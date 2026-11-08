@@ -259,7 +259,7 @@ pub fn copy_original(source:&ImmutableBacking,output:&mut impl Write,cancelled:&
     while offset<source.byte_len() {
         active(cancelled)?;
         let count=(source.byte_len()-offset).min(64*1024) as usize;
-        let super::RangeState::Ready(bytes)=source.poll_original(offset,count)? else {return Err("Package bytes are pending".into());};
+        let super::RangeState::Ready(bytes)=source.poll_original_on_worker(offset,count)? else {return Err("Package bytes are pending".into());};
         output.write_all(&bytes).map_err(|e|e.to_string())?;
         offset+=count as u64;
     }

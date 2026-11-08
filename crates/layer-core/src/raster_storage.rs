@@ -110,6 +110,10 @@ impl Bytes {
     pub(crate) fn memory(&self) -> Result<Option<Arc<[u8]>>,String> {
         Ok(match self.snapshot()? {Value::Memory(bytes)=>Some(bytes),_=>None})
     }
+    pub(crate) fn read_interest(&self)->Result<Option<crate::tile_io::ReadWait>,String> {
+        self.healthy()?;
+        match self.snapshot()? {Value::Memory(_)=>Ok(None),Value::Store(location)=>location.read_interest().map(Some),Value::Package(range)=>range.read_interest().map(Some)}
+    }
     pub(crate) fn location(&self)->Result<Option<Arc<crate::package::session_store::StoreLocation>>,String> {
         Ok(match self.snapshot()? {Value::Store(location)=>Some(location),_=>None})
     }

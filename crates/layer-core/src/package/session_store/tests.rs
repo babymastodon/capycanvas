@@ -31,6 +31,7 @@
     struct TransportFile {inner:Arc<dyn StoreFile>,name:String,control:Arc<Mutex<Control>>}
     impl RangeReader for TransportFile {
         fn transfer_key(&self)->Option<String> {Some(format!("test-store:{}",self.name))}
+        fn allocation_bytes(&self,offset:u64,length:usize)->usize {self.inner.allocation_bytes(offset,length)}
         fn read(&self,offset:u64,length:usize,crc:Option<u32>,completion:ReadCompletion) {
             let mut state=self.control.lock().unwrap();
             if state.hold_reads {state.reads.push_back((self.inner.clone(),offset,length,crc,completion));return;}
@@ -275,19 +276,22 @@
         let mut read=Box::pin(tile.read_compressed());let mut context=Context::from_waker(Waker::noop());
         assert!(read.as_mut().poll(&mut context).is_pending());cache.drive();
         let (file,offset,length,crc,completion)=control.lock().unwrap().reads.pop_front().expect("one leased tile read");
+        let retained=file.allocation_bytes(offset,length) as u64;
         assert_eq!(crc,Some(location.crc));file.read(offset,length,crc,completion);
         location.range().source.evict();cache.drive();budget.flush_reports();
-        assert_eq!(budget.snapshot().ram_physical_bytes,physical+expected.len() as u64);
+        assert_eq!(budget.snapshot().ram_physical_bytes,physical+retained);
         let Poll::Ready(Ok(bytes))=read.as_mut().poll(&mut context) else {panic!("completed tile read retains its result")};drop(read);
-        assert_eq!(&*bytes,&*expected);assert_eq!(crc32fast::hash(&bytes),location.crc);
-        location.range().source.evict();budget.flush_reports();assert_eq!(budget.snapshot().ram_physical_bytes,physical+expected.len() as u64);
-        drop(bytes);location.range().source.evict();cache.drive();budget.flush_reports();
+        assert_eq!(&*bytes,&*expected);assert_eq!(crc32fast::hash(&bytes),location.crc);assert_eq!(bytes.retained_bytes() as u64,retained);
+        location.range().source.evict();budget.flush_reports();assert_eq!(budget.snapshot().ram_physical_bytes,physical+retained);
+        drop(bytes);location.range().source.evict();budget.flush_reports();assert_eq!(cache.limit_bytes(),0);
+        cache.drive();budget.flush_reports();
         assert_eq!(budget.snapshot().ram_physical_bytes,physical);assert!(control.lock().unwrap().reads.is_empty());drop(drain);
     }
     #[test]
     fn oversized_known_resource_is_rejected_before_payload_reads() {
         struct CountedFile {inner:Arc<dyn StoreFile>,reads:Arc<AtomicU64>}
         impl RangeReader for CountedFile {
+            fn allocation_bytes(&self,offset:u64,length:usize)->usize {self.inner.allocation_bytes(offset,length)}
             fn read(&self,offset:u64,length:usize,crc:Option<u32>,completion:ReadCompletion) {
                 self.reads.fetch_add(1,Ordering::Relaxed);self.inner.read(offset,length,crc,completion)
             }

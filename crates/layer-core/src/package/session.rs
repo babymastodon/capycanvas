@@ -516,6 +516,11 @@ pub fn open_with_budget(source:ImmutableBacking,limits:ProjectLimits,cancel:&Ato
             if offset.checked_add(length as u64).is_none_or(|end|end>self.length){return Err("Session resource range overflow".into());}
             self.source.poll(self.offset.checked_add(offset).ok_or("Session resource offset overflow")?,length)
         }
+        #[cfg(not(target_arch="wasm32"))]
+        fn poll_on_worker(&self,offset:u64,length:usize)->Result<super::RangeState,String> {
+            if offset.checked_add(length as u64).is_none_or(|end|end>self.length){return Err("Session resource range overflow".into());}
+            self.source.read_on_worker(self.offset.checked_add(offset).ok_or("Session resource offset overflow")?,length).map(super::RangeState::Ready)
+        }
     }
     let backing=ImmutableBacking::new(Arc::new(Pack {source:source.clone(),offset:pack.offset,length:pack.length})).map_err(str::to_string)?;
     open_parts_checked_with_budget(&metadata,backing,limits,cancel,programs,budget,

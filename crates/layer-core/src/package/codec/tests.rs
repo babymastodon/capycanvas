@@ -730,3 +730,30 @@ fn leased_save_keeps_only_its_current_resource_pinned() {
     }
     let mut output=Sink {budget,maximum,saw_pin:false};pollster::block_on(prepared.write_async(&mut output,&cancel)).unwrap();assert!(output.saw_pin);
 }
+
+#[cfg(not(target_arch="wasm32"))]
+#[test]
+fn cold_original_copy_uses_worker_reads_without_revalidating_the_package() {
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    struct Source {bytes:Arc<[u8]>,reads:AtomicUsize}
+    impl super::super::ByteSource for Source {
+        fn byte_len(&self)->u64 {self.bytes.len() as u64}
+        fn poll(&self,_:u64,_:usize)->Result<super::super::RangeState,String> {Ok(super::super::RangeState::Pending)}
+        fn poll_on_worker(&self,offset:u64,length:usize)->Result<super::super::RangeState,String> {
+            self.reads.fetch_add(1,Ordering::Relaxed);
+            Ok(super::super::RangeState::Ready(super::super::ByteRange::new(self.bytes.clone(),offset as usize..offset as usize+length)?))
+        }
+    }
+    let input=Arc::new(Source {bytes:(0..65_537).map(|index|index as u8).collect::<Vec<_>>().into(),reads:AtomicUsize::new(0)});
+    let source=ImmutableBacking::new(input.clone()).unwrap();
+    let failure=source.fail("Invalid artwork must still be copied".into());
+    let mut copied=Vec::new();
+    copy_original(&source,&mut copied,&AtomicBool::new(false)).unwrap();
+    assert_eq!(copied.as_slice(),input.bytes.as_ref());
+    assert_eq!(input.reads.load(Ordering::Relaxed),2);
+    assert_eq!(source.poll(0,1).unwrap_err(),failure);
+    let mut cancelled=Vec::new();
+    assert!(copy_original(&source,&mut cancelled,&AtomicBool::new(true)).is_err());
+    assert!(cancelled.is_empty());
+    assert_eq!(input.reads.load(Ordering::Relaxed),2);
+}

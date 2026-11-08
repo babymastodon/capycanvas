@@ -278,6 +278,7 @@ impl TileBlob {
     pub fn memory_compressed(&self)->Result<Option<Arc<[u8]>>,String> {self.compressed.memory()}
     pub fn poll_compressed(&self)->Result<crate::package::RangeState,String> {self.compressed.poll()}
     pub async fn read_compressed(&self)->Result<crate::package::ByteRange,String> {self.compressed.read().await}
+    pub fn read_interest(&self)->Result<Option<crate::tile_io::ReadWait>,String> {self.compressed.read_interest()}
     pub(crate) fn has_package_origin(&self)->bool {matches!(self.content_identity,Some(TileContentIdentity::Package {..})) || self.compressed.package_origin()}
     pub fn resident_bytes(&self) -> usize { self.compressed.resident_bytes() }
     fn decode_samples(descriptor: PixelDescriptor, compressed: &[u8]) -> Result<Vec<u8>, String> {

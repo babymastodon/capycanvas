@@ -860,6 +860,7 @@ impl Pack {
 }
 impl RangeReader for Pack {
     fn transfer_key(&self)->Option<String> {self.file.transfer_key()}
+    fn allocation_bytes(&self,offset:u64,length:usize)->usize {self.file.allocation_bytes(offset,length)}
     fn read(&self,offset:u64,length:usize,crc:Option<u32>,completion:ReadCompletion) {self.file.read(offset,length,crc,completion);}
 }
 struct StoreRange {pack:Arc<Pack>,source:ReadSource,offset:u64}
@@ -909,7 +910,8 @@ impl StoreLocation {
         }
         if checksum.finalize()!=self.crc {return Err("Recovery resource checksum failed".into());}Ok(())
     }
-    pub(crate) async fn read(&self)->Result<ByteRange,String> {let range=self.range();range.source.wait_checked(range.offset,self.length as usize,self.crc)?.await}
+    pub(crate) fn read_interest(&self)->Result<crate::tile_io::ReadWait,String> {let range=self.range();range.source.wait_checked(range.offset,self.length as usize,self.crc)}
+    pub(crate) async fn read(&self)->Result<ByteRange,String> {self.read_interest()?.await}
     pub(crate) fn poll(&self)->Result<RangeState,String> {let range=self.range();range.source.poll_checked(range.offset,self.length as usize,self.crc)}
     #[cfg(not(target_arch="wasm32"))]
     pub(crate) fn read_on_worker(&self)->Result<ByteRange,String> {let range=self.range();range.source.read_checked_on_worker(range.offset,self.length as usize,self.crc)}

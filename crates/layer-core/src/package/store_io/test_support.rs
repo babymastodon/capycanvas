@@ -9,6 +9,7 @@ impl Observed {
     }
 }
 impl RangeReader for ObservedFile {
+    fn allocation_bytes(&self,offset:u64,length:usize)->usize {self.inner.allocation_bytes(offset,length)}
     fn read(&self,offset:u64,length:usize,crc:Option<u32>,completion:ReadCompletion) {
         (self.observe)();self.inner.read(offset,length,crc,completion);
     }
