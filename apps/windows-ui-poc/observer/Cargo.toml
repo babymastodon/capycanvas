@@ -1,0 +1,14 @@
+[package]
+name = "poc-observer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+poc-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_System_JobObjects", "Win32_UI_Controls", "Win32_System_SystemInformation", "Win32_System_Diagnostics_Debug", "Win32_UI_Accessibility", "Win32_System_Variant", "Win32_System_Ole"] }

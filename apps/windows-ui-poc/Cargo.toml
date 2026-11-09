@@ -1,0 +1,25 @@
+[workspace]
+members = ["common", "canvas", "observer"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+poc-common = { path = "common" }
+poc-canvas = { path = "canvas" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossbeam-channel = "0.5"
+pollster = "0.4"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_Pointer", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+[patch.crates-io]
+wgpu-core = { path = "../../vendor/wgpu-core" }
+wgpu = { path = "../../vendor/wgpu" }
+wgpu-hal = { path = "../../vendor/wgpu-hal" }
+wgpu-types = { path = "../../vendor/wgpu-types" }
