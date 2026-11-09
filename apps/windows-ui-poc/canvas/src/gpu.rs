@@ -1,6 +1,15 @@
 use poc_common::PenSample;
-use windows::Win32::{Foundation::{HANDLE, WAIT_OBJECT_0}, System::Threading::WaitForSingleObject};
+use windows::{core::Interface,Win32::{Foundation::{HANDLE, WAIT_OBJECT_0}, System::Threading::WaitForSingleObject}};
 
+#[derive(Default)]
+struct FrameSlot {reserved:bool,chain:usize}
+impl FrameSlot {
+    fn acquire(&mut self,chain:usize,wait:impl FnOnce()->Result<(),String>)->Result<(),String>{
+        if self.chain!=chain{self.chain=chain;self.reserved=false;}
+        if !self.reserved {wait()?;self.reserved=true;}Ok(())
+    }
+    fn release(&mut self){self.reserved=false;}
+}
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -8,6 +17,7 @@ pub struct Gpu {
     pub config: wgpu::SurfaceConfiguration,
     pub info: wgpu::AdapterInfo,
     pub scale: f32,
+    frame_slot:FrameSlot,
     pub document: wgpu::Texture,
     pub viewport: wgpu::Texture,
     pub viewport_view: wgpu::TextureView,
@@ -87,6 +97,7 @@ impl Gpu {
     pub fn instance() -> wgpu::Instance {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = wgpu::Backends::DX12;
+        desc.flags.remove(wgpu::InstanceFlags::DEBUG);
         desc.backend_options.dx12.latency_waitable_object = wgpu::Dx12UseFrameLatencyWaitableObject::DontWait;
         wgpu::Instance::new(desc)
     }
@@ -136,7 +147,7 @@ impl Gpu {
         queue.submit([encoder.finish()]);
         let upload = wgpu::util::StagingBelt::new(device.clone(), 1 << 20);
         let timestamps = crate::cache::GpuTimestamps::new(&device);
-        Ok(Self { device, queue, surface, config, info, scale, document, viewport, viewport_view, params, dabs, document_group, viewport_group, viewport_pipeline, dab_pipeline, upload, timestamps, in_flight: None })
+        Ok(Self { device, queue, surface, config, info, scale, frame_slot:FrameSlot::default(),document, viewport, viewport_view, params, dabs, document_group, viewport_group, viewport_pipeline, dab_pipeline, upload, timestamps, in_flight: None })
     }
     pub fn resize(&mut self, width: u32, height: u32, scale: f32) {
         self.config.width = width.max(1); self.config.height = height.max(1); self.scale = scale;
@@ -144,15 +155,23 @@ impl Gpu {
         self.viewport = texture(&self.device, "viewport", width.max(1), height.max(1));
         self.viewport_view=self.viewport.create_view(&Default::default());
     }
+    pub fn set_panel_transform(&self)->Result<(),String> {
+        let native=unsafe{self.surface.as_hal::<wgpu::hal::api::Dx12>()}.ok_or("panel surface has no D3D12 backend")?;
+        let chain=native.swap_chain().ok_or("panel swap chain is not configured")?;
+        let extent=unsafe{chain.GetDesc1()}.map_err(|error|error.to_string())?;
+        let transform=windows::Win32::Graphics::Dxgi::DXGI_MATRIX_3X2_F {_11:self.config.width as f32/extent.Width as f32/self.scale,_22:self.config.height as f32/extent.Height as f32/self.scale,..Default::default()};
+        unsafe{chain.SetSourceSize(self.config.width,self.config.height).and_then(|()|chain.SetMatrixTransform(&transform))}.map_err(|error|error.to_string())
+    }
     pub fn wait(&mut self) -> Result<(), String> {
         if let Some(submission) = self.in_flight.take() {
             self.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(10)) }).map_err(|e| e.to_string())?;
         }
-        let handle = unsafe { self.surface.as_hal::<wgpu::hal::api::Dx12>() }.and_then(|surface| unsafe { surface.waitable_handle() });
-        if let Some(handle) = handle && unsafe { WaitForSingleObject(HANDLE(handle.0), 10000) } != WAIT_OBJECT_0 { return Err("canvas latency wait failed".into()); }
-        Ok(())
+        let (chain,handle) = unsafe { self.surface.as_hal::<wgpu::hal::api::Dx12>() }.and_then(|surface|surface.swap_chain().map(|chain|(chain.as_raw() as usize,unsafe{surface.waitable_handle()}))).ok_or("canvas swap chain is not configured")?;
+        self.frame_slot.acquire(chain,||{if let Some(handle)=handle && unsafe{WaitForSingleObject(HANDLE(handle.0),10000)}!=WAIT_OBJECT_0{return Err("canvas latency wait failed".into());}Ok(())})
     }
+    pub fn present(&mut self,target:wgpu::SurfaceTexture){self.queue.present(target);self.frame_slot.release();}
     pub fn encode(&mut self, samples: &[PenSample], pen_count: u32, frame: u32) -> Result<(wgpu::SurfaceTexture, wgpu::CommandEncoder), String> {
+        self.wait()?;
         let floats = [self.config.width as f32, self.config.height as f32];
         let mut data = Vec::with_capacity(16);
         for value in floats { data.extend_from_slice(&value.to_ne_bytes()); }
@@ -177,7 +196,7 @@ mod tests {
 
     #[test]
     fn oversized_dab_batch_preserves_first_and_last_document_pixels() {
-        let instance = Gpu::instance();
+        let instance = crate::cache::headless_instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         let params: Vec<u8> = [64.0f32, 64.0].into_iter().flat_map(f32::to_ne_bytes).chain([0u8; 8]).collect();
@@ -220,3 +239,13 @@ mod tests {
         assert_eq!(&pixels[..4], &[0, 0, 0, 255]);
     }
 }
+    #[test]
+    fn noop_batches_and_resize_of_the_same_chain_keep_the_acquired_slot_until_present() {
+        let mut slot=FrameSlot::default();let waits=std::cell::Cell::new(0);
+        let wait=||{waits.set(waits.get()+1);Ok(())};
+        slot.acquire(1,wait).unwrap();
+        for _ in 0..4 {slot.acquire(1,wait).unwrap();}
+        assert_eq!(waits.get(),1);
+        slot.release();slot.acquire(1,wait).unwrap();assert_eq!(waits.get(),2);
+        slot.acquire(2,wait).unwrap();assert_eq!(waits.get(),3);
+    }

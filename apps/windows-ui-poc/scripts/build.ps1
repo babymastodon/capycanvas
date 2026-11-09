@@ -25,6 +25,6 @@ try{
     if(!$files.Count){throw 'Release build produced no executables or DLLs'}
     $revisionFile=Join-Path $root 'source-revision.txt'
     $revision=if(Test-Path -LiteralPath $revisionFile){(Get-Content -LiteralPath $revisionFile -Raw).Trim()}else{& git rev-parse HEAD}
-    $inputs=@(Get-ChildItem -LiteralPath $root -Recurse -File|Where-Object {$_.FullName -notlike ($TargetDirectory.TrimEnd('\')+'\*') -and $_.Extension -in '.rs','.wgsl','.toml','.lock','.ps1','.cpp','.h','.vcxproj','.config','.manifest','.svg'}|Sort-Object FullName|ForEach-Object {@{path=$_.FullName.Substring($root.Length+1);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}})
+    $inputs=@(Get-ChildItem -LiteralPath $root -Recurse -File|Where-Object {$_.FullName -notlike ($TargetDirectory.TrimEnd('\')+'\*') -and $_.FullName -notlike (Join-Path $root 'winui\packages\*') -and $_.Extension -in '.rs','.wgsl','.toml','.lock','.ps1','.cs','.cpp','.h','.vcxproj','.config','.manifest','.svg'}|Sort-Object FullName|ForEach-Object {@{path=$_.FullName.Substring($root.Length+1);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}})
     @{configuration='Release';commit=$revision;rustc=(& rustc --version);source_inputs=$inputs;files=$files}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $target 'build.json') -Encoding UTF8
 }finally{Pop-Location}

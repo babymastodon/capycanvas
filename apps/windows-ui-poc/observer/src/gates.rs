@@ -29,8 +29,14 @@ pub struct PenEvidence {
     pub consumed:u32,
     pub matching_basis:&'static str,
     pub timestamp_identity:&'static str,
-    pub rewritten_receipt_timestamps:u32,
-    pub rewritten_consumed_timestamps:u32,
+    pub rewritten_receipt_timestamps:Option<u32>,
+    pub rewritten_consumed_timestamps:Option<u32>,
+    pub timestamp_comparable_samples:u32,
+    pub timestamp_noncomparable_samples:u32,
+    pub host_timestamp_bases:Vec<String>,
+    pub native_latest_identity:&'static str,
+    pub native_latest_checked_samples:u32,
+    pub native_latest_rewritten_samples:Option<u32>,
     pub tolerances:PenTolerances,
 }
 fn ordered<'a>(records:&'a [Value],kind:&str,expected:u32)->Result<Vec<&'a Value>,String> {
@@ -47,28 +53,71 @@ fn number(row:&Value,key:&str,index:usize)->Result<f64,String> {
 fn timestamp(row:&Value,index:usize)->Result<u64,String> {
     row.get("timestamp").and_then(Value::as_u64).ok_or_else(||format!("pen sample {index} has no timestamp"))
 }
+fn sample_tuple(input:&Value,sample:&Value,prefix:&str,index:usize,tolerances:&PenTolerances)->Result<(),String> {
+    for (key,tolerance) in [("x",tolerances.position_px),("y",tolerances.position_px),("pressure",tolerances.pressure),("tilt_x",tolerances.tilt_degrees),("tilt_y",tolerances.tilt_degrees),("twist",tolerances.twist_degrees)] {
+        let expected=number(input,key,index)?;let actual=number(sample,&format!("{prefix}{key}"),index)?;
+        if (expected-actual).abs()>tolerance{return Err(format!("ordered pen sample {index} differs in {key}: injected {expected}, {prefix}sample {actual}, quantization tolerance {tolerance}"));}
+    }
+    Ok(())
+}
+struct HostTimestampEvidence {bases:Vec<TimestampBasis>,names:Vec<String>,latest_checked:u32,latest_rewritten:u32}
+#[derive(Clone, Copy)]
+enum TimestampBasis {NativeQpc,WinrtMicroseconds,Undeclared}
+fn host_timestamp_basis(trace:&[Value],receipts:&[&Value],injections:&[&Value],tolerances:&PenTolerances,expected:u32)->Result<HostTimestampEvidence,String> {
+    let messages:Vec<_>=trace.iter().filter(|row|row["kind"]=="host_pen_message").collect();
+    if messages.is_empty(){return Ok(HostTimestampEvidence{bases:vec![TimestampBasis::Undeclared;expected as usize],names:Vec::new(),latest_checked:0,latest_rewritten:0});}
+    let mut samples=Vec::new();let mut names=std::collections::BTreeSet::new();let mut latest_checked=0;let mut latest_rewritten=0;
+    for message in messages {
+        let count=message["samples"].as_f64().filter(|n|n.is_finite()&&n.fract()==0.0&&*n>0.0&&*n<=expected as f64).ok_or("host pen message has no valid sample count")? as usize;
+        if samples.len()+count>receipts.len(){return Err("host pen messages exceed the accepted delivery count".into());}
+        let name=message["timestamp_basis"].as_str().unwrap_or("undeclared");names.insert(name.to_owned());
+        let basis=match name {
+            "native_PerformanceCount_matched_ordered_history"=>{
+                if message["native_history_matched"]!=true||message["native_history_count"].as_f64()!=Some(count as f64){return Err("native PerformanceCount basis lacks matched ordered history".into());}
+                TimestampBasis::NativeQpc
+            },
+            "PointerPoint.Timestamp_microseconds"=>TimestampBasis::WinrtMicroseconds,
+            _=>TimestampBasis::Undeclared,
+        };
+        let receipt=message["receipt_qpc"].as_f64().filter(|v|v.is_finite()&&v.fract()==0.0).ok_or("host pen message has no receipt QPC")?;
+        for record in &receipts[samples.len()..samples.len()+count]{if record["qpc"].as_f64()!=Some(receipt){return Err("host pen message sample count or receipt QPC does not match ordered delivery".into());}}
+        if !matches!(basis,TimestampBasis::NativeQpc)&&message["native_latest_tuple_matched"]==true {
+            let index=samples.len()+count-1;
+            sample_tuple(injections[index],message,"native_latest_",index,tolerances)?;
+            let native_stamp=message["native_performance_count"].as_f64().filter(|n|n.is_finite()&&n.fract()==0.0&&*n>0.0).ok_or("matched native latest sample has no PerformanceCount")?;
+            latest_checked+=1;latest_rewritten+=u32::from(native_stamp!=timestamp(injections[index],index)? as f64);
+        }
+        samples.extend(std::iter::repeat_n(basis,count));
+    }
+    if samples.len()!=expected as usize{return Err("host timestamp basis does not cover the accepted delivery count".into());}
+    Ok(HostTimestampEvidence{bases:samples,names:names.into_iter().collect(),latest_checked,latest_rewritten})
+}
 pub fn pen_delivery(inputs:&[Value],trace:&[Value],expected:u32)->Result<PenEvidence,String> {
     if expected<2{return Err("pen workload has no complete accepted contact".into());}
     let injections=ordered(inputs,"pen",expected)?;
     let receipts=ordered(trace,"input_receipt",expected)?;
     let consumed=ordered(trace,"pen_consumed",expected)?;
     let tolerances=PenTolerances {position_px:0.5,pressure:0.5/1024.0+1e-7,tilt_degrees:0.5+1e-7,twist_degrees:0.5+1e-7};
-    let mut rewritten_receipt_timestamps=0;let mut rewritten_consumed_timestamps=0;
+    let host=host_timestamp_basis(trace,&receipts,&injections,&tolerances,expected)?;
+    let timestamp_bases=host.bases;
+    let mut rewritten_receipt_timestamps=0;let mut rewritten_consumed_timestamps=0;let mut timestamp_comparable_samples=0;
     for (i,((input,receipt),consumed)) in injections.iter().zip(&receipts).zip(&consumed).enumerate(){
         let injected_stamp=timestamp(input,i)?;
         let receipt_stamp=timestamp(receipt,i)?;
         let sample=consumed.get("sample").ok_or_else(||format!("pen consumption {i} has no sample tuple"))?;
         let consumed_stamp=timestamp(sample,i)?;
         if receipt_stamp!=consumed_stamp{return Err(format!("pen receipt and consumption timestamps disagree at index {i}"));}
-        rewritten_receipt_timestamps+=u32::from(receipt_stamp!=injected_stamp);
-        rewritten_consumed_timestamps+=u32::from(consumed_stamp!=injected_stamp);
-        if consumed.get("pen_samples").and_then(Value::as_u64)!=Some(i as u64+1){return Err(format!("invalid consumed pen count at index {i}"));}
-        for (key,tolerance) in [("x",tolerances.position_px),("y",tolerances.position_px),("pressure",tolerances.pressure),("tilt_x",tolerances.tilt_degrees),("tilt_y",tolerances.tilt_degrees),("twist",tolerances.twist_degrees)] {
-            let expected=number(input,key,i)?;let actual=number(sample,key,i)?;
-            if (expected-actual).abs()>tolerance{return Err(format!("ordered pen sample {i} differs in {key}: injected {expected}, consumed {actual}, quantization tolerance {tolerance}"));}
+        if matches!(timestamp_bases[i],TimestampBasis::NativeQpc){
+            timestamp_comparable_samples+=1;
+            rewritten_receipt_timestamps+=u32::from(receipt_stamp!=injected_stamp);
+            rewritten_consumed_timestamps+=u32::from(consumed_stamp!=injected_stamp);
         }
+        if consumed.get("pen_samples").and_then(Value::as_u64)!=Some(i as u64+1){return Err(format!("invalid consumed pen count at index {i}"));}
+        sample_tuple(input,sample,"",i,&tolerances)?;
     }
-    Ok(PenEvidence {validated:true,injected:expected,received:expected,consumed:expected,matching_basis:"ordered_indices_and_quantized_sample_tuples",timestamp_identity:if rewritten_receipt_timestamps==0&&rewritten_consumed_timestamps==0{"unchanged"}else{"rewritten"},rewritten_receipt_timestamps,rewritten_consumed_timestamps,tolerances})
+    let timestamp_identity=if timestamp_comparable_samples==expected {if rewritten_receipt_timestamps==0&&rewritten_consumed_timestamps==0{"unchanged"}else{"rewritten"}}else if timestamp_comparable_samples>0{"partially_comparable"}else if timestamp_bases.iter().all(|basis|matches!(basis,TimestampBasis::WinrtMicroseconds)){"not_comparable_different_units"}else{"unverified_source_basis"};
+    let native_latest_identity=if host.latest_checked>0{if host.latest_rewritten>0{"rewritten"}else{"unchanged"}}else if timestamp_comparable_samples==expected{"covered_by_ordered_history"}else{"unverified"};
+    Ok(PenEvidence {validated:true,injected:expected,received:expected,consumed:expected,matching_basis:"ordered_indices_and_quantized_sample_tuples",timestamp_identity,rewritten_receipt_timestamps:(timestamp_comparable_samples>0).then_some(rewritten_receipt_timestamps),rewritten_consumed_timestamps:(timestamp_comparable_samples>0).then_some(rewritten_consumed_timestamps),timestamp_comparable_samples,timestamp_noncomparable_samples:expected-timestamp_comparable_samples,host_timestamp_bases:host.names,native_latest_identity,native_latest_checked_samples:host.latest_checked,native_latest_rewritten_samples:(host.latest_checked>0).then_some(host.latest_rewritten),tolerances})
 }
 
 #[cfg(test)]
@@ -106,6 +155,7 @@ mod tests {
             trace.push(json!({"kind":"input_receipt","index":i,"qpc":injected+8,"timestamp":stamp}));
             trace.push(json!({"kind":"pen_consumed","index":i,"pen_samples":i+1,"sample":{"timestamp":stamp,"x":100+i*4,"y":200+i*3,"pressure":(pressure*1024.0).round()/1024.0,"tilt_x":tilt_x.round(),"tilt_y":tilt_y.round(),"twist":twist.round()}}));
         }
+        for i in 0..3 {trace.push(json!({"kind":"host_pen_message","samples":1,"receipt_qpc":108+i*10,"timestamp_basis":"native_PerformanceCount_matched_ordered_history","native_history_count":1,"native_history_matched":true}));}
         (inputs,trace)
     }
     #[test]
@@ -113,8 +163,9 @@ mod tests {
         for rewritten in [false,true]{
             let (inputs,trace)=samples(rewritten);let evidence=pen_delivery(&inputs,&trace,3).unwrap();
             assert!(evidence.validated);assert_eq!(evidence.timestamp_identity,if rewritten{"rewritten"}else{"unchanged"});
-            assert_eq!(evidence.rewritten_receipt_timestamps,if rewritten{3}else{0});assert_eq!(evidence.rewritten_consumed_timestamps,if rewritten{3}else{0});
+            assert_eq!(evidence.rewritten_receipt_timestamps,Some(if rewritten{3}else{0}));assert_eq!(evidence.rewritten_consumed_timestamps,Some(if rewritten{3}else{0}));
             assert_eq!(evidence.matching_basis,"ordered_indices_and_quantized_sample_tuples");
+            assert_eq!(evidence.native_latest_identity,"covered_by_ordered_history");assert_eq!(evidence.native_latest_checked_samples,0);assert_eq!(evidence.native_latest_rewritten_samples,None);
         }
     }
     #[test]
@@ -158,6 +209,53 @@ mod tests {
         assert!(pen_delivery(&inputs,&trace,2).unwrap_err().contains("differs in x"));
         let first=trace[1]["sample"].clone();trace[1]["sample"]=trace[3]["sample"].clone();trace[3]["sample"]=first;
         assert!(pen_delivery(&inputs,&trace,2).unwrap().validated);
+    }
+
+    #[test]
+    fn winrt_microseconds_are_not_classified_as_rewritten_qpc() {
+        let (inputs,mut trace)=samples(true);
+        for row in trace.iter_mut().filter(|row|row["kind"]=="host_pen_message"){row["timestamp_basis"]=json!("PointerPoint.Timestamp_microseconds");row["native_history_matched"]=json!(false);}
+        let evidence=pen_delivery(&inputs,&trace,3).unwrap();
+        assert!(evidence.validated);assert_eq!(evidence.timestamp_identity,"not_comparable_different_units");assert_eq!(evidence.timestamp_comparable_samples,0);assert_eq!(evidence.timestamp_noncomparable_samples,3);assert_eq!(evidence.rewritten_receipt_timestamps,None);assert_eq!(evidence.rewritten_consumed_timestamps,None);
+    }
+    fn microsecond_batch(rewritten:bool)->(Vec<Value>,Vec<Value>) {
+        let (inputs,mut trace)=samples(true);trace.truncate(6);trace[2]["qpc"]=json!(108);
+        let mut message=json!({"kind":"host_pen_message","samples":2.0,"receipt_qpc":108.0,"timestamp_basis":"PointerPoint.Timestamp_microseconds","native_history_matched":false,"native_latest_tuple_matched":true,"native_performance_count":if rewritten{115.0}else{110.0}});
+        for key in ["x","y","pressure","tilt_x","tilt_y","twist"]{message[format!("native_latest_{key}")]=trace[3]["sample"][key].clone();}
+        trace.push(message);trace.push(json!({"kind":"host_pen_message","samples":1,"receipt_qpc":128,"timestamp_basis":"PointerPoint.Timestamp_microseconds","native_latest_tuple_matched":false}));
+        (inputs,trace)
+    }
+    #[test]
+    fn microsecond_history_independently_checks_only_batch_latest_native_qpc() {
+        for rewritten in [false,true]{
+            let (inputs,trace)=microsecond_batch(rewritten);let evidence=pen_delivery(&inputs,&trace,3).unwrap();
+            assert_eq!(evidence.timestamp_identity,"not_comparable_different_units");assert_eq!(evidence.timestamp_comparable_samples,0);assert_eq!(evidence.rewritten_receipt_timestamps,None);
+            assert_eq!(evidence.native_latest_identity,if rewritten{"rewritten"}else{"unchanged"});assert_eq!(evidence.native_latest_checked_samples,1);assert_eq!(evidence.native_latest_rewritten_samples,Some(u32::from(rewritten)));
+        }
+    }
+    #[test]
+    fn unmatched_or_missing_latest_native_proof_remains_unverified() {
+        for matched in [json!(false),Value::Null]{
+            let (inputs,mut trace)=microsecond_batch(true);trace[6]["native_latest_tuple_matched"]=matched;
+            let evidence=pen_delivery(&inputs,&trace,3).unwrap();assert_eq!(evidence.native_latest_identity,"unverified");assert_eq!(evidence.native_latest_checked_samples,0);assert_eq!(evidence.native_latest_rewritten_samples,None);
+        }
+    }
+    #[test]
+    fn latest_native_proof_requires_the_last_accepted_tuple_in_its_batch() {
+        let (inputs,mut trace)=microsecond_batch(true);trace[6]["native_latest_x"]=inputs[0]["x"].clone();assert!(pen_delivery(&inputs,&trace,3).unwrap_err().contains("sample 1 differs in x"));
+        let (inputs,mut trace)=microsecond_batch(true);trace[6]["native_performance_count"]=Value::Null;assert!(pen_delivery(&inputs,&trace,3).unwrap_err().contains("no PerformanceCount"));
+    }
+    #[test]
+    fn mixed_or_missing_timestamp_units_preserve_order_gates_without_identity_claims() {
+        let (inputs,mut trace)=samples(true);trace[6]["timestamp_basis"]=json!("PointerPoint.Timestamp_microseconds");
+        let evidence=pen_delivery(&inputs,&trace,3).unwrap();assert_eq!(evidence.timestamp_identity,"partially_comparable");assert_eq!(evidence.timestamp_comparable_samples,2);assert_eq!(evidence.rewritten_receipt_timestamps,Some(2));
+        trace.retain(|row|row["kind"]!="host_pen_message");let evidence=pen_delivery(&inputs,&trace,3).unwrap();assert_eq!(evidence.timestamp_identity,"unverified_source_basis");assert_eq!(evidence.rewritten_receipt_timestamps,None);
+    }
+    #[test]
+    fn timestamp_basis_must_cover_the_same_ordered_receipt_batches() {
+        let (inputs,mut trace)=samples(true);trace[6]["samples"]=json!(1.0);trace[6]["native_history_count"]=json!(1.0);assert!(pen_delivery(&inputs,&trace,3).is_ok());
+        let (inputs,mut trace)=samples(true);trace[6]["receipt_qpc"]=json!(999);assert!(pen_delivery(&inputs,&trace,3).is_err());
+        let (inputs,mut trace)=samples(true);trace[6]["native_history_matched"]=json!(false);assert!(pen_delivery(&inputs,&trace,3).is_err());
     }
 
 }

@@ -6,3 +6,4 @@ mod gpu;
 mod native;
 #[cfg(windows)]
 pub use native::*;
+mod model_abi;

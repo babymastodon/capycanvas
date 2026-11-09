@@ -18,8 +18,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument('scripts', type=Path)
 parser.add_argument('--vm', required=True, choices=('capycanvas6-poc-gpu', 'capycanvas6-poc-warp'))
 parser.add_argument('--profile', choices=('normal', 'lowcpu'), default='normal')
+parser.add_argument('--arm', choices=('abba','retained','winui'), default='abba')
+parser.add_argument('--workload', action='append', default=[])
 parser.add_argument('--already-started', action='store_true')
 args = parser.parse_args()
+if any(not re.fullmatch(r'[a-z][a-z0-9-]*',name) for name in args.workload):
+    raise SystemExit('Invalid workload name')
 repo = args.scripts.resolve().parents[2]
 vm = repo / 'tools/windows-vm/windows-vm.py'
 scratch = Path('/mnt/localssd/capycanvas6-poc')
@@ -68,7 +72,8 @@ try:
     ssh(f"Set-Content -LiteralPath 'C:\\capycanvas\\apps\\windows-ui-poc\\source-revision.txt' -Value '{revision}' -Encoding ASCII; & 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' -NoProfile -File 'C:\\capycanvas\\apps\\windows-ui-poc\\scripts\\build.ps1'; exit $LASTEXITCODE")
     task = 'CapyPoc-' + run_name
     runner_path = guest_out + r'\invoke.ps1'
-    invocation = f"& 'C:\\capycanvas\\apps\\windows-ui-poc\\scripts\\run-bench.ps1' -Vm {args.vm} -Profile {args.profile} -Out '{guest_out}' -PresentMon '{guest_tools}\\{filename}' -PresentMonSha256 {sha256}"
+    selected = " -Workload @(" + ",".join("'" + name + "'" for name in args.workload) + ")" if args.workload else ""
+    invocation = f"& 'C:\\capycanvas\\apps\\windows-ui-poc\\scripts\\run-bench.ps1' -Vm {args.vm} -Profile {args.profile} -Arm {args.arm} -Out '{guest_out}' -PresentMon '{guest_tools}\\{filename}' -PresentMonSha256 {sha256}{selected}"
     runner = f"""$ErrorActionPreference='Stop'
 $exitCode=1
 Start-Transcript -LiteralPath '{guest_out}\\task.log'|Out-Null

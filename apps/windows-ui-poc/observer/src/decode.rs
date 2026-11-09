@@ -12,14 +12,14 @@ impl Pixels {
         let pixels: Vec<_> = (0..24).map(|i| self.at(1+i*4+2,3).ok_or("marker payload is incomplete")).collect::<Result<_, _>>()?;
         poc_common::decode_marker(&pixels)
     }
-    pub fn edge(&self, color: [u8; 3], vertical: bool) -> Option<i32> {
+    pub fn color_run(&self, color: [u8; 3], vertical: bool) -> Option<std::ops::Range<i32>> {
         let length = if vertical { self.height } else { self.width };
-        let mut found = false;
+        let mut first = None;
         for i in 0..length {
             let pixel = if vertical { self.at(0, i) } else { self.at(i, 0) }?;
-            if pixel[..3] == color { found = true; } else if found { return Some(i as i32); }
+            if pixel[..3] == color {first.get_or_insert(i as i32);} else if let Some(first)=first {return Some(first..i as i32);}
         }
-        found.then_some(length as i32)
+        first.map(|first|first..length as i32)
     }
     pub fn ruler(&self, row_height: f64, list_top: i32) -> Option<f64> {
         if row_height <= 0.0 { return None; }
@@ -84,8 +84,12 @@ mod tests {
     #[test]
     fn absent_edge_is_not_zero_and_bottom_edges_align() {
         let p = Pixels { width: 1, height: 6, rgba: vec![[0;4],[0;4],[255,0,255,255],[255,0,255,255],[0;4],[0;4]] };
-        assert_eq!(p.edge([255,0,255],true), Some(4));
-        assert_eq!(p.edge([0,255,255],true), None);
+        assert_eq!(p.color_run([255,0,255],true), Some(2..4));
+        assert_eq!(p.color_run([0,255,255],true), None);
+        let glass=Pixels {width:1,height:6,rgba:vec![[0;4],[0;4],[0;4],[0;4],[0,255,255,255],[0,255,255,255]]};
+        assert_eq!(p.color_run([255,0,255],true).unwrap().end,glass.color_run([0,255,255],true).unwrap().start);
+        let drawer=Pixels {width:3,height:1,rgba:vec![[255,255,0,255],[255,255,0,255],[0;4]]};
+        assert_eq!(drawer.color_run([255,255,0],false),Some(0..2));
     }
     #[test]
     fn ruler_decodes_absolute_rows_beyond_256() {

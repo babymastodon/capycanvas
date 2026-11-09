@@ -97,6 +97,7 @@ pub fn run(options:&Options,owner:(usize,u32),targets:Targets,start:i64,path:&Pa
     let result=(||->Result<()> {
         loop {
             if stop.load(Ordering::Acquire){return Err("observer canceled injection".into());}
+            if options.samples.is_some_and(|target|streams.iter().any(|stream|stream.name=="pen"&&poc_observer::diagnostic::data_complete(target,stream.accepted_total))){break;}
             cpu.sample()?;
             let Some((stream_index,deadline))=streams.iter().enumerate().filter_map(|(index,stream)|stream.clock.next_deadline().map(|deadline|(index,deadline))).min_by(|a,b|a.1.total_cmp(&b.1)) else {break;};
             injector.wait(start+(deadline*frequency() as f64).ceil() as i64)?;
@@ -115,7 +116,7 @@ pub fn run(options:&Options,owner:(usize,u32),targets:Targets,start:i64,path:&Pa
                     if event.kind=="touch-up" {
                         stream.close(&mut injector,stamp,&context,&mut records)?;continue;
                     }
-                    context.evaluate(&mut event,actual);
+                    context.evaluate(&mut event,actual,stream.accepted_total);
                     if event.kind=="mouse-move" && !injector.mouse_active() {
                         let point=if context.options.workload=="resize-native" {POINT{x:outer.right-1,y:(outer.top+outer.bottom)/2}}else{center(if context.options.workload=="scrub-while-painting" {targets.slider}else{targets.divider})};
                         injector.mouse(point,Some(true),0,true).map_err(|error|format!("mouse capture down before source_index={}: {error}",event.index))?;
@@ -144,7 +145,7 @@ pub fn run(options:&Options,owner:(usize,u32),targets:Targets,start:i64,path:&Pa
                 }
             }
         }
-        injector.wait(start+(total*frequency() as f64).ceil() as i64)?;
+        if options.samples.is_none(){injector.wait(start+(total*frequency() as f64).ceil() as i64)?;}
         for stream in &mut streams {
             if matches!(stream.name,"pen"|"touch"|"mouse") && stream.last_qpc.is_some() {
                 let deadline=stream.last_finish_qpc+(frequency() as f64/stream.nominal_hz).ceil() as i64;
@@ -152,24 +153,31 @@ pub fn run(options:&Options,owner:(usize,u32),targets:Targets,start:i64,path:&Pa
                 stream.close(&mut injector,qpc(),&context,&mut records)?;
             }
         }
+        if let Some(target)=options.samples {
+            let accepted=streams.iter().find(|stream|stream.name=="pen").map_or(0,|stream|stream.next_index);
+            if accepted!=target as usize{return Err(format!("pen-check reached its 60 second deadline with {accepted} accepted samples; target was {target}").into());}
+        }
         Ok(())
     })();
     cpu.finish()?;
     drop(injector);
     let mut file=BufWriter::new(File::create(path)?);
     for record in records {write_line(&mut file,&record)?;}file.flush()?;
+    let active_start=streams.iter().filter_map(|stream|stream.first_qpc).min();let active_end=streams.iter().filter_map(|stream|stream.last_qpc).max();
+    let measured_seconds=if options.samples.is_some(){active_start.zip(active_end).map_or(0.0,|(first,last)|(last-first) as f64/frequency() as f64)}else{options.seconds};
+    if options.samples.is_some(){for stream in &mut streams{stream.measured_seconds=measured_seconds;}}
     let input_limited=streams.iter().any(|stream|stream.input_limited());
-    let summary=serde_json::json!({"measured_seconds":options.seconds,"warmup_seconds":options.warmup,"input_limited":input_limited,"streams":streams.iter().map(|stream|(stream.name,stream.summary())).collect::<BTreeMap<_,_>>(),"failure":result.as_ref().err().map(ToString::to_string)});
+    let summary=serde_json::json!({"measured_seconds":measured_seconds,"maximum_seconds":options.samples.map(|_|poc_observer::diagnostic::MAX_SECONDS),"requested_samples":options.samples,"active_start_qpc":active_start,"active_end_qpc":active_end,"warmup_seconds":options.warmup,"input_limited":input_limited,"streams":streams.iter().map(|stream|(stream.name,stream.summary())).collect::<BTreeMap<_,_>>(),"failure":result.as_ref().err().map(ToString::to_string)});
     serde_json::to_writer_pretty(File::create(path.with_file_name("injection.json"))?,&summary)?;
     result
 }
 fn stream_name(kind:&str)->&str {match kind {"pen"=>"pen","mouse-move"=>"mouse","touch-down"|"touch-move"|"touch-up"=>"touch","wheel"=>"wheel","click"=>"click","key"=>"key","resize"=>"resize",_=>unreachable!()}}
 struct Context<'a> {start:i64,contact:u32,options:&'a Options,targets:&'a Targets,client:RECT,origin:POINT,scale:f64,outer:RECT,geometry:DragGeometry}
 impl Context<'_> {
-    fn evaluate(&self,event:&mut Event,actual:f64) {
+    fn evaluate(&self,event:&mut Event,actual:f64,accepted_index:usize) {
         event.measured=actual>=self.options.warmup;
         if event.kind=="pen" {
-            let angle=actual*std::f64::consts::PI;let progress=(actual/(self.options.warmup+self.options.seconds)).clamp(0.0,1.0);
+            let angle=actual*std::f64::consts::PI;let progress=self.options.samples.map_or_else(||(actual/(self.options.warmup+self.options.seconds)).clamp(0.0,1.0),|target|poc_observer::diagnostic::axis_progress(target,accepted_index));
             event.x=(self.origin.x as f64+self.client.right as f64-540.0*self.scale+150.0*self.scale*angle.cos()).round() as i32;
             event.y=(self.origin.y as f64+500.0*self.scale+150.0*self.scale*angle.sin()).round() as i32;
             event.axes=[0.2+0.7*progress,30.0*angle.sin(),30.0*angle.cos(),(progress*359.0).round()];
@@ -186,14 +194,14 @@ impl Context<'_> {
         } else if event.kind=="wheel" {event.value=Some(if actual-self.options.warmup<self.options.seconds/2.0 {-120.0}else{120.0});}
     }
 }
-struct Stream {name:&'static str,events:Vec<Event>,clock:Clock,nominal_hz:f64,measured_seconds:f64,next_index:usize,accepted_total:usize,accepted_measured:usize,skipped_slots:usize,skipped_measured_slots:usize,terminal_samples:usize,setup_samples:usize,last_qpc:Option<i64>,last_finish_qpc:i64,last_event:Option<Event>,touch_segment:Option<u32>}
+struct Stream {name:&'static str,events:Vec<Event>,clock:Clock,nominal_hz:f64,measured_seconds:f64,next_index:usize,accepted_total:usize,accepted_measured:usize,skipped_slots:usize,skipped_measured_slots:usize,terminal_samples:usize,setup_samples:usize,first_qpc:Option<i64>,last_qpc:Option<i64>,last_finish_qpc:i64,last_event:Option<Event>,touch_segment:Option<u32>}
 impl Stream {
     fn new(name:&str,events:Vec<Event>,options:&Options,total:f64)->Self {
         let name=match name {"pen"=>"pen","mouse"=>"mouse","touch"=>"touch","wheel"=>"wheel","click"=>"click","key"=>"key","resize"=>"resize",_=>unreachable!()};
         let nominal_hz=poc_observer::clock::nominal_hz(&options.workload,name);
         let measured_seconds=if name=="touch" {(0..total.ceil() as usize).map(|i|((i as f64+0.04).min(total)-(i as f64).max(options.warmup)).max(0.0)).sum()}else{options.seconds};
         let clock=Clock::new(events.iter().map(|event|event.seconds).collect(),total,1.0/nominal_hz);
-        Self {name,events,clock,nominal_hz,measured_seconds,next_index:0,accepted_total:0,accepted_measured:0,skipped_slots:0,skipped_measured_slots:0,terminal_samples:0,setup_samples:0,last_qpc:None,last_finish_qpc:0,last_event:None,touch_segment:None}
+        Self {name,events,clock,nominal_hz,measured_seconds,next_index:0,accepted_total:0,accepted_measured:0,skipped_slots:0,skipped_measured_slots:0,terminal_samples:0,setup_samples:0,first_qpc:None,last_qpc:None,last_finish_qpc:0,last_event:None,touch_segment:None}
     }
     fn skip(&mut self,range:std::ops::Range<usize>) {for event in &self.events[range] {if event.kind!="touch-up" {self.skipped_slots+=1;if event.measured {self.skipped_measured_slots+=1;}}}}
     fn input_limited(&self)->bool {self.measured_seconds>0.0 && self.accepted_measured as f64/self.measured_seconds<0.9*self.nominal_hz}
@@ -203,7 +211,7 @@ impl Stream {
         let after=qpc();
         let actual=(stamp-start) as f64/frequency() as f64;let scheduled=start+(event.seconds*frequency() as f64).round() as i64;
         records.push(serde_json::json!({"qpc":stamp,"qpc_after":after,"scheduled_qpc":scheduled,"index":self.next_index,"source_index":if terminal||event.kind=="mouse-down"{None}else{Some(event.index)},"setup":event.kind=="mouse-down","stream":self.name,"kind":event.kind,"expected_state":event.state,"expected_value":event.value,"segment":event.segment,"contact":contact,"measured":actual>=context.options.warmup&&actual<context.options.warmup+context.options.seconds,"warmup":actual<context.options.warmup,"terminal":terminal,"phase":event.phase,"actual_time_seconds":actual,"resting_calibration":poc_observer::trajectory::is_drag(&context.options.workload)&&matches!(event.kind,"mouse-move"|"resize")&&poc_observer::trajectory::drag(actual,context.options.warmup,0.0,0.0).resting,"timestamp":stamp,"x":event.x-context.origin.x,"y":event.y-context.origin.y,"pressure":event.axes[0],"tilt_x":event.axes[1],"tilt_y":event.axes[2],"twist":event.axes[3]}));
-        self.next_index+=1;self.last_qpc=Some(stamp);self.last_finish_qpc=after;self.last_event=Some(event);
+        self.next_index+=1;self.first_qpc.get_or_insert(stamp);self.last_qpc=Some(stamp);self.last_finish_qpc=after;self.last_event=Some(event);
     }
     fn close(&mut self,injector:&mut Injector,stamp:i64,context:&Context<'_>,records:&mut Vec<serde_json::Value>)->Result<()> {
         let active=if self.name=="mouse" {injector.mouse_active()}else{injector.pointer_active(self.name=="pen")};

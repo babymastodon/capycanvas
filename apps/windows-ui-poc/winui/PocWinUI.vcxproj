@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{372C927B-3A98-45A4-9439-B21A0C239C21}</ProjectGuid>
+    <RootNamespace>PocWinUI</RootNamespace><ProjectName>PocWinUI</ProjectName><DefaultLanguage>en-US</DefaultLanguage>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion><WindowsTargetPlatformMinVersion>10.0.22000.0</WindowsTargetPlatformMinVersion><TargetPlatformVersion>10.0.26100.0</TargetPlatformVersion>
+    <AppContainerApplication>false</AppContainerApplication><UseWinUI>true</UseWinUI><WindowsPackageType>None</WindowsPackageType><AppxPackage>false</AppxPackage><WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <MinimalCoreWin>true</MinimalCoreWin><CppWinRTOptimized>true</CppWinRTOptimized><CppWinRTRootNamespaceAutoMerge>true</CppWinRTRootNamespaceAutoMerge>
+    <PocPackages Condition="'$(PocPackages)' == ''">$(ProjectDir)packages</PocPackages>
+    <PocRustDirectory Condition="'$(PocRustDirectory)' == ''">$(OutDir)</PocRustDirectory>
+  </PropertyGroup>
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(PocPackages)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props" Condition="Exists('$(PocPackages)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props')" />
+    <Import Project="$(PocPackages)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.props" Condition="Exists('$(PocPackages)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.props')" />
+    <Import Project="$(PocPackages)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.props" Condition="Exists('$(PocPackages)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Widgets.2.0.5\build\native\Microsoft.WindowsAppSDK.Widgets.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Widgets.2.0.5\build\native\Microsoft.WindowsAppSDK.Widgets.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.AI.2.5.5\build\native\Microsoft.WindowsAppSDK.AI.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.AI.2.5.5\build\native\Microsoft.WindowsAppSDK.AI.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.ML.2.1.94\build\native\Microsoft.WindowsAppSDK.ML.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.ML.2.1.94\build\native\Microsoft.WindowsAppSDK.ML.props')" />
+    <Import Project="$(PocPackages)\Microsoft.Windows.AI.MachineLearning.2.1.74\build\native\Microsoft.Windows.AI.MachineLearning.props" Condition="Exists('$(PocPackages)\Microsoft.Windows.AI.MachineLearning.2.1.74\build\native\Microsoft.Windows.AI.MachineLearning.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Search.2.5.5\build\native\Microsoft.WindowsAppSDK.Search.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Search.2.5.5\build\native\Microsoft.WindowsAppSDK.Search.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.props')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.2.5.1\build\native\Microsoft.WindowsAppSDK.props" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.2.5.1\build\native\Microsoft.WindowsAppSDK.props')" />
+  </ImportGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet><DesktopCompatible>true</DesktopCompatible><UseDebugLibraries Condition="'$(Configuration)' == 'Debug'">true</UseDebugLibraries></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup><TargetName>PocWinUI</TargetName><GenerateManifest>true</GenerateManifest></PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><LanguageStandard>stdcpp20</LanguageStandard><WarningLevel>Level4</WarningLevel><Optimization Condition="'$(Configuration)' == 'Release'">MaxSpeed</Optimization><PrecompiledHeader>NotUsing</PrecompiledHeader><AdditionalOptions>/bigobj /utf-8 %(AdditionalOptions)</AdditionalOptions><AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\canvas\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions><RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary></ClCompile>
+    <Link><SubSystem>Windows</SubSystem><AdditionalDependencies>$(PocRustDirectory)\poc_canvas.dll.lib;windowsapp.lib;user32.lib;shell32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Manifest><AdditionalManifestFiles>app.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles></Manifest>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="App.cpp" /><ClCompile Include="PocWindow.cpp" /><ClCompile Include="Input.cpp" /><ClCompile Include="Thumbnails.cpp" /><ClInclude Include="PocWindow.h" /><ClInclude Include="Native.h" /><None Include="packages.config" /><Content Include="Assets\layer-eye-symbolic.svg"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content><None Include="Assets\LICENSE-MIT" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(PocPackages)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets" Condition="Exists('$(PocPackages)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('$(PocPackages)\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets" Condition="Exists('$(PocPackages)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets" Condition="Exists('$(PocPackages)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Widgets.2.0.5\build\native\Microsoft.WindowsAppSDK.Widgets.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Widgets.2.0.5\build\native\Microsoft.WindowsAppSDK.Widgets.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.AI.2.5.5\build\native\Microsoft.WindowsAppSDK.AI.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.AI.2.5.5\build\native\Microsoft.WindowsAppSDK.AI.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.ML.2.1.94\build\native\Microsoft.WindowsAppSDK.ML.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.ML.2.1.94\build\native\Microsoft.WindowsAppSDK.ML.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.Windows.AI.MachineLearning.2.1.74\build\native\Microsoft.Windows.AI.MachineLearning.targets" Condition="Exists('$(PocPackages)\Microsoft.Windows.AI.MachineLearning.2.1.74\build\native\Microsoft.Windows.AI.MachineLearning.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Search.2.5.5\build\native\Microsoft.WindowsAppSDK.Search.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Search.2.5.5\build\native\Microsoft.WindowsAppSDK.Search.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.targets')" />
+    <Import Project="$(PocPackages)\Microsoft.WindowsAppSDK.2.5.1\build\native\Microsoft.WindowsAppSDK.targets" Condition="Exists('$(PocPackages)\Microsoft.WindowsAppSDK.2.5.1\build\native\Microsoft.WindowsAppSDK.targets')" />
+  </ImportGroup>
+  <Target Name="StageSelectedWindowsRuntime" AfterTargets="AddMicrosoftWindowsAppSDKPayloadFilesFromComponents"><ItemGroup><None Update="@(MicrosoftWindowsAppSDKFiles)" CopyToOutputDirectory="Always" /></ItemGroup></Target>
+  <Target Name="StagePocAssets" AfterTargets="Build"><MakeDir Directories="$(OutDir)Assets" /><Copy SourceFiles="$(ProjectDir)Assets\layer-eye-symbolic.svg" DestinationFolder="$(OutDir)Assets" SkipUnchangedFiles="true" /></Target>
+</Project>

@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory)][string]$PresentMon,
     [Parameter(Mandatory)][string]$PresentMonSha256,
     [ValidateSet('normal','lowcpu')][string]$Profile='normal',
+    [Alias('Arm')][ValidateSet('abba','retained','winui')][string]$ArmOrder='abba',
+    [Alias('Workload')][string[]]$WorkloadNames,
     [string]$TargetDirectory
 )
 $ErrorActionPreference='Stop'
@@ -20,7 +22,8 @@ $build=Get-Content -LiteralPath (Join-Path $bin 'build.json') -Raw|ConvertFrom-J
 foreach($file in $build.files){if((Get-FileHash -LiteralPath (Join-Path $bin $file.path) -Algorithm SHA256).Hash -ine $file.sha256){throw "Build hash mismatch: $($file.path)"}}
 if((Get-FileHash -LiteralPath $PresentMon -Algorithm SHA256).Hash -ine $PresentMonSha256){throw 'PresentMon SHA256 mismatch'}
 $workloads=@('startup','paint-still','divider','resize-programmatic','resize-native','scroll-wheel','scroll-touch','drawer','zen','scrub-while-painting','typing','stall-drawer','stall-scroll','slowcanvas-divider','slowcanvas-drawer')
-$arms=@('retained','winui','winui','retained')
+if($WorkloadNames){foreach($name in $WorkloadNames){if($name -notin $workloads){throw "Unknown workload $name"}};$workloads=$WorkloadNames}
+$arms=@(if($ArmOrder -eq 'abba'){'retained','winui','winui','retained'}else{$ArmOrder})
 $records=[Collections.Generic.List[object]]::new()
 $runtimeOnly=$Vm -eq 'capycanvas6-poc-warp'
 $presentmonMode=if($runtimeOnly){'runtime-only'}else{'full'}
@@ -68,7 +71,7 @@ try{
                     if($monitor -and $monitor.HasExited){$collectorCode=$monitor.ExitCode}
                     $csvHasRows=(Test-Path -LiteralPath $csv) -and (@(Get-Content -LiteralPath $csv -TotalCount 2).Count -gt 1)
                     $presentmonUnavailable=if($runtimeOnly){'Approved WARP-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}elseif($workload -eq 'startup' -and !$csvHasRows){'PresentMon 2.3.0 emitted no startup interval rows; the first present establishes the interval baseline'}else{$null}
-                    $record=@{vm=$Vm;profile=$Profile;workload=$workload;arm=$arm;order_slot=$slot;no_capture=$noCapture;exit_code=$code;presentmon_exit_code=$collectorCode;presentmon_mode=$presentmonMode;presentmon_sha256=$PresentMonSha256;presentmon_unavailable_reason=$presentmonUnavailable;commit=$build.commit;binary_hashes=$build.files}
+                    $record=@{vm=$Vm;profile=$Profile;workload=$workload;arm=$arm;order_slot=$slot;order=$ArmOrder;no_capture=$noCapture;exit_code=$code;presentmon_exit_code=$collectorCode;presentmon_mode=$presentmonMode;presentmon_sha256=$PresentMonSha256;presentmon_unavailable_reason=$presentmonUnavailable;commit=$build.commit;binary_hashes=$build.files}
                     $record|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $folder 'run.json') -Encoding UTF8
                     $records.Add($record)
                     foreach($metaFile in Get-ChildItem -LiteralPath $folder -Filter meta.json -Recurse -File){
@@ -78,8 +81,7 @@ try{
                             $adapter=Get-Content -LiteralPath $canvasTrace|ForEach-Object {$_|ConvertFrom-Json}|Where-Object kind -eq 'adapter'|Select-Object -First 1
                             if($adapter){$meta|Add-Member -NotePropertyName adapter -NotePropertyValue $adapter -Force}
                         }
-                        $meta|Add-Member -NotePropertyName display_mode -NotePropertyValue @{width=$meta.width;height=$meta.height;refresh_hz=$meta.refresh_hz;scale=$meta.scale} -Force
-                        foreach($key in @('vm','order_slot','commit','binary_hashes','presentmon_mode','presentmon_sha256','presentmon_unavailable_reason')){$meta|Add-Member -NotePropertyName $key -NotePropertyValue $record[$key] -Force}
+                        foreach($key in @('vm','order_slot','order','commit','binary_hashes','presentmon_mode','presentmon_sha256','presentmon_unavailable_reason')){$meta|Add-Member -NotePropertyName $key -NotePropertyValue $record[$key] -Force}
                         $meta|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $metaFile.FullName -Encoding UTF8
                     }
                 }

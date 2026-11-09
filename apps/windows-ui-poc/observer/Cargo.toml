@@ -11,4 +11,4 @@ serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_System_JobObjects", "Win32_UI_Controls", "Win32_System_SystemInformation", "Win32_System_Diagnostics_Debug", "Win32_UI_Accessibility", "Win32_System_Variant", "Win32_System_Ole"] }
+windows = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_System_JobObjects", "Win32_UI_Controls", "Win32_System_SystemInformation", "Win32_System_Diagnostics_Debug", "Win32_UI_Accessibility", "Win32_System_Variant", "Win32_System_Ole", "Win32_Graphics_Imaging", "Win32_System_Com_StructuredStorage", "Win32_System_StationsAndDesktops"] }

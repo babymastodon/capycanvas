@@ -16,6 +16,8 @@ apps/windows-ui-poc/scripts/vm-bench.sh --vm capycanvas6-poc-warp --profile norm
 
 The host wrapper checks memory admission, syncs, builds Release, verifies pinned PresentMon 2.3.0, starts an interactive task in a private test desktop, retrieves the run and stops its VM. Only `capycanvas6-poc-gpu` and `capycanvas6-poc-warp` are accepted. `--already-started` uses an owned VM already started by the caller; the wrapper still stops it. No VM configuration or pool changes are made.
 
+Select a checkpoint smoke with `--arm winui --workload startup --workload paint-still --workload divider`; omit those flags for the full ABBA matrix.
+
 WARP uses PresentMon runtime events with display/GPU/input tracking disabled. Its PresentMode and display timings remain unverified. GPU runs require full PresentMon display metrics. Desktop Duplication and pen-delivery checks apply to both VMs.
 
 Run the completed arms with `--vm capycanvas6-poc-gpu --profile normal`, `--vm capycanvas6-poc-gpu --profile lowcpu`, or `--vm capycanvas6-poc-warp --profile normal`. Hardware startup requires a free pool GPU. Verify the NVIDIA primary at 120 Hz and effective DPI before interpreting hardware diagnostics.
@@ -28,6 +30,14 @@ Observer invocation on the guest:
 
 Run observer commands only on the private desktop created by `apps/layer-windows/scripts/test-desktop.ps1`. `--no-capture` collects injections and process data without Desktop Duplication. Thumbnails default off; the benchmark enables them only for wheel/touch/stall-scroll. The sole load is `light`, with `slow` reserved for the slowcanvas workloads. The matrix uses dark theme only.
 
+The observer supplies `--ready-event` and starts input after the arm signals that its input routing is ready; standalone app launches omit that option.
+
+Panel hosts attach the configured handle, register independent input handlers, then call `poc_canvas_start_panel`. The first completed frame supplies presentation readiness.
+
+Run guest functional checks with `scripts/check-functional.ps1 -Vm capycanvas6-poc-warp -Arm winui -Out C:\capycanvas\artifacts\windows-ui-poc\functional`; it creates the private desktop when needed. Use `-BenchmarkResults` to reuse matching completed contacts. Run `scripts/test-functional-pixels.ps1 -Out C:\capycanvas\artifacts\windows-ui-poc\pixel-tests` for the PNG algorithm checks. Review the saved text, DPI, popup and selected IME crops before interpreting their results.
+
+`poc-observer pen-check --arm winui --exe <PocWinUI.exe> --samples 2400 --out <directory>` checks exactly 2,400 accepted samples. `poc-observer snapshot --hwnd <decimal HWND> --pid <PID> --out <PNG> [--rect x,y,width,height | --screen]` captures the owned private client or primary display through Desktop Duplication.
+
 Host builds use `CARGO_TARGET_DIR=/mnt/localssd/capycanvas6-poc/target`. Raw runs belong under `/mnt/localssd/capycanvas6-poc/results/<vm>/<run>/`, outside Git. Rebuild reports without a VM:
 
 ```sh
@@ -37,7 +47,7 @@ python3 -m unittest discover -s apps/windows-ui-poc/scripts -p 'test_*.py'
 
 Reports use displayed geometry for motion, UI markers for input echoes and all-content changes, and canvas markers for consumed samples. Marker payloads keep their specified positions and use a one-pixel framing guard to reject blank window contents. Missing measurements remain null. JSON preserves individual contacts, pooled distributions, order slots, censored/unmatched counts, capture failures and marker samples. An observer or capture failure makes the benchmark fail.
 
-Contacts keep six measured seconds. The injector samples the trajectory at actual injection time and skips overdue slots. Reports retain achieved input rates, skipped slots, input-limited contacts below 90% of nominal, capture-limited contacts, and observer thread CPU. Receipt timing uses source order only after sample tuples and delivery counts pass validation.
+Contacts keep six measured seconds. The injector samples the trajectory at actual injection time and skips overdue slots. Captured pen contacts wait for the final accepted sample's displayed marker after settling, failing if it is not observed within ten seconds. Reports retain achieved input rates, skipped slots, input-limited contacts below 90% of nominal, capture-limited contacts, and observer thread CPU. Receipt timing uses source order only after sample tuples and delivery counts pass validation.
 
 The locked dependency graph declares these licences, including platform-specific dependencies:
 

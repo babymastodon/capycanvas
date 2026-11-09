@@ -5,13 +5,16 @@ use windows::{core::{PCWSTR,PWSTR}, Win32::{Foundation::*, Graphics::{Gdi::*,Dwm
 pub struct Process { pub info: PROCESS_INFORMATION, job: HANDLE, pub launch_qpc: i64, pub cpu_rate: Option<u32> }
 impl Process {
     pub fn start(exe: &Path, args: &[String], lowcpu: bool) -> Result<Self> {
-        let path: Vec<u16> = exe.as_os_str().to_string_lossy().encode_utf16().chain(Some(0)).collect();
-        let command = std::iter::once(exe.to_string_lossy().into_owned()).chain(args.iter().cloned()).map(|s| quote(&s)).collect::<Vec<_>>().join(" ");
+        let image=poc_observer::paths::plain(&exe.to_string_lossy());
+        let directory=poc_observer::paths::plain(&exe.parent().ok_or("application image has no absolute parent directory")?.to_string_lossy());
+        let directory:Vec<u16>=directory.encode_utf16().chain(Some(0)).collect();
+        let path: Vec<u16> = image.encode_utf16().chain(Some(0)).collect();
+        let command = std::iter::once(image).chain(args.iter().cloned()).map(|s| quote(&s)).collect::<Vec<_>>().join(" ");
         let mut command: Vec<u16> = command.encode_utf16().chain(Some(0)).collect();
         let mut info = PROCESS_INFORMATION::default();
         let startup = STARTUPINFOW { cb:size_of::<STARTUPINFOW>() as u32, ..Default::default() };
         let launch_qpc = qpc();
-        unsafe { CreateProcessW(PCWSTR(path.as_ptr()),Some(PWSTR(command.as_mut_ptr())),None,None,false,CREATE_SUSPENDED,None,PCWSTR::null(),&startup,&mut info)?; }
+        unsafe { CreateProcessW(PCWSTR(path.as_ptr()),Some(PWSTR(command.as_mut_ptr())),None,None,false,CREATE_SUSPENDED,None,PCWSTR(directory.as_ptr()),&startup,&mut info)?; }
         let mut result = Self { info, job:HANDLE::default(), launch_qpc, cpu_rate:None };
         if lowcpu {
             let cpus = unsafe { GetActiveProcessorCount(0xffff) };
@@ -72,7 +75,10 @@ unsafe extern "system" fn find_window(hwnd:HWND, value:LPARAM) -> windows::core:
     let find=unsafe { &mut *(value.0 as *mut Find) };
     let mut pid=0;
     unsafe { GetWindowThreadProcessId(hwnd,Some(&mut pid)); }
-    if pid==find.pid && unsafe { IsWindowVisible(hwnd).as_bool() } && unsafe { GetWindow(hwnd,GW_OWNER).map(|h|h.is_invalid()).unwrap_or(true) } { find.window=hwnd; return false.into(); }
+    if pid!=find.pid {return true.into();}
+    let mut title=vec![0u16;unsafe{GetWindowTextLengthW(hwnd)}.max(0) as usize+1];
+    let length=unsafe{GetWindowTextW(hwnd,&mut title)}.max(0) as usize;
+    if poc_observer::placement::application_window(find.pid,pid,&String::from_utf16_lossy(&title[..length]),unsafe {IsWindowVisible(hwnd).as_bool()},unsafe {GetWindow(hwnd,GW_OWNER).map(|h|h.is_invalid()).unwrap_or(true)}) {find.window=hwnd;return false.into();}
     true.into()
 }
 pub fn bounds(hwnd:HWND)->Result<(RECT,POINT,f64)> {
@@ -83,12 +89,16 @@ pub fn bounds(hwnd:HWND)->Result<(RECT,POINT,f64)> {
 pub fn position(hwnd:HWND)->Result<()> {
     let dpi=unsafe { GetDpiForWindow(hwnd) };
     let scale=dpi as f64/96.0;
-    let mut rect=RECT {left:0,top:0,right:(1600.0*scale).round() as i32,bottom:(1000.0*scale).round() as i32};
+    let (client,origin,_)=bounds(hwnd)?;
+    let mut outer=RECT::default();
     unsafe {
-        AdjustWindowRectExForDpi(&mut rect,WINDOW_STYLE(GetWindowLongPtrW(hwnd,GWL_STYLE) as u32),false,WINDOW_EX_STYLE(GetWindowLongPtrW(hwnd,GWL_EXSTYLE) as u32),dpi)?;
-        SetWindowPos(hwnd,None,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOZORDER|SWP_NOACTIVATE)?;
+        GetWindowRect(hwnd,&mut outer)?;
+        let [x,y,width,height]=poc_observer::placement::client_at_origin([outer.left,outer.top,outer.right,outer.bottom],[client.right-client.left,client.bottom-client.top],[origin.x,origin.y],[(poc_common::CLIENT[0] as f64*scale).round() as i32,(poc_common::CLIENT[1] as f64*scale).round() as i32]);
+        SetWindowPos(hwnd,None,x,y,width,height,SWP_NOZORDER|SWP_NOACTIVATE)?;
         if !SetForegroundWindow(hwnd).as_bool() { return Err("could not acquire owned window foreground".into()); }
     }
+    let (actual,at,_)=bounds(hwnd)?;
+    if at.x!=0||at.y!=0||actual.right!=(poc_common::CLIENT[0] as f64*scale).round() as i32||actual.bottom!=(poc_common::CLIENT[1] as f64*scale).round() as i32{return Err("actual client placement differs from the requested primary-display rectangle".into());}
     Ok(())
 }
 pub fn refresh()->Result<f64> {
@@ -96,6 +106,13 @@ pub fn refresh()->Result<f64> {
     unsafe { DwmGetCompositionTimingInfo(HWND::default(),&mut info)?; }
     if info.rateRefresh.uiDenominator==0 { return Err("DWM returned no refresh denominator".into()); }
     Ok(info.rateRefresh.uiNumerator as f64/info.rateRefresh.uiDenominator as f64)
+}
+pub fn display_mode(hwnd:HWND,refresh:f64,scale:f64)->Result<serde_json::Value> {
+    let monitor=unsafe {MonitorFromWindow(hwnd,MONITOR_DEFAULTTOPRIMARY)};
+    let mut info=MONITORINFOEXW::default();info.monitorInfo.cbSize=size_of::<MONITORINFOEXW>() as u32;
+    if !unsafe {GetMonitorInfoW(monitor,&mut info.monitorInfo)}.as_bool(){return Err(windows::core::Error::from_thread().into());}
+    let rect=info.monitorInfo.rcMonitor;
+    Ok(serde_json::json!({"monitor":monitor.0 as usize,"device":String::from_utf16_lossy(&info.szDevice).trim_end_matches('\0'),"desktop_rect":[rect.left,rect.top,rect.right,rect.bottom],"width":rect.right-rect.left,"height":rect.bottom-rect.top,"refresh_hz":refresh,"scale":scale}))
 }
 pub fn sample_process(handle:HANDLE, file:&mut BufWriter<std::fs::File>)->Result<()> {
     let (mut create,mut exit,mut kernel,mut user)=(FILETIME::default(),FILETIME::default(),FILETIME::default(),FILETIME::default());

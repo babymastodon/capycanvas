@@ -25,6 +25,12 @@ class ReportTests(unittest.TestCase):
         values, _, _ = report.latency_drag([{"qpc": 130, "divider_y": 50}], inputs, "divider_y", 1000)
         self.assertEqual(values, [30])
 
+    def test_absent_drag_probes_are_counted_as_unmatched_within_the_segment(self):
+        inputs = [{"qpc": 0, "segment": 0, "expected_value": 0}, {"qpc": 100, "segment": 0, "expected_value": 50}, {"qpc": 200, "segment": 0, "expected_value": 100}]
+        frames = [{"qpc": -10, "width": None}, {"qpc": 110, "width": None}, {"qpc": 130, "width": 50}, {"qpc": 210, "width": None}]
+        values, censored, unmatched = report.latency_drag(frames, inputs, "width", 1000)
+        self.assertEqual((values, censored, unmatched), ([30], 0, 1))
+
     def test_counter_wrap_counts_observed_changes_only(self):
         frames = [{"qpc": index, "ui_frame": value} for index, value in enumerate([254, 255, 0, 0, 2])]
         self.assertEqual(report.changes(frames, "ui_frame", 0, 4), [1, 2, 4])
@@ -42,6 +48,16 @@ class ReportTests(unittest.TestCase):
         (directory / "canvas.jsonl").write_text(json.dumps({"kind": "startup", "milestone": "first_canvas_present", "qpc": 140}) + '\n')
         (directory / "inputs.jsonl").write_text('\n'.join(json.dumps(row) for row in [{"qpc": 1100, "kind": "pen", "index": 0}, {"qpc": 1200, "kind": "pen", "index": 1}, {"qpc": 1400, "kind": "pen", "index": 2}]))
         return report.analyse_contact(directory)
+
+    def test_display_mode_preserves_monitor_resolution_instead_of_client_size(self):
+        mode = {"width": 2560, "height": 1600, "scale": 1.5, "refresh_hz": 150, "desktop_rect": [0, 0, 2560, 1600], "device": "DISPLAY1"}
+        for no_capture in (False, True):
+            with tempfile.TemporaryDirectory() as temporary:
+                row = self.contact(Path(temporary), width=2400, height=1500, display_mode=mode, no_capture=no_capture)
+            self.assertEqual(row["display_mode"], mode)
+        with tempfile.TemporaryDirectory() as temporary:
+            row = self.contact(Path(temporary), width=2400, height=1500)
+        self.assertIsNone(row["display_mode"])
 
     def test_ink_matches_consumed_threshold_and_counts_unmatched(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -227,6 +243,52 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(row['receipt_matching']['basis'], 'source_index_validated_by_pen-delivery.json')
         self.assertEqual(row['receipt_matching']['timestamp_identity'], 'rewritten')
         self.assertEqual(row['receipt_matching']['rewritten_receipt_timestamps'], 3)
+
+    def test_winrt_timestamp_units_remain_qualified_without_affecting_qpc_latency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            evidence = {"validated": True, "injected": 3, "received": 3, "consumed": 3, "matching_basis": "ordered_indices_and_quantized_sample_tuples", "timestamp_identity": "not_comparable_different_units", "rewritten_receipt_timestamps": None, "rewritten_consumed_timestamps": None, "timestamp_comparable_samples": 0, "timestamp_noncomparable_samples": 3, "host_timestamp_bases": ["PointerPoint.Timestamp_microseconds"], "native_latest_identity": "rewritten", "native_latest_checked_samples": 2, "native_latest_rewritten_samples": 1}
+            self.delivery_fixture(directory, evidence)
+            row = report.analyse_contact(directory)
+        self.assertEqual(row['input_receipt_latency_ms']['p99'], 25)
+        self.assertEqual(row['receipt_matching']['timestamp_identity'], 'not_comparable_different_units')
+        self.assertIsNone(row['receipt_matching']['rewritten_receipt_timestamps'])
+        self.assertEqual(row['receipt_matching']['timestamp_comparable_samples'], 0)
+        self.assertEqual(row['receipt_matching']['timestamp_noncomparable_samples'], 3)
+        pooled = report.aggregate([row])[0]
+        self.assertEqual(pooled['receipt_matching']['host_timestamp_bases'], ['PointerPoint.Timestamp_microseconds'])
+        self.assertEqual(pooled['receipt_matching']['native_latest_identity'], ['rewritten'])
+        self.assertEqual(pooled['receipt_matching']['native_latest_checked_samples'], 2)
+        self.assertEqual(pooled['receipt_matching']['native_latest_rewritten_samples'], 1)
+        self.assertIn('Latest native checked / rewritten', report.render([pooled]))
+        self.assertIn('never by comparing WinRT microseconds with QPC ticks', report.render([pooled]))
+
+    def test_frame_quality_excludes_startup_warmup_and_after_motion(self):
+        for workload, field in (('divider', 'divider_y'), ('slowcanvas-divider', 'divider_y'), ('resize-native', 'width'), ('resize-programmatic', 'width')):
+            with self.subTest(workload=workload), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.contact(directory, workload=workload)
+                frames = []
+                for tick, drift, black in ((200, 50, 20), (900, 30, 20), (1100, 10, 20), (1400, 2, 1), (1500, 0, 0), (2100, 100, 20)):
+                    frames.append({'qpc': tick, 'last_present_qpc': tick, 'divider_y': 100, 'glass_y': 100+drift, 'fill_y': 100, 'width': 1600, 'black_samples': black})
+                (directory / 'frames.jsonl').write_text('\n'.join(json.dumps(frame) for frame in frames))
+                row = report.analyse_contact(directory)
+                self.assertEqual(row['drift_max_px'], 2)
+                self.assertEqual(row['drift_over_1_share'], .5)
+                self.assertEqual(row['black_interior_frames'], 1)
+
+    def test_absent_or_nonmotion_frame_quality_is_unobserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.contact(directory)
+            (directory / 'frames.jsonl').write_text(json.dumps({'qpc': 1500, 'last_present_qpc': 1500, 'black_samples': None}))
+            self.assertIsNone(report.analyse_contact(directory)['black_interior_frames'])
+            self.contact(directory, workload='startup', motion_start_qpc=None, motion_end_qpc=None)
+            with (directory / 'frames.jsonl').open('a') as stream:
+                stream.write('\n'+json.dumps({'qpc': 1500, 'last_present_qpc': 1500, 'black_samples': 20, 'divider_y': 1, 'glass_y': 100, 'fill_y': 1}))
+            row = report.analyse_contact(directory)
+            self.assertIsNone(row['black_interior_frames'])
+            self.assertIsNone(row['drift_max_px'])
 
     def test_count_only_delivery_evidence_never_enables_receipt_matching(self):
         with tempfile.TemporaryDirectory() as temporary:
