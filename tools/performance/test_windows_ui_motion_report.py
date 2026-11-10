@@ -10,6 +10,91 @@ spec.loader.exec_module(report)
 
 
 class ReportTests(unittest.TestCase):
+    def test_missing_reversal_can_hide_two_changes_between_equal_endpoints(self):
+        full=[{'qpc':-1,'position':0}]+[{'qpc':i,'position':position} for i,position in enumerate((0,10,0,-10))]
+        captured=[{**full[i],'valid':True,'accumulated_frames':2 if i==3 else 1} for i in (0,1,3,4)]
+        counted=len(report.changes(captured,'position',0,3))
+        row={'errors':['capture inadequate','edge: 0 low-confidence frames; total missing 25.00%'],
+             'probes':{'edge':{'changes':counted,'rejected_probe_frames':0,'total_missing_share':.25}}}
+        bounds=report.divider_rate_bounds(row,report.divider_loss_window(captured,0,3),3,True)
+        self.assertTrue(bounds['qualified'])
+        self.assertEqual(bounds['upper'],len(report.changes(full,'position',0,3))/3)
+        self.assertEqual(bounds['equal_endpoint_missed_gaps'],1)
+        self.assertEqual(report.divider_loss_window(captured,0,3)['equal_endpoint_missed_gaps'],1)
+        captured[2]['accumulated_frames']=3
+        self.assertEqual(report.divider_loss_window(captured,0,3)['equal_endpoint_missed_gaps'],1)
+
+    def test_lossy_divider_rate_does_not_qualify_percentiles_or_other_faults(self):
+        row={'valid':False,'errors':['capture inadequate','edge: 0 low-confidence frames; total missing 4.00%'],
+             'probes':{'edge':{'changes':100,'rejected_probe_frames':0,'total_missing_share':.04}}}
+        window={'window_bracketed':True,'ambiguous_leading_changes':0,'missed_presents':4,'equal_endpoint_missed_gaps':0}
+        bounds=report.divider_rate_bounds(row,window,2,True)
+        self.assertTrue(bounds['qualified'])
+        self.assertEqual((bounds['lower'],bounds['upper']),(50,52))
+        self.assertFalse(row['valid'])
+        self.assertFalse(report.divider_rate_bounds(row,window,2,False)['qualified'])
+        row['errors'].append('input below 90% nominal')
+        self.assertFalse(report.divider_rate_bounds(row,window,2,True)['qualified'])
+        row['errors'].pop();row['probes']['edge']['rejected_probe_frames']=1
+        self.assertFalse(report.divider_rate_bounds(row,window,2,True)['qualified'])
+
+    def test_bounded_window_covers_trailing_loss_and_refuses_ambiguous_start(self):
+        frames=[{'qpc':t,'position':p,'accumulated_frames':n,'valid':True}
+                for t,p,n in ((-1,0,1),(1,1,1),(3,1,1),(5,1,3))]
+        window=report.divider_loss_window(frames,0,4)
+        self.assertTrue(window['window_bracketed'])
+        self.assertEqual((window['missed_presents'],window['equal_endpoint_missed_gaps']),(2,1))
+        self.assertFalse(report.divider_loss_window(frames[:-1],0,4)['window_bracketed'])
+        frames[1]['accumulated_frames']=2
+        window=report.divider_loss_window(frames,0,4)
+        self.assertEqual(window['ambiguous_leading_changes'],1)
+        row={'errors':[],'probes':{'edge':{'changes':1,'rejected_probe_frames':0,'total_missing_share':0}}}
+        self.assertFalse(report.divider_rate_bounds(row,window,4,True)['qualified'])
+
+    def test_bounded_rate_pools_counts_and_includes_all_missing_presents(self):
+        def bound(count,missed,seconds):
+            return {'qualified':True,'counted_changes':count,'missed_presents':missed,'motion_seconds':seconds}
+        first=bound(10,2,1);first['equal_endpoint_missed_gaps']=1
+        actual=report.pooled_rate_bounds([first,bound(20,4,3)])
+        self.assertEqual((actual['lower'],actual['upper']),(7.5,9.25))
+        self.assertEqual(actual['missed_presents'],6)
+        self.assertEqual(actual['equal_endpoint_missed_gaps'],1)
+        self.assertFalse(report.pooled_rate_bounds([bound(10,2,1),{'qualified':False}])['qualified'])
+
+    def test_bounded_gain_requires_lower_above_control_upper_plus_bounded_noise(self):
+        def bound(lower,upper):
+            return report.pooled_rate_bounds([{'qualified':True,'counted_changes':lower,
+                    'missed_presents':upper-lower,'motion_seconds':1}])
+        noise=report.compare_rate_bounds([bound(50,52),bound(51,53),bound(49,50),bound(50,51)],'aa')
+        self.assertEqual(noise['noise'],4)
+        slots=[bound(50,52),bound(57,59),bound(57,59),bound(51,53)]
+        result=report.compare_rate_bounds(slots,'abba',noise['noise'])
+        self.assertEqual(result['control_upper'],53)
+        self.assertEqual(result['threshold'],4)
+        self.assertEqual(result['status'],'no qualified gain')
+        slots[1]=slots[2]=bound(58,60)
+        self.assertEqual(report.compare_rate_bounds(slots,'abba',4)['status'],'gain')
+        self.assertEqual(report.compare_rate_bounds(slots,'abba')['status'],'no A/A noise control')
+        self.assertEqual(report.compare_rate_bounds(slots[:3],'abba',4)['status'],'unmeasured')
+
+    def test_bounded_divider_keeps_strict_failure_and_requires_every_clean_contact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);rows=[]
+            (root/'order.json').write_text(json.dumps({'order':'aa','slots':[None]*4,'workloads':['divider']}))
+            for slot in range(4):
+                folder=root/f'{slot}-control-divider';folder.mkdir()
+                (folder/'completed.json').write_text('{"ok":true}')
+                for contact in range(3):
+                    rows.append({'path':str(folder/f'contact-{contact}'),'workload':'divider','valid':False,
+                        'bounded_rate':{'qualified':True,'counted_changes':50,'missed_presents':2,'motion_seconds':1}})
+            actual=report.aggregate(root,rows)
+            self.assertTrue(actual['errors'])
+            self.assertEqual(actual['workloads'],{})
+            self.assertEqual(actual['bounded_rates']['divider/edge']['noise'],2)
+            self.assertEqual(report.aggregate(root,rows[:-1])['bounded_rates']['divider/edge']['status'],'unmeasured')
+            (root/'0-control-divider/completed.json').unlink()
+            self.assertEqual(report.aggregate(root,rows)['bounded_rates']['divider/edge']['status'],'unmeasured')
+
     def test_process_cpu_per_displayed_change_pools_work_instead_of_inputs(self):
         def contact(cpu,changes,inputs):
             return {'input_count':inputs,'cpu':{'active_ui_ms':1,'process_ms':cpu,

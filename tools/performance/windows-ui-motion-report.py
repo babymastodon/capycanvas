@@ -296,7 +296,65 @@ def summarize_contact(path):
         if discrete and targets and incomplete:
             result["errors"].append(f"{name}: {incomplete} calibrated targets not displayed")
         result["probes"][name] = row
+    if workload=="divider":
+        result["bounded_rate"]=divider_rate_bounds(result,divider_loss_window(probe_frames(frames,"edge"),start,end),seconds,
+            cost["p95"] is not None and cost["p95"]<=500/meta["refresh_hz"])
     result["valid"] = not result["errors"]
+    return result
+
+
+def divider_loss_window(frames,start,end):
+    pairs=[(a,b) for a,b in zip(frames,frames[1:]) if frame_time(a)<end and frame_time(b)>=start]
+    lost=[(a,b) for a,b in pairs if b["accumulated_frames"]>1]
+    leading=sum(frame_time(a)<start and a["position"]!=b["position"] for a,b in lost)
+    covered=bool(frames and frame_time(frames[0])<start and frame_time(frames[-1])>=end
+                 and all(a.get("valid") and b.get("valid") and a.get("position") is not None and b.get("position") is not None for a,b in pairs))
+    return {"window_bracketed":covered,"ambiguous_leading_changes":leading,
+            "missed_presents":sum(b["accumulated_frames"]-1 for _,b in lost),
+            "equal_endpoint_missed_gaps":sum(a["position"]==b["position"] for a,b in lost)}
+
+
+def divider_rate_bounds(contact,window,seconds,capture_budget_ok):
+    edge=contact["probes"].get("edge",{})
+    missed=window["missed_presents"];equal=window["equal_endpoint_missed_gaps"]
+    loss_error=f'edge: 0 low-confidence frames; total missing {edge.get("total_missing_share",0):.2%}'
+    qualified=bool(capture_budget_ok and window["window_bracketed"] and not window["ambiguous_leading_changes"] and seconds>0 and edge.get("changes",0)>0
+        and edge.get("rejected_probe_frames") == 0
+        and not set(contact["errors"])-{"capture inadequate",loss_error})
+    return {**window,"qualified":qualified,"counted_changes":edge.get("changes",0),
+            "motion_seconds":seconds,"lower":edge.get("changes",0)/seconds if seconds>0 else None,
+            "upper":(edge.get("changes",0)+missed+equal)/seconds if seconds>0 else None}
+
+
+def pooled_rate_bounds(bounds):
+    if not bounds or not all(row.get("qualified",False) for row in bounds):
+        return {"qualified":False}
+    counted=sum(row["counted_changes"] for row in bounds)
+    missed=sum(row["missed_presents"] for row in bounds)
+    equal=sum(row.get("equal_endpoint_missed_gaps",0) for row in bounds)
+    seconds=sum(row["motion_seconds"] for row in bounds)
+    return {"qualified":True,"counted_changes":counted,"missed_presents":missed,"equal_endpoint_missed_gaps":equal,
+            "motion_seconds":seconds,"lower":counted/seconds,"upper":(counted+missed+equal)/seconds}
+
+
+def compare_rate_bounds(slots,order,noise=None):
+    result={"status":"unmeasured","slots":slots}
+    if len(slots)!=4 or not all(slot.get("qualified",False) for slot in slots):
+        return result
+    control=pooled_rate_bounds([slots[0],slots[3]])
+    candidate=pooled_rate_bounds(slots[1:3])
+    result.update(control=control,candidate=candidate)
+    if order=="aa":
+        result.update(status="A/A",noise=max(row["upper"] for row in slots)-min(row["lower"] for row in slots))
+    elif order=="abba":
+        if noise is None or not math.isfinite(noise) or noise<0:
+            result["status"]="no A/A noise control"
+            return result
+        upper=max(slots[i]["upper"] for i in (0,3))
+        drift=upper-min(slots[i]["lower"] for i in (0,3))
+        threshold=max(noise,drift)
+        result.update(status="gain" if candidate["lower"]>upper+threshold else "no qualified gain",
+                      noise=noise,control_upper=upper,bounded_control_drift=drift,threshold=threshold)
     return result
 
 
@@ -356,7 +414,7 @@ def pooled(contacts, probe):
     return metrics
 
 
-def aggregate(root, contacts, noise=None, pen=None):
+def aggregate(root, contacts, noise=None, pen=None, bounded_noise=None):
     order_path = root/"order.json"
     if not order_path.exists():
         return {"errors":["Missing ABBA order/provenance"],"workloads":{}}
@@ -367,12 +425,19 @@ def aggregate(root, contacts, noise=None, pen=None):
         folder = Path(row["path"]).relative_to(root).parts[0]
         index = int(folder.split("-",1)[0])
         slots[(row["workload"],index)].append(row)
-    output = {}
+    output = {};bounded_output={}
     expected_slots = len(order["slots"])
     for workload in order["workloads"]:
         if workload == "pen":
             continue
         by_slot = [slots[(workload,i)] for i in range(expected_slots)]
+        if workload=="divider" and expected_slots==4:
+            bounds=[pooled_rate_bounds([row.get("bounded_rate",{}) for row in rows]) if len(rows)==3 else {"qualified":False} for rows in by_slot]
+            closed=all((Path(row["path"]).parent/"completed.json").exists()
+                       and read_json(Path(row["path"]).parent/"completed.json").get("ok") is True
+                       for rows in by_slot for row in rows)
+            bounded_output["divider/edge"]=compare_rate_bounds(bounds,order["order"],
+                (bounded_noise or {}).get("divider/edge",{}).get("noise")) if closed else {"status":"unmeasured","error":"Missing clean slot exit"}
         if any(len(rows)!=3 or not all(row["valid"] for row in rows) for rows in by_slot):
             errors.append(f"{workload}: requires three valid contacts in every slot")
             continue
@@ -402,7 +467,7 @@ def aggregate(root, contacts, noise=None, pen=None):
             if expected_slots==4:
                 entry["metrics"]=compare_metrics(metrics,median_metrics(pen_slots[0]+pen_slots[3]),median_metrics(pen_slots[1]+pen_slots[2]),order["order"],"pen/renderer",noise)
             output["pen/renderer"]=entry
-    return {"order":order,"workloads":output,"errors":errors}
+    return {"order":order,"workloads":output,"bounded_rates":bounded_output,"errors":errors}
 
 
 def summarize_pen(path):
@@ -455,7 +520,8 @@ def main():
             failures.append({"path":str(capture.parent),"error":str(error)})
     failures.extend({"path":str(p), "error":p.read_text(encoding="utf-8-sig")} for p in args.run.rglob("failure.txt"))
     args.out.mkdir(parents=True, exist_ok=True)
-    arms=aggregate(args.run,rows,read_json(args.noise)["workloads"] if args.noise else None,pen)
+    noise=read_json(args.noise) if args.noise else {}
+    arms=aggregate(args.run,rows,noise.get("workloads"),pen,noise.get("bounded_rates"))
     if "pen" in arms.get("order",{}).get("workloads",[]) and len(pen)!=len(arms["order"]["slots"]):
         arms["errors"].append("Missing pen slots")
     summary = {"basis":"Desktop Duplication composed changes; GPU VM diagnostic", "contacts":rows,"pen":pen, "failures":failures,
