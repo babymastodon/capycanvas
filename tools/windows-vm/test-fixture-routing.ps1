@@ -1111,7 +1111,8 @@ namespace CapyLocalDumpsTest {
         $globalFault=$Case -in 'snapshot-query-error','snapshot-pid-invalid' -or ($Action -eq 'wait' -and $Case -in 'bad-json','empty')
         $fault=$Case -in 'live-denied','initial-session-unknown','initial-birth-unknown','bad-precision','fresh-session-unknown','fresh-birth-unknown','fresh-query-error','process-query-error','pin-start-unavailable','same-us-alias','missing-birth','malformed-birth','bad-json','snapshot-query-error','snapshot-pid-invalid','stop-error','dispose-error','wait-lingering','empty'
         $open41=$Case -notin 'gone-before-snapshot','foreign-reuse','birth-reuse','initial-session-unknown','initial-birth-unknown','bad-precision','missing-birth','malformed-birth','close-exact','bad-json','snapshot-query-error','snapshot-pid-invalid','empty'
-        $fresh=$Case -in 'snapshot-open-exit','live-denied','fresh-foreign','fresh-birth','fresh-session-unknown','fresh-birth-unknown','fresh-query-error','process-query-error','pin-start-unavailable','pin-start-exit','same-us-alias'
+        $fresh=$Case -in 'live-denied','fresh-foreign','fresh-birth','fresh-session-unknown','fresh-birth-unknown','fresh-query-error','process-query-error','pin-start-unavailable','pin-start-exit','same-us-alias'
+        $kernelExitCheck=$Case -eq 'snapshot-open-exit' -or ($fresh -and $Case -ne 'process-query-error')
         $matches41=$Case -in 'live-match','close-other-birth','close-window','close-failed','close-missing-birth','stop-error','dispose-error','wait-lingering'
         $script:snapTargets=if($globalFault -or ($Action -eq 'wait' -and $fault -and $Case -ne 'wait-lingering')){@()}elseif($matches41){@(41,42)}else{@(42)}
         $script:snapInitial=0;$script:snapFresh=0;$script:snapQueries=@{41=0;42=0};$script:snapHandleReads=@{41=0;42=0};$script:snapBirthReads=@{41=0;42=0};$script:snapLive=@{41=($Case -ne 'gone-before-snapshot');42=$true};$script:snapProcesses=@{}
@@ -1120,7 +1121,7 @@ namespace CapyLocalDumpsTest {
         $failure=$null;try{if($Action -eq 'stop'){Stop-Review}else{Wait-FixtureReviews 'row'}}catch{$failure=$_}
         if(!$fault -and $failure){throw "Snapshot case $Case ($Action): $($failure.Exception.Message)"}
         if($fault -and !$failure){throw "An unknown or denied snapshot identity was accepted: $Case ($Action)"}
-        if($script:snapMetadataHandles -or $script:snapMetadataWaits -or $script:snapMetadataStops -or $script:snapProcessSessions -or $script:snapProcessExits){throw "Snapshot cleanup retained a superseded getter or acted on metadata: $Case ($Action)"}
+        if($script:snapMetadataHandles -or $script:snapMetadataWaits -or $script:snapMetadataStops -or $script:snapProcessSessions -or $script:snapProcessExits -ne [int]$kernelExitCheck){throw "Snapshot cleanup escaped its catch-only kernel exit check or acted on metadata: $Case ($Action)"}
         if((($script:snapReturned|Sort-Object) -join ',') -cne (($script:snapDisposed|Sort-Object) -join ',')){throw "Snapshot cleanup did not dispose every returned process exactly once: $Case ($Action)"}
         $initial=if($Action -eq 'wait' -and $Case -in 'bad-json','empty'){0}else{1}
         $q42=if($globalFault -or ($Action -eq 'wait' -and $fault -and $Case -ne 'wait-lingering')){0}else{1}
@@ -1220,15 +1221,16 @@ public static class CapyReviewOwnershipTest {
                 if($subject.SessionId -ne [Diagnostics.Process]::GetCurrentProcess().SessionId){throw 'The real open-race subject lost its original session'}
                 @{process_id=$entry.id;process_start_utc=$entry.start.ToString('o');windows=@();closes=@()}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath ($log+'-context.json')
                 $script:realSnapshotCalls=0;$script:realOpenCalls=0
+                $script:realOpenRaceRows=@(CimCmdlets\Get-CimInstance Win32_Process -Filter ("ProcessId="+$entry.id) -Property ProcessId,SessionId,CreationDate -ErrorAction Stop)
+                if($script:realOpenRaceRows.Count -ne 1){throw 'The real live child was absent before the open race'}
                 function Get-CimInstance{
                     [CmdletBinding()]param($ClassName,$Filter,$Property)
                     $script:realSnapshotCalls++
-                    $rows=@(CimCmdlets\Get-CimInstance Win32_Process -Filter ("ProcessId="+$entry.id) -Property ProcessId,SessionId,CreationDate -ErrorAction Stop)
-                    if($script:realSnapshotCalls -eq 1){if($rows.Count -ne 1){throw 'The real live child was absent before the open race'};Finish-OwnershipChild $entry}
-                    $rows
+                    if($script:realSnapshotCalls -eq 1){Finish-OwnershipChild $entry}
+                    $script:realOpenRaceRows
                 }
                 function Get-Process([int]$Id){if($Id -ne $entry.id){throw 'Open-race lookup escaped its exact child'};$script:realOpenCalls++;$subject}
-                if(@(Reviews ($log+'-context.json')).Count -or $script:realSnapshotCalls -ne 2 -or $script:realOpenCalls -ne 1){throw 'A real retired primed subject was retained without one fresh atomic absence observation'}
+                if(@(Reviews ($log+'-context.json')).Count -or $script:realSnapshotCalls -ne 1 -or $script:realOpenCalls -ne 1){throw 'A real kernel-confirmed retired subject required fresh CIM absence or remained owned'}
                 if(!$entry.process.HasExited -or $entry.process.ExitCode -ne 0){throw 'The real open-race child did not finish normally'}
             }finally{$subject.Dispose()}
         }

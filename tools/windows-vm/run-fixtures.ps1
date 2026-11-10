@@ -359,6 +359,9 @@ function Reviews([string]$ContextPath,[Collections.Generic.List[object]]$Failure
                 $retained=$true;$matched.Add($process)
             }catch{
                 $failure=$_
+                $exited=$false
+                if($null -ne $process){try{$exited=$process.HasExited}catch{}}
+                if($exited -is [bool] -and $exited){continue}
                 $fresh=Get-CimInstance Win32_Process -Filter "ProcessId=$id" -Property ProcessId,SessionId,CreationDate -ErrorAction Stop
                 if(& $sameIdentity $fresh $owner $start){throw $failure}
             }
