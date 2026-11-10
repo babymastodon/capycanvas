@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0">
+  <Profiles>
+    <EventCollector Id="CapyObserverCollector" Name="Capy observer timeline"><BufferSize Value="64"/><Buffers Value="16"/></EventCollector>
+    <EventProvider Id="CapyObserverProvider" Name="75de640b-8863-4535-b326-443c2307f3e0" Level="5"><Keywords><Keyword Value="0x1"/></Keywords></EventProvider>
+    <Profile Id="CapyObserver.Verbose.File" Name="CapyObserver" Description="External benchmark QPC correlation" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors><EventCollectorId Value="CapyObserverCollector"><EventProviders><EventProviderId Value="CapyObserverProvider"/></EventProviders></EventCollectorId></Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

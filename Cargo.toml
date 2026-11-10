@@ -18,6 +18,7 @@ members = [
     "apps/layer-apple/native/link",
     "apps/layer-windows/native",
     "apps/layer-windows/native/link",
+    "tools/performance/windows-ui-motion",
 ]
 resolver = "2"
 exclude = ["vendor/wgpu-core", "vendor/wgpu", "vendor/wgpu-hal", "vendor/wgpu-types", "vendor/image-webp", "vendor/rav1d", "vendor/rust_h265", "vendor/moxcms", "fuzz"]

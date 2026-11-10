@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WpaProfileContainer xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Version="2" xmlns="http://tempuri.org/SerializableElement.xsd">
+  <Content xsi:type="WpaProfile2">
+    <Sessions><Session Index="0" /></Sessions>
+    <Views>
+      <View Guid="88e5af30-04c3-43eb-b339-6f0c74ec553e" Title="Capy CPU sampling" IsVisible="true">
+        <Graphs>
+          <Graph Guid="b855361e-7be0-4bc8-a754-3e8507715ca5" LayoutStyle="DataTable" GraphHeight="70" IsShown="true">
+            <Preset Name="Capy sampled stacks" GraphColumnCount="8" KeyColumnCount="6" InitialExpansionQuery="[Series Depth]:&lt;=128" InitialFilterQuery="([Process Name]:=&quot;CapyCanvas.exe&quot; OR [Process Name]:=&quot;dwm.exe&quot;)" InitialFilterShouldKeep="true">
+              <MetadataEntries>
+                <MetadataEntry Guid="05100ece-df05-40c7-aad6-ffff99b60491" Name="Thread ID" ColumnMetadata="EndThreadId" />
+                <MetadataEntry Guid="0bbf4299-0176-445e-b1d9-991df475d631" Name="TimeStamp" ColumnMetadata="StartTime" />
+              </MetadataEntries>
+              <HighlightEntries />
+              <Columns>
+                <Column Guid="5b77e48f-6d24-4f29-8972-69c30e32f87d" Name="Process" SortPriority="1" IsVisible="true" />
+                <Column Guid="05100ece-df05-40c7-aad6-ffff99b60491" Name="Thread ID" SortPriority="2" IsVisible="true" />
+                <Column Guid="0bbf4299-0176-445e-b1d9-991df475d631" Name="TimeStamp" SortPriority="3" IsVisible="true" />
+                <Column Guid="842af11e-661d-477e-b7b6-556ed8181177" Name="Stack" SortPriority="4" IsVisible="true"><StackOptionsParameter FrameTagFold="False" /></Column>
+                <Column Guid="ccdb05c1-04a9-4289-aaa6-a376d1d66012" Name="Module" SortPriority="5" IsVisible="true" />
+                <Column Guid="7ad93780-708c-471c-9e3f-5a497cbefdd7" Name="Function" SortPriority="6" IsVisible="true" />
+                <Column Guid="e0c6cb9e-04c2-4bb5-ba5f-4ed765f4ecaa" Name="Weight" AggregationMode="Sum" SortPriority="7" IsVisible="true" />
+                <Column Guid="01a82c2c-5048-4c9d-ac37-eaf6556f6af5" Name="Count" AggregationMode="Sum" SortPriority="8" IsVisible="true" />
+              </Columns>
+            </Preset>
+          </Graph>
+        </Graphs>
+        <SessionIndices><SessionIndex>0</SessionIndex></SessionIndices>
+      </View>
+    </Views>
+  </Content>
+</WpaProfileContainer>
