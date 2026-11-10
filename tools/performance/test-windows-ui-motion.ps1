@@ -30,6 +30,8 @@ try{
 }finally{if(Test-Path -LiteralPath $seedPath){Remove-Item -LiteralPath $seedPath -Recurse -Force}}
 $closedProvider=[Runtime.InteropServices.COMException]::new('Closed provider',-2147418094)
 if(!(Motion-ProviderClosed ([Exception]::new('Wrapped',$closedProvider)))){throw 'Terminal provider failure was not recognized'}
+$disconnectedProvider=[Runtime.InteropServices.COMException]::new('Disconnected provider',-2147417848)
+if(!(Motion-ProviderClosed ([Exception]::new('Wrapped',$disconnectedProvider)))){throw 'Disconnected closing provider was not recognized'}
 if(Motion-ProviderClosed ([Runtime.InteropServices.COMException]::new('Access denied',-2147024891))){throw 'Unrelated provider failure was suppressed'}
 $review=[pscustomobject]@{Id=42};$drawingWindow=[IntPtr]42
 function Find {return $null}

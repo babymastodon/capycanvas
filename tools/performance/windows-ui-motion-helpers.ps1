@@ -76,7 +76,7 @@ function Motion-SelectPanel([string]$Panel){
 function Motion-Key([uint16]$Key,[uint16[]]$Modifiers=@()){
  [CapyRowPointer]::Chord([uint32]$review.Id,$Modifiers,$Key)
 }
-function Motion-ProviderClosed([Exception]$Exception){$Exception.GetBaseException().HResult -eq -2147418094}
+function Motion-ProviderClosed([Exception]$Exception){$Exception.GetBaseException().HResult -in @(-2147418094,-2147417848)}
 function Motion-Close{
  if(!$review -or $review.HasExited){return}
  [CapyWindowApi]::PostMessage($drawingWindow,0x10,[UIntPtr]::Zero,[IntPtr]::Zero)|Out-Null
