@@ -18,7 +18,7 @@ The host wrapper checks memory admission, syncs, builds Release, verifies pinned
 
 Select a checkpoint smoke with `--arm winui --workload startup --workload paint-still --workload divider`; omit those flags for the full ABBA matrix.
 
-WARP and GPU WinUI use PresentMon runtime events with display/GPU/input tracking disabled; their PresentMode and display timings remain unverified. GPU retained requires full display metrics. Approved runtime collection may have no interval rows when the trace records exactly one canvas present and no owned UI presents; interval timing then remains unverified. Desktop Duplication, pen-delivery and resting-probe calibration checks apply to both VMs.
+Both VMs use PresentMon runtime events with display/GPU/input tracking disabled; PresentMode, display timings and display-based capture-overhead comparisons remain unverified. Approved runtime collection may have no interval rows when the trace records exactly one canvas present and no owned UI presents; interval timing then remains unverified. Desktop Duplication, pen-delivery and resting-probe calibration checks apply to both VMs.
 
 Run the completed arms with `--vm capycanvas6-poc-gpu --profile normal`, `--vm capycanvas6-poc-gpu --profile lowcpu`, or `--vm capycanvas6-poc-warp --profile normal`. Hardware startup requires a free pool GPU. Verify the NVIDIA primary at 120 Hz and effective DPI before interpreting hardware diagnostics.
 

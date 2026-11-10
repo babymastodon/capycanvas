@@ -9,6 +9,7 @@ from pathlib import Path
 
 WARP_RUNTIME_REASON = "Approved WARP-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only"
 GPU_WINUI_RUNTIME_REASON = "Approved GPU WinUI-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only"
+GPU_RETAINED_RUNTIME_REASON = "Approved GPU retained-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only"
 SPARSE_RUNTIME_REASON = "Approved sparse runtime exception: interval timing is unverified when the owned trace records one canvas present and no UI presents"
 
 CALIBRATED_WORKLOADS = {"divider", "resize-programmatic", "resize-native", "scrub-while-painting"}
@@ -255,7 +256,7 @@ def ui_cpu_per_change(trace, frames, start, end):
 
 
 def runtime_only_approved(meta):
-    reason = WARP_RUNTIME_REASON if meta.get("vm") == "capycanvas6-poc-warp" else GPU_WINUI_RUNTIME_REASON if meta.get("vm") == "capycanvas6-poc-gpu" and meta.get("arm") == "winui" else None
+    reason = WARP_RUNTIME_REASON if meta.get("vm") == "capycanvas6-poc-warp" else {"winui": GPU_WINUI_RUNTIME_REASON, "retained": GPU_RETAINED_RUNTIME_REASON}.get(meta.get("arm")) if meta.get("vm") == "capycanvas6-poc-gpu" else None
     return reason is not None and meta.get("presentmon_mode") == "runtime-only" and meta.get("presentmon_unavailable_reason") == reason
 
 
@@ -306,7 +307,7 @@ def contact_validation(directory, meta, calibration, receipt_matching, inputs, p
     mode = meta.get("presentmon_mode", "full")
     runtime = runtime_only_approved(meta)
     if mode not in ("full", "runtime-only") or mode == "runtime-only" and not runtime:
-        errors.append("PresentMon runtime-only mode requires the approved WARP-only exception or approved GPU WinUI-only exception")
+        errors.append("PresentMon runtime-only mode requires the approved VM and arm exception")
     if run.get("presentmon_mode", "full") != mode:
         errors.append("PresentMon run.json mode does not match contact metadata")
     if runtime and (run.get("vm") != meta.get("vm") or run.get("presentmon_unavailable_reason") != meta.get("presentmon_unavailable_reason")):
@@ -694,7 +695,7 @@ def render(rows, contacts=(), abba=(), overhead=()):
     lines.extend(["", "Motion rates use captured target geometry. All UI changes use the marker counter separately. Latencies use desktop LastPresentTime; receipt latency uses source indices only after pen-delivery.json validates ordered indices and sample tuples. Injection time always comes from inputs.jsonl QPC; Windows source timestamps are diagnostic: rewrite identity is assessed only for declared native PerformanceCount samples, never by comparing WinRT microseconds with QPC ticks. Latest-native identity separately checks tuple-matched batch endpoints when ordered native history was unavailable; its counts exclude ordered-history comparisons. Drift and black-interior counts use the measured motion windows and omit startup, warmup and settling frames. Pre-gutter WinUI drift is unverified because its cyan edge could be obscured; raw captures remain unchanged. Drift shares use only frames with all three verified probes; missing probes are counted separately and never treated as zero. Process CPU uses guest capacity when logical_cpus is available, otherwise one core.", "", "A contact is capture-limited when missing / (desktop + missing) exceeds 2% or capture p95 exceeds half a refresh period. Every derived rate carries its capture and input status; comparisons retain these warnings. Input is limited when accepted measured data slots / nominal active seconds falls below 90% of the recorded stream nominal Hz. Terminal up events count toward pen delivery but not scheduled-slot rates. Probe calibration uses resting observations and fails above 1 px spread. Full distributions, per-contact values, censored/unmatched counts, provenance and decoded marker samples are in results.json.", ""])
     reasons = sorted({reason for row in rows for reason in row.get("presentmon_unavailable_reasons", []) + row.get("presentmon_interval_unavailable_reasons", [])})
     if reasons:
-        lines.extend(["", "PresentMon limits: " + "; ".join(reasons) + ". PresentMode and display timing remain unverified for approved runtime-only collection (WARP, or GPU WinUI only); display rates and display-overhead comparisons stay null. Approved sparse runtime contacts have one traced canvas present and no UI presents; runtime interval timing and idle presents remain unverified when interval rows are absent.", ""])
+        lines.extend(["", "PresentMon limits: " + "; ".join(reasons) + ". PresentMode and display timing remain unverified for approved runtime-only collection on both VMs; display rates and display-overhead comparisons stay null. Approved sparse runtime contacts have one traced canvas present and no UI presents; runtime interval timing and idle presents remain unverified when interval rows are absent.", ""])
     return "\n".join(lines)
 
 

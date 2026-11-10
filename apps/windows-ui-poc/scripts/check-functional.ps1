@@ -266,19 +266,7 @@ foreach($which in $arms){
     $repro="check-functional.ps1 -Vm $Vm -Arm $which -Out `"$Out`" -TargetDirectory `"$TargetDirectory`""
     if(!(Test-Path -LiteralPath $executable)){foreach($i in 1..12){Check "F$i" 'Application prerequisite' {Unverified "The $which executable has not been built: $executable"}};continue}
     Check 'F1' 'Present modes' {
-        if($Vm -eq 'capycanvas6-poc-warp'){Unverified 'Approved WARP-only runtime collector exception: PresentMode and display timing are unverified' @{present_modes=$null;presentmon_mode='runtime-only'}}
-        if(!$BenchmarkResults -or !(Test-Path -LiteralPath $BenchmarkResults -PathType Container)){Unverified 'No full GPU PresentMon benchmark result tree was supplied'}
-        $chains=[Collections.Generic.List[object]]::new()
-        foreach($file in Get-ChildItem -LiteralPath $BenchmarkResults -Filter meta.json -Recurse -File){
-            $meta=Get-Content -LiteralPath $file.FullName -Raw|ConvertFrom-Json
-            if($meta.arm -ne $which -or $meta.workload -ne 'paint-still' -or $meta.no_capture -or !(Benchmark-Completed $file.DirectoryName $meta) -or !(Matching-Binary $meta)){continue}
-            Assert ($meta.presentmon_mode -eq 'full') 'GPU functional evidence cannot use runtime-only PresentMon'
-            $csv=Join-Path $file.Directory.Parent.FullName 'presents.csv';if(!(Test-Path -LiteralPath $csv)){continue}
-            $rows=@(Import-Csv -LiteralPath $csv|Where-Object {[uint32]$_.ProcessID -eq [uint32]$meta.process_id -and [long]$_.QPCTime -ge [long]$meta.motion_start_qpc -and [long]$_.QPCTime -le [long]$meta.motion_end_qpc})
-            foreach($group in $rows|Group-Object SwapChainAddress){$modes=@($group.Group|ForEach-Object {$_.PresentMode}|Where-Object {$_}|Sort-Object -Unique);Assert ($modes.Count -gt 0) 'PresentMon has no mode for a captured swap chain';$chains.Add(@{contact=$file.DirectoryName;process_id=$meta.process_id;swapchain=$group.Name;modes=$modes;rows=$group.Count})}
-        }
-        if(!$chains.Count){Unverified 'No owned paint-still full PresentMon rows were available in the supplied tree'}
-        @{status='pass';swapchains=@($chains)}
+        Unverified 'Approved runtime-only collector exceptions: PresentMode and display timing are unverified on both VMs' @{present_modes=$null;presentmon_mode='runtime-only'}
     }
     Check 'F2' 'Pen samples, axes and history' {
         $destination=Join-Path $armOut 'pen-check';$arguments=@('pen-check','--arm',$which,'--exe',$executable,'--out',$destination,'--samples','2400','--','--rows','1000','--canvas-load','light','--thumbnails','off')

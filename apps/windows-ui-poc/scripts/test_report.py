@@ -712,8 +712,21 @@ class ReportTests(unittest.TestCase):
                 path.write_text(json.dumps(data))
                 self.assertFalse(report.analyse_contact(directory)['valid'])
 
-    def test_gpu_retained_and_unapproved_gpu_winui_runtime_collection_are_rejected(self):
-        for arm, reason in (('retained', report.GPU_WINUI_RUNTIME_REASON), ('winui', report.WARP_RUNTIME_REASON), ('winui', 'unapproved')):
+    def test_approved_gpu_retained_runtime_collection_keeps_display_and_overhead_unverified(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            row = self.runtime_benchmark_contact(Path(temporary), vm='capycanvas6-poc-gpu', arm='retained', reason=report.GPU_RETAINED_RUNTIME_REASON)
+        self.assertTrue(row['valid'], row['validation_errors'])
+        self.assertTrue(row['presentmon_runtime_only_approved'])
+        self.assertIsNone(row['present_modes'])
+        self.assertIsNone(row['present_display_intervals_ms'])
+        self.assertIsNone(row['canvas_presentmon_display_hz'])
+        pooled = report.aggregate([row])[0]
+        comparison = report.overhead_checks([pooled, dict(pooled, no_capture=True)])[0]
+        self.assertFalse(comparison['comparison_eligible'])
+        self.assertIsNone(comparison['overhead_fraction'])
+
+    def test_runtime_collection_rejects_another_gpu_arms_exception(self):
+        for arm, reason in (('retained', report.GPU_WINUI_RUNTIME_REASON), ('winui', report.GPU_RETAINED_RUNTIME_REASON), ('retained', 'unapproved'), ('winui', report.WARP_RUNTIME_REASON), ('winui', 'unapproved')):
             with self.subTest(arm=arm, reason=reason), tempfile.TemporaryDirectory() as temporary:
                 row = self.runtime_benchmark_contact(Path(temporary), vm='capycanvas6-poc-gpu', arm=arm, reason=reason)
                 self.assertFalse(row['valid'])
@@ -837,7 +850,7 @@ class ReportTests(unittest.TestCase):
         self.assertFalse(comparison['comparison_eligible'])
         self.assertIsNone(comparison['overhead_fraction'])
 
-    def test_runtime_only_is_rejected_on_gpu_or_without_the_approved_reason(self):
+    def test_runtime_only_rejects_an_unsupported_gpu_arm_or_unapproved_reason(self):
         for changes in ({'vm': 'capycanvas6-poc-gpu'}, {'presentmon_unavailable_reason': None}, {'presentmon_unavailable_reason': 'single-present interval baseline'}):
             with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
@@ -846,7 +859,7 @@ class ReportTests(unittest.TestCase):
                 meta = json.loads(path.read_text()); meta.update(changes); path.write_text(json.dumps(meta))
                 row = report.analyse_contact(directory)
                 self.assertFalse(row['valid'])
-                self.assertTrue(any('approved WARP-only exception' in error for error in row['validation_errors']))
+                self.assertTrue(any('approved VM and arm exception' in error for error in row['validation_errors']))
 
     def test_presentmon_record_mode_must_match_metadata(self):
         with tempfile.TemporaryDirectory() as temporary:

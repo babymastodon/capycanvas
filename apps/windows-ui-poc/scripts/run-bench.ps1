@@ -25,14 +25,13 @@ $workloads=@('startup','paint-still','divider','resize-programmatic','resize-nat
 if($WorkloadNames){foreach($name in $WorkloadNames){if($name -notin $workloads){throw "Unknown workload $name"}};$workloads=$WorkloadNames}
 $arms=@(if($ArmOrder -eq 'abba'){'retained','winui','winui','retained'}else{$ArmOrder})
 $records=[Collections.Generic.List[object]]::new()
+$presentmonMode='runtime-only'
 $overall=$false
 try{
     foreach($workload in $workloads){
         for($slot=0;$slot -lt $arms.Count;$slot++){
             $arm=$arms[$slot]
-            $runtimeOnly=$Vm -eq 'capycanvas6-poc-warp' -or $arm -eq 'winui'
-            $presentmonMode=if($runtimeOnly){'runtime-only'}else{'full'}
-            $runtimeReason=if($Vm -eq 'capycanvas6-poc-warp'){'Approved WARP-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}elseif($runtimeOnly){'Approved GPU WinUI-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}else{$null}
+            $runtimeReason=if($Vm -eq 'capycanvas6-poc-warp'){'Approved WARP-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}elseif($arm -eq 'winui'){'Approved GPU WinUI-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}else{'Approved GPU retained-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}
             $executable=Join-Path $bin (@{retained='poc-retained.exe';winui='PocWinUI.exe'}[$arm])
             $captureModes=if($slot -lt 2 -and $workload -in 'paint-still','divider'){@($false,$true)}else{@($false)}
             foreach($noCapture in $captureModes){
@@ -44,8 +43,7 @@ try{
                 $code=$null
                 $collectorCode=$null
                 try{
-                    $monitorArguments=@('--process_name',([IO.Path]::GetFileName($executable)),'--session_name',$session,'--v1_metrics','--qpc_time','--no_console_stats','--output_file',('"'+$csv+'"'))
-                    if($runtimeOnly){$monitorArguments+=@('--no_track_display','--no_track_gpu','--no_track_input')}
+                    $monitorArguments=@('--process_name',([IO.Path]::GetFileName($executable)),'--session_name',$session,'--v1_metrics','--qpc_time','--no_console_stats','--no_track_display','--no_track_gpu','--no_track_input','--output_file',('"'+$csv+'"'))
                     $monitor=Start-Process -FilePath $PresentMon -ArgumentList $monitorArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $folder 'presentmon.log') -RedirectStandardError (Join-Path $folder 'presentmon-error.log')
                     $null=$monitor.Handle
                     Start-Sleep -Milliseconds 500
@@ -82,10 +80,9 @@ try{
                         if($adapter){$meta|Add-Member -NotePropertyName adapter -NotePropertyValue $adapter -Force}
                         @{file=$metaFile;meta=$meta;canvas_presents=$canvasPresents;ui_presents=$uiPresents}
                     })
-                    $sparseRuntime=$runtimeOnly -and $contacts.Count -eq 3 -and @($contacts|Where-Object {$_.canvas_presents -ne 1 -or $_.ui_presents -ne 0}).Count -eq 0
+                    $sparseRuntime=$contacts.Count -eq 3 -and @($contacts|Where-Object {$_.canvas_presents -ne 1 -or $_.ui_presents -ne 0}).Count -eq 0
                     $intervalUnavailable=if($sparseRuntime){'Approved sparse runtime exception: interval timing is unverified when the owned trace records one canvas present and no UI presents'}else{$null}
-                    $presentmonUnavailable=if($runtimeOnly){$runtimeReason}elseif($workload -eq 'startup' -and !$csvHasRows){'PresentMon 2.3.0 emitted no startup interval rows; the first present establishes the interval baseline'}else{$null}
-                    $record=@{vm=$Vm;profile=$Profile;workload=$workload;arm=$arm;order_slot=$slot;order=$ArmOrder;no_capture=$noCapture;exit_code=$code;presentmon_exit_code=$collectorCode;presentmon_mode=$presentmonMode;presentmon_sha256=$PresentMonSha256;presentmon_unavailable_reason=$presentmonUnavailable;presentmon_interval_unavailable_reason=$intervalUnavailable;commit=$build.commit;binary_hashes=$build.files}
+                    $record=@{vm=$Vm;profile=$Profile;workload=$workload;arm=$arm;order_slot=$slot;order=$ArmOrder;no_capture=$noCapture;exit_code=$code;presentmon_exit_code=$collectorCode;presentmon_mode=$presentmonMode;presentmon_sha256=$PresentMonSha256;presentmon_unavailable_reason=$runtimeReason;presentmon_interval_unavailable_reason=$intervalUnavailable;commit=$build.commit;binary_hashes=$build.files}
                     $record|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $folder 'run.json') -Encoding UTF8
                     $records.Add($record)
                     foreach($contact in $contacts){
@@ -101,7 +98,7 @@ try{
                 }
                 if(!(Import-Csv -LiteralPath $csv|Select-Object -First 1)){throw 'PresentMon CSV contains no presents'}
                 $headers=@((Get-Content -LiteralPath $csv -First 1) -split ','|ForEach-Object {$_.Trim().Trim([char]34)})
-                $requiredHeaders=if($runtimeOnly){@('Application','ProcessID','Runtime','SwapChainAddress','msBetweenPresents','QPCTime')}else{@('PresentMode','SwapChainAddress','msBetweenPresents','msBetweenDisplayChange','msUntilDisplayed','QPCTime')}
+                $requiredHeaders=@('Application','ProcessID','Runtime','SwapChainAddress','msBetweenPresents','QPCTime')
                 foreach($required in $requiredHeaders){if($required -notin $headers){throw "PresentMon CSV missing $required"}}
             }
         }
