@@ -83,11 +83,12 @@ exit $exitCode
     encoded = base64.b64encode(runner.encode('utf-8')).decode('ascii')
     ssh(f"New-Item -ItemType Directory -Force '{guest_out}'|Out-Null;[IO.File]::WriteAllBytes('{runner_path}',[Convert]::FromBase64String('{encoded}'))")
     arguments = f'''"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoProfile -Sta -ExecutionPolicy Bypass -File "{runner_path}"'''
+    run_level = 'Highest' if args.vm.endswith('-gpu') else 'Limited'
     ssh(f"""$ErrorActionPreference='Stop'
 $deadline=(Get-Date).AddMinutes(2)
 while(!(Get-Process explorer -IncludeUserName -ErrorAction SilentlyContinue|Where-Object UserName -Like '*\\capy')){{if((Get-Date)-ge$deadline){{throw 'Interactive desktop unavailable'}};Start-Sleep 2}}
 $action=New-ScheduledTaskAction -Execute conhost.exe -Argument '{arguments}' -WorkingDirectory 'C:\\capycanvas'
-$principal=New-ScheduledTaskPrincipal -UserId capy -LogonType Interactive -RunLevel Limited
+$principal=New-ScheduledTaskPrincipal -UserId capy -LogonType Interactive -RunLevel {run_level}
 $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 12)
 Register-ScheduledTask -TaskName '{task}' -Action $action -Principal $principal -Settings $settings|Out-Null
 Start-ScheduledTask -TaskName '{task}'

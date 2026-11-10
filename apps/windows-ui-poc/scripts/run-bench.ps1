@@ -25,13 +25,14 @@ $workloads=@('startup','paint-still','divider','resize-programmatic','resize-nat
 if($WorkloadNames){foreach($name in $WorkloadNames){if($name -notin $workloads){throw "Unknown workload $name"}};$workloads=$WorkloadNames}
 $arms=@(if($ArmOrder -eq 'abba'){'retained','winui','winui','retained'}else{$ArmOrder})
 $records=[Collections.Generic.List[object]]::new()
-$runtimeOnly=$Vm -eq 'capycanvas6-poc-warp'
-$presentmonMode=if($runtimeOnly){'runtime-only'}else{'full'}
 $overall=$false
 try{
     foreach($workload in $workloads){
         for($slot=0;$slot -lt $arms.Count;$slot++){
             $arm=$arms[$slot]
+            $runtimeOnly=$Vm -eq 'capycanvas6-poc-warp' -or $arm -eq 'winui'
+            $presentmonMode=if($runtimeOnly){'runtime-only'}else{'full'}
+            $runtimeReason=if($Vm -eq 'capycanvas6-poc-warp'){'Approved WARP-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}elseif($runtimeOnly){'Approved GPU WinUI-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}else{$null}
             $executable=Join-Path $bin (@{retained='poc-retained.exe';winui='PocWinUI.exe'}[$arm])
             $captureModes=if($slot -lt 2 -and $workload -in 'paint-still','divider'){@($false,$true)}else{@($false)}
             foreach($noCapture in $captureModes){
@@ -70,24 +71,32 @@ try{
                     }
                     if($monitor -and $monitor.HasExited){$collectorCode=$monitor.ExitCode}
                     $csvHasRows=(Test-Path -LiteralPath $csv) -and (@(Get-Content -LiteralPath $csv -TotalCount 2).Count -gt 1)
-                    $presentmonUnavailable=if($runtimeOnly){'Approved WARP-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only'}elseif($workload -eq 'startup' -and !$csvHasRows){'PresentMon 2.3.0 emitted no startup interval rows; the first present establishes the interval baseline'}else{$null}
-                    $record=@{vm=$Vm;profile=$Profile;workload=$workload;arm=$arm;order_slot=$slot;order=$ArmOrder;no_capture=$noCapture;exit_code=$code;presentmon_exit_code=$collectorCode;presentmon_mode=$presentmonMode;presentmon_sha256=$PresentMonSha256;presentmon_unavailable_reason=$presentmonUnavailable;commit=$build.commit;binary_hashes=$build.files}
-                    $record|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $folder 'run.json') -Encoding UTF8
-                    $records.Add($record)
-                    foreach($metaFile in Get-ChildItem -LiteralPath $folder -Filter meta.json -Recurse -File){
+                    $contacts=@(foreach($metaFile in Get-ChildItem -LiteralPath $folder -Filter meta.json -Recurse -File){
                         $meta=Get-Content -LiteralPath $metaFile.FullName -Raw|ConvertFrom-Json
                         $canvasTrace=Join-Path $metaFile.DirectoryName 'canvas.jsonl'
-                        if(Test-Path -LiteralPath $canvasTrace){
-                            $adapter=Get-Content -LiteralPath $canvasTrace|ForEach-Object {$_|ConvertFrom-Json}|Where-Object kind -eq 'adapter'|Select-Object -First 1
-                            if($adapter){$meta|Add-Member -NotePropertyName adapter -NotePropertyValue $adapter -Force}
-                        }
-                        foreach($key in @('vm','order_slot','order','commit','binary_hashes','presentmon_mode','presentmon_sha256','presentmon_unavailable_reason')){$meta|Add-Member -NotePropertyName $key -NotePropertyValue $record[$key] -Force}
-                        $meta|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $metaFile.FullName -Encoding UTF8
+                        $canvasPresents=0;$uiPresents=0;$adapter=$null
+                        if(Test-Path -LiteralPath $canvasTrace){foreach($line in Get-Content -LiteralPath $canvasTrace -Encoding UTF8){
+                            if(!$line){continue};$entry=$line|ConvertFrom-Json
+                            switch($entry.kind){'canvas_frame'{$canvasPresents++};'ui_present'{$uiPresents++};'adapter'{if(!$adapter){$adapter=$entry}}}
+                        }}
+                        if($adapter){$meta|Add-Member -NotePropertyName adapter -NotePropertyValue $adapter -Force}
+                        @{file=$metaFile;meta=$meta;canvas_presents=$canvasPresents;ui_presents=$uiPresents}
+                    })
+                    $sparseRuntime=$runtimeOnly -and $contacts.Count -eq 3 -and @($contacts|Where-Object {$_.canvas_presents -ne 1 -or $_.ui_presents -ne 0}).Count -eq 0
+                    $intervalUnavailable=if($sparseRuntime){'Approved sparse runtime exception: interval timing is unverified when the owned trace records one canvas present and no UI presents'}else{$null}
+                    $presentmonUnavailable=if($runtimeOnly){$runtimeReason}elseif($workload -eq 'startup' -and !$csvHasRows){'PresentMon 2.3.0 emitted no startup interval rows; the first present establishes the interval baseline'}else{$null}
+                    $record=@{vm=$Vm;profile=$Profile;workload=$workload;arm=$arm;order_slot=$slot;order=$ArmOrder;no_capture=$noCapture;exit_code=$code;presentmon_exit_code=$collectorCode;presentmon_mode=$presentmonMode;presentmon_sha256=$PresentMonSha256;presentmon_unavailable_reason=$presentmonUnavailable;presentmon_interval_unavailable_reason=$intervalUnavailable;commit=$build.commit;binary_hashes=$build.files}
+                    $record|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $folder 'run.json') -Encoding UTF8
+                    $records.Add($record)
+                    foreach($contact in $contacts){
+                        $meta=$contact.meta
+                        foreach($key in @('vm','order_slot','order','commit','binary_hashes','presentmon_mode','presentmon_sha256','presentmon_unavailable_reason','presentmon_interval_unavailable_reason')){$meta|Add-Member -NotePropertyName $key -NotePropertyValue $record[$key] -Force}
+                        $meta|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $contact.file.FullName -Encoding UTF8
                     }
                 }
                 if($null -eq $collectorCode -or $collectorCode -ne 0){throw "PresentMon collector exited with code $collectorCode"}
                 if(!$csvHasRows){
-                    if($workload -eq 'startup'){continue}
+                    if($workload -eq 'startup' -or $sparseRuntime){continue}
                     throw 'PresentMon produced no interval rows'
                 }
                 if(!(Import-Csv -LiteralPath $csv|Select-Object -First 1)){throw 'PresentMon CSV contains no presents'}

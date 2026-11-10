@@ -593,12 +593,12 @@ class ReportTests(unittest.TestCase):
             self.assertFalse(saved['contacts'][0]['valid'])
             self.assertEqual(saved['pooled'][0]['valid_contacts'], 0)
 
-    def runtime_benchmark_contact(self, directory, workload='paint-still'):
+    def runtime_benchmark_contact(self, directory, workload='paint-still', vm='capycanvas6-poc-warp', arm='canvas-only', reason=None):
         self.valid_benchmark_contact(directory, workload)
         for name in ('meta.json', 'run.json'):
             path = directory / name
             value = json.loads(path.read_text())
-            value.update(vm='capycanvas6-poc-warp', presentmon_mode='runtime-only', presentmon_unavailable_reason=report.WARP_RUNTIME_REASON)
+            value.update(vm=vm, arm=arm, presentmon_mode='runtime-only', presentmon_unavailable_reason=reason or report.WARP_RUNTIME_REASON)
             if name == 'meta.json':
                 value['process_id'] = 42
             path.write_text(json.dumps(value))
@@ -606,6 +606,151 @@ class ReportTests(unittest.TestCase):
         (directory / 'done.json').write_text(json.dumps({'ok': True, 'runs': [run]}))
         (directory / 'presents.csv').write_text('Application,ProcessID,Runtime,SwapChainAddress,msBetweenPresents,QPCTime\ncanvas-only.exe,42,DXGI,0x123,16,1150\n')
         return report.analyse_contact(directory)
+
+    def sparse_runtime_contact(self, directory, **options):
+        self.runtime_benchmark_contact(directory, workload='drawer', **options)
+        trace = directory / 'canvas.jsonl'
+        with trace.open('a') as stream:
+            stream.write('\n' + json.dumps({'kind': 'canvas_frame', 'qpc': 140, 'present_qpc': 140}) + '\n')
+        for name in ('meta.json', 'run.json'):
+            path = directory / name
+            data = json.loads(path.read_text())
+            data['presentmon_interval_unavailable_reason'] = report.SPARSE_RUNTIME_REASON
+            path.write_text(json.dumps(data))
+        run = json.loads((directory / 'run.json').read_text())
+        (directory / 'done.json').write_text(json.dumps({'ok': True, 'runs': [run]}))
+        (directory / 'presents.csv').unlink()
+        return report.analyse_contact(directory)
+
+    def test_approved_gpu_winui_runtime_only_has_explicit_scope_and_null_display_rates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            row = self.runtime_benchmark_contact(Path(temporary), vm='capycanvas6-poc-gpu', arm='winui', reason=report.GPU_WINUI_RUNTIME_REASON)
+        self.assertTrue(row['valid'], row['validation_errors'])
+        self.assertTrue(row['presentmon_runtime_only_approved'])
+        self.assertEqual(row['presentmon_mode'], 'runtime-only')
+        self.assertEqual(row['presentmon_unavailable_reason'], report.GPU_WINUI_RUNTIME_REASON)
+        self.assertIsNone(row['present_modes'])
+        self.assertIsNone(row['canvas_presentmon_display_hz'])
+        pooled = report.aggregate([row])[0]
+        self.assertTrue(pooled['presentmon_runtime_only_approved'])
+        self.assertIn(report.GPU_WINUI_RUNTIME_REASON, pooled['presentmon_unavailable_reasons'])
+
+    def test_approved_runtime_reason_must_match_run_and_done_metadata(self):
+        for name in ('run.json', 'done.json'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.runtime_benchmark_contact(directory, vm='capycanvas6-poc-gpu', arm='winui', reason=report.GPU_WINUI_RUNTIME_REASON)
+                path = directory / name
+                data = json.loads(path.read_text())
+                target = data['runs'][0] if name == 'done.json' else data
+                target['presentmon_unavailable_reason'] = 'unapproved'
+                path.write_text(json.dumps(data))
+                self.assertFalse(report.analyse_contact(directory)['valid'])
+
+    def test_gpu_retained_and_unapproved_gpu_winui_runtime_collection_are_rejected(self):
+        for arm, reason in (('retained', report.GPU_WINUI_RUNTIME_REASON), ('winui', report.WARP_RUNTIME_REASON), ('winui', 'unapproved')):
+            with self.subTest(arm=arm, reason=reason), tempfile.TemporaryDirectory() as temporary:
+                row = self.runtime_benchmark_contact(Path(temporary), vm='capycanvas6-poc-gpu', arm=arm, reason=reason)
+                self.assertFalse(row['valid'])
+                self.assertFalse(row['presentmon_runtime_only_approved'])
+
+    def test_sparse_runtime_interval_exception_uses_actual_full_trace_and_null_metrics(self):
+        for options in ({}, {'vm': 'capycanvas6-poc-gpu', 'arm': 'winui', 'reason': report.GPU_WINUI_RUNTIME_REASON}):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as temporary:
+                row = self.sparse_runtime_contact(Path(temporary), **options)
+                self.assertTrue(row['valid'], row['validation_errors'])
+                self.assertEqual(row['presentmon_sparse_runtime'], {'approved': True, 'applied': True, 'owned_canvas_presents': 1, 'owned_ui_presents': 0})
+                self.assertEqual(row['presentmon_interval_status'], 'unverified_sparse')
+                self.assertIsNone(row['idle_presents'])
+                self.assertIsNone(row['present_modes'])
+                self.assertIsNone(row['present_display_intervals_ms'])
+                self.assertIsNone(row['canvas_presentmon_display_hz'])
+                self.assertEqual(row['presentmon_swapchains'], {})
+                pooled = report.aggregate([row])[0]
+                self.assertEqual(pooled['presentmon_sparse_runtime_contacts'], 1)
+                self.assertEqual(pooled['presentmon_interval_unavailable_reasons'], [report.SPARSE_RUNTIME_REASON])
+                self.assertIsNone(pooled['idle_presents']['p50'])
+                comparison = report.overhead_checks([dict(pooled, workload='divider'), dict(pooled, workload='divider', no_capture=True)])[0]
+                self.assertFalse(comparison['comparison_eligible'])
+                self.assertIsNone(comparison['overhead_fraction'])
+
+    def test_sparse_candidate_metadata_keeps_actual_nonempty_runtime_intervals(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.sparse_runtime_contact(directory)
+            (directory / 'presents.csv').write_text('Application,ProcessID,Runtime,SwapChainAddress,msBetweenPresents,QPCTime\ncanvas-only.exe,42,DXGI,0x123,16,1150\n')
+            row = report.analyse_contact(directory)
+            self.assertTrue(row['valid'], row['validation_errors'])
+            self.assertTrue(row['presentmon_sparse_runtime']['approved'])
+            self.assertFalse(row['presentmon_sparse_runtime']['applied'])
+            self.assertEqual(row['presentmon_interval_status'], 'observed')
+            self.assertEqual(row['presentmon_swapchains']['0x123']['runtime_intervals_ms']['p50'], 16)
+            pooled = report.aggregate([row])[0]
+            self.assertEqual(pooled['presentmon_empty_runtime_contacts'], 0)
+
+    def test_sparse_runtime_outside_window_rows_do_not_imply_measured_intervals_or_zero_idle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.sparse_runtime_contact(directory)
+            path = directory / 'meta.json'
+            data = json.loads(path.read_text()); data.update(idle_start_qpc=5000, idle_end_qpc=15000); path.write_text(json.dumps(data))
+            (directory / 'presents.csv').write_text('Application,ProcessID,Runtime,SwapChainAddress,msBetweenPresents,QPCTime\ncanvas-only.exe,42,DXGI,0x123,16,150\n')
+            row = report.analyse_contact(directory)
+            self.assertTrue(row['valid'], row['validation_errors'])
+            self.assertTrue(row['presentmon_sparse_runtime']['applied'])
+            self.assertEqual(row['presentmon_interval_status'], 'unverified_sparse')
+            self.assertEqual(row['runtime_present_rows'], 0)
+            self.assertIsNone(row['idle_presents'])
+            self.assertEqual(row['presentmon_swapchains'], {})
+
+    def test_sparse_runtime_exception_rejects_missing_zero_or_multiple_owned_presents(self):
+        for change in ('missing', 'zero', 'canvas', 'ui'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.sparse_runtime_contact(directory)
+                path = directory / 'canvas.jsonl'
+                rows = report.read_jsonl(path)
+                if change == 'missing':
+                    path.unlink()
+                else:
+                    if change == 'zero':
+                        rows = [row for row in rows if row.get('kind') != 'canvas_frame']
+                    else:
+                        rows.append({'kind': 'canvas_frame' if change == 'canvas' else 'ui_present', 'qpc': 3000})
+                    path.write_text('\n'.join(json.dumps(row) for row in rows))
+                row = report.analyse_contact(directory)
+                self.assertFalse(row['valid'])
+                self.assertFalse(row['presentmon_sparse_runtime']['approved'])
+                self.assertTrue(any('sparse exception' in error for error in row['validation_errors']))
+
+    def test_sparse_exception_rejects_full_display_mode_and_mismatched_metadata(self):
+        for change in ('full', 'meta', 'run', 'done'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.sparse_runtime_contact(directory)
+                if change == 'full':
+                    for name in ('meta.json', 'run.json'):
+                        path = directory / name
+                        data = json.loads(path.read_text()); data['presentmon_mode'] = 'full'; path.write_text(json.dumps(data))
+                    run = json.loads((directory / 'run.json').read_text())
+                    (directory / 'done.json').write_text(json.dumps({'ok': True, 'runs': [run]}))
+                else:
+                    path = directory / (change + '.json')
+                    data = json.loads(path.read_text())
+                    target = data['runs'][0] if change == 'done' else data
+                    target['presentmon_interval_unavailable_reason'] = 'unapproved'
+                    path.write_text(json.dumps(data))
+                self.assertFalse(report.analyse_contact(directory)['valid'])
+
+    def test_sparse_exception_preserves_pen_and_batch_failure_gates(self):
+        for name in ('pen-delivery.json', 'completed.json', 'done.json'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.sparse_runtime_contact(directory)
+                (directory / name).unlink()
+                row = report.analyse_contact(directory)
+                self.assertTrue(row['presentmon_sparse_runtime']['approved'])
+                self.assertFalse(row['valid'])
 
     def test_approved_warp_runtime_only_keeps_display_measurements_null(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -688,8 +833,12 @@ class ReportTests(unittest.TestCase):
     def test_runtime_startup_retains_single_present_empty_csv_exception(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            self.runtime_benchmark_contact(directory, workload='startup')
-            (directory / 'presents.csv').unlink()
+            self.sparse_runtime_contact(directory)
+            for name in ('meta.json', 'run.json'):
+                path = directory / name
+                data = json.loads(path.read_text()); data['workload'] = 'startup'; path.write_text(json.dumps(data))
+            run = json.loads((directory / 'run.json').read_text())
+            (directory / 'done.json').write_text(json.dumps({'ok': True, 'runs': [run]}))
             meta = json.loads((directory / 'meta.json').read_text())
             meta.update(motion_start_qpc=None, motion_end_qpc=None, idle_start_qpc=5000, idle_end_qpc=15000)
             (directory / 'meta.json').write_text(json.dumps(meta))

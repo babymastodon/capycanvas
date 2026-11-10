@@ -8,6 +8,8 @@ from pathlib import Path
 
 
 WARP_RUNTIME_REASON = "Approved WARP-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only"
+GPU_WINUI_RUNTIME_REASON = "Approved GPU WinUI-only exception: PresentMode and display timing are unverified; PresentMon records runtime events only"
+SPARSE_RUNTIME_REASON = "Approved sparse runtime exception: interval timing is unverified when the owned trace records one canvas present and no UI presents"
 
 CALIBRATED_WORKLOADS = {"divider", "resize-programmatic", "resize-native", "scrub-while-painting"}
 RATE_FIELDS = ("motion_rate_hz", "fraction_refresh", "all_ui_changes_hz", "canvas_change_hz", "canvas_presentmon_display_hz")
@@ -243,7 +245,15 @@ def ui_cpu_per_change(trace, frames, start, end):
 
 
 def runtime_only_approved(meta):
-    return meta.get("vm") == "capycanvas6-poc-warp" and meta.get("presentmon_mode") == "runtime-only" and meta.get("presentmon_unavailable_reason") == WARP_RUNTIME_REASON
+    reason = WARP_RUNTIME_REASON if meta.get("vm") == "capycanvas6-poc-warp" else GPU_WINUI_RUNTIME_REASON if meta.get("vm") == "capycanvas6-poc-gpu" and meta.get("arm") == "winui" else None
+    return reason is not None and meta.get("presentmon_mode") == "runtime-only" and meta.get("presentmon_unavailable_reason") == reason
+
+
+def sparse_runtime_evidence(meta, trace, presents):
+    canvas = sum(row.get("kind") == "canvas_frame" for row in trace)
+    ui = sum(row.get("kind") == "ui_present" for row in trace)
+    approved = runtime_only_approved(meta) and meta.get("presentmon_interval_unavailable_reason") == SPARSE_RUNTIME_REASON and canvas == 1 and ui == 0
+    return {"approved": approved, "applied": approved and not presents, "owned_canvas_presents": canvas, "owned_ui_presents": ui}
 
 
 def presentmon(path, mode="full"):
@@ -270,7 +280,7 @@ def presentmon(path, mode="full"):
     return rows, sorted({row["PresentMode"] for row in rows if row.get("PresentMode")})
 
 
-def contact_validation(directory, meta, calibration, receipt_matching, inputs, presents, first_ui, first_canvas, presentmon_error):
+def contact_validation(directory, meta, calibration, receipt_matching, inputs, presents, first_ui, first_canvas, presentmon_error, sparse):
     errors = []
     if calibration["status"] == "failed":
         errors.append("Probe calibration failed: " + calibration["error"])
@@ -286,11 +296,16 @@ def contact_validation(directory, meta, calibration, receipt_matching, inputs, p
     mode = meta.get("presentmon_mode", "full")
     runtime = runtime_only_approved(meta)
     if mode not in ("full", "runtime-only") or mode == "runtime-only" and not runtime:
-        errors.append("PresentMon runtime-only mode requires the approved WARP-only exception")
+        errors.append("PresentMon runtime-only mode requires the approved WARP-only exception or approved GPU WinUI-only exception")
     if run.get("presentmon_mode", "full") != mode:
         errors.append("PresentMon run.json mode does not match contact metadata")
-    if runtime and run.get("presentmon_unavailable_reason") != WARP_RUNTIME_REASON:
-        errors.append("PresentMon run.json does not record the approved WARP-only exception")
+    if runtime and (run.get("vm") != meta.get("vm") or run.get("presentmon_unavailable_reason") != meta.get("presentmon_unavailable_reason")):
+        errors.append("PresentMon run.json does not record the matching approved runtime-only exception")
+    sparse_reason = meta.get("presentmon_interval_unavailable_reason")
+    if sparse_reason is not None and not sparse["approved"]:
+        errors.append("PresentMon sparse exception requires approved runtime-only collection and an actual trace with one canvas present and no UI presents")
+    if run.get("presentmon_interval_unavailable_reason") != sparse_reason:
+        errors.append("PresentMon run.json sparse interval reason does not match contact metadata")
     if presentmon_error:
         errors.append(presentmon_error)
     identity_keys = ("arm", "workload", "profile")
@@ -300,10 +315,11 @@ def contact_validation(directory, meta, calibration, receipt_matching, inputs, p
         errors.append("PresentMon collector exit evidence is missing or failed")
     if done.get("ok") is not True:
         errors.append("Benchmark done.json is missing or records a failed batch")
-    if not any(all(record.get(key) == meta.get(key) for key in identity_keys) and record.get("exit_code") == 0 and record.get("presentmon_mode", "full") == mode for record in done.get("runs", [])):
-        errors.append("Benchmark done.json does not include a completed matching run")
-    startup_exception = meta["workload"] == "startup" and bool(meta.get("presentmon_unavailable_reason"))
-    if not presents and not startup_exception:
+    matching = [record for record in done.get("runs", []) if all(record.get(key) == meta.get(key) for key in identity_keys) and record.get("exit_code") == 0 and record.get("presentmon_mode", "full") == mode]
+    if not any(record.get("presentmon_interval_unavailable_reason") == sparse_reason and (not runtime or record.get("vm") == meta.get("vm") and record.get("presentmon_unavailable_reason") == meta.get("presentmon_unavailable_reason")) for record in matching):
+        errors.append("Benchmark done.json does not include a completed matching run and collector reasons")
+    startup_exception = mode == "full" and meta["workload"] == "startup" and bool(meta.get("presentmon_unavailable_reason")) and sparse_reason is None
+    if not presents and not startup_exception and not sparse["applied"]:
         errors.append("PresentMon has no measured-window interval evidence")
     if presents and not runtime and not all(row.get("PresentMode") and row.get("SwapChainAddress") for row in presents):
         errors.append("PresentMon rows lack present-mode or swap-chain evidence")
@@ -450,16 +466,17 @@ def analyse_contact(directory):
     first_ui = next((frame_time(frame) for frame in frames if frame_time(frame) >= meta["launch_qpc"] and frame.get("ui_marker") not in (None, 0)), None)
     canvas_present = next((row["qpc"] for row in trace if row.get("kind") == "startup" and row.get("milestone") == "first_canvas_present"), None)
     first_canvas = next((frame_time(frame) for frame in frames if canvas_present is not None and frame_time(frame) >= max(meta["launch_qpc"], canvas_present) and frame.get("pen_samples") is not None and (meta["arm"] != "canvas-only" or frame.get("ui_marker") not in (None, 0))), None)
+    sparse = sparse_runtime_evidence(meta, trace, presents)
     idle_start, idle_end = meta.get("idle_start_qpc"), meta.get("idle_end_qpc")
     idle_presents = None
-    if idle_start is not None and idle_end is not None:
+    if idle_start is not None and idle_end is not None and not sparse["applied"]:
         timed = [row for row in all_presents if row.get("QPCTime") or row.get("CPUStartQPC")]
         idle_presents = sum(idle_start <= float(row.get("QPCTime") or row["CPUStartQPC"]) <= idle_end for row in timed) if timed else None
-    validation_errors = contact_validation(directory, meta, calibration, receipt_matching, all_inputs, presents, first_ui, first_canvas, presentmon_error)
+    validation_errors = contact_validation(directory, meta, calibration, receipt_matching, all_inputs, presents, first_ui, first_canvas, presentmon_error, sparse)
     decoded = [frame for frame in frames if frame.get("ui_marker") not in (None, 0) and frame.get("pen_samples") is not None]
     sample_frames = decoded[:2] + [frame for frame in decoded if frame.get("pen_samples", 0) > 0][:1] + decoded[-1:]
     samples = [{key: frame.get(key) for key in ("qpc", "ui_marker", "state16", "ui_frame", "pen_samples")} for frame in {frame["qpc"]: frame for frame in sample_frames}.values()]
-    return {"ui_change_measurement": ui_change_measurement(meta["arm"]), "directory": str(directory), "presentmon_mode": meta.get("presentmon_mode", "full"), "presentmon_runtime_only_approved": runtime, "presentmon_display_status": "unverified" if runtime else "verified" if presents else "unverified", "runtime_present_rows": len(presents), "presentmon_unavailable_reason": meta.get("presentmon_unavailable_reason"), "valid": not validation_errors, "validation_errors": validation_errors, "probe_calibration": calibration, "capture_quality": quality, "input_quality": injection, "observer_cpu": observer_threads, "rate_capture_status": {key: quality["status"] for key in RATE_FIELDS}, "rate_input_status": {key: injection["status"] for key in RATE_FIELDS}, "vm": meta.get("vm", directory.parts[-4] if len(directory.parts) > 3 else "unknown"), "arm": meta["arm"], "profile": meta["profile"], "workload": meta["workload"], "no_capture": meta.get("no_capture", False), "contact": meta.get("contact"), "adapter": next((row for row in trace if row.get("kind") == "adapter"), meta.get("adapter")), "display_mode": meta.get("display_mode"), "order_slot": meta.get("order_slot"), "refresh_hz": meta.get("refresh_hz"), "motion_duration_s": duration, "motion_changes": len(motion_ticks), "motion_rate_hz": len(motion_ticks) / duration if duration else None, "fraction_refresh": len(motion_ticks) / duration / meta["refresh_hz"] if duration and meta.get("refresh_hz") else None, "ui_change_intervals_ms": quantiles(ui_intervals), "motion_intervals_ms": quantiles(intervals), "all_ui_changes": len(ui_ticks) if frames else None, "all_ui_changes_hz": len(ui_ticks) / elapsed if elapsed > 0 and frames else None, "canvas_change_hz": len(canvas_ticks) / elapsed if elapsed > 0 and frames else None, "ui_latency_ms": quantiles(latency), "completion_latency_ms": quantiles(completion), "completion_target_basis": completion_target_basis, "inertia_ms": quantiles(inertia), "ink_latency_ms": quantiles(ink), "input_receipt_latency_ms": quantiles(receipt), "receipt_matching": receipt_matching, "unmatched": unmatched, "censored": censored, "ink_unmatched": ink_unmatched, "receipt_unmatched": receipt_unmatched, "probe_geometry": meta.get("probe_geometry"), "drift_probe_quality": drift_quality, "drift_max_px": max(drift) if drift else None, "drift_over_1_share": sum(value > 1 for value in drift) / len(drift) if drift else None, "black_interior_frames": sum(value > 0 for value in black) if black else None, "process_cpu_percent": cpu(valid_process), "cpu_basis": "guest capacity" if meta.get("logical_cpus") else "one core", "private_mib": max((row["private_bytes"] / 1048576 for row in processes), default=None), "ui_cpu_ms_per_change": ui_cpu_per_change(trace, frames, start, end), "startup_ui_ms": (first_ui - meta["launch_qpc"]) * 1000 / frequency if first_ui is not None else None, "startup_canvas_ms": (first_canvas - meta["launch_qpc"]) * 1000 / frequency if first_canvas is not None else None, "idle_presents": idle_presents, "idle_cpu_percent": cpu(process_usage(processes, idle_start, idle_end)) if idle_start else None, "present_modes": modes, "presentmon_swapchains": chain_metrics, "canvas_presentmon_display_hz": canvas_pm_rate, "present_display_intervals_ms": None if runtime else quantiles(display_intervals), "capture": capture, "marker_sample": samples, "_samples": {"ui_change_intervals_ms": ui_intervals, "present_display_intervals_ms": display_intervals, "motion_intervals_ms": intervals, "ui_latency_ms": latency, "completion_latency_ms": completion, "ink_latency_ms": ink, "input_receipt_latency_ms": receipt, "inertia_ms": inertia}}
+    return {"ui_change_measurement": ui_change_measurement(meta["arm"]), "directory": str(directory), "presentmon_mode": meta.get("presentmon_mode", "full"), "presentmon_runtime_only_approved": runtime, "presentmon_sparse_runtime": sparse, "presentmon_interval_unavailable_reason": meta.get("presentmon_interval_unavailable_reason"), "presentmon_interval_status": "unverified_sparse" if sparse["applied"] else "observed" if presents else "unverified", "presentmon_display_status": "unverified" if runtime else "verified" if presents else "unverified", "runtime_present_rows": len(presents), "presentmon_unavailable_reason": meta.get("presentmon_unavailable_reason"), "valid": not validation_errors, "validation_errors": validation_errors, "probe_calibration": calibration, "capture_quality": quality, "input_quality": injection, "observer_cpu": observer_threads, "rate_capture_status": {key: quality["status"] for key in RATE_FIELDS}, "rate_input_status": {key: injection["status"] for key in RATE_FIELDS}, "vm": meta.get("vm", directory.parts[-4] if len(directory.parts) > 3 else "unknown"), "arm": meta["arm"], "profile": meta["profile"], "workload": meta["workload"], "no_capture": meta.get("no_capture", False), "contact": meta.get("contact"), "adapter": next((row for row in trace if row.get("kind") == "adapter"), meta.get("adapter")), "display_mode": meta.get("display_mode"), "order_slot": meta.get("order_slot"), "refresh_hz": meta.get("refresh_hz"), "motion_duration_s": duration, "motion_changes": len(motion_ticks), "motion_rate_hz": len(motion_ticks) / duration if duration else None, "fraction_refresh": len(motion_ticks) / duration / meta["refresh_hz"] if duration and meta.get("refresh_hz") else None, "ui_change_intervals_ms": quantiles(ui_intervals), "motion_intervals_ms": quantiles(intervals), "all_ui_changes": len(ui_ticks) if frames else None, "all_ui_changes_hz": len(ui_ticks) / elapsed if elapsed > 0 and frames else None, "canvas_change_hz": len(canvas_ticks) / elapsed if elapsed > 0 and frames else None, "ui_latency_ms": quantiles(latency), "completion_latency_ms": quantiles(completion), "completion_target_basis": completion_target_basis, "inertia_ms": quantiles(inertia), "ink_latency_ms": quantiles(ink), "input_receipt_latency_ms": quantiles(receipt), "receipt_matching": receipt_matching, "unmatched": unmatched, "censored": censored, "ink_unmatched": ink_unmatched, "receipt_unmatched": receipt_unmatched, "probe_geometry": meta.get("probe_geometry"), "drift_probe_quality": drift_quality, "drift_max_px": max(drift) if drift else None, "drift_over_1_share": sum(value > 1 for value in drift) / len(drift) if drift else None, "black_interior_frames": sum(value > 0 for value in black) if black else None, "process_cpu_percent": cpu(valid_process), "cpu_basis": "guest capacity" if meta.get("logical_cpus") else "one core", "private_mib": max((row["private_bytes"] / 1048576 for row in processes), default=None), "ui_cpu_ms_per_change": ui_cpu_per_change(trace, frames, start, end), "startup_ui_ms": (first_ui - meta["launch_qpc"]) * 1000 / frequency if first_ui is not None else None, "startup_canvas_ms": (first_canvas - meta["launch_qpc"]) * 1000 / frequency if first_canvas is not None else None, "idle_presents": idle_presents, "idle_cpu_percent": cpu(process_usage(processes, idle_start, idle_end)) if idle_start else None, "present_modes": modes, "presentmon_swapchains": chain_metrics, "canvas_presentmon_display_hz": canvas_pm_rate, "present_display_intervals_ms": None if runtime else quantiles(display_intervals), "capture": capture, "marker_sample": samples, "_samples": {"ui_change_intervals_ms": ui_intervals, "present_display_intervals_ms": display_intervals, "motion_intervals_ms": intervals, "ui_latency_ms": latency, "completion_latency_ms": completion, "ink_latency_ms": ink, "input_receipt_latency_ms": receipt, "inertia_ms": inertia}}
 
 
 def aggregate(contacts):
@@ -494,6 +511,11 @@ def aggregate(contacts):
         pooled["drift_probe_quality"] = {"status": "partial" if observed and missing else "observed" if observed else "unverified" if "unverified" in drift_statuses else "unobserved", "statuses": drift_statuses, "observed_frames": observed, "unobserved_frames": missing, "over_1_frames": over_1, "over_1_share": over_1 / observed if observed else None, "reasons": sorted({row["drift_probe_quality"]["reason"] for row in rows if row["drift_probe_quality"]["reason"]})}
         pooled["cpu_bases"] = sorted({row["cpu_basis"] for row in rows})
         pooled["presentmon_modes"] = sorted({row["presentmon_mode"] for row in all_rows})
+        pooled["presentmon_runtime_only_approved"] = all(row["presentmon_runtime_only_approved"] for row in all_rows)
+        pooled["presentmon_sparse_runtime_contacts"] = sum(row["presentmon_sparse_runtime"]["approved"] for row in all_rows)
+        pooled["presentmon_empty_runtime_contacts"] = sum(row["presentmon_sparse_runtime"]["applied"] for row in all_rows)
+        pooled["presentmon_interval_statuses"] = sorted({row["presentmon_interval_status"] for row in all_rows})
+        pooled["presentmon_interval_unavailable_reasons"] = sorted({row["presentmon_interval_unavailable_reason"] for row in all_rows if row["presentmon_interval_unavailable_reason"]})
         pooled["present_modes"] = sorted({mode for row in rows for mode in (row["present_modes"] or [])}) if any(row["present_modes"] is not None for row in rows) else None
         pooled["observer_cpu"] = {}
         for thread in sorted({thread for row in rows for thread in row.get("observer_cpu", {})}):
@@ -658,9 +680,9 @@ def render(rows, contacts=(), abba=(), overhead=()):
     if marker_rows:
         lines.extend(["", "| Arm | Workload | Capture QPC | UI marker | state16 | ui_frame8 | Pen consumed |", "| --- | --- | ---: | ---: | ---: | ---: | ---: |", *marker_rows])
     lines.extend(["", "Motion rates use captured target geometry. All UI changes use the marker counter separately. Latencies use desktop LastPresentTime; receipt latency uses source indices only after pen-delivery.json validates ordered indices and sample tuples. Injection time always comes from inputs.jsonl QPC; Windows source timestamps are diagnostic: rewrite identity is assessed only for declared native PerformanceCount samples, never by comparing WinRT microseconds with QPC ticks. Latest-native identity separately checks tuple-matched batch endpoints when ordered native history was unavailable; its counts exclude ordered-history comparisons. Drift and black-interior counts use the measured motion windows and omit startup, warmup and settling frames. Pre-gutter WinUI drift is unverified because its cyan edge could be obscured; raw captures remain unchanged. Drift shares use only frames with all three verified probes; missing probes are counted separately and never treated as zero. Process CPU uses guest capacity when logical_cpus is available, otherwise one core.", "", "A contact is capture-limited when missing / (desktop + missing) exceeds 2% or capture p95 exceeds half a refresh period. Every derived rate carries its capture and input status; comparisons retain these warnings. Input is limited when accepted measured data slots / nominal active seconds falls below 90% of the recorded stream nominal Hz. Terminal up events count toward pen delivery but not scheduled-slot rates. Probe calibration uses resting observations and fails above 1 px spread. Full distributions, per-contact values, censored/unmatched counts, provenance and decoded marker samples are in results.json.", ""])
-    reasons = sorted({reason for row in rows for reason in row.get("presentmon_unavailable_reasons", [])})
+    reasons = sorted({reason for row in rows for reason in row.get("presentmon_unavailable_reasons", []) + row.get("presentmon_interval_unavailable_reasons", [])})
     if reasons:
-        lines.extend(["", "PresentMon limits: " + "; ".join(reasons) + ". PresentMode and display timing remain unverified for the approved WARP runtime-only exception; display rates and display-overhead comparisons stay null. Startup idle presents remain unverified when interval rows are absent.", ""])
+        lines.extend(["", "PresentMon limits: " + "; ".join(reasons) + ". PresentMode and display timing remain unverified for approved runtime-only collection (WARP, or GPU WinUI only); display rates and display-overhead comparisons stay null. Approved sparse runtime contacts have one traced canvas present and no UI presents; runtime interval timing and idle presents remain unverified when interval rows are absent.", ""])
     return "\n".join(lines)
 
 
