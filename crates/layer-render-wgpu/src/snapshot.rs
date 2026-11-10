@@ -588,17 +588,17 @@ impl SnapshotRenderer {
                         encoder.submit(&r.queue);
                         Ok(result)
                     },
-                    Err(GpuRasterError::DeferredObjectWork)=> {
+                    Err(error) if error.is_preparation_pending()=> {
                         r.uploads.finish(&encoder);
                         encoder.submit(&r.queue);
                         crate::local_tone::wait_async(&r.device,&r.queue).await.map_err(GpuRasterError::Color)?;
-                        Err(GpuRasterError::DeferredObjectWork)
+                        Err(error)
                     },
                     Err(error)=>Err(error),
                 }
             };
             match result {
-                Err(GpuRasterError::DeferredObjectWork)=> {
+                Err(error) if error.is_preparation_pending()=> {
                     let r=&mut self.renderer;
                     let mut scene=r.scene.take().map(Ok).unwrap_or_else(|| scene::Scene::new(r))?;
                     let result=scene.prepare_capture_work_async(r).await;

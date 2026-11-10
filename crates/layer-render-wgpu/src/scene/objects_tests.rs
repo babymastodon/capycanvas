@@ -39,7 +39,7 @@ fn native(r: &mut WgpuRasterizer, doc: &layer_core::Document, output: Output) ->
     let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
     for _ in 0..5000 {
         let result=scene.capture_region_prepared(r,packet(doc.scene(),extent),&texture,PixelRect::full(extent),output,&mut encoder);
-        match result {Ok(())=>break,Err(GpuRasterError::DeferredObjectWork)=>{},Err(error)=>panic!("{error}")}
+        match result {Ok(())=>break,Err(GpuRasterError::NotReady)=>{},Err(error)=>panic!("{error}")}
         r.uploads.finish(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1));
         encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
@@ -77,13 +77,13 @@ fn an_unrelated_effect_format_change_reuses_ready_canonical_image_results() {
     assert_eq!(request.format,wgpu::TextureFormat::Rgba16Float);
     let mut cache=super::super::object_cache::ObjectCache::live();
     cache.set_workspace(scene.object_workspace(&r,true));
-    assert!(cache.resolve_collection(&r,doc.scene(),&request).unwrap().is_none());
+    assert!(cache.resolve_collection(&r,doc.scene(),&request,None).unwrap().is_none());
     let deadline=std::time::Instant::now()+std::time::Duration::from_secs(10);
     let result=loop {
         let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
         r.drain_image_decodes(&mut encoder).unwrap();cache.advance(&mut r,&mut scene,&mut encoder,false).unwrap();
         r.uploads.finish(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
-        if let Some(result)=cache.resolve_collection(&r,doc.scene(),&request).unwrap() {break result;}
+        if let Some(result)=cache.resolve_collection(&r,doc.scene(),&request,None).unwrap() {break result;}
         assert!(std::time::Instant::now()<deadline,"canonical image preparation completes");
         std::thread::sleep(std::time::Duration::from_millis(1));
     };
@@ -97,7 +97,7 @@ fn an_unrelated_effect_format_change_reuses_ready_canonical_image_results() {
     let changed=layer_core::Document::from_artwork(artwork).unwrap();
     let request=canonical_request(&r,&mut scene,&changed,owner,window);
     assert_eq!(request.format,wgpu::TextureFormat::Rgba32Float);
-    assert!(cache.resolve_collection(&r,changed.scene(),&request).unwrap().is_some(),"an unrelated preview format change reuses the exact F32 result");
+    assert!(cache.resolve_collection(&r,changed.scene(),&request,None).unwrap().is_some(),"an unrelated preview format change reuses the exact F32 result");
     let after=cache.request_windows();assert_eq!(after.len(),1,"no canonical work is admitted");
     assert!(before[0].0.ptr_eq(&after[0].0));
     assert!(float_pixels(&r,result.texture()).iter().all(|pixel|*pixel==[1.,0.,0.,1.]));
@@ -115,7 +115,7 @@ fn object_frame_work_uses_the_scene_grant_beyond_cache_retention() {
     assert!(u64::from(request.window.size[0]) * u64::from(request.window.size[1]) * 16
         > (crate::memory::OBJECT_CACHE_BYTES / 2) + r.memory.working_limit());
     scene.object_results.set_workspace(scene.object_workspace(&r, true));
-    assert!(matches!(scene.object_results.resolve_collection(&r, doc.scene(), &request), Ok(None)));
+    assert!(matches!(scene.object_results.resolve_collection(&r, doc.scene(), &request,None), Ok(None)));
     let mut cache = std::mem::take(&mut scene.object_results);
     let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
     pollster::block_on(r.compilation.prepare_all(r.scene_pipelines.objects.pipelines())).unwrap();
@@ -147,7 +147,7 @@ fn a_downscaled_object_above_the_drained_window_workspace_is_refused() {
     let workspace = scene.object_workspace(&r, false);
     scene.exact_object_results.set_workspace(workspace);
     for _ in 0..2 {
-        assert!(matches!(scene.exact_object_results.resolve_collection(&r, doc.scene(), &request),
+        assert!(matches!(scene.exact_object_results.resolve_collection(&r, doc.scene(), &request,None),
             Err(GpuRasterError::SourceWorkingSetExceeded)));
     }
 }
@@ -181,7 +181,7 @@ fn object_only_native_and_display_composite_ordered_siblings_and_raw_queries() {
     for _ in 0..5000 {
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
         let result = scene.capture_region_prepared(&mut r, raw_frame, &target, PixelRect::full([16; 2]), Output::Objects(owner), &mut encoder);
-        if let Err(error) = &result { assert!(matches!(error, GpuRasterError::DeferredObjectWork), "{error:?}"); }
+        if let Err(error) = &result { assert!(matches!(error, GpuRasterError::NotReady), "{error:?}"); }
         r.uploads.finish(&encoder); encoder.submit(&r.queue); r.wait_idle().unwrap();
         if result.is_ok() { captured = true; break; }
     }
@@ -249,7 +249,7 @@ fn object_read_mapping_preserves_f64_relative_coordinates_and_requested_density(
         let mut cache = super::super::object_cache::ObjectCache::default();
         let deadline = std::time::Instant::now() + crate::READBACK_TIMEOUT;
         let view = loop {
-            if let Some(view) = cache.resolve_collection(&r, doc.scene(), &request).unwrap() { break view; }
+            if let Some(view) = cache.resolve_collection(&r, doc.scene(), &request,None).unwrap() { break view; }
             let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
             r.drain_image_decodes(&mut encoder).unwrap();
             cache.advance(&mut r, &mut scene, &mut encoder, true).unwrap();
@@ -271,7 +271,7 @@ fn private_canonical_jobs_yield_and_cancel_before_publication() {
     let mut compositor=Scene::new(&r).unwrap();
     let mut cache = super::super::object_cache::ObjectCache::default();
     let request = canonical_request(&r, &mut compositor, &doc, owner, ObjectWindow { origin: [0.; 2], side: 1., size: [16; 2] });
-    assert!(cache.resolve_collection(&r,doc.scene(),&request).unwrap().is_none());
+    assert!(cache.resolve_collection(&r,doc.scene(),&request,None).unwrap().is_none());
     let mut complete = None;
     for _ in 0..300 {
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
@@ -282,7 +282,7 @@ fn private_canonical_jobs_yield_and_cancel_before_publication() {
         assert!(taps <= limit && (encoder.pass_count() - passes) * super::super::object_cache::PASS_TAPS <= limit, "canonical refinement has a bounded per-frame workload");
         r.uploads.finish(&encoder); encoder.submit(&r.queue);
         if !cache.pending() {
-            complete = cache.resolve_collection(&r,doc.scene(),&request).unwrap();
+            complete = cache.resolve_collection(&r,doc.scene(),&request,None).unwrap();
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -291,12 +291,12 @@ fn private_canonical_jobs_yield_and_cancel_before_publication() {
     let pixels = float_pixels(&r, view.texture());
     assert!(pixels[8 * 16 + 8][0] > 0.999);
     assert!(cache.bytes() < 64 * 1024);
-    let reused = cache.resolve_collection(&r,doc.scene(),&request).unwrap().unwrap();
+    let reused = cache.resolve_collection(&r,doc.scene(),&request,None).unwrap().unwrap();
     assert_eq!(view, reused, "multiple consumers share the completed result within one submission");
     assert!(!cache.pending());
     let encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
     cache.flush_retired(&encoder); r.uploads.finish(&encoder); r.last_submission = Some(encoder.submit(&r.queue)); r.wait_idle().unwrap();
-    assert!(cache.resolve_collection(&r,doc.scene(),&request).unwrap().is_none(), "a query cache releases encoded results");
+    assert!(cache.resolve_collection(&r,doc.scene(),&request,None).unwrap().is_none(), "a query cache releases encoded results");
     doc.artwork.objects.get_mut(children[0]).unwrap().affine.0[4] = 32.;
     cache.retain(doc.scene(),layer_core::BlendSpace::Linear,r.device.working_space());
     assert!(!cache.pending(), "obsolete affine work cannot publish");
@@ -318,7 +318,7 @@ fn required_canonical_sources_follow_only_the_next_bounded_task() {
         let owner = doc.scene().object_owner(handle).unwrap();
         let request = canonical_request(&r, &mut scene, &doc, owner,
             ObjectWindow { origin: [0.; 2], side: 1., size: [256; 2] });
-        assert!(cache.resolve_collection(&r, doc.scene(), &request).unwrap().is_none());
+        assert!(cache.resolve_collection(&r, doc.scene(), &request,None).unwrap().is_none());
     }
     let mut required = Vec::new();
     cache.required_sources(&mut required).unwrap();
@@ -378,8 +378,8 @@ fn coarse_linear_object_node_includes_source_outside_its_output_cell() {
     for iteration in 0..2000 {
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
         if r.prepare_moving_images(frame, &mut encoder).unwrap() { scene.invalidate_object_previews([8192; 2]); }
-        let composed = scene.compose(&mut r, frame, &[], if iteration == 0 { window } else { PixelRect::EMPTY }, &mut encoder, None);
-        if let Err(error) = &composed { assert!(matches!(error, GpuRasterError::DeferredObjectWork), "{error:?}"); }
+        let composed = scene.compose(&mut r, frame, if iteration == 0 { window } else { PixelRect::EMPTY }, &mut encoder, None);
+        if let Err(error) = &composed { assert!(matches!(error, GpuRasterError::NotReady), "{error:?}"); }
         r.uploads.finish(&encoder); r.last_submission = Some(encoder.submit(&r.queue)); r.wait_idle().unwrap();
         if composed.is_ok() && !scene.objects_pending() && !r.moving_images.pending() && !r.image_decode_waiting() { settled = true; break; }
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -432,19 +432,115 @@ fn exact_interactive_objects_read_parked_samples_on_decode_workers() {
     let request=canonical_request(&r,&mut compositor,&doc,owner,ObjectWindow {origin:[0.;2],side:1.,size:[32;2]});
     assert!(!request.live && !r.snapshot_worker);
     let mut cache=super::super::object_cache::ObjectCache::default();
-    assert!(cache.resolve_collection(&r,doc.scene(),&request).unwrap().is_none());
+    assert!(cache.resolve_collection(&r,doc.scene(),&request,None).unwrap().is_none());
     let deadline=std::time::Instant::now()+std::time::Duration::from_secs(10);
     let result=loop {
         let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
         r.drain_image_decodes(&mut encoder).unwrap();cache.advance(&mut r,&mut compositor,&mut encoder,false).unwrap();
         r.uploads.finish(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
-        if let Some(view)=cache.resolve_collection(&r,doc.scene(),&request).unwrap() {break view;}
+        if let Some(view)=cache.resolve_collection(&r,doc.scene(),&request,None).unwrap() {break view;}
         assert!(std::time::Instant::now()<deadline,"exact samples must finish through the decode queue");
         std::thread::sleep(std::time::Duration::from_millis(1));
     };
     let readers=store.gate.readers.lock().unwrap();assert!(!readers.is_empty());
     assert!(readers.iter().all(|thread|*thread!=std::thread::current().id()),"the renderer owner must not read/decode parked source samples");
     assert!(float_pixels(&r,result.texture()).iter().all(|pixel|*pixel==[1.,0.,0.,1.]));
+}
+
+#[test]
+fn canonical_results_at_the_request_limit_survive_a_fitting_grant_until_consumed() {
+    let extent=[256;2];
+    let (doc,owner,_)=document(extent,vec![ImageObject::new(image(extent,[255,0,0,255]))]);
+    let mut r=crate::memory::memory_tests::legacy_scene_renderer(doc.composition().color);
+    crate::memory::memory_tests::legacy_scene_frame(&mut r,packet(doc.scene(),extent));
+    let mut scene=Scene::new(&r).unwrap();scene.object_display=true;scene.object_spatial.prepare(doc.scene());
+    let mut cache=super::super::object_cache::ObjectCache::live();cache.set_workspace(scene.object_workspace(&r,true));
+    let requests=(0..16).flat_map(|y|(0..16).map(move|x|[x,y])).map(|coordinate| {
+        let request=canonical_request(&r,&mut scene,&doc,owner,ObjectWindow {
+            origin:coordinate.map(|value|f64::from(value*16+8)),side:1.,size:[1;2]});
+        assert!(cache.resolve_collection(&r,doc.scene(),&request,None).unwrap().is_none());request
+    }).collect::<Vec<_>>();
+    let mut consumed=std::collections::BTreeSet::new();
+    let deadline=std::time::Instant::now()+std::time::Duration::from_secs(10);
+    loop {
+        scene.begin_frame();
+        let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+        r.drain_image_decodes(&mut encoder).unwrap();cache.advance(&mut r,&mut scene,&mut encoder,false).unwrap();
+        cache.flush_retired(&encoder);
+        r.uploads.finish(&encoder);r.last_submission=Some(encoder.submit(&r.queue));r.wait_idle().unwrap();
+        let completed=cache.work_progress().1;
+        if completed!=0 {
+            assert_eq!(cache.trim_unused(u64::MAX,u64::MAX),0,"a full request queue must not evict fitting results before consumption");
+            assert_eq!(cache.work_progress().1,completed);
+            for (index,request) in requests.iter().enumerate().filter(|(index,_)|!consumed.contains(index)).collect::<Vec<_>>() {
+                if let Some(result)=cache.resolve_collection(&r,doc.scene(),request,None).unwrap() {
+                    assert_eq!(float_pixels(&r,result.texture()),vec![[1.,0.,0.,1.]]);consumed.insert(index);
+                }
+            }
+            if consumed.len()==requests.len() {break;}
+        }
+        assert!(std::time::Instant::now()<deadline,"accepted canonical work must complete");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn canonical_disjoint_tasks_keep_pending_inputs_until_their_contribution() {
+    fn codes(coordinate:[u32;2])->[u8;4] {[31+coordinate[0] as u8*11,43+coordinate[1] as u8*19,113,255]}
+    fn attempt(r:&mut WgpuRasterizer)->bool {
+        let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+        r.apply_frame_grants(&mut encoder);
+        let mut scene=r.scene.take().unwrap();scene.begin_frame();
+        r.drain_image_decodes(&mut encoder).unwrap();
+        let mut cache=std::mem::take(&mut scene.object_results);
+        cache.advance(r,&mut scene,&mut encoder,false).unwrap();
+        cache.flush_retired(&encoder);
+        let complete=!cache.pending();scene.object_results=cache;r.scene=Some(scene);
+        r.apply_frame_grants(&mut encoder);
+        r.uploads.finish(&encoder);r.last_submission=Some(encoder.submit(&r.queue));r.wait_idle().unwrap();
+        complete
+    }
+    let source=AuthoredImage::new(rgba8_source([4096;2],|x,y|codes([x/PAGE_SIZE,y/PAGE_SIZE])));
+    let (mut doc,owner,_)=document([4096;2],vec![ImageObject::new(source)]);
+    let root=doc.artwork.root;doc.artwork.compositions.get_mut(root).unwrap().blend=layer_core::BlendSpace::Linear;
+    let store=crate::test_support::GatedStore::new(&layer_core::Editor::new(doc.clone()).retained_tiles(),false);
+    let mut r=crate::memory::memory_tests::renderer_for_restore(&doc);
+    r.document_extent=[4096;2];let frame=packet(doc.scene(),[4096;2]);
+    crate::memory::memory_tests::declare_source_budget(&mut r,frame,32,16<<20,0);
+    let slots=r.source_tiles.borrow().admitted_bytes()[0]/crate::scene::sources::NORMALIZED_PAGE_BYTES;
+    assert_eq!(slots,32,"the source allowance is applied before accepting canonical work");
+    let mut scene=r.scene.take().unwrap_or_else(||Scene::new(&r).unwrap());scene.object_display=true;
+    let coordinates=(0..8).flat_map(|y|(0..16).map(move|x|[x,y])).collect::<Vec<_>>();
+    let requests=coordinates.iter().map(|coordinate| {
+        let request=canonical_request(&r,&mut scene,&doc,owner,ObjectWindow {
+            origin:coordinate.map(|v|f64::from(v*PAGE_SIZE+96)),side:1.,size:[64;2]});
+        assert!(request.live && request.display);
+        let job=request.child(0,request.part(0),r.empty_view.clone()).unwrap();
+        let (_,bounds,pages)=super::super::object_cache::working_set(&job).unwrap();
+        assert_eq!(pages,1);assert_eq!(page_coordinates(bounds).collect::<Vec<_>>(),vec![*coordinate]);
+        assert!(scene.object_results.resolve_collection(&r,doc.scene(),&request,None).unwrap().is_none());request
+    }).collect::<Vec<_>>();
+    assert!(requests.len() as u64>=4*slots);
+    scene.object_display=false;r.scene=Some(scene);
+    let before=crate::test_support::PassCounts::snapshot();
+    assert!(!attempt(&mut r));store.gate.entered();store.gate.release();
+    let mut settled=false;
+    for _ in 1..4000 {if attempt(&mut r) {settled=true;break;}}
+    let counts=crate::test_support::PassCounts::snapshot().delta(before);
+    assert_eq!(counts.source_input_misses,0);assert_eq!(counts.raster_output_misses,0);
+    assert!(settled,"disjoint canonical tasks must settle within4000attempts: {counts:?}");
+    assert!(counts.normalizations*100<=requests.len() as u64*105,
+        "each disjoint source key normalizes at most1.05times: unique={}, {counts:?}",requests.len());
+    let mut scene=r.scene.take().unwrap();
+    for (request,coordinate) in requests.iter().zip(coordinates) {
+        let view=scene.object_results.resolve_collection(&r,doc.scene(),request,None).unwrap().unwrap();
+        let expected=codes(coordinate);let pixels=float_pixels(&r,view.texture());
+        for actual in pixels {for channel in 0..3 {
+            assert!((actual[channel]-doc.composition().color.space.decode(f64::from(expected[channel])/255.) as f32).abs()<2e-5);
+        }assert!((actual[3]-1.).abs()<2e-5);}
+    }
+    r.scene=Some(scene);
+    assert!(store.gate.readers.lock().unwrap().iter().all(|thread|*thread!=std::thread::current().id()));
 }
 
 #[test]
@@ -500,7 +596,7 @@ fn simultaneous_photo_results_bound_batches_and_survive_deferred_retries() {
     let mut cache = super::super::object_cache::ObjectCache::default();
     let requests: Vec<_> = [[0., 0.], [256., 0.], [0., 256.], [256., 256.]].into_iter()
         .zip(doc.scene().order().iter().copied()).map(|(origin,owner)| canonical_request(&r, &mut compositor, &doc, owner, ObjectWindow { origin, side: 1., size: [256; 2] })).collect();
-    for request in &requests { assert!(cache.resolve_collection(&r, doc.scene(), request).unwrap().is_none()); }
+    for request in &requests { assert!(cache.resolve_collection(&r, doc.scene(), request,None).unwrap().is_none()); }
     let mut complete = false;
     for _ in 0..4000 {
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
@@ -519,10 +615,10 @@ fn simultaneous_photo_results_bound_batches_and_survive_deferred_retries() {
         if !cache.pending() { complete = true; break; }
     }
     assert!(complete, "all four private results make bounded progress");
-    let views: Vec<_> = requests.iter().map(|request| cache.resolve_collection(&r, doc.scene(), request).unwrap().unwrap()).collect();
+    let views: Vec<_> = requests.iter().map(|request| cache.resolve_collection(&r, doc.scene(), request,None).unwrap().unwrap()).collect();
     cache.reset_used();
     for (request, view) in requests.iter().zip(&views) {
-        assert_eq!(&cache.resolve_collection(&r, doc.scene(), request).unwrap().unwrap(), view, "a deferred frame retains every completed result");
+        assert_eq!(&cache.resolve_collection(&r, doc.scene(), request,None).unwrap().unwrap(), view, "a deferred frame retains every completed result");
     }
     let (destination, _) = create_color_target(&r.device, [256; 2], "retained object result consumer");
     let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
@@ -648,7 +744,7 @@ fn live_object_read_defers_without_inline_decode_then_returns_canonical_pixels()
     let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
     let before = r.device.source_samples.stats();
     let result = scene.capture_region_prepared(&mut r, frame, &target, PixelRect::full([64; 2]), Output::Objects(owner), &mut encoder);
-    assert!(matches!(result, Err(GpuRasterError::DeferredObjectWork)));
+    assert!(matches!(result, Err(GpuRasterError::NotReady)));
     assert_eq!(r.device.source_samples.stats(), before, "the initiating read cannot decompress source pixels");
     assert!(!r.image_decode_waiting(), "initial admission schedules only metadata");
     assert_eq!(encoder.pass_count(), 0);
@@ -657,7 +753,7 @@ fn live_object_read_defers_without_inline_decode_then_returns_canonical_pixels()
     for _ in 0..500 {
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
         let result = scene.capture_region_prepared(&mut r, frame, &target, PixelRect::full([64; 2]), Output::Objects(owner), &mut encoder);
-        if let Err(error) = &result { assert!(matches!(error, GpuRasterError::DeferredObjectWork), "{error:?}"); }
+        if let Err(error) = &result { assert!(matches!(error, GpuRasterError::NotReady), "{error:?}"); }
         assert!(encoder.pass_count() < 40, "live reads advance bounded GPU work");
         r.uploads.finish(&encoder); r.last_submission = Some(encoder.submit(&r.queue)); r.wait_idle().unwrap();
         if result.is_ok() { complete = true; break; }
@@ -685,7 +781,7 @@ fn cold_object_reads_advance_every_finished_tile_and_the_idle_budget_per_attempt
         assert!(attempts < 32, "a read of 64 source tiles and 2^24 taps completes in a few host polls");
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
         let result = scene.capture_region_prepared(&mut r, frame, &target, PixelRect::full([128; 2]), Output::Objects(owner), &mut encoder);
-        if let Err(error) = &result { assert!(matches!(error, GpuRasterError::DeferredObjectWork), "{error:?}"); }
+        if let Err(error) = &result { assert!(matches!(error, GpuRasterError::NotReady), "{error:?}"); }
         r.uploads.finish(&encoder); r.last_submission = Some(encoder.submit(&r.queue)); r.wait_idle().unwrap();
         if result.is_ok() { break; }
         std::thread::sleep(std::time::Duration::from_millis(16));
@@ -806,7 +902,7 @@ fn overlapping_sibling_images_keep_bounded_residency_and_composite_order() {
             assert!(start.elapsed()<std::time::Duration::from_secs(40),"ordered sibling images make bounded progress");
             let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
             let result=scene.capture_region_prepared(&mut r,FramePacket {blend_space:blend,..packet(doc.scene(),[256;2])},&target,PixelRect::full([256;2]),Output::Artwork(None),&mut encoder);
-            if let Err(error)=&result {assert!(matches!(error,GpuRasterError::DeferredObjectWork),"{error:?}");}
+            if let Err(error)=&result {assert!(matches!(error,GpuRasterError::NotReady),"{error:?}");}
             peak=peak.max(scene.object_results.bytes());
             assert!(scene.object_results.bytes()<=64*1024*1024+80*256*256*16,"resident outputs are bounded by eighty image planes plus private scratch");
             r.uploads.finish(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
@@ -838,14 +934,14 @@ fn unfinished_collection_cancels_changed_content_and_display_visibility_but_keep
     let mut scene=Scene::new(&r).unwrap();scene.object_display=true;
     let content=scene.object_spatial.content(doc.scene(),owner).unwrap();
     let request=scene.collection_job(&r,packet(doc.scene(),[256;2]),owner,content,ObjectWindow {origin:[0.;2],side:1.,size:[256;2]});
-    let mut cache=super::super::object_cache::ObjectCache::default();cache.resolve_collection(&r,doc.scene(),&request).unwrap();
+    let mut cache=super::super::object_cache::ObjectCache::default();cache.resolve_collection(&r,doc.scene(),&request,None).unwrap();
     let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());cache.advance(&mut r,&mut scene,&mut encoder,true).unwrap();
     r.uploads.finish(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
     doc.artwork.occurrences.get_mut(owner).unwrap().visible=false;
     cache.retain(doc.scene(),request.blend,request.context);assert!(!cache.pending(),"hidden display owner cancels unfinished work");
     let encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());cache.flush_retired(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
     let mut raw=request.clone();raw.display=false;
-    cache.resolve_collection(&r,doc.scene(),&raw).unwrap();cache.retain(doc.scene(),raw.blend,raw.context);assert!(cache.pending(),"raw objects include hidden owners");
+    cache.resolve_collection(&r,doc.scene(),&raw,None).unwrap();cache.retain(doc.scene(),raw.blend,raw.context);assert!(cache.pending(),"raw objects include hidden owners");
     let sibling=doc.scene().object_owner(handles[1]).unwrap();
     let mut first=doc.scene().occurrence(owner).unwrap().clone();let mut second=doc.scene().occurrence(sibling).unwrap().clone();
     std::mem::swap(&mut first.content,&mut second.content);
@@ -857,14 +953,14 @@ fn unfinished_collection_cancels_changed_content_and_display_visibility_but_keep
     doc.apply(undo).unwrap();
     let content=scene.object_spatial.content(doc.scene(),owner).unwrap();
     raw=scene.collection_job(&r,packet(doc.scene(),[256;2]),owner,content,ObjectWindow {origin:[0.;2],side:1.,size:[256;2]});raw.display=false;
-    cache.resolve_collection(&r,doc.scene(),&raw).unwrap();
+    cache.resolve_collection(&r,doc.scene(),&raw,None).unwrap();
     doc.artwork.objects.get_mut(handles[0]).unwrap().affine.0[4]=0.5;
     cache.retain(doc.scene(),raw.blend,raw.context);assert!(!cache.pending(),"pose changes cancel a captured source mapping");
     let content=scene.object_spatial.content(doc.scene(),owner).unwrap();
     raw=scene.collection_job(&r,packet(doc.scene(),[256;2]),owner,content,ObjectWindow {origin:[0.;2],side:1.,size:[256;2]});raw.display=false;
-    cache.resolve_collection(&r,doc.scene(),&raw).unwrap();
+    cache.resolve_collection(&r,doc.scene(),&raw,None).unwrap();
     cache.retain(doc.scene(),layer_core::BlendSpace::Perceptual,raw.context);assert!(!cache.pending(),"blend changes retire the previous color domain");
-    cache.resolve_collection(&r,doc.scene(),&raw).unwrap();
+    cache.resolve_collection(&r,doc.scene(),&raw,None).unwrap();
     cache.retain(doc.scene(),raw.blend,layer_core::color::RgbSpace::DisplayP3);assert!(!cache.pending(),"working RGB changes retire the previous interpretation");
 }
 
@@ -895,7 +991,11 @@ fn deferred_collection_construction_discards_unencoded_prefix_and_reuses_scratch
     let mut scene=Scene::new(&r).unwrap();scene.object_query=true;
     for _ in 0..12 {
         scene.alloc(&r,wgpu::Color::TRANSPARENT).unwrap();
-        assert!(matches!(scene.object_tile(&r,packet(doc.scene(),[256;2]),owner,[0;2]),Err(GpuRasterError::DeferredObjectWork)));
+        let before=crate::test_support::PassCounts::snapshot();
+        assert!(matches!(scene.object_tile(&r,packet(doc.scene(),[256;2]),owner,[0;2]),Err(GpuRasterError::NotReady)));
+        assert_eq!(crate::test_support::PassCounts::snapshot().delta(before).total,0,"deferred construction must not encode the prefix");
+        assert!(matches!(scene.jobs.as_slice(),[Job::Clear(target,_)] if *target==scene.pool[0].view),"deferred construction must leave the prefix unwritten");
+        scene.discard_unencoded_jobs();
         assert!(scene.jobs.is_empty());assert!(scene.source_jobs.is_empty());assert!(scene.used.iter().all(|used|!used.occupied()));
         assert_eq!(scene.pool.len(),1,"abandoned composition prefix remains reusable");
         assert!(scene.object_results.pending(),"private collection progress remains scheduled");
@@ -940,11 +1040,12 @@ fn settle_live_frames(r: &mut WgpuRasterizer, frame: FramePacket<'_>, limit: usi
     crate::test_support::submit_ready(r, frame).unwrap();
     for submitted in 1..=limit {
         r.wait_idle().unwrap();
+        if let Some(cache)=&r.scale_display {cache.assert_pending_capacity(r);}
         if !r.has_pending_work() { return submitted; }
         crate::test_support::submit_ready(r, FramePacket { composite_all: false, reset_layers: false, ..frame }).unwrap();
     }
     panic!("object scene must settle within {limit} submissions: deferred={}, image_waiting={}, moving={}, analysis={}, results_pending={}, results_bytes={}, completed_images={}, passes={}",
-        r.object_deferred,r.image_decode_waiting(),r.moving_images_pending(),r.analysis_dirty,
+        crate::scene::scale::tests::publication_pending(&r),r.image_decode_waiting(),r.moving_images_pending(),r.analysis_dirty,
         r.scene.as_ref().is_some_and(|scene|scene.object_results.pending()),r.scene.as_ref().map_or(0,|scene|scene.object_results.bytes()),
         r.moving_images.completed_images,r.metrics.command_passes);
 }
@@ -962,7 +1063,7 @@ fn batch_motion_of_twenty_sibling_images_pauses_queued_canonical_work_and_resume
     settle_live_frames(&mut r,FramePacket {view,..packet(doc.scene(),[128;2])},2000);
     let mut scene=r.scene.take().unwrap();
     let request=canonical_request(&r,&mut scene,&doc,owner,ObjectWindow {origin:[3.,5.],side:4.,size:[32;2]});
-    assert!(scene.object_results.resolve_collection(&r,doc.scene(),&request).unwrap().is_none());
+    assert!(scene.object_results.resolve_collection(&r,doc.scene(),&request,None).unwrap().is_none());
     assert!(scene.object_results.pending());r.scene=Some(scene);
     layer_render::CanvasRenderer::prepare_moving_layer(&mut r,Some(owner));
     settle_live_frames(&mut r,FramePacket {view,reset_layers:false,composite_all:true,..packet(doc.scene(),[128;2])},2000);
@@ -1014,7 +1115,7 @@ fn moving_blurred_object_layer_publishes_every_pose_without_queueing_canonical_w
             crate::memory::memory_tests::legacy_scene_frame(&mut r, frame);
             crate::test_support::submit_ready(&mut r, frame).unwrap();
             r.wait_idle().unwrap();
-            assert!(r.composite_revision != revision && !r.object_deferred, "pose {step} publishes a fresh preview (distinct={distinct})");
+            assert!(r.composite_revision != revision && !crate::scene::scale::tests::publication_pending(&r), "pose {step} publishes a fresh preview (distinct={distinct})");
             let full = r.scale_display.as_ref().unwrap().plan.size.into_iter().map(u64::from).product::<u64>();
             assert!(step == 0 || (r.metrics.composited_pixels - composited) * 2 < full, "an advancing frame clock without animated effects keeps bounded object damage");
             assert!(!r.scene.as_ref().unwrap().object_results.pending(), "a moving layer never starts canonical work for a superseded pose");
@@ -1117,7 +1218,7 @@ fn moving_nearest_objects_publish_level_zero_poses_with_and_without_effects() {
             let revision = r.composite_revision;
             crate::test_support::submit_ready(&mut r, FramePacket { view, composite_all: false, ..packet(doc.scene(), [256; 2]) }).unwrap();
             r.wait_idle().unwrap();
-            assert!(r.composite_revision != revision && !r.object_deferred, "Nearest pose {step} publishes (blur={blur})");
+            assert!(r.composite_revision != revision && !crate::scene::scale::tests::publication_pending(&r), "Nearest pose {step} publishes (blur={blur})");
             assert!(!r.scene.as_ref().unwrap().object_results.pending(), "Nearest motion queues no canonical work");
             if !blur {
                 let pixels = float_pixels(&r, r.scale_display.as_ref().unwrap().texture());
@@ -1214,7 +1315,7 @@ fn ready_mip_pixels_present_while_canonical_results_are_rebuilt() {
     let request = canonical_request(&r, &mut scene, &doc, owner,
         ObjectWindow { origin: [1280., 768.], side: 1., size: [PAGE_SIZE; 2] });
     assert!(!request.keys.is_empty());
-    assert!(!scene.object_results.prepare_collection(&r, doc.scene(), &request).unwrap());
+    assert!(!scene.object_results.prepare_collection(&r, doc.scene(), &request,None).unwrap());
     r.scene = Some(scene);
     for _ in 0..2 {
         crate::test_support::submit_ready(&mut r, FramePacket { composite_all: false, ..frame }).unwrap();
@@ -1251,11 +1352,10 @@ fn photo_navigation_presents_current_camera_within_two_submissions() {
             crate::memory::memory_tests::declare_source_budget(r, frame, 64, 16 << 20, 44 << 20);
             crate::test_support::submit_ready(r, frame).unwrap();
             r.wait_idle().unwrap();
-            if !r.has_presentable_frame() || r.display_backup.is_some()
-                || r.evaluated_object_revision() != Some(doc.scene().revision())
+            if !r.has_presentable_frame() || crate::scene::scale::tests::publication_pending(r)
                 || !r.artwork_frame.as_ref().is_some_and(|frame| frame.view == view) { continue; }
             if r.scene.as_ref().is_some_and(|scene| scene.object_results.pending()) {
-                assert!(r.object_deferred || r.selected_display_cache().unwrap().approximating(),
+                assert!(crate::scene::scale::tests::publication_pending(&r) || r.selected_display_cache().unwrap().approximating(),
                     "pending canonical work must not label mip pixels exact");
             }
             if seed != 0 {
@@ -1382,7 +1482,80 @@ fn eight_ready_photo_mips_resettle_without_fragmented_canonical_work() {
     let revision=r.composite_revision;
     settle_live_frames(&mut r,frame,4000);
     assert_eq!(r.moving_images.completed_images,completed);assert_eq!(r.moving_images.tile_builds,built);
-    assert!(r.composite_revision!=revision);assert!(!r.object_deferred);
+    assert!(r.composite_revision!=revision);assert!(!crate::scene::scale::tests::publication_pending(&r));
     assert!(!r.scene.as_ref().unwrap().object_results.pending());
     assert!(r.scale_display.as_ref().is_some_and(|cache|!cache.approximating()));
+}
+
+#[test]
+fn accepted_canonical_results_survive_pressure_until_consumed_and_released() {
+    let extent=[256;2];let batch_bytes=32*16;
+    let (doc,owner,_)=document(extent,vec![ImageObject::new(image(extent,[255,0,0,255]))]);
+    let mut r=crate::memory::memory_tests::legacy_scene_renderer(doc.composition().color);
+    crate::memory::memory_tests::legacy_scene_frame(&mut r,packet(doc.scene(),extent));
+    let mut scene=Scene::new(&r).unwrap();scene.object_display=true;scene.object_spatial.prepare(doc.scene());
+    let mut cache=super::super::object_cache::ObjectCache::live();cache.set_workspace(scene.object_workspace(&r,true));
+    let mut previous=Vec::<std::sync::Weak<std::sync::atomic::AtomicBool>>::new();
+    let mut previous_requests=Vec::new();
+    let mut uniform_bytes=0;
+    for batch in 0..3 {
+        let mut accepted=sources::AcceptedInputs::default();
+        let requests=(batch*32..(batch+1)*32).map(|index| {
+            let request=canonical_request(&r,&mut scene,&doc,owner,ObjectWindow {
+                origin:[f64::from(index%16*16+8),f64::from(index/16*16+8)],side:1.,size:[1;2]});
+            assert!(cache.resolve_collection(&r,doc.scene(),&request,Some(&mut accepted)).unwrap().is_none());request
+        }).collect::<Vec<_>>();
+        assert_eq!(accepted.len(),32);
+        let interests=cache.request_windows().into_iter().skip(previous.len()).map(|(valid,_,_)|valid).collect::<Vec<_>>();
+        assert_eq!(interests.len(),32);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(10);
+        while cache.pending() {
+            scene.begin_frame();
+            let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+            r.drain_image_decodes(&mut encoder).unwrap();cache.advance(&mut r,&mut scene,&mut encoder,false).unwrap();
+            cache.flush_retired(&encoder);
+            r.uploads.finish(&encoder);r.last_submission=Some(encoder.submit(&r.queue));r.wait_idle().unwrap();
+            assert!(interests.iter().all(|interest|interest.upgrade().is_some()),"accepted canonical work cannot disappear before consumption");
+            assert!(std::time::Instant::now()<deadline,"each accepted batch must make bounded progress");
+            if cache.pending() {std::thread::sleep(std::time::Duration::from_millis(1));}
+        }
+        assert_eq!(cache.work_progress().0,32+previous.len());
+        assert_eq!(cache.work_progress().1,32+previous.len());
+        if batch==0 {
+            uniform_bytes=cache.memory_bytes()[1].checked_sub(batch_bytes).unwrap();
+            assert!(uniform_bytes>0);
+            crate::memory::memory_tests::object_frame_with_budget(&mut r,packet(doc.scene(),extent),2*(uniform_bytes+batch_bytes));
+        }
+        let allowance=uniform_bytes+batch_bytes;
+        assert_eq!(cache.pinned_gpu_bytes(),batch_bytes,"accepted completed results stay reported as pinned");
+        for request in &previous_requests {assert!(cache.resolve_collection(&r,doc.scene(),request,None).unwrap().is_some());}
+        let encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+        cache.flush_retired(&encoder);r.uploads.finish(&encoder);r.last_submission=Some(encoder.submit(&r.queue));r.wait_idle().unwrap();
+        assert_eq!(cache.memory_bytes()[1],uniform_bytes+batch_bytes*(1+u64::from(!previous.is_empty())));
+        assert_eq!(cache.trim_unused(u64::MAX,allowance),if previous.is_empty() {0}else {batch_bytes});
+        assert_eq!(cache.work_progress().0,32,"pressure must evict only the previous unaccepted batch");
+        assert_eq!(cache.work_progress().1,32,"no accepted completed result may be evicted before consumption");
+        assert!(interests.iter().all(|interest|interest.upgrade().is_some()));
+        let encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+        cache.flush_retired(&encoder);r.uploads.finish(&encoder);r.last_submission=Some(encoder.submit(&r.queue));r.wait_idle().unwrap();
+        assert!(previous.iter().all(|interest|interest.upgrade().is_none()),"released results must be evictable for the next accepted batch");
+        assert_eq!(cache.memory_bytes()[1],allowance);
+        for request in &requests {
+            let result=cache.resolve_collection(&r,doc.scene(),request,Some(&mut accepted)).unwrap()
+                .expect("every accepted result must survive completion and pressure until its actual read");
+            assert_eq!(float_pixels(&r,result.texture()),vec![[1.,0.,0.,1.]]);
+        }
+        assert_eq!(accepted.len(),32);
+        drop(accepted);
+        previous=interests;
+        previous_requests=requests;
+        let encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+        cache.flush_retired(&encoder);r.uploads.finish(&encoder);r.last_submission=Some(encoder.submit(&r.queue));r.wait_idle().unwrap();
+    }
+    assert_eq!(cache.trim_unused(u64::MAX,uniform_bytes),batch_bytes,"cancelling the last accepted interest releases its result capacity");
+    let encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+    cache.flush_retired(&encoder);r.uploads.finish(&encoder);r.last_submission=Some(encoder.submit(&r.queue));r.wait_idle().unwrap();
+    assert!(previous.iter().all(|interest|interest.upgrade().is_none()));
+    assert_eq!(cache.work_progress().0,0);
+    assert_eq!(cache.memory_bytes()[1],uniform_bytes);
 }

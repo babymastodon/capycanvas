@@ -206,7 +206,11 @@ impl Worker {
             composite_all: true,
             blend_space: document.composition().blend,
         };
-        while !renderer.raster_dependencies_ready(packet, None) {
+        loop {
+            match renderer.submit_when_ready(packet, None) {
+                std::task::Poll::Ready(result) => { result.map_err(error)?; break; }
+                std::task::Poll::Pending => {},
+            }
             check()?;
             renderer
                 .device()
@@ -214,7 +218,6 @@ impl Worker {
                 .map_err(error)?;
             std::thread::sleep(Duration::from_millis(2));
         }
-        renderer.submit(packet).map_err(error)?;
         let finished = Arc::new(AtomicBool::new(false));
         let completed = finished.clone();
         renderer

@@ -127,8 +127,7 @@ fn snapshot_placed_photo_crops_restore_off_canvas_paint_and_linked_mask() {
         assert!(painted > 100);
         assert_eq!(document.artwork.paint.get(paint_id).unwrap().base, source);
         assert!(capture.renderer.scale_display.is_none());
-        assert!(capture.renderer.scene.as_ref().unwrap()
-            .placement_cache(SourceTarget::Paint(paint_id)).is_none());
+        assert!(crate::scene::scale::tests::source_textures(&capture.renderer,SourceTarget::Paint(paint_id),None).is_empty());
     }
 }
 

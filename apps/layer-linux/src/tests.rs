@@ -9,6 +9,8 @@ mod native_penup;
 mod prediction;
 #[path = "stroke_recording_tests.rs"]
 mod stroke_recording;
+#[path = "wrong_tile_repro_tests.rs"]
+mod wrong_tile_repro;
 #[path = "native_navigation_tests.rs"]
 mod native_navigation;
 #[path = "editing_tools_tests.rs"]

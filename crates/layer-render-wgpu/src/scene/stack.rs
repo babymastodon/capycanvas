@@ -143,7 +143,10 @@ pub(super) fn tile(
 ) -> Result<usize, GpuRasterError> {
     let stop = scene.stop_before.take();
     let presented = scene.presented_backdrop;
-    let result = compose(&mut Tile { scene, r, packet, coordinate, stop, presented }, packet.scene, parent, stop).map(|lease| scene.keep(lease));
+    let mut compositor = Tile { scene, r, packet, coordinate, stop, presented, waiting: false };
+    let result = compose(&mut compositor, packet.scene, parent, stop);
+    let waiting = compositor.waiting;
+    let result = result.and_then(|lease| if waiting {Err(GpuRasterError::NotReady)} else {Ok(scene.keep(lease))});
     scene.stop_before = stop;
     result
 }
@@ -155,6 +158,7 @@ struct Tile<'a> {
     coordinate: [u32; 2],
     stop: Option<OccurrenceHandle>,
     presented: Option<OccurrenceHandle>,
+    waiting: bool,
 }
 impl Compositor for Tile<'_> {
     type Image = scratch::Lease;
@@ -171,7 +175,7 @@ impl Compositor for Tile<'_> {
     }
     fn fade(&mut self, front: Self::Image, back: Self::Image, index: OccurrenceHandle) -> Result<Self::Image, GpuRasterError> {
         let group = self.packet.scene.occurrence(index).unwrap();
-        if let Some((mask, source)) = self.packet.scene.mask(index).filter(|(m, _)| m.enabled) {
+        let result = (|| if let Some((mask, source)) = self.packet.scene.mask(index).filter(|(m, _)| m.enabled) {
             let coverage = self.scene.mask_at(self.r, mask, source, self.packet.scene.target_offset(SourceTarget::Coverage(mask.source)), self.coordinate)?;
             let coverage = self.scene.own(coverage);
             let change = self.weighted_sum(&front, &back, [1., -1.])?;
@@ -180,24 +184,26 @@ impl Compositor for Tile<'_> {
             self.scene.draw(self.r, masked.index, self.scene.pool[change.index].view.clone(), Some(self.scene.pool[coverage.index].view.clone()),
                 [0., 0., 256., 256.], [3., 1., 0., 0.], false, Convert::None);
             self.weighted_sum(&masked, &back, [group.opacity, 1.])
-        } else { self.weighted_sum(&front, &back, [group.opacity, 1. - group.opacity]) }
+        } else { self.weighted_sum(&front, &back, [group.opacity, 1. - group.opacity]) })();
+        Ok(self.ready(result)?.unwrap_or(back))
     }
     fn layer(&mut self, index: OccurrenceHandle) -> Result<Self::Image, GpuRasterError> {
-        let output = self.scene.layer(self.r, self.packet, index, self.coordinate)?;
-        Ok(self.scene.own(output))
+        let result = self.scene.layer(self.r, self.packet, index, self.coordinate);
+        match self.ready(result)? {Some(output)=>Ok(self.scene.own(output)),None=>self.clear()}
     }
     fn blend(&mut self, front: Self::Image, back: Self::Image, index: OccurrenceHandle, clipped: bool) -> Result<Self::Image, GpuRasterError> {
         let layer = self.packet.scene.occurrence(index).unwrap();
-        let output = self.scene.combine(self.r, front.index, back.index, layer.opacity, layer.blend, clipped, self.packet.blend_space)?;
-        Ok(self.scene.own(output))
+        let result = self.scene.combine(self.r, front.index, back.index, layer.opacity, layer.blend, clipped, self.packet.blend_space);
+        Ok(match self.ready(result)? {Some(output)=>self.scene.own(output),None=>back})
     }
     fn effect(&mut self, chain: &[OccurrenceHandle], input: Self::Image) -> Result<Self::Image, GpuRasterError> {
-        let output = self.scene.effect(self.r, self.packet, chain, self.coordinate, input.index)?;
-        Ok(self.scene.own(output))
+        let result = self.scene.effect(self.r, self.packet, chain, self.coordinate, input.index);
+        Ok(match self.ready(result)? {Some(output)=>self.scene.own(output),None=>input})
     }
     fn has_content(&self, index: OccurrenceHandle) -> bool { has_content(self.r, self.packet.scene, index) }
     fn draw_normal(&mut self, index: OccurrenceHandle, output: &Self::Image) -> Result<bool, GpuRasterError> {
-        self.scene.draw_normal_layer(self.r, self.packet, index, self.coordinate, output.index)
+        let result = self.scene.draw_normal_layer(self.r, self.packet, index, self.coordinate, output.index);
+        Ok(self.ready(result)?.unwrap_or(true))
     }
     fn checkpoint(&mut self, parent: Option<OccurrenceHandle>) -> Result<Option<Checkpoint<Self::Image>>, GpuRasterError> {
         let scene = self.packet.scene;
@@ -210,13 +216,19 @@ impl Compositor for Tile<'_> {
         }) else { return Ok(None); };
         let Some(pixels) = self.scene.images.output(handle) else { return Ok(None); };
         let bounds = pixels.plan.doc_bounds.translated(self.scene.images.doc_bounds.min);
-        let output = self.scene.image_tile(self.r, pixels.view, bounds, self.coordinate)?;
-        Ok(Some((handle, self.scene.own(output))))
+        let result = self.scene.image_tile(self.r, pixels.view, bounds, self.coordinate);
+        Ok(self.ready(result)?.map(|output|(handle,self.scene.own(output))))
     }
     fn presented_backdrop(&self) -> Option<OccurrenceHandle> { self.presented }
 }
 
 impl Tile<'_> {
+    fn ready<T>(&mut self, result: Result<T, GpuRasterError>) -> Result<Option<T>, GpuRasterError> {
+        match result {
+            Err(GpuRasterError::NotReady) => {self.waiting=true;Ok(None)},
+            result=>result.map(Some),
+        }
+    }
     fn weighted_sum(&mut self, front: &scratch::Lease, back: &scratch::Lease, weights: [f32; 2]) -> Result<scratch::Lease, GpuRasterError> {
         let output = self.scene.reserve(self.r)?;
         self.scene.draw(self.r, output, self.scene.pool[front.index].view.clone(), Some(self.scene.pool[back.index].view.clone()),
@@ -246,4 +258,52 @@ pub(super) fn support(scene: SceneView<'_>, level: u32) -> Option<u32> {
         fn has_content(&self, _: OccurrenceHandle) -> bool { true }
     }
     compose(&mut Support { scene, level }, scene, scene.effect_input().and_then(|h| layer_core::composite_input_scope(scene,h)), scene.effect_input()).ok().flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use layer_core::{authored::*,color::source::rgba8_source};
+
+    #[test]
+    fn a_waiting_native_tile_requests_outer_and_nested_object_layers_without_publishing() {
+        for passthrough in [false,true] {
+            let mut artwork=Artwork::new([16;2]).unwrap();
+            let owners:Vec<_>=(0..3).map(|index| {
+                let source=layer_core::authored::Image::new(rgba8_source([16;2],|_,_|[index*60,30,90,255]));
+                let object=artwork.objects.insert(PortableId::random(),ImageObject::new(source)).unwrap();
+                artwork.occurrences.insert(PortableId::random(),Occurrence::new(OccurrenceContent::Objects(object),"Photo")).unwrap()
+            }).collect();
+            let root=artwork.compositions.get(artwork.root).unwrap().result;
+            artwork.stacks.get_mut(root).unwrap().entries=owners.clone();
+            let mut mask=layer_core::CoverageSnapshot::reveal_all(artwork.coverage.next_handle(),[16;2],[0;2]);
+            let descriptor=artwork.compositions.get(artwork.root).unwrap().color.coverage_descriptor();
+            let data=Arc::new(layer_core::raster::RasterData {tiles:[(layer_core::raster::TileKey {
+                plane:layer_core::raster::RasterPlane::Mask,coordinate:[0;2]},layer_core::raster::RasterTile::backed(
+                    layer_core::raster::TileBlob::encode(descriptor,&vec![128;descriptor.byte_len([PAGE_SIZE;2]).unwrap()]).unwrap()))].into(),..Default::default()});
+            mask.source.raster=layer_core::raster::RasterRevision::backed((*data).clone());
+            let mask_target=SourceTarget::Coverage(mask.use_.source);
+            artwork.coverage.insert(PortableId::random(),mask.source).unwrap();
+            artwork.occurrences.get_mut(owners[0]).unwrap().mask=Some(mask.use_);
+            let mut doc=layer_core::Document::from_artwork(artwork).unwrap();
+            let group=crate::artwork_sample_tests::add_group(&mut doc,owners[..2].to_vec(),0);
+            if passthrough {
+                let group=doc.artwork.occurrences.get_mut(group).unwrap();
+                group.blend=layer_core::LayerBlend::PassThrough;group.opacity=0.5;
+                crate::artwork_sample_tests::refresh(&mut doc);
+            }
+            let gpu=WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
+            let mut r=WgpuRasterizer::native_capture_on_factory(gpu.factory.clone(),gpu.device.clone(),doc.composition().color).unwrap();
+            drop(gpu);
+            r.ensure_document_metadata([16;2],doc.scene()).unwrap();
+            r.publish_cold_raster(mask_target,&data).unwrap();
+            let mut scene=Scene::new(&r).unwrap();scene.object_display=true;
+            let result=tile(&mut scene,&r,crate::test_support::packet(doc.scene(),[16;2]),None,[0;2]);
+            assert!(matches!(result,Err(GpuRasterError::NotReady)));
+            let requested:std::collections::BTreeSet<_>=scene.object_results.request_windows().into_iter().map(|(_,owner,_)|owner).collect();
+            assert_eq!(requested,owners.iter().copied().collect(),"passthrough={passthrough}");
+            assert!(scene.jobs.iter().any(|job|matches!(job,Job::DecodedTile(_))),"a waiting source must still gather its own cold mask");
+            assert!(scene.used.iter().all(|usage|!usage.occupied()),"a waiting tile must not publish or keep a scratch output");
+        }
+    }
 }

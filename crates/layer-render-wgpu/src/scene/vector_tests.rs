@@ -575,19 +575,15 @@ fn pressing_selected_paths_draws_nothing_their_selection_prepared_and_deselectin
         let vectors = &r.scene.as_ref().unwrap().vectors;
         assert!(vectors.motion.is_none(), "deselecting drops the moving image");
         let retained = vectors.spare_motion.as_ref().map(|image| image.texture.clone()).expect("the moving image's texture is kept for the next selection");
-        let spare = r.scale_display.as_ref().unwrap().spare_branch_textures();
-        assert!(!spare.is_empty(), "deselecting keeps the halves' images for the next selection at zoom {zoom}");
         let resident = layer_render::CanvasRenderer::telemetry(&r).resident_bytes;
-        assert!(resident <= idle + texture_bytes(&retained) + spare.iter().map(texture_bytes).sum::<u64>(),
-            "deselecting releases what the selection prepared but the textures kept for the next one: {resident} after {idle}");
+        assert!(resident <= idle + texture_bytes(&retained),
+            "deselecting retains only the moving image beyond idle storage: {resident} after {idle}");
         assert!(presented(&r, view).iter().zip(&shown).all(|(a, b)| a.abs_diff(*b) <= 1), "the cancelled drag restores the paths at zoom {zoom}");
         let fewer = Arc::new(items.iter().take(2).copied().collect::<std::collections::BTreeSet<_>>());
         r.set_vector_selection(Some(&layer_core::authored::VectorItemSelection { layer, items: fewer }));
         submit_ready(&mut r, frame);
         assert_eq!(r.scene.as_ref().unwrap().vectors.motion.as_ref().map(|motion| motion.image.texture.clone()), Some(retained),
             "selecting other paths draws their moving image into the kept texture instead of allocating one at zoom {zoom}");
-        let branches = r.scale_display.as_ref().unwrap().branch_textures();
-        assert!(spare.iter().all(|texture| branches.contains(texture)), "the other paths' halves reuse the kept images at zoom {zoom}");
     }
 }
 

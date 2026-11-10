@@ -413,14 +413,14 @@ impl MeshDraw {
 pub(crate) struct MeshBuffers {
     vertices: Option<wgpu::Buffer>,
     indices: Option<wgpu::Buffer>,
-    uploaded: Option<Arc<MeshGeometry>>,
+    uploaded: Option<(Arc<MeshGeometry>,Arc<std::sync::atomic::AtomicBool>)>,
     bytes: Vec<u8>,
 }
 impl MeshBuffers {
     pub fn storage_bytes(&self) -> u64 {
         self.vertices.as_ref().map_or(0, wgpu::Buffer::size) + self.indices.as_ref().map_or(0, wgpu::Buffer::size)
     }
-    pub fn range_for_region(&self,region:layer_core::Rect)->Range<u32> {self.uploaded.as_ref().map_or(0..0,|g|g.range_for_region(region))}
+    pub fn range_for_region(&self,region:layer_core::Rect)->Range<u32> {self.uploaded.as_ref().map_or(0..0,|(g,_)|g.range_for_region(region))}
     pub fn drawing(&self,triangles:Range<u32>)->MeshDraw {MeshDraw {vertices:self.vertices.as_ref().unwrap().clone(),indices:self.indices.as_ref().unwrap().clone(),triangles}}
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, triangles: Range<u32>) {
         if triangles.is_empty() { return; }
@@ -438,7 +438,7 @@ impl MeshBuffers {
         if self
             .uploaded
             .as_ref()
-            .is_some_and(|g| Arc::ptr_eq(g, geometry))
+            .is_some_and(|(g,valid)| Arc::ptr_eq(g, geometry) && valid.load(std::sync::atomic::Ordering::Acquire))
         {
             return Ok(());
         }
@@ -481,7 +481,9 @@ impl MeshBuffers {
             }
             r.uploads.write(encoder, buffer.as_ref().unwrap(), bytes)?;
         }
-        self.uploaded = Some(geometry.clone());
+        let write=crate::submission::CacheWrite::new();
+        self.uploaded = Some((geometry.clone(),write.validity()));
+        write.track(encoder);
         Ok(())
     }
 }
@@ -606,7 +608,7 @@ impl Positions {
         encoder: &mut crate::submission::CommandEncoder,
         page: [u32; 2],
     ) -> Result<(), GpuRasterError> {
-        let triangles=self.buffers.uploaded.as_ref().map_or(0..0,|g|g.window(page.map(|v| v as i32)));
+        let triangles=self.buffers.uploaded.as_ref().map_or(0..0,|(g,_)|g.window(page.map(|v| v as i32)));
         let origin=page.map(|v|(v*PAGE_SIZE) as f32-1.);
         self.draw_window(r,encoder,triangles,origin,layer_core::Affine::IDENTITY,1.)
     }

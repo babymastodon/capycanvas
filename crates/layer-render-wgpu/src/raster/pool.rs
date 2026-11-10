@@ -14,16 +14,22 @@ impl Resource {
         }
     }
 }
+pub(crate) struct Charge {counter:Arc<AtomicU64>,bytes:u64}
+impl Charge { pub fn bytes(&self) -> u64 { self.bytes } }
+impl Drop for Charge {fn drop(&mut self) {self.counter.fetch_sub(self.bytes,Ordering::Release);}}
 #[derive(Default)]
 pub(crate) struct BufferPool {
     resources: Mutex<Vec<Resource>>,
     pub bytes: AtomicU64,
     pub working: AtomicU64,
-    pub transfer: AtomicU64,
+    pub transfer: Arc<AtomicU64>,
     retained_limit: AtomicU64,
     pub(super) priority: Arc<deferred::PresentationPriority>,
 }
 impl BufferPool {
+    pub(crate) fn charge(&self,bytes:u64)->Charge {
+        self.transfer.fetch_add(bytes,Ordering::AcqRel);Charge {counter:self.transfer.clone(),bytes}
+    }
     pub fn set_retained_limit(&self, bytes: u64) { self.retained_limit.store(bytes.min(crate::memory::RASTER_BUFFER_BYTES), Ordering::Release); }
     pub fn trim_unused(&self) -> u64 {
         let limit = self.retained_limit.load(Ordering::Acquire);
@@ -44,9 +50,10 @@ impl BufferPool {
         released
     }
     pub fn memory_bytes(&self) -> [u64; 2] {
-        let metadata = self.resources.lock().unwrap().capacity() as u64 * std::mem::size_of::<Resource>() as u64;
-        [metadata.saturating_add(self.working.load(Ordering::Acquire)),
-            self.bytes.load(Ordering::Acquire).saturating_add(self.transfer.load(Ordering::Acquire))]
+        let resources=self.resources.lock().unwrap();
+        let metadata=resources.capacity() as u64*std::mem::size_of::<Resource>() as u64;
+        let gpu=self.bytes.load(Ordering::Acquire).saturating_add(self.transfer.load(Ordering::Acquire));
+        [metadata.saturating_add(self.working.load(Ordering::Acquire)),gpu]
     }
     fn take_matching(&self, matches: impl Fn(&Resource) -> bool) -> Option<Resource> {
         let mut resources = self.resources.lock().unwrap();
@@ -119,11 +126,15 @@ impl BufferPool {
             view_formats: &[],
         }))
     }
+    #[cfg(test)]
     pub fn put(&self, buffer: wgpu::Buffer) {
         self.put_resource(Resource::Buffer(buffer));
     }
-    pub(super) fn put_resource(&self, resource: Resource) {
-        let mut resources = self.resources.lock().unwrap();
+    pub(super) fn put_charged(&self,resource:Resource,charge:Charge) {self.retain(resource,Some(charge));}
+    #[cfg(test)]
+    pub(super) fn put_resource(&self,resource:Resource) {self.retain(resource,None);}
+    fn retain(&self,resource:Resource,charge:Option<Charge>) {
+        let mut resources = self.resources.lock().unwrap();drop(charge);
         let size = resource.bytes();
         let limit = self.retained_limit.load(Ordering::Acquire);
         while self.bytes.load(Ordering::Relaxed).saturating_add(size) > limit {

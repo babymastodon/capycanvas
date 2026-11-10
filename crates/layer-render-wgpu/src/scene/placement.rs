@@ -29,9 +29,12 @@ pub(super) struct PlacementJob {
 }
 
 impl PlacementJob {
+    pub(super) fn work(&self)->u64 {self.region.area().saturating_mul(u64::from(self.taps.max(1)))}
+    pub(super) fn source_views(&self) -> impl Iterator<Item = &wgpu::TextureView> {
+        self.sources.iter().map(|(_, view)| view).chain(self.positions.iter())
+    }
     pub(super) fn reads(&self, texture: &wgpu::Texture) -> bool {
-        self.sources.iter().any(|(_, view)| view.texture() == texture)
-            || self.positions.as_ref().is_some_and(|view| view.texture() == texture)
+        self.source_views().any(|view| view.texture() == texture)
     }
 }
 
@@ -45,13 +48,15 @@ impl Scene {
     pub(super) fn command_mask_at(&mut self, r: &WgpuRasterizer, coverage: &layer_core::CoverageSnapshot, tile: [u32; 2], command: layer_masks::CommandCoverage) -> Result<ColorInput, GpuRasterError> {
         if coverage.use_.offset == [0; 2] && !coverage.use_.inverted {
             if let Some(page) = r.layer_masks.command_pages.get(&(command, tile)) {
-                return Ok(ColorInput { view: page.view.clone(), lease: None });
+                let name=crate::raster::contents::command_mask(&coverage.source,coverage.selection.as_ref(),tile)?;
+                if let Ok(read)=page.read(name,self.submission.as_ref()) {return Ok(ColorInput { view: read.value().view.clone(), lease: None });}
             }
-            if coverage.source.default_coverage == 0. {
+            if coverage.source.default_coverage == 0. && !layer_masks::command_page_needed(coverage,command.2,tile)
+                && (coverage.selection.is_some() || r.mask_data(SourceTarget::Coverage(coverage.use_.source),&coverage.source)?.tiles.get(&layer_core::raster::TileKey {plane:layer_core::raster::RasterPlane::Mask,coordinate:tile}).is_none()) {
                 return Ok(ColorInput { view: r.empty_scalar_view.clone(), lease: None });
             }
         }
-        let index = self.mask_tile_input(r, &coverage.use_, &coverage.source, coverage.use_.offset, tile, Some(command))?;
+        let index = self.mask_tile_input(r, &coverage.use_, &coverage.source, coverage.use_.offset, tile, Some((command,coverage)))?;
         Ok(ColorInput { view: self.pool[index].view.clone(), lease: Some(self.own(index).into_owner().into()) })
     }
 
@@ -188,33 +193,42 @@ impl Scene {
                     [None, None] => Ok((None, None)),
                 };
             }
-            let view = if plane == RasterPlane::Mask { r.layer_masks.pages.get(&(source, c)).map(|page| &page.view) }
-            else { stored.and_then(|stored| match plane {
-                RasterPlane::WatercolorWetness => r.preview_watercolor_wetness_pages.iter()
-                    .find(|p| r.preview_layer_id == Some(target) && p.coordinate == c && !r.preview_damage.intersect(page_rect(c)).is_empty())
-                    .or_else(|| stored.watercolor_wetness_pages.iter().find(|p| p.coordinate == c)).map(|p| &p.active().view),
-                _ => None,
-            }) };
-            if let Some(view) = view { return Ok((Some(ColorInput { view: view.clone(), lease: None }), None)); }
-            Ok((scene.cold_plane(r, source, plane, c)?, None))
+            let view = if plane == RasterPlane::Mask {
+                r.read_mask(source,mask.unwrap().1,c,scene.display_signatures()?.as_deref(),scene.submission.as_ref())?.map(|read|read.value().view.clone())
+            }else if plane==RasterPlane::WatercolorWetness {
+                let preview=r.preview_watercolor_wetness_pages.iter().find(|page|r.preview_layer_id==Some(target)
+                    && page.coordinate==c && !r.preview_damage.intersect(page_rect(c)).is_empty());
+                preview.or_else(||stored.and_then(|stored|stored.watercolor_wetness_pages.iter().find(|page|page.coordinate==c)))
+                    .map(|page|r.read_scene_wetness_input(scene_view,target,page,preview.is_some(),scene.display_signatures()?.as_deref(),scene.submission.as_ref())
+                        .map(|read|read.map(|read|read.value().view.clone()))).transpose()?.flatten()
+            }else {None};
+            if let Some(view)=view {return Ok((Some(ColorInput {view,lease:None}),None));}
+            let cold=r.raster_tile_for(scene_view,source,plane,c)?.map(|blob|scene.cold_raster(r,&blob)).transpose()?;
+            Ok((cold,None))
         })
     }
 
-    pub(super) fn cold_plane(&mut self, r: &WgpuRasterizer, id: SourceTarget, plane: layer_core::raster::RasterPlane, c: [u32; 2]) -> Result<Option<ColorInput>, GpuRasterError> {
-        let Some(blob) = r.native_plane_tile(id, plane, c)? else { return Ok(None); };
+    pub(super) fn cold_raster(&mut self,r:&WgpuRasterizer,blob:&Arc<layer_core::raster::TileBlob>)->Result<ColorInput,GpuRasterError> {
         let space = r.document_color().space;
+        if let Some(inputs)=&self.inputs {
+            let read=sources::accepted_raster(inputs,&blob,space,space)?;
+            return Ok(ColorInput {view:self.read_input(read),lease:None});
+        }
         let (tile, pending) = r.source_tiles.borrow_mut().plan_raster(r, &blob, space, space)?;
         if let Some(pending) = pending { self.enqueue_source_decode(pending); }
         let (tile,pending)=r.source_tiles.borrow_mut().promote(r,tile)?;
         if let Some(pending)=pending {self.enqueue_source_decode(pending);}
         let lease = r.source_tiles.borrow().lease(&tile.view);
-        Ok(Some(ColorInput { view: tile.view, lease }))
+        Ok(ColorInput { view: tile.view, lease })
     }
 
-    pub(super) fn mask_page(&mut self, r: &WgpuRasterizer, id: SourceTarget, tile: [u32; 2]) -> Result<Option<wgpu::TextureView>, GpuRasterError> {
-        if let Some(page) = r.layer_masks.pages.get(&(id, tile)) { return Ok(Some(page.view.clone())); }
-        if !r.snapshot_worker { return Ok(None); }
-        Ok(self.cold_plane(r, id, layer_core::raster::RasterPlane::Mask, tile)?.map(|input| input.view))
+    pub(super) fn mask_page(&mut self, r: &WgpuRasterizer, id: SourceTarget, source:&CoverageSource, tile: [u32; 2]) -> Result<Option<wgpu::TextureView>, GpuRasterError> {
+        if let Some(read)=r.read_mask(id,source,tile,self.display_signatures()?.as_deref(),self.submission.as_ref())? {return Ok(Some(read.value().view.clone()));}
+        let data=r.mask_data(id,source)?;
+        let Some(stored)=data.tiles.get(&layer_core::raster::TileKey {plane:layer_core::raster::RasterPlane::Mask,coordinate:tile}) else {return Ok(None);};
+        if stored.content_version().matches(&r.mask_version(id,source,tile)?)!=Some(true) {return Err(GpuRasterError::NotReady);}
+        let blob=stored.try_backing().ok_or(GpuRasterError::NotReady)?.map_err(GpuRasterError::Effect)?;
+        self.cold_raster(r,&blob).map(|input|Some(input.view))
     }
 
     /// Document page `tile` of a paint layer whose pixel (0, 0) lies `offset`
@@ -395,12 +409,18 @@ mod tests {
 
     #[test]
     fn command_mask_reuse_preserves_fractional_coverage_and_placement() {
-        let mut r = WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+        let color=layer_core::color::DocumentColor {depth:layer_core::color::SampleDepth::F32,..Default::default()};
+        let mut r = WgpuRasterizer::new_native_headless(color).unwrap();
         let mut scene = Scene::new(&r).unwrap();
         let command = (SourceTarget::default(), 0, false);
         for value in [0., 0.0001, 1. / 255., 0.12345, 0.5, 0.9995, 1.] {
-            let page = layer_masks::MaskPage::new(&r.device);
-            scene.jobs.push(Job::Clear(page.view.clone(), wgpu::Color { r:value, g:value, b:value, a:value }));
+            let tile=layer_core::raster::RasterTile::backed(layer_core::raster::TileBlob::encode(
+                layer_core::raster::RasterPlane::Mask.descriptor(color),&(0..PAGE_SIZE*PAGE_SIZE).flat_map(|_|(value as f32).to_le_bytes()).collect::<Vec<_>>()).unwrap());
+            let data=layer_core::raster::RasterRevision::backed(layer_core::raster::RasterData {
+                tiles:[(layer_core::raster::TileKey {plane:layer_core::raster::RasterPlane::Mask,coordinate:[0;2]},tile.clone())].into(),..Default::default()});
+            let mut page = layer_masks::MaskPage::new(&r.device);
+            let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+            page.clear(&mut encoder,value,tile.content_version()).unwrap();r.last_submission=Some(encoder.submit(&r.queue));
             r.layer_masks.command_pages.insert((command, [0; 2]), page.clone());
             for (offset, inverted, tile, default) in [
                 ([0; 2], false, [0; 2], 0.), ([8, 0], false, [0; 2], 0.),
@@ -410,13 +430,14 @@ mod tests {
                 let mut coverage = layer_core::CoverageSnapshot::reveal_all(Default::default(), [512, 256], offset);
                 coverage.use_.inverted = inverted;
                 coverage.source.default_coverage = default;
+                coverage.source.raster=data.clone();
                 let before = scene.pool.len();
                 let input = scene.command_mask_at(&r, &coverage, tile, command).unwrap();
                 if offset == [0; 2] && !inverted && (tile == [0; 2] || default == 0.) {
                     assert_eq!(scene.pool.len(), before);
                     assert!(input.lease.is_none());
                 }
-                let pooled = scene.mask_tile_input(&r, &coverage.use_, &coverage.source, offset, tile, Some(command)).unwrap();
+                let pooled = scene.mask_tile_input(&r, &coverage.use_, &coverage.source, offset, tile, Some((command,&coverage))).unwrap();
                 let _pooled = scene.own(pooled);
                 let mut outputs = Vec::new();
                 for mask in [scene.pool[pooled].view.clone(), input.view.clone()] {

@@ -164,11 +164,12 @@ impl Pipelines {
         &self.kernels[&(operation as u32, slot, entry, blender.kind as u8, blender.paper, blender.lift, blender.cells)]
     }
 
-    fn output(&self, r: &WgpuRasterizer, color: &PageSurface, coverage: Option<&PageSurface>, wetness: Option<&PageSurface>) -> wgpu::BindGroup {
-        let outputs = if coverage.is_some_and(|p| p.texture.format() == wgpu::TextureFormat::Rgba32Float) { 3 }
+    fn output(&self,device:&PipelineDevice,style:&wgpu::Buffer,color:&resident::RasterWrite<'_,PageSurface>,
+        coverage:Option<&resident::RasterWrite<'_,PageSurface>>,wetness:Option<&resident::RasterWrite<'_,PageSurface>>) -> wgpu::BindGroup {
+        let outputs = if coverage.is_some_and(|p| p.value().texture.format() == wgpu::TextureFormat::Rgba32Float) { 3 }
             else { usize::from(coverage.is_some()) + usize::from(wetness.is_some()) };
         let layout = &self.layouts[outputs];
-        dry_material::output_binding(r, layout, color, coverage, wetness, None)
+        dry_material::output_binding(device,style,layout,color,coverage,wetness,None)
     }
 }
 
@@ -206,56 +207,93 @@ impl WgpuRasterizer {
             let color = first.color_rgba_linear;
             record([0; 4], [[color[0], color[1], color[2], batch.style.wet_mix.amount_of_paint * first.material[2]].map(f32::to_bits)])
         })), encoder)?;
+        let mut publications=Vec::with_capacity(jobs.len()*3+usize::from(exchange.is_some()));
+        let mut written=Vec::with_capacity(jobs.len()*3+usize::from(exchange.is_some()));
         let mut dispatches = Vec::with_capacity(jobs.len());
-        for job in jobs {
-            let layer = &self.paint_layers[layer_index];
-            let (color_pages, coverage_pages, wetness_pages) = if preview {
-                (&self.preview_pages, &self.preview_coverage_pages, &self.preview_watercolor_wetness_pages)
-            } else {
-                (&layer.pages, &layer.coverage_pages, &layer.watercolor_wetness_pages)
-            };
-            let destination = color_pages[job.page_index].surface(job.destination_secondary);
-            let coverage = job.coverage_index.zip(job.coverage_destination_secondary)
-                .map(|(i, secondary)| if secondary { &coverage_pages[i].secondary } else { &coverage_pages[i].primary });
-            let wetness = (operation == MaterialOperation::Watercolor).then(|| wetness_pages.iter().find(|p| p.coordinate == job.coordinate)
-                .expect("watercolor wetness page is prepared before encoding").inactive());
-            destination.preview.set(None);
-            let output = self.pipelines.destination_material.output(self, destination, coverage, wetness);
-            let entry = if wetness.is_some() { Entry::Watercolor } else if coverage.is_some() { Entry::Coverage } else { Entry::Color };
-            self.add_transport_job(encoder, batch_index, batch, job.coordinate, first_record, sources_preview, entry, output, &mut dispatches)?;
+        for (index,job) in jobs.iter().enumerate() {
+            let sources=self.transport_sources(encoder,batch_index,batch,job.coordinate,sources_preview,&mut dispatches,&mut publications,&mut written)?;
+            let color_ticket=preview.then(||self.preview_material_version(batch,batch_index,RasterPlane::Color,job.coordinate,scene::PreviewPass::Color)).transpose()?;
+            let coverage_ticket=(preview && job.coverage_index.is_some()).then(||self.preview_pass_version(batch.target,RasterPlane::Color,job.coordinate,scene::PreviewStage::AfterBatch(batch_index),scene::PreviewPass::Coverage)).transpose()?;
+            let wetness_ticket=(preview && operation==MaterialOperation::Watercolor).then(||self.preview_material_version(batch,batch_index,RasterPlane::WatercolorWetness,job.coordinate,scene::PreviewPass::Wetness)).transpose()?;
+            let receipt=encoder.submission();let intent=self.raster_intent(batch.target,RasterPlane::Color,job.coordinate)?;
+            self.validate_raster_intent(batch.target,&intent)?;
+            let wet_intent=(operation==MaterialOperation::Watercolor).then(||self.raster_intent(batch.target,RasterPlane::WatercolorWetness,job.coordinate)).transpose()?;
+            if let Some(intent)=&wet_intent {self.validate_raster_intent(batch.target,intent)?;}
+            let layer=&mut self.paint_layers[layer_index];
+            let (color_pages,coverage_pages,wetness_pages)=if preview {(&mut self.preview_pages,&mut self.preview_coverage_pages,&mut self.preview_watercolor_wetness_pages)}
+                else {(&mut layer.pages,&mut layer.coverage_pages,&mut layer.watercolor_wetness_pages)};
+            let page=&mut color_pages[job.page_index];
+            let destination=if preview {page.surface_mut(job.destination_secondary).overwrite(&receipt)}
+                else {page.write(job.destination_secondary,&intent,&receipt)}.ok_or(GpuRasterError::Invariant("accepted destination is not writable"))?;
+            let coverage=job.coverage_index.zip(job.coverage_destination_secondary).map(|(index,secondary)| {
+                let page=&mut coverage_pages[index];let destination=if secondary {&mut page.secondary}else {&mut page.primary};
+                destination.overwrite(&receipt).ok_or(GpuRasterError::Invariant("accepted destination is not writable"))
+            }).transpose()?;
+            let wetness=if let Some(wet_intent)=&wet_intent {
+                let page=wetness_pages.iter_mut().find(|page|page.coordinate==job.coordinate).ok_or(GpuRasterError::Invariant("prepared encode transport jobs state is inconsistent"))?;
+                let secondary=!page.active_secondary;
+                let write=if !seeds[index] {
+                    let WatercolorWetnessPage {primary,secondary:second,pending,..}=page;
+                    let (state,written,_)=pending.as_ref().ok_or(GpuRasterError::Invariant("prepared encode transport jobs state is inconsistent"))?;
+                    if !state.input.same_selection(wet_intent) || state.input.version().matches(wet_intent.version())!=Some(true) {return Err(GpuRasterError::Invariant("accepted write selection changed"));}
+                    (if secondary {second}else {primary}).continue_written(written,&receipt)
+                }else if preview {page.surface_mut(secondary).overwrite(&receipt)}else {page.write(secondary,wet_intent,&receipt)};
+                Some(write.ok_or(GpuRasterError::Invariant("prepared encode transport jobs state is inconsistent"))?)
+            }else {None};
+            destination.value().preview.set(None);
+            let output=self.pipelines.destination_material.output(&self.device,&self.style_buffer,&destination,coverage.as_ref(),wetness.as_ref());
+            let entry=if wetness.is_some() {Entry::Watercolor}else if coverage.is_some() {Entry::Coverage}else {Entry::Color};
+            let next_publications=[
+                Some(MaterialPublication {kind:MaterialOutputKind::Color,coordinate:job.coordinate,preview:color_ticket.clone(),input:intent.clone(),
+                    encoding:destination.encoded(color_ticket.as_ref().map_or_else(||layer_core::raster::ContentName::fresh().into(),|ticket|ticket.version().clone()))}),
+                coverage.map(|write|MaterialPublication {kind:MaterialOutputKind::Coverage,coordinate:job.coordinate,preview:coverage_ticket.clone(),input:intent,
+                    encoding:write.encoded(coverage_ticket.as_ref().map_or_else(||layer_core::raster::ContentName::fresh().into(),|ticket|ticket.version().clone()))}),
+                wetness.map(|write|MaterialPublication {kind:MaterialOutputKind::Wetness,coordinate:job.coordinate,preview:wetness_ticket.clone(),input:wet_intent.unwrap(),
+                    encoding:write.encoded(wetness_ticket.as_ref().map_or_else(||layer_core::raster::ContentName::fresh().into(),|ticket|ticket.version().clone()))}),
+            ];
+            dispatches.push(Dispatch {entry,output,sources,coordinate:job.coordinate,record_offset:self.material_records.offset(first_record)});
+            publications.extend(next_publications.into_iter().flatten());
             first_record += 1;
         }
         if let Some((_, last)) = exchange {
             let coordinate = std::array::from_fn(|i| ([last.center.x, last.center.y][i].max(0.) as u32 / PAGE_SIZE).min(extent[i].saturating_sub(1) / PAGE_SIZE));
-            let output = self.pipelines.destination_material.output(self, self.reservoir.inactive(), None, None);
-            self.add_transport_job(encoder, batch_index, batch, coordinate, first_record, false, Entry::Reservoir, output, &mut dispatches)?;
+            let sources=self.transport_sources(encoder,batch_index,batch,coordinate,false,&mut dispatches,&mut publications,&mut written)?;
+            let receipt=encoder.submission();let intent=self.raster_intent(batch.target,RasterPlane::Color,coordinate)?;
+            let destination=if self.reservoir.active_secondary {&mut self.reservoir.primary}else {&mut self.reservoir.secondary};
+            let write=destination.overwrite(&receipt).ok_or(GpuRasterError::Invariant("accepted destination is not writable"))?;
+            let output=self.pipelines.destination_material.output(&self.device,&self.style_buffer,&write,None,None);
+            let publication=MaterialPublication {kind:MaterialOutputKind::Reservoir,coordinate,preview:None,input:intent,
+                encoding:write.encoded(layer_core::raster::ContentName::fresh())};
+            dispatches.push(Dispatch {entry:Entry::Reservoir,output,sources,coordinate,record_offset:self.material_records.offset(first_record)});
+            publications.push(publication);
         }
         self.encode_transport(encoder, batch_index, batch, &dispatches);
+        let actual=encoder.submission();written.extend(publications.drain(..).map(|publication:MaterialPublication|publication.encoded(&actual)));
+        self.publish_material(batch,written)?;
         if exchange.is_some() { self.reservoir.active_secondary = !self.reservoir.active_secondary; }
         Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn add_transport_job(
+    fn transport_sources(
         &mut self,
         encoder: &mut crate::submission::CommandEncoder,
         batch_index: usize,
         batch: &DabBatch,
         coordinate: [u32; 2],
-        record_index: usize,
         preview: bool,
-        entry: Entry,
-        output: wgpu::BindGroup,
         dispatches: &mut Vec<Dispatch>,
-    ) -> Result<(), GpuRasterError> {
+        publications:&mut Vec<MaterialPublication>,
+        written:&mut Vec<MaterialWritten>,
+    ) -> Result<wgpu::BindGroup, GpuRasterError> {
         let timing = self.telemetry.enabled;
         let offsets = self.material_offsets(batch);
-        self.encode_before_borrowing(encoder, batch_index, batch, coordinate, offsets, preview, dispatches);
+        self.encode_before_borrowing(encoder, batch_index, batch, coordinate, offsets, preview, dispatches,publications,written);
         let started = timing.then(web_time::Instant::now);
-        let (sources, _) = self.material_bind_group(batch, coordinate, preview, MaterialInputs::Neighborhood, None, encoder)?;
+        let target=if preview {BrushEncodingTarget::Preview {from_persistent:false}}else {BrushEncodingTarget::Persistent};
+        let (sources, _) = self.material_bind_group(batch,batch_index, coordinate, target, MaterialInputs::Neighborhood, None, encoder)?;
         self.metrics.material_cpu_ms[4] += elapsed(started);
-        dispatches.push(Dispatch { entry, output, sources, coordinate, record_offset: self.material_records.offset(record_index) });
-        Ok(())
+        Ok(sources)
     }
 
     /// The decoded-tile cache may reuse a slot that a pending dispatch reads,
@@ -270,9 +308,12 @@ impl WgpuRasterizer {
         offsets: [Option<[i32; 2]>; 9],
         preview: bool,
         dispatches: &mut Vec<Dispatch>,
+        publications:&mut Vec<MaterialPublication>,
+        written:&mut Vec<MaterialWritten>,
     ) {
         if self.borrows_decoded_tiles(batch.target, coordinate, offsets, preview) {
             self.encode_transport(encoder, batch_index, batch, dispatches);
+            let actual=encoder.submission();written.extend(publications.drain(..).map(|publication|publication.encoded(&actual)));
             dispatches.clear();
         }
     }

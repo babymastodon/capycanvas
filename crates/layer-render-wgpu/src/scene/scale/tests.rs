@@ -6,16 +6,201 @@ use layer_core::{DefaultBrushPreset, Document, CoverageSnapshot};
 use layer_core::authored::*;
 use super::Image;
 
+pub(super) fn prepare_fixture_frame(r:&WgpuRasterizer,packet:FramePacket<'_>,scene:&Scene) {
+    let declared=Declared {preview:r.preview_declaration.clone(),..Default::default()};
+    scene.scale_pages.lock().unwrap().set_expected(Arc::new(SignatureFrame::capture(r,packet,declared).unwrap()));
+}
+
+pub(super) fn evict_composite_pages(cache:&Cache,areas:&[PixelRect]) {pages::evict_composite_pages(cache,areas)}
+
+fn source_chunks(cache:&Cache,id:SourceTarget,level:u32)->BTreeSet<[u32;2]> {
+    cache.pages.lock().unwrap().retained_pages().into_iter().filter(|page|page.key.source==Some(id) && page.key.level==level)
+        .flat_map(|page|page.current.iter().copied().collect::<Vec<_>>()).collect()
+}
+
+fn source_levels(cache:&Cache,id:SourceTarget)->BTreeMap<u32,BTreeSet<[u32;2]>> {
+    let mut levels=BTreeMap::<u32,BTreeSet<[u32;2]>>::new();
+    for page in cache.pages.lock().unwrap().retained_pages().into_iter().filter(|page|page.key.source==Some(id) && !page.current.is_empty()) {
+        levels.entry(page.key.level).or_default().extend(page.current.iter().copied());
+    }
+    levels
+}
+
+pub(crate) fn source_textures(r:&WgpuRasterizer,id:SourceTarget,level:Option<u32>)->Vec<wgpu::Texture> {
+    let Some(cache)=r.scale_display.as_ref() else {return Vec::new();};
+    source_textures_in(cache,id,level)
+}
+
+fn source_textures_in(cache:&Cache,id:SourceTarget,level:Option<u32>)->Vec<wgpu::Texture> {
+    let mut pages=cache.pages.lock().unwrap().retained_pages().into_iter()
+        .filter(|page|page.key.source==Some(id) && level.is_none_or(|level|page.key.level==level) && !page.current.is_empty()).collect::<Vec<_>>();
+    pages.sort_by_key(|page|(page.key.level,page.key.coordinate));
+    pages.into_iter().map(|page|page.texture).collect()
+}
+
+pub(crate) fn source_cache_info(r:&WgpuRasterizer,id:SourceTarget,level:Option<u32>)->Option<(Vec<wgpu::Texture>,u64,u32)> {
+    let cache=r.scale_display.as_ref()?;
+    let source=r.scene.as_ref()?.scale_sources.entries.get(&id)?;
+    let level=level.or_else(||source_levels(cache,id).first_key_value().map(|(level,_)|*level))?;
+    let textures=source_textures_in(cache,id,Some(level));
+    (!textures.is_empty()).then_some((textures,source.updates,level))
+}
+
+fn source_image(r:&WgpuRasterizer,cache:&Cache,source:&sources::Source,id:SourceTarget,plan:display_mips::Plan)->Image {
+    let mut store=cache.pages.lock().unwrap();
+    let inputs=page_coordinates(plan.bounds).map(|coordinate| {
+        let region=page_rect(coordinate).intersect(plan.bounds);
+        let key=source.key(r,id,plan.level,coordinate.map(|value|value>>plan.level));
+        let image=store.get(&key,region,pages::Accuracy::Display,key.level).expect("every sampled source chunk must be committed and current");
+        (key,image,region)
+    }).collect::<Vec<_>>();
+    let output=Image::new(r,plan,"committed source test window");
+    let mut encoder=submission::CommandEncoder::new(&r.device,&Default::default());
+    for (key,image,region) in inputs {
+        let [sx,sy,width,height]=paint_transform::texel_rect(region.window_local(image.plan.bounds),1<<plan.level);
+        let [dx,dy,_,_]=paint_transform::texel_rect(region.window_local(plan.bounds),1<<plan.level);
+        encoder.copy_texture_to_texture(wgpu::TexelCopyTextureInfo {origin:wgpu::Origin3d {x:sx,y:sy,z:0},..image.texture.as_image_copy()},
+            wgpu::TexelCopyTextureInfo {origin:wgpu::Origin3d {x:dx,y:dy,z:0},..output.texture.as_image_copy()},wgpu::Extent3d {width,height,depth_or_array_layers:1});
+        store.read(&key,&image,encoder.submission());
+    }
+    encoder.submit(&r.queue);output
+}
+
+pub(crate) fn source_copy_ready(r:&WgpuRasterizer,scene:SceneView<'_>,id:SourceTarget,extent:[u32;2],level:u32)->bool {
+    let output=Image::new(r,display_mips::Plan::at(extent,level),"raw transform source eligibility");
+    let mut encoder=submission::CommandEncoder::new(&r.device,&Default::default());
+    pages::coordinates(PixelRect::full(extent),level).all(|coordinate|
+        r.scene.as_ref().unwrap().copy_reduced_source(r,scene,id,extent,level,pages::bounds(coordinate,level,extent),&output.texture,&mut encoder))
+}
+
+pub(crate) fn publication_pending(r: &WgpuRasterizer) -> bool {
+    r.scale_display.as_ref().is_some_and(|cache| !cache.coverage_snapshot().ready(cache.plan.bounds,pages::Accuracy::Display))
+}
+
+pub(super) fn covered_document_pages(cache:&Cache,accuracy:pages::Accuracy)->impl Iterator<Item=[u32;2]> {
+    let coverage=cache.coverage_snapshot();let bounds=cache.plan.bounds;
+    page_coordinates(bounds).filter(move|coordinate|coverage.ready(page_rect(*coordinate).intersect(bounds),accuracy))
+}
+
+fn reset_page_store(cache:&mut Cache) {
+    let expected=cache.pages.lock().unwrap().expected().cloned();
+    let mut store=pages::Store::default();if let Some(expected)=expected {store.set_expected(expected);}
+    let pages=Arc::new(std::sync::Mutex::new(store));
+    let mut current=Some(cache);
+    while let Some(cache)=current {cache.pixels=Default::default();cache.pages=pages.clone();current=cache.overview.as_deref_mut();}
+}
+
+fn assert_coverage_eq(before:&pages::Coverage,after:&pages::Coverage) {
+    assert_eq!(before.written,after.written);
+    assert_eq!(before.matching,after.matching);
+    assert_eq!(before.exact,after.exact);
+}
+
 fn working_scene_frame(r: &mut WgpuRasterizer, frame: FramePacket<'_>) {
     r.begin_frame_memory(frame);
     r.publish_memory(true);
-    let level=display_mips::view_level(frame.view.document_to_surface,4).unwrap();
-    let display=view_plan(frame,level,Evaluation::Display).map_or(0,|plan|
-        allocation_bound(r,plan,frame,None,false,None,Evaluation::Display,None).into_iter().fold(0,u64::saturating_add));
-    let native=view_plan(frame,level,Evaluation::Native).map_or(0,|plan|native_bytes(r,frame,plan));
-    let page=u64::from(PAGE_SIZE).pow(2)*16;
-    let bytes=display.max(native).max(r.memory.part_pins()[0]).saturating_add(4*page).next_multiple_of(page);
-    crate::memory::memory_tests::scene_frame_with_budget(r,frame,bytes);
+    let scene = r.scene.as_ref().map_or(0, |scene| scene.memory_bytes()[1].saturating_sub(
+        scene.object_results.memory_bytes()[1] + scene.exact_object_results.memory_bytes()[1]));
+    let page = u64::from(PAGE_SIZE).pow(2) * 16;
+    let required = r.composition_storage_bytes().saturating_add(scene).max(r.memory.part_pins()[0])
+        .saturating_add(4 * page).next_multiple_of(page);
+    let bytes = r.memory.scene_limit().max(required);
+    crate::memory::memory_tests::scene_frame_with_budget(r, frame, bytes);
+}
+
+#[test]
+fn trim_pages_does_not_hold_the_store_while_computing_working_memory() {
+    let r=crate::memory::memory_tests::legacy_scene_renderer(Default::default());
+    let scene=Scene::new(&r).unwrap();
+    let mut cache=Cache::new(&r,Request {plan:display_mips::Plan::at([256;2],0),evaluation:Evaluation::Display},0);
+    cache.pages=scene.scale_pages.clone();
+    assert!(Arc::ptr_eq(&cache.pages,&scene.scale_pages));
+    let memory=scene.memory_bytes();
+    let expected=memory[1].saturating_sub(scene.object_results.memory_bytes()[1]+scene.exact_object_results.memory_bytes()[1]);
+    assert_eq!(scene.working_bytes(),expected);
+    cache.trim_pages(&scene,&r,[0;2]);
+    assert!(cache.pages.try_lock().is_ok());
+    assert_eq!(scene.memory_bytes(),memory);
+}
+
+#[test]
+fn nearest_work_is_bounded_and_uses_accepted_inputs_only_to_break_ties() {
+    let document=Document::new(PortableId::random(),32768,30518,layer_core::DocumentNames {paint:"Pixels".into(),paper:"Paper".into()});
+    let mut frame=packet(document.scene(),document.composition().size);
+    frame.view.width_px=1024;frame.view.height_px=768;
+    frame.view.document_to_surface=[1.,0.,0.,1.,-4096.,-2048.];
+    let wanted=view_plan(frame,0).unwrap().bounds;
+    let smaller=FramePacket {document_extent:[9504,6336],..frame};
+    for level in 0..=1 {
+        assert_eq!(view_plan(frame,level).unwrap().bounds,view_plan(smaller,level).unwrap().bounds,
+            "per-attempt output planning depends on the window, not the document extent");
+    }
+    let held=[wanted.min_x()/PAGE_SIZE,wanted.min_y()/PAGE_SIZE];
+    let candidates=||page_coordinates(wanted);
+    let selected=nearest_pages(wanted,frame.view,7,[held],|_|true);
+    assert_eq!(selected.len(),7);assert_ne!(selected[0],held);
+    assert!(selected.iter().all(|coordinate|!page_rect(*coordinate).intersect(wanted).is_empty()));
+    assert_eq!(selected.iter().copied().collect::<BTreeSet<_>>().len(),selected.len());
+    let mut expected=candidates().collect::<Vec<_>>();
+    let center=[4608.,2432.];
+    expected.sort_by_key(|coordinate| {
+        let rect=page_rect(*coordinate);
+        let dx=f64::from(rect.min_x()+rect.max_x())*0.5-center[0];
+        let dy=f64::from(rect.min_y()+rect.max_y())*0.5-center[1];
+        ((dx*dx+dy*dy).to_bits(),*coordinate!=held,*coordinate)
+    });
+    assert_eq!(selected,expected[..7]);
+    let visited=std::cell::Cell::new(0);
+    assert!(nearest_pages(wanted,frame.view,0,std::iter::empty(),|_|{visited.set(visited.get()+1);true}).is_empty());
+    assert_eq!(visited.get(),0,"exhausted frames must not enumerate source work");
+}
+
+#[test]
+fn authored_work_excludes_source_arrivals_camera_moves_and_refinement() {
+    fn authored(frame:FramePacket<'_>)->layer_core::raster::ContentStamp {
+        let preview=crate::scene::PreviewDeclaration::from_scene(frame,Default::default(),Default::default(),crate::scene::PreviewQuality::default(),None).unwrap().map(|declaration| {
+            assert!(frame.dab_batches.iter().filter(|batch|batch.kind==DabBatchKind::Preview).all(|batch|batch.stroke_start));
+            let seeds=declaration.required_seed_inputs().into_iter().map(|(plane,coordinate,pass)| {
+                let versions=match pass {
+                    crate::scene::PreviewPass::Coverage|crate::scene::PreviewPass::Reservoir=>Vec::new(),
+                    crate::scene::PreviewPass::StrokeStart=>vec![declaration.version(declaration.target(),plane,coordinate,crate::scene::PreviewStage::Seed).unwrap()],
+                    _=>panic!("fresh-stroke fixture has an unexpected seed pass"),
+                };
+                crate::scene::PreviewSeed {plane,coordinate,pass,versions}
+            }).collect();
+            Arc::new(declaration.with_seed_inputs(seeds).unwrap())
+        });
+        let prepared=SignatureFrame::from_scene(frame,Declared {preview,..Default::default()}).unwrap();
+        let root=graph::compose(frame,None,None,0,frame.scene.composition().color.space,None,None).unwrap();
+        prepared.authored_revision(&root).unwrap()
+    }
+    let doc=document_at([512;2]);let frame=packet(doc.scene(),doc.composition().size);let baseline=authored(frame);
+    assert_eq!(authored(frame),baseline);
+    let mut moved=frame;moved.view.document_to_surface[4]+=128.;
+    assert_eq!(authored(moved),baseline);
+    let target=source_at(&doc,0);
+    let restored=FramePacket {composite_all:true,..moved};
+    assert_eq!(authored(restored),baseline,"physical restoration alone is not an authored edit");
+    let dab=crate::tests::test_dab([48.,48.],[1.,0.,0.,1.],1.);
+    let batch=dab_batch(target,crate::layer_tests::preset_style(DefaultBrushPreset::GPen),dab.bounds());
+    let mut changed=doc.clone();
+    paint_mut(&mut changed,0).raster=layer_core::raster::RasterRevision::backed(layer_core::raster::RasterData {
+        tiles:[(layer_core::raster::TileKey {plane:layer_core::raster::RasterPlane::Color,coordinate:[0;2]},
+            layer_core::raster::RasterTile::pending(layer_core::raster::RasterPlane::Color.descriptor(changed.composition().color)))].into(),..Default::default()
+    });
+    assert_ne!(authored(FramePacket {scene:changed.scene(),dabs:std::slice::from_ref(&dab),dab_batches:std::slice::from_ref(&batch),..moved}),baseline);
+    let mut changed=doc.clone();occurrence_mut(&mut changed,0).opacity=0.5;
+    assert_ne!(authored(FramePacket {scene:changed.scene(),..moved}),baseline);
+    let mut preview=batch.clone();preview.kind=DabBatchKind::Preview;
+    let preview_frame=FramePacket {dabs:std::slice::from_ref(&dab),dab_batches:std::slice::from_ref(&preview),..frame};
+    let current=authored(preview_frame);
+    assert_eq!(authored(FramePacket {view:moved.view,..preview_frame}),current,
+        "resubmitting an unchanged preview while moving the camera is not an authored edit");
+    assert_ne!(authored(frame),current,"removing authored preview pixels requires in-frame recomposition");
+    let mut replacement=preview.clone();replacement.damage=layer_core::Rect {
+        min:layer_core::Point {x:64.,y:64.},max:layer_core::Point {x:96.,y:96.}};
+    let replacement_dab=crate::tests::test_dab([80.,80.],[1.,0.,0.,1.],1.);
+    assert_ne!(authored(FramePacket {dabs:std::slice::from_ref(&replacement_dab),dab_batches:std::slice::from_ref(&replacement),..preview_frame}),current);
 }
 
 #[test]
@@ -33,6 +218,9 @@ fn identity_source_window_clips_signed_bounds_without_interpolation_padding() {
 
 #[path = "presentation_tests.rs"]
 mod presentation;
+
+#[path = "commit_tests.rs"]
+mod commit;
 
 #[path = "scratch_tests.rs"]
 mod scratch_ownership;
@@ -65,6 +253,30 @@ mod moved_paint;
 
 pub(super) use crate::test_support::submit_published;
 
+fn retained_root_pages(cache: &Cache) -> Vec<pages::RetainedPage> {
+    let root=cache.graph.content.as_ref().expect("prepared root");
+    cache.pages.lock().unwrap().retained_pages().into_iter().filter(|page|page.key.expression==*root).collect()
+}
+
+fn retained_level_pixels(r: &WgpuRasterizer, cache: &Cache, level: u32) -> Vec<[f32;4]> {
+    let plan=display_mips::Plan::at(cache.plan.extent,level);
+    let mut output=vec![[f32::NAN;4];(plan.size[0]*plan.size[1]) as usize];
+    for page in retained_root_pages(cache).into_iter().filter(|page|page.key.level==level) {
+        let local=page.key.plan();let data=pixels(r,&page.texture);
+        for region in page.exact.regions(local.bounds) {
+            let [sx,sy,width,height]=paint_transform::texel_rect(region.window_local(local.bounds),1<<level);
+            let [x,y,_,_]=paint_transform::texel_rect(region,1<<level);
+            for row in 0..height {
+                let from=((sy+row)*local.size[0]+sx) as usize;
+                let to=((y+row)*plan.size[0]+x) as usize;
+                output[to..to+width as usize].copy_from_slice(&data[from..from+width as usize]);
+            }
+        }
+    }
+    assert!(output.iter().all(|pixel|pixel.iter().all(|value|value.is_finite())),"the requested exact level must be completely retained");
+    output
+}
+
 fn assert_settled(mut r: &mut WgpuRasterizer, frame: FramePacket<'_>, reference: &[[f32; 4]]) {
     let revision = r.artwork_revision;
     let pages = page_coordinates(PixelRect::full(frame.document_extent)).count();
@@ -91,10 +303,10 @@ fn assert_settled(mut r: &mut WgpuRasterizer, frame: FramePacket<'_>, reference:
     }
     assert!(!r.has_pending_work(), "refinement and its Navigator refresh must settle");
     let cache = r.scale_display.as_ref().unwrap();
-    let error = quality(&display_pixels(r), reference, cache.plan);
+    let error = quality(&display_pixels(r), reference, cache.plan, cache.texture().format());
     assert!(error[2] < 2e-5, "settled display {error:?}");
     if let Some(overview) = &cache.overview {
-        let error = quality(&window_pixels(r, overview.pixels.root().unwrap(), overview.plan), reference, overview.plan);
+        let error = quality(&window_pixels(r, overview.pixels.root().unwrap(), overview.plan), reference, overview.plan, overview.pixels.root().unwrap().texture.format());
         assert!(error[2] < 2e-5, "settled overview {error:?}");
     }
     assert_presentation_mip(r);
@@ -223,14 +435,14 @@ fn native_material_reduction_preserves_small_hdr_corrections() {
     let bytes = |values: &[[f32; 4]]| values.iter().flatten().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
     crate::test_support::upload_page(&r, &base, &bytes(&pigment));
     crate::test_support::upload_page(&r, &source, &bytes(&appearance));
-    let binding = Commands::binding(&r, &source.create_view(&Default::default()),
+    let binding = RegionRecords::binding(&r, &source.create_view(&Default::default()),
         &base.create_view(&Default::default()), &output.create_view(&Default::default()));
-    pollster::block_on(r.compilation.prepare_all([&r.scene_pipelines.scale.reduce])).unwrap();
-    let mut commands = Commands::new(&r);
+    pollster::block_on(r.compilation.prepare_all([&r.scene_pipelines.scale.full.reduce])).unwrap();
+    let mut commands = RegionRecords::new(&r);
     let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
     let mut values = [0; 20];
     values[..8].copy_from_slice(&[0, 0, 1, 1, 256, 256, 2, 128]);
-    commands.reduce(&mut r, &mut encoder, values, &binding, "HDR material correction oracle").unwrap();
+    commands.reduce(&mut r, &mut encoder, values, &binding, "HDR material correction oracle",wgpu::TextureFormat::Rgba32Float).unwrap();
     r.uploads.finish(&encoder); encoder.submit(&r.queue);
     let actual = pixels(&r, &output)[0][0];
     assert!((f64::from(actual) - expected).abs() < 1e-6, "HDR correction {actual}, expected {expected}");
@@ -257,7 +469,7 @@ fn idle_display_converges_to_exact_composition_after_edits() {
             submit_published(&mut r, frame);
             submit_published(&mut exact, frame);
             let reference = pixels(&exact, crate::test_support::document_texture(&exact));
-            let before = quality(&display_pixels(&r), &reference, r.scale_display.as_ref().unwrap().plan);
+            let before = quality(&display_pixels(&r), &reference, r.scale_display.as_ref().unwrap().plan, r.scale_display.as_ref().unwrap().texture().format());
             assert!(before[2] > 1e-4, "fixture must need refinement: {before:?}");
             if step == 0 {
                 crate::test_support::submit_ready(&mut r, FramePacket { composite_all: false, ..frame }).unwrap();
@@ -312,7 +524,7 @@ fn blend_space_changes_refresh_branches_and_source_representations() {
         let sources = &r.scene.as_ref().unwrap().scale_sources;
         assert_eq!(sources.entries[&source_at(&doc,0)].blend_space, space);
         if space == BlendSpace::Perceptual {
-            assert!(sources.complete_texture(doc.scene(), source_at(&doc,0), extent, level).is_none());
+            assert!(!source_copy_ready(&r,doc.scene(),source_at(&doc,0),extent,level));
         }
         if level == 0 {
             let reference = pixels(&exact, crate::test_support::document_texture(&exact));
@@ -367,7 +579,7 @@ fn native_graph_admits_a_full_4k_view_with_bounded_scratch() {
         let scene = r.scene.as_ref().unwrap();
         assert_eq!(cache.plan.level, 0);
         assert!(cache.graph.root.is_some());
-        assert!(scene.scale_sources.entries.values().all(|s| !s.levels.contains_key(&0)));
+        assert!(cache.pages.lock().unwrap().retained_pages().iter().all(|page|page.key.source.is_none() || page.key.level!=0));
         let bytes = resident_bytes_with_pool(cache, scene);
         assert!(bytes <= crate::scene::scale::CACHE_BYTES, "layers={count}, bytes={bytes}");
         assert!(scene.used.iter().all(|used| !used.occupied()));
@@ -408,9 +620,8 @@ fn partial_reduced_views_admit_the_visible_window() {
         frame.view.document_to_surface = [scale, 0., 0., scale, -1600. * scale, -900. * scale];
         r.begin_frame_memory(frame);
         assert_eq!(request(&r, frame).ok().map(|q| q.plan.level), Some(detail));
-        let plan = view_plan(frame, detail, Evaluation::Display).unwrap();
+        let plan = view_plan(frame, detail).unwrap();
         assert!(plan.bounds.area() < PixelRect::full(plan.extent).area());
-        assert!(allocation(&r, plan, frame, None).into_iter().sum::<u64>() <= crate::scene::scale::CACHE_BYTES);
     }
 }
 
@@ -470,7 +681,6 @@ fn streamed_sources_match_cached_pixels_through_masks_paint_and_admission_change
         crate::memory::memory_tests::legacy_scene_frame(&mut streamed, frame);
         submit_published(&mut streamed, frame);
         let full = streamed.scale_display.as_ref().unwrap();
-        assert_eq!(full.streamed_sources, state != 3, "state {state}");
         let full_plan = full.plan;
         let complete = display_pixels(&streamed);
         frame.view.width_px = 192; frame.view.height_px = 128;
@@ -479,7 +689,6 @@ fn streamed_sources_match_cached_pixels_through_masks_paint_and_admission_change
         crate::memory::memory_tests::legacy_scene_frame(&mut cached, frame);
         submit_published(&mut cached, frame);
         let window = cached.scale_display.as_ref().unwrap();
-        assert!(!window.streamed_sources, "cached oracle state {state}");
         let actual = display_pixels(&cached);
         let origin = [window.plan.bounds.min_x() >> 1, window.plan.bounds.min_y() >> 1];
         for (i, pixel) in actual.iter().enumerate() {
@@ -509,23 +718,29 @@ fn streamed_sources_reuse_valid_finer_pages_without_native_decoding() {
     let mut cache = r.scale_display.take().unwrap();
     let mut scene = r.scene.take().unwrap();
     let mut commands = scene.scale_commands.take().unwrap();
-    let source = scene.scale_sources.entries.get_mut(&source_at(&doc,0)).unwrap();
-    assert!(source.levels.contains_key(&2));
-    source.levels.remove(&3);
-    cache.streamed_sources = true;
+    let id=source_at(&doc,0);
+    let mut encoder=submission::CommandEncoder::new(&r.device,&Default::default());
+    scene.begin_frame();
+    cache.prepare_source(&mut scene,&mut r,frame,&mut encoder,id,SourceRequest {plan:display_mips::Plan::at(frame.document_extent,2),required:PixelRect::full(frame.document_extent).into(),covered:PixelRect::EMPTY},WorkClass::Background).unwrap();
+    r.uploads.finish(&encoder);encoder.submit(&r.queue);crate::test_support::complete(&r);
+    assert!(!source_chunks(&cache,id,2).is_empty());
+    cache.pages.lock().unwrap().remove_source_level(id,3);
     for missing in [None, Some([4, 3])] {
-        let source = scene.scale_sources.entries.get_mut(&source_at(&doc,0)).unwrap();
-        if let Some(tile) = missing { assert!(source.levels.get_mut(&2).unwrap().valid.remove(&tile)); }
-        let updates = source.updates;
+        if let Some(tile) = missing {
+            assert!(source_chunks(&cache,id,2).contains(&tile));
+            cache.pages.lock().unwrap().discard_source_chunks(id,2,page_rect(tile));
+        }
+        let updates = scene.scale_sources.entries[&id].updates;
         cache.graph = Default::default();
-        cache.valid.clear();
+        evict_composite_pages(&cache,&[cache.plan.bounds]);
         scene.begin_frame();
         commands.begin();
-        cache.prepare_graph(&r, frame, &scene, &commands, None).unwrap();
+        crate::scene::scale::tests::prepare_fixture_frame(&r, frame, &scene);
+        cache.prepare_graph(&r, frame, &scene).unwrap();
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
         cache.render(&mut scene, &mut r, frame, PixelRect::full(frame.document_extent),
-            &mut Encoding { encoder: &mut encoder, commands: &mut commands }, None).unwrap();
-        commands.flush(&mut r, &mut encoder).unwrap();
+            &mut Encoding { encoder: &mut encoder, commands: &mut commands, retained:[0;2] }, None).unwrap();
+        scene.encode_jobs(&mut r, &mut encoder).unwrap();
         r.uploads.finish(&encoder);
         encoder.submit(&r.queue);
         assert_eq!(scene.scale_sources.entries[&source_at(&doc,0)].updates, updates + u64::from(missing.is_some()),
@@ -560,40 +775,6 @@ fn source_window_growth_remains_admitted_during_rotated_pans() {
         let bytes = resident_bytes_with_pool(cache, scene);
         assert!(bytes <= crate::scene::scale::CACHE_BYTES, "step {step}: {bytes}");
     }
-}
-
-#[test]
-fn retained_windows_stream_sources_when_source_requirements_grow() {
-    let mut doc = document_at([65, 33]);
-    composition_mut(&mut doc).size[0] = 3584; composition_mut(&mut doc).size[1] = 3584;
-    paint_mut(&mut doc,0).domain = [3584;2];
-    for _ in 0..15 {
-        let layer = copy_paint(&mut doc,0);
-        doc.artwork.occurrences.get_mut(layer).unwrap().visible = false;
-        let position=doc.scene().order().len(); insert_occurrence(&mut doc, layer, position);
-    }
-    let mut r = crate::memory::memory_tests::legacy_scene_renderer(doc.composition().color);
-    let mut full = packet(doc.scene(), doc.composition().size);
-    full.view.width_px = doc.composition().size[0];
-    full.view.height_px = doc.composition().size[1];
-    full.view.document_to_surface = [0.5, 0., 0., 0.5, 0., 0.];
-    let previous = view_plan(full, 1, Evaluation::Display).unwrap();
-    assert_eq!(previous.bounds, PixelRect::full(previous.extent));
-    crate::memory::memory_tests::legacy_scene_frame(&mut r, full);
-    assert_eq!(request(&r, full).ok().map(|q| q.plan.level), Some(1));
-    let old = Cache::new(&r, Request { plan: previous, evaluation: Evaluation::Display }, doc.scene().order().len());
-    for i in 0..doc.scene().order().len() { occurrence_mut(&mut doc,i).visible = true; }
-    let mut frame = packet(doc.scene(), doc.composition().size);
-    frame.view.width_px = 192;
-    frame.view.height_px = 128;
-    frame.view.document_to_surface = [0.5, 0., 0., 0.5, 0., 0.];
-    crate::memory::memory_tests::legacy_scene_frame(&mut r, frame);
-    assert_eq!(request(&r, frame).ok().map(|q| q.plan.level), Some(1));
-    assert!(allocation(&r, previous, frame, None).into_iter().sum::<u64>() > crate::scene::scale::CACHE_BYTES);
-    let (selected, _) = Cache::select(Some(old), &r, frame, request(&r, frame).unwrap(), false);
-    assert_eq!(selected.plan, previous);
-    assert!(selected.streamed_sources);
-    assert!(allocation_for(&r, selected.plan, frame, None, true, None).into_iter().sum::<u64>() <= crate::scene::scale::CACHE_BYTES);
 }
 
 #[test]
@@ -642,7 +823,7 @@ fn view_windows_reuse_overlap_and_preserve_global_sampling() {
             if detail == 0 { assert!(cache.plan.bounds.area() < PixelRect::full(extent).area() / 2); }
             if let Some(overview) = &cache.overview { assert!(overview.plan.level > cache.plan.level); }
 
-            assert!(quality(&display_pixels(&r), &oracle, cache.plan)[2] < 2e-5, "view={i}");
+            assert!(quality(&display_pixels(&r), &oracle, cache.plan, cache.texture().format())[2] < 2e-5, "view={i}");
             assert_presentation_mip(&r);
             if i == 1 { assert_eq!(r.metrics.composited_pixels, work); }
             if i == 2 { assert!(r.metrics.composited_pixels - work < cache.plan.size.map(u64::from).into_iter().product()); }
@@ -657,7 +838,7 @@ fn view_windows_reuse_overlap_and_preserve_global_sampling() {
             let complete = whole.scale_display.as_ref().unwrap();
             assert_eq!(complete.plan.bounds, PixelRect::full(extent));
             assert_eq!(complete.plan.level, cache.plan.level);
-            assert!(quality(&display_pixels(&whole), &oracle, complete.plan)[2] < 2e-5);
+            assert!(quality(&display_pixels(&whole), &oracle, complete.plan, complete.texture().format())[2] < 2e-5);
             let reference = surface(&whole, &mut reference_presenter, frame.view);
             let error = crate::test_support::max_error(&actual, &reference);
             assert!(error < 0.0001, "window presentation detail={detail} view={i} plan={:?} error={error}", cache.plan);
@@ -671,9 +852,9 @@ fn view_windows_reuse_overlap_and_preserve_global_sampling() {
         submit_published(&mut exact, frame);
         let cache = r.scale_display.as_ref().unwrap();
         let oracle = pixels(&exact, crate::test_support::document_texture(&exact));
-        assert!(quality(&display_pixels(&r), &oracle, cache.plan)[2] < 2e-5);
+        assert!(quality(&display_pixels(&r), &oracle, cache.plan, cache.texture().format())[2] < 2e-5);
         if let Some(overview) = &cache.overview {
-            assert!(quality(&pixels(&r, overview.texture()), &oracle, overview.plan)[2] < 2e-5);
+            assert!(quality(&pixels(&r, overview.texture()), &oracle, overview.plan, overview.texture().format())[2] < 2e-5);
         }
         assert_presentation_mip(&r);
     }
@@ -713,7 +894,7 @@ fn offset_sources_and_masks_compose_in_document_scale_and_keep_exact_queries() {
     let mut r = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
     let mut exact = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
     exact.test.reference = true;
-    for (pose, offset) in [[16, 32], [-120, 32], [30, 4], [-17, 21]].into_iter().enumerate() {
+    for (pose, offset) in [[16, 32], [-120, 32], [30, 4], [-17, 21], [37, 0], [0, 101]].into_iter().enumerate() {
         occurrence_mut(&mut doc,0).offset = offset;
         occurrence_mut(&mut doc,0).mask.as_mut().unwrap().inverted = pose % 2 != 0;
         for enabled in [true, false] {
@@ -727,7 +908,7 @@ fn offset_sources_and_masks_compose_in_document_scale_and_keep_exact_queries() {
                 let cache = r.scale_display.as_ref().unwrap();
                 assert_eq!(cache.plan.level, level);
 
-                let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan);
+                let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan, cache.texture().format());
                 assert!(error[0] < 0.004 && error[1] < 0.04, "pose={pose} level={level}: {error:?}");
                 assert_presentation_mip(&r);
                 let actual = r.readback_srgb_rgba8().unwrap();
@@ -757,7 +938,7 @@ fn source_windows_keep_overlap_and_sample_global_coordinates() {
         crate::memory::memory_tests::legacy_scene_frame(&mut r, frame);
         submit_published(&mut r, frame); submit_published(&mut exact, frame);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while r.object_deferred || r.moving_decode.as_ref().is_some_and(|(_, queue)| queue.pending()) {
+        while crate::scene::scale::tests::publication_pending(&r) || r.moving_decode.as_ref().is_some_and(|(_, queue)| queue.pending()) {
             assert!(std::time::Instant::now() < deadline, "moving source tiles must decode and publish");
             r.wait_idle().unwrap();
             crate::test_support::submit_ready(&mut r, frame).unwrap();
@@ -765,16 +946,17 @@ fn source_windows_keep_overlap_and_sample_global_coordinates() {
         let cache = r.scale_display.as_ref().unwrap();
 
         let sources = &r.scene.as_ref().unwrap().scale_sources;
-        assert!(sources.storage_bytes() < 8 << 20, "small output retains bounded source windows: {}", sources.storage_bytes());
+        let bytes=sources.storage_bytes()+sources.entries.keys().flat_map(|id|source_textures(&r,*id,None)).map(|texture|texture_bytes(&texture)).sum::<u64>();
+        assert!(bytes < 8 << 20, "small output retains bounded source windows: {bytes}");
         let source = &sources.entries[&source_at(&doc,0)];
-        let images: Vec<_> = source.levels.values().map(|l| l.image.texture.clone()).collect();
+        let images = source_textures(&r,source_at(&doc,0),None);
         if step == 1 || step == 3 {
             assert_eq!(source.updates, updates, "motion inside the retained window reuses source pixels");
             assert_eq!(previous.as_ref().unwrap(), &images, "covered motion retains the same textures");
         }
         previous = Some(images);
         updates = source.updates;
-        let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan);
+        let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan, cache.texture().format());
         assert!(error[0] < 0.004 && error[1] < 0.04, "step={step}: {error:?}");
         assert_presentation_mip(&r);
     }
@@ -782,7 +964,7 @@ fn source_windows_keep_overlap_and_sample_global_coordinates() {
     occurrence_mut(&mut doc,0).offset = [-100, -100];
     let frame = packet(doc.scene(), extent);
     submit_published(&mut r, frame); submit_published(&mut exact, frame);
-    let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), r.scale_display.as_ref().unwrap().plan);
+    let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), r.scale_display.as_ref().unwrap().plan, r.scale_display.as_ref().unwrap().texture().format());
     assert!(error[0] < 0.004 && error[1] < 0.04, "native offset after a partial source: {error:?}");
 }
 
@@ -797,14 +979,21 @@ fn cold_identity_sources_prepare_adjacent_detail_without_redecoding() {
     let source = &r.scene.as_ref().unwrap().scale_sources.entries[&source_at(&doc,0)];
     let updates = source.updates;
     assert_eq!(updates, 20);
-    assert!(source.levels.contains_key(&2) && source.levels.contains_key(&3));
-    let finer = source.levels[&2].image.texture.clone();
+    assert!(source_levels(r.scale_display.as_ref().unwrap(),source_at(&doc,0)).contains_key(&3));
+    let mut cache=r.scale_display.take().unwrap();let mut scene=r.scene.take().unwrap();
+    let mut encoder=submission::CommandEncoder::new(&r.device,&Default::default());scene.begin_frame();
+    cache.prepare_source(&mut scene,&mut r,frame,&mut encoder,source_at(&doc,0),SourceRequest {plan:display_mips::Plan::at(frame.document_extent,2),required:PixelRect::full(frame.document_extent).into(),covered:PixelRect::EMPTY},WorkClass::Background).unwrap();
+    r.uploads.finish(&encoder);encoder.submit(&r.queue);crate::test_support::complete(&r);
+    let updates=scene.scale_sources.entries[&source_at(&doc,0)].updates;
+    let levels=source_levels(&cache,source_at(&doc,0)).keys().copied().collect::<BTreeSet<_>>();
+    let finer = source_textures_in(&cache,source_at(&doc,0),Some(2));
+    assert!(!finer.is_empty());r.scale_display=Some(cache);r.scene=Some(scene);
     frame.view.document_to_surface = [0.25, 0., 0., 0.25, 0., 0.];
     submit_published(&mut r, frame);
     let source = &r.scene.as_ref().unwrap().scale_sources.entries[&source_at(&doc,0)];
     assert_eq!(source.updates, updates);
-    assert_eq!(source.levels[&2].image.texture, finer);
-    assert!(!source.levels.contains_key(&1), "scale changes must not repeatedly promote optional detail");
+    assert_eq!(source_textures(&r,source_at(&doc,0),Some(2)), finer);
+    assert_eq!(source_levels(r.scale_display.as_ref().unwrap(),source_at(&doc,0)).keys().copied().collect::<BTreeSet<_>>(),levels,"scale changes must not repeatedly promote optional detail");
 }
 
 #[test]
@@ -843,7 +1032,6 @@ fn source_retention_reserves_images_that_composition_allocates_later() {
         }
         let cache = Cache::new(&r, Request { plan: display_mips::Plan::at(frame.document_extent, 2), evaluation: Evaluation::Display }, doc.scene().order().len());
         assert!(cache.output.is_empty() && cache.pixels.next().is_none());
-        let source_budget = cache.source_budget(&r, frame, &Commands::new(&r), None);
         r.scale_display = Some(cache);
         submit_published(&mut r, frame);
         let cache = r.scale_display.as_ref().unwrap();
@@ -851,8 +1039,7 @@ fn source_retention_reserves_images_that_composition_allocates_later() {
         let commands = r.scene.as_ref().unwrap().scale_commands.as_ref().unwrap();
         let scene = r.scene.as_ref().unwrap();
         let material_bytes = scene.pool.iter().map(PageSurface::storage_bytes).sum::<u64>();
-        let total = source_budget + cache.storage_bytes() + commands.storage_bytes() + material_bytes;
-        eprintln!("material={material}: prospective_source={source_budget}, later_display={}, later_material={material_bytes}, total={total}", cache.storage_bytes());
+        let total = cache.storage_bytes() + commands.storage_bytes() + material_bytes;
         assert!(total <= crate::scene::scale::CACHE_BYTES, "prospective sources and later outputs/material must stay admitted: {total}");
     }
 }
@@ -865,33 +1052,47 @@ fn source_windows_derive_across_origins_and_fill_only_missing_pages() {
     let mut r = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
     let mut frame = packet(doc.scene(), extent);
     submit_published(&mut r, frame);
-    let reference = pixels(&r, r.scale_display.as_ref().unwrap().texture());
+    let mut exact=WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();exact.test.reference=true;
+    submit_published(&mut exact,frame);
+    let reference=pixels(&exact,crate::test_support::document_texture(&exact));
     frame.view.document_to_surface = [0.125, 0., 0., 0.125, 0., 0.];
     submit_published(&mut r, frame);
-    let mut scene = r.scene.take().unwrap();
+    let mut scene = r.scene.take().unwrap();let mut cache=r.scale_display.take().unwrap();
     let full = PixelRect::full(extent);
     let window = PixelRect::new(256, 256, extent[0], extent[1]);
     for (fine, coarse) in [(full, window), (window, full)] {
-        let mut commands = Commands::new(&r);
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-        scene.prepare_scale_color(&mut commands, &mut r, frame, &mut encoder, doc.scene().order()[0], SourceRequest {
-            plan: display_mips::Plan::window(extent, 1, fine), required: fine.into(), covered: PixelRect::EMPTY,
-        }).unwrap();
-        scene.scale_sources.entries.get_mut(&id).unwrap().levels.remove(&2);
-        let plan = display_mips::Plan::window(extent, 2, coarse);
-        let updates = scene.scale_sources.entries[&id].updates;
-        scene.scale_sources.ensure_level(&mut commands, &mut r, &mut encoder, id, plan).unwrap();
-        let complete = scene.scale_sources.image(id, 2).valid.len();
-        assert_eq!(complete, page_coordinates(fine.intersect(coarse)).count());
-        assert_eq!(scene.scale_sources.entries[&id].updates, updates);
-        scene.prepare_scale_color(&mut commands, &mut r, frame, &mut encoder, doc.scene().order()[0], SourceRequest {
-            plan, required: coarse.into(), covered: PixelRect::EMPTY,
-        }).unwrap();
-        assert_eq!(scene.scale_sources.entries[&id].updates - updates, (page_coordinates(coarse).count() - complete) as u64);
-        r.uploads.finish(&encoder); encoder.submit(&r.queue);
-        let actual = pixels(&r, &scene.scale_sources.image(id, 2).image.texture);
-        assert!(quality(&actual, &reference, plan)[2] < 1e-6);
-        assert_eq!(scene.scale_sources.complete_texture(doc.scene(), source_at(&doc,0), extent, 2).is_some(), coarse == full);
+        cache.pages.lock().unwrap().remove_source_level(id,1);
+        scene.begin_frame();
+        cache.prepare_source(&mut scene,&mut r,frame,&mut encoder,id,SourceRequest {
+            plan:display_mips::Plan::window(extent,1,fine),required:fine.into(),covered:PixelRect::EMPTY,
+        },WorkClass::Background).unwrap();
+        cache.pages.lock().unwrap().remove_source_level(id,2);
+        let plan=display_mips::Plan::window(extent,2,coarse);
+        let updates=scene.scale_sources.entries[&id].updates;
+        scene.begin_frame();
+        cache.prepare_source(&mut scene,&mut r,frame,&mut encoder,id,SourceRequest {plan,required:fine.intersect(coarse).into(),covered:PixelRect::EMPTY},WorkClass::Background).unwrap();
+        let complete=source_chunks(&cache,id,2).len();
+        assert_eq!(complete,page_coordinates(fine.intersect(coarse)).count());
+        assert_eq!(scene.scale_sources.entries[&id].updates,updates);
+        scene.begin_frame();
+        cache.prepare_source(&mut scene,&mut r,frame,&mut encoder,id,SourceRequest {plan,required:coarse.into(),covered:PixelRect::EMPTY},WorkClass::Background).unwrap();
+        assert_eq!(scene.scale_sources.entries[&id].updates-updates,(page_coordinates(coarse).count()-complete) as u64);
+        r.uploads.finish(&encoder);encoder.submit(&r.queue);
+        let image=source_image(&r,&cache,&scene.scale_sources.entries[&id],id,plan);
+        let actual=pixels(&r,&image.texture);
+        let error=quality(&actual,&reference,plan,image.texture.format());
+        let first=(error[2]>=1e-6).then(||actual.iter().enumerate().find_map(|(index,actual)| {
+            let side=1<<plan.level;let x=plan.bounds.min_x()+index as u32%plan.size[0]*side;
+            let y=plan.bounds.min_y()+index as u32/plan.size[0]*side;let mut expected=[0.;4];let mut count=0.;
+            for yy in y..(y+side).min(plan.bounds.max_y()) {for xx in x..(x+side).min(plan.bounds.max_x()) {
+                for c in 0..4 {expected[c]+=reference[(yy*extent[0]+xx) as usize][c];}count+=1.;
+            }}
+            let expected=committed_color(image.texture.format(),expected.map(|value|value/count));
+            actual.iter().zip(expected).any(|(a,b)|(*a-b).abs()>=1e-6).then_some(([x,y],*actual,expected))
+        }));
+        assert!(error[2]<1e-6,"source window fine={fine:?} coarse={coarse:?} error={error:?} first={first:?}");
+        assert_eq!(source_chunks(&cache,id,2).len()==page_coordinates(full).count(),coarse==full);
     }
 }
 
@@ -914,7 +1115,7 @@ fn moving_layer_crossing_identity_keeps_the_prepared_source() {
         let source = &r.scene.as_ref().unwrap().scale_sources.entries[&id];
         let level = *prepared_level.get_or_insert_with(|| source_level(r.scale_display.as_ref().unwrap().plan.level,
             source_frame(Some(&r.scene.as_ref().unwrap().scale_sources), doc.scene(), id)));
-        let current = (source.updates, source.levels[&level].image.texture.clone());
+        let current = (source.updates,source_textures(&r,id,Some(level)));
         assert_eq!(prepared.get_or_insert_with(|| current.clone()), &current,
             "moving an unchanged photo through its original position must reuse its pixels");
         assert!(!r.has_pending_work(), "an unfinished move must not schedule exact refinement");
@@ -935,8 +1136,7 @@ fn moving_layer_crossing_identity_keeps_the_prepared_source() {
     submit_published(&mut fresh, frame);
     let actual = display_pixels(&r);
     let expected = display_pixels(&fresh);
-    let describe = |r: &WgpuRasterizer| r.scene.as_ref().unwrap().scale_sources.entries[&id].levels.iter()
-        .map(|(level, image)| (*level, r.scene.as_ref().unwrap().scale_sources.entries[&id].accepts(image), image.valid.len())).collect::<Vec<_>>();
+    let describe = |r:&WgpuRasterizer|source_levels(r.scale_display.as_ref().unwrap(),id).into_iter().map(|(level,chunks)|(level,chunks.len())).collect::<Vec<_>>();
     assert_eq!(actual.len(), expected.len());
     let error = actual.iter().zip(&expected).flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
         .fold(0f32, f32::max);
@@ -1035,7 +1235,7 @@ fn deferred_transform_preview_navigator_preserves_coarse_artwork() {
         frame.time_seconds = step as f32 * 0.1;
         frame.view.document_to_surface = [0.25, 0., 0., 0.25, 8.25, 7.5];
         crate::test_support::submit_ready(&mut r, frame).unwrap(); crate::test_support::submit_settled(&mut exact, frame);
-        assert!(r.scale_display.as_ref().unwrap().placed.is_some());
+        assert_keyed_presentation(&r);
         for size in [[128, 77], [64, 39], [32, 19], [16, 10], [7, 4]] {
             let actual = overview(&r, size);
             let high = size.map(|n| n * 8);
@@ -1066,20 +1266,21 @@ fn deriving_partial_sources_preserves_completed_texels_between_refreshed_regions
     submit_published(&mut r, frame);
     let mut scene = r.scene.take().unwrap();
     let id = source_at(&doc,0);
-    let expected = pixels(&r, &scene.scale_sources.image(id, 3).image.texture);
-    let mut commands = Commands::new(&r);
+    let mut cache=r.scale_display.take().unwrap();
+    let plan=display_mips::Plan::at(extent,3);
+    let expected=pixels(&r,&source_image(&r,&cache,&scene.scale_sources.entries[&id],id,plan).texture);
     let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-    for tile in [[0, 0], [3, 3]] {
-        scene.scale_sources.entries.get_mut(&id).unwrap().levels.get_mut(&3).unwrap().valid.remove(&tile);
-        scene.prepare_scale_color(&mut commands, &mut r, frame, &mut encoder, doc.scene().order()[0],
-            SourceRequest { plan: display_mips::Plan::at(extent, 1), required: page_rect(tile).into(), covered: PixelRect::EMPTY }).unwrap();
+    for tile in [[0,0],[3,3]] {
+        cache.pages.lock().unwrap().discard_source_chunks(id,3,page_rect(tile));
+        scene.begin_frame();
+        cache.prepare_source(&mut scene,&mut r,frame,&mut encoder,id,SourceRequest {plan:display_mips::Plan::at(extent,1),required:page_rect(tile).into(),covered:PixelRect::EMPTY},WorkClass::Background).unwrap();
     }
-    scene.scale_sources.ensure_level(&mut commands, &mut r, &mut encoder, id, display_mips::Plan::at(extent, 3)).unwrap();
-    r.uploads.finish(&encoder);
-    encoder.submit(&r.queue);
-    let actual = pixels(&r, &scene.scale_sources.image(id, 3).image.texture);
-    assert!(actual.iter().flatten().zip(expected.iter().flatten()).all(|(a,b)| (a-b).abs() < 1e-6));
-    assert_eq!(scene.scale_sources.image(id, 3).valid.len(), 16);
+    scene.begin_frame();
+    cache.prepare_source(&mut scene,&mut r,frame,&mut encoder,id,SourceRequest {plan,required:PixelRect::full(extent).into(),covered:PixelRect::EMPTY},WorkClass::Background).unwrap();
+    r.uploads.finish(&encoder);encoder.submit(&r.queue);
+    let actual=pixels(&r,&source_image(&r,&cache,&scene.scale_sources.entries[&id],id,plan).texture);
+    assert!(actual.iter().flatten().zip(expected.iter().flatten()).all(|(a,b)|(a-b).abs()<1e-6));
+    assert_eq!(source_chunks(&cache,id,3).len(),16);
 }
 
 #[test]
@@ -1124,7 +1325,7 @@ fn groups_clipping_and_all_blends_share_exact_stack_semantics() {
             submit_published(&mut reduced, frame);
             submit_published(&mut exact, frame);
             let cache = reduced.scale_display.as_ref().unwrap();
-            let error = quality(&display_pixels(&reduced), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan);
+            let error = quality(&display_pixels(&reduced), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan, cache.texture().format());
             assert!(error[2] < 2e-5, "{mode:?} state={state}: {error:?}");
             assert_presentation_mip(&reduced);
 
@@ -1169,7 +1370,7 @@ fn cached_branches_recompose_logarithmic_work_and_preserve_untouched_regions() {
             let records = scene.scale_commands.as_ref().unwrap().cursor;
             assert!(records <= record_bound, "32 photos, first paint on an empty layer and end edits must reuse the other branches: step={step} {kind:?}, {records} > {record_bound}");
             let cache = r.scale_display.as_ref().unwrap();
-            let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan);
+            let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan, cache.texture().format());
             assert!(error[0] < 0.003 && error[1] < 0.025, "step={step} kind={kind:?}: {error:?}");
             assert_presentation_mip(&r);
             assert!(resident_bytes(cache, scene) <= crate::scene::scale::CACHE_BYTES);
@@ -1185,7 +1386,7 @@ fn cached_branches_recompose_logarithmic_work_and_preserve_untouched_regions() {
         crate::test_support::submit_published(&mut r, frame(doc.scene(), extent));
         crate::test_support::submit_published(&mut exact, frame(doc.scene(), extent));
         let cache = r.scale_display.as_ref().unwrap();
-        let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan);
+        let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan, cache.texture().format());
         assert!(error[0] < 0.003 && error[1] < 0.025, "metadata step={step}: {error:?}");
     }
 }
@@ -1237,29 +1438,12 @@ fn layer_edits_reuse_balanced_branches_across_the_stack() {
                     let work = blends(cache.graph.root.as_ref().unwrap(), target).unwrap();
                     assert!(work <= bound, "{count} static layers, {space:?}, paper={paper}, layer={:?}: {work} > {bound}", target);
                 }
-                let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan);
+                let error = quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan, cache.texture().format());
                 assert!(error[0] < 0.003 && error[1] < 0.025, "{count} static layers, {space:?}, index={index}: {error:?}");
                 assert_presentation_mip(&r);
             }
         }
     }
-}
-
-#[test]
-fn output_damage_initializes_cold_pages_and_aligns_separated_warm_cells() {
-    let plan = display_mips::Plan::at([513, 259], 2);
-    let initialized = page_coordinates(plan.bounds).filter(|c| *c != [1, 0]).collect();
-    let damage = Damage::from_regions([
-        PixelRect::new(5, 5, 6, 6), PixelRect::new(249, 249, 250, 250),
-        PixelRect::new(512, 258, 513, 259),
-    ]);
-    let regions = damage.update_regions(plan, &initialized);
-    assert_eq!(regions.len(), 4);
-    for expected in [PixelRect::new(256, 0, 512, 256), PixelRect::new(4, 4, 8, 8),
-        PixelRect::new(248, 248, 252, 252), PixelRect::new(512, 256, 513, 259)] {
-        assert!(regions.contains(&expected), "missing required update {expected:?}: {regions:?}");
-    }
-    assert_eq!(regions.iter().map(|r| r.area()).sum::<u64>(), u64::from(PAGE_SIZE).pow(2) + 35);
 }
 
 #[test]
@@ -1360,7 +1544,7 @@ fn masks_refresh_coverage_properties_and_paint_without_exact_display() {
         submit_published(&mut reduced, frame);
         submit_published(&mut exact, FramePacket { composite_all: true, ..frame });
         let cache = reduced.scale_display.as_ref().unwrap();
-        let error = quality(&display_pixels(&reduced), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan);
+        let error = quality(&display_pixels(&reduced), &pixels(&exact, crate::test_support::document_texture(&exact)), cache.plan, cache.texture().format());
         assert!(error[0] < 0.001 && error[1] < 0.015, "moving mask state={state}: {error:?}");
         assert_presentation_mip(&reduced);
         assert_settled(&mut reduced, frame, &pixels(&exact, crate::test_support::document_texture(&exact)));
@@ -1373,60 +1557,27 @@ fn masks_refresh_coverage_properties_and_paint_without_exact_display() {
 pub(crate) fn display_pixels(r: &WgpuRasterizer) -> Vec<[f32; 4]> {
     pixels(r, &materialized_display(r).texture)
 }
+fn assert_keyed_presentation(r:&WgpuRasterizer) {
+    let cache=r.scale_display.as_ref().unwrap();
+    assert!(cache.coverage_complete());
+    assert!(cache.pixels.root().is_some());
+    let pages=cache.pages.lock().unwrap().retained_pages();
+    assert!(pages.iter().any(|page|!page.current.is_empty()),"presentation must have committed current keyed pixels");
+}
 fn materialized_display(r: &WgpuRasterizer) -> Image {
     let cache = r.scale_display.as_ref().unwrap();
-    if let Some(root) = &cache.placed {
-        let [width, height] = cache.plan.size;
-        let texels = [0, 0, width, height];
-        let values = match root {
-            Presentation::Placed(p) => p.value.record(cache.plan, texels).unwrap(),
-            Presentation::Mapped(p) => {
-                let mut values = p.values;
-                let side = (1 << cache.plan.level) as f32;
-                for row in values[..128].as_chunks_mut::<16>().0 { for component in row[..8].as_chunks_mut::<4>().0 {
-                    let n = f32::from_le_bytes(*component) * side;
-                    component.copy_from_slice(&n.to_le_bytes());
-                }}
-                for (dst, n) in values[144..160].as_chunks_mut::<4>().0.iter_mut().zip(texels) { dst.copy_from_slice(&n.to_le_bytes()); }
-                for (dst, n) in values[208..216].as_chunks_mut::<4>().0.iter_mut().zip(cache.plan.extent) { dst.copy_from_slice(&(n as f32 / side).to_le_bytes()); }
-                values
-            }
-        };
-        let uniforms = r.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("materialized display query"), contents: &values,
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let (texture, view) = create_color_target(&r.device, cache.plan.size, "materialized display query");
-        let pass = &r.scene_pipelines.resample;
-        pollster::block_on(r.compilation.prepare_all([&pass.area])).unwrap();
-        pollster::block_on(r.compilation.prepare_all([&pass.mesh[4]])).unwrap();
-        let kept = match root { Presentation::Placed(_) => root.view(), Presentation::Mapped(_) => root.next() };
-        let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-        match root {
-            Presentation::Placed(_) => {
-                let binding = pass.binding(&r.device, &uniforms, 0, [root.view(), &view, kept]);
-                pass.encode(&mut encoder, &binding, texels);
-            }
-            Presentation::Mapped(_) => {
-                let binding = pass.mesh_binding(&r.device, &uniforms, &[root.view().clone(), kept.clone()]);
-                pass.encode_mesh(&mut encoder, &binding, &view, texels, None, false);
-            }
-        }
-        encoder.submit(&r.queue);
-        Image { texture, view, plan: cache.plan }
-    } else {
-        let image = cache.pixels.root().unwrap();
-        if image.plan == cache.plan { return image.clone(); }
-        let output = Image::new(r, cache.plan, "display window query");
-        let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-        encoder.copy_texture_to_texture(wgpu::TexelCopyTextureInfo {
-            origin: wgpu::Origin3d { x: cache.plan.bounds.min_x() >> cache.plan.level, y: cache.plan.bounds.min_y() >> cache.plan.level, z: 0 },
-            ..image.texture.as_image_copy()
-        }, output.texture.as_image_copy(), wgpu::Extent3d { width: cache.plan.size[0], height: cache.plan.size[1], depth_or_array_layers: 1 });
-        encoder.submit(&r.queue);
-        output
-    }
+    let image = cache.pixels.root().unwrap();
+    if image.plan == cache.plan { return image.clone(); }
+    let output = Image::new(r, cache.plan, "display window query");
+    let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
+    encoder.copy_texture_to_texture(wgpu::TexelCopyTextureInfo {
+        origin: wgpu::Origin3d { x: cache.plan.bounds.min_x() >> cache.plan.level, y: cache.plan.bounds.min_y() >> cache.plan.level, z: 0 },
+        ..image.texture.as_image_copy()
+    }, output.texture.as_image_copy(), wgpu::Extent3d { width: cache.plan.size[0], height: cache.plan.size[1], depth_or_array_layers: 1 });
+    encoder.submit(&r.queue);
+    output
 }
+
 fn window_pixels(r: &WgpuRasterizer, image: &Image, plan: display_mips::Plan) -> Vec<[f32; 4]> {
     let pixels = pixels(r, &image.texture);
     let [x, y, width, height] = paint_transform::texel_rect(plan.bounds.window_local(image.plan.bounds), 1 << plan.level);
@@ -1435,12 +1586,8 @@ fn window_pixels(r: &WgpuRasterizer, image: &Image, plan: display_mips::Plan) ->
 
 fn assert_presentation_mip(r: &WgpuRasterizer) {
     let cache = r.scale_display.as_ref().unwrap();
-    let (input, actual, plan) = if let Some(Presentation::Placed(root)) = &cache.placed {
-        let source = &r.scene.as_ref().unwrap().scale_sources;
-        (pixels(r, &source.image(root.value.id, root.value.plan.level).image.texture),
-            pixels(r, &source.image(root.value.id, root.value.plan.level + 1).image.texture), root.value.plan)
-    } else { (display_pixels(r), window_pixels(r, cache.pixels.next().unwrap(),
-        display_mips::Plan::window(cache.plan.extent, cache.plan.level + 1, cache.plan.bounds)), cache.plan) };
+    let (input, actual, plan) = (display_pixels(r), window_pixels(r, cache.pixels.next().unwrap(),
+        display_mips::Plan::window(cache.plan.extent, cache.plan.level + 1, cache.plan.bounds)), cache.plan);
     let size = plan.level_size(plan.level + 1);
     let side = 1 << plan.level;
     for y in 0..size[1] {
@@ -1458,18 +1605,47 @@ fn assert_presentation_mip(r: &WgpuRasterizer) {
                     area += weight;
                 }
             }
+            let expected=sum.map(|value|value/area);
+            let format=cache.pixels.next().unwrap().texture.format();
             for c in 0..4 {
-                assert!(
-                    (actual[(y * size[0] + x) as usize][c] - sum[c] / area).abs() < 1e-5,
-                    "adjacent output level must include every changed region and weight partial cells"
+                let value=actual[(y * size[0] + x) as usize][c];
+                let allowed=match format {
+                    wgpu::TextureFormat::Rgba16Float=>half_storage_bounds(expected[c]),
+                    wgpu::TextureFormat::Rgba32Float=>[expected[c];2],
+                    format=>panic!("unexpected committed page format: {format:?}"),
+                };
+                let matches=if format==wgpu::TextureFormat::Rgba16Float {allowed.contains(&value)}
+                    else {(value-expected[c]).abs()<1e-5};
+                assert!(matches,
+                    "adjacent output must weight partial cells; WGSL half storage permits either bracketing value: level={} at={:?} channel={c} actual={value} exact_mean={} allowed={allowed:?} max_adjacent={} format={format:?}",
+                    plan.level,[x,y],expected[c],allowed[1]-allowed[0]
                 );
             }
         }
     }
 }
 
-pub(crate) fn quality(actual: &[[f32; 4]], exact: &[[f32; 4]], plan: display_mips::Plan) -> [f32; 3] {
-    quality_linear(actual, exact, plan, |color| color)
+fn half_storage_bounds(value:f32)->[f32;2] {
+    assert!(value.is_finite(),"storage mean must be finite: {value}");
+    let rounded=layer_core::color::f16::from_f32(value);
+    let nearest=rounded.to_f32();
+    if nearest==value {return [value;2];}
+    let upward=value>nearest;
+    let step=if upward==nearest.is_sign_positive() {1}else {-1};
+    let adjacent=layer_core::color::f16::from_bits(rounded.to_bits().wrapping_add_signed(step)).to_f32();
+    [nearest.min(adjacent),nearest.max(adjacent)]
+}
+
+fn committed_color(format:wgpu::TextureFormat,pixel:[f32;4])->[f32;4] {
+    match format {
+        wgpu::TextureFormat::Rgba16Float=>pixel.map(|value|layer_core::color::f16::from_f32(value).to_f32()),
+        wgpu::TextureFormat::Rgba32Float=>pixel,
+        format=>panic!("unexpected committed page format: {format:?}"),
+    }
+}
+
+pub(crate) fn quality(actual: &[[f32; 4]], exact: &[[f32; 4]], plan: display_mips::Plan, format: wgpu::TextureFormat) -> [f32; 3] {
+    quality_linear(actual, exact, plan, format, |color| color)
 }
 
 fn linear_color(color: [f32; 4], space: layer_core::BlendSpace, rgb: layer_core::color::RgbSpace) -> [f32; 4] {
@@ -1480,7 +1656,7 @@ fn linear_color(color: [f32; 4], space: layer_core::BlendSpace, rgb: layer_core:
      rgb.decode(f64::from(color[2] / a)) as f32 * a, a]
 }
 
-fn quality_linear(actual: &[[f32; 4]], exact: &[[f32; 4]], plan: display_mips::Plan, linear: impl Fn([f32; 4]) -> [f32; 4]) -> [f32; 3] {
+fn quality_linear(actual: &[[f32; 4]], exact: &[[f32; 4]], plan: display_mips::Plan, format: wgpu::TextureFormat, linear: impl Fn([f32; 4]) -> [f32; 4]) -> [f32; 3] {
     let side = 1 << plan.level;
     let mut errors = Vec::new();
     for y in 0..plan.size[1] {
@@ -1496,7 +1672,7 @@ fn quality_linear(actual: &[[f32; 4]], exact: &[[f32; 4]], plan: display_mips::P
                 }
             }
             let a = linear(actual[(y * plan.size[0] + x) as usize]);
-            let b = linear(sum.map(|v| v / count));
+            let b = linear(committed_color(format, sum.map(|v| v / count)));
             for c in 0..4 { errors.push((a[c] - b[c]).abs()); }
         }
     }
@@ -1530,7 +1706,7 @@ fn scaled_composition_preserves_exact_paint_and_replaces_full_display() {
     let plan = r.scale_display.as_ref().unwrap().plan;
     assert_eq!(plan.level, 3);
     assert_eq!(plan.bounds, PixelRect::full(extent));
-    assert!(quality(&original, &reference, plan)[2] < 1e-5);
+    assert!(quality(&original, &reference, plan, r.scale_display.as_ref().unwrap().texture().format())[2] < 1e-5);
     let mut dab = crate::tests::test_dab([255., 129.], [0.9, 0.02, 0.1, 0.7], 1.);
     dab.radii = [45.; 2];
     let batch = dab_batch(
@@ -1557,7 +1733,7 @@ fn scaled_composition_preserves_exact_paint_and_replaces_full_display() {
             assert!(
                 r.preview_pages
                     .iter()
-                    .all(|p| p.primary.texture.width() == 64)
+                    .all(|p| p.primary.size().width == 64)
             );
             assert!(r.preview_coverage_pages.is_empty());
         }
@@ -1565,7 +1741,7 @@ fn scaled_composition_preserves_exact_paint_and_replaces_full_display() {
         let error = quality(
             &pixels(&r, coarse.texture()),
             &pixels(&exact, crate::test_support::document_texture(&exact)),
-            coarse.plan,
+            coarse.plan, coarse.texture().format(),
         );
         assert!(
             error[0] < 0.003,
@@ -1589,7 +1765,7 @@ fn scaled_composition_preserves_exact_paint_and_replaces_full_display() {
     crate::test_support::submit_ready(&mut r, p).unwrap();
     assert_eq!(r.scale_display.as_ref().unwrap().plan.level, 0);
 
-    assert!(quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), r.scale_display.as_ref().unwrap().plan)[2] < 1e-6);
+    assert!(quality(&display_pixels(&r), &pixels(&exact, crate::test_support::document_texture(&exact)), r.scale_display.as_ref().unwrap().plan, r.scale_display.as_ref().unwrap().texture().format())[2] < 1e-6);
 }
 
 #[test]
@@ -1641,14 +1817,14 @@ fn native_predictions_match_exact_composition_before_layer_opacity_and_blending(
                 crate::test_support::submit_ready(&mut exact, FramePacket { dab_batches: if prediction { std::slice::from_ref(&oracle_batch) } else { &[] }, ..stroke }).unwrap();
                 let actual = display_pixels(&r);
                 let expected = pixels(&exact, crate::test_support::document_texture(&exact));
-                let error = quality(&actual, &expected, r.scale_display.as_ref().unwrap().plan);
+                let error = quality(&actual, &expected, r.scale_display.as_ref().unwrap().plan, r.scale_display.as_ref().unwrap().texture().format());
                 assert!(error[2] < 1e-6, "{preset:?} target={target:?}, mode={mode:?}, preview={prediction}: {error:?}");
                 if prediction {
                     assert_ne!(actual, original);
                     assert_eq!(r.preview_level, 0);
                     assert!(!r.preview_contribution, "{preset:?}/{mode:?} plain scene uses native underpaint");
                     assert!(!exact.preview_contribution);
-                    assert!(r.preview_pages.iter().all(|p| p.primary.texture.width() == PAGE_SIZE));
+                    assert!(r.preview_pages.iter().all(|p| p.primary.size().width == PAGE_SIZE));
                 }
                 else { assert_eq!(actual, original); }
             }
@@ -1683,9 +1859,12 @@ fn compact_preview_weights_partial_edge_texels_and_retires_corrections() {
             ..p
         }).unwrap();
         if let Some(page) = r.preview_page([2, 1]) {
-            let compact = pixels(&r, &page.active().texture);
+            let wanted=r.preview_version(source_at(&doc,0),RasterPlane::Color,page.coordinate,scene::PreviewStage::Final).unwrap();
+            let read=page.active().read(wanted.version(),None).unwrap();
+            let compact = pixels(&r, &read.value().texture);
             let cache = r.scale_display.as_ref().unwrap();
-            let layer = pixels(&r, &r.scene.as_ref().unwrap().scale_sources.image(source_at(&doc,0), cache.plan.level).image.texture);
+            let id=source_at(&doc,0);
+            let layer = pixels(&r, &source_image(&r,cache,&r.scene.as_ref().unwrap().scale_sources.entries[&id],id,display_mips::Plan::at(doc.composition().size,cache.plan.level)).texture);
             // The 517 × 259 document ends with a 5 × 3 block: these two
             // compact texels cover 4 × 3 and 1 × 3 original pixels.
             let last = layer.last().unwrap();
@@ -1734,7 +1913,7 @@ fn scaled_layer_cache_tracks_stack_changes_and_odd_edges_at_each_level() {
             let error = quality(
                 &pixels(&r, cache.texture()),
                 &pixels(&exact, crate::test_support::document_texture(&exact)),
-                cache.plan,
+                cache.plan, cache.texture().format(),
             );
             assert!(
                 error[2] < 2e-5,
@@ -1842,7 +2021,7 @@ fn photographic_preview_and_committed_display_quality() {
             let errors = quality_linear(
                 &display_pixels(&r),
                 &pixels(&exact, crate::test_support::document_texture(&exact)),
-                cache.plan,
+                cache.plan, cache.texture().format(),
                 |color| linear_color(color, space, doc.composition().color.space),
             );
             assert!(
@@ -1896,16 +2075,15 @@ fn unchanged_navigation_derives_and_reuses_a_bounded_neighbor_level() {
         let error = quality(
             &display_pixels(&r),
             &pixels(&exact, crate::test_support::document_texture(&exact)),
-            cache.plan,
+            cache.plan, cache.texture().format(),
         );
         assert!(
             error[2] < 1e-5,
             "derived level must include correct partial-edge weights: {error:?}"
         );
     }
-    assert!(r.scale_display.as_ref().unwrap().spare.is_some());
-    // Changing artwork retires the spare and any native backing references it
-    // holds. Returning to that level must not resurrect its stale composition.
+    assert!(retained_root_pages(r.scale_display.as_ref().unwrap()).iter().map(|page|page.key.level).collect::<BTreeSet<_>>().len()>=2);
+    let previous_root=r.scale_display.as_ref().unwrap().graph.root.clone();
     occurrence_mut(&mut doc,0).opacity = 0.3;
     for (index, scale) in [0.25, 0.125].into_iter().enumerate() {
         let mut p = packet(doc.scene(), extent);
@@ -1914,13 +2092,13 @@ fn unchanged_navigation_derives_and_reuses_a_bounded_neighbor_level() {
         submit_published(&mut r, p);
         submit_published(&mut exact, p);
         if scale == 0.25 {
-            assert!(r.scale_display.as_ref().unwrap().spare.is_none());
+            assert!(r.scale_display.as_ref().unwrap().graph.root!=previous_root);
         }
         let cache = r.scale_display.as_ref().unwrap();
         let error = quality(
             &display_pixels(&r),
             &pixels(&exact, crate::test_support::document_texture(&exact)),
-            cache.plan,
+            cache.plan, cache.texture().format(),
         );
         assert!(
             error[2] < 1e-5,
@@ -1941,7 +2119,7 @@ fn unchanged_navigation_derives_and_reuses_a_bounded_neighbor_level() {
         let error = quality(
             &display_pixels(&r),
             &pixels(&exact, crate::test_support::document_texture(&exact)),
-            cache.plan,
+            cache.plan, cache.texture().format(),
         );
         assert!(
             error[2] < 1e-5,
@@ -2166,7 +2344,7 @@ fn fitted_projective_preview_reuses_coarse_pixels_and_bounds_fine_source_ownersh
     let bounded_owned=|r:&WgpuRasterizer| {
         let cache=r.scale_display.as_ref().unwrap();let scene=r.scene.as_ref().unwrap();
         resident_bytes_with_pool(cache,scene).saturating_sub(cache.resident_bytes())+r.navigator.storage_bytes()
-            +r.transforms.as_ref().unwrap().storage_bytes()+r.display_backup.as_ref().map_or(0,|backup|backup.bytes)
+            +r.transforms.as_ref().unwrap().storage_bytes()
             +r.retired_display_bytes.load(std::sync::atomic::Ordering::Acquire)
     };
     let mut preparation_trace=Vec::new();
@@ -2174,8 +2352,8 @@ fn fitted_projective_preview_reuses_coarse_pixels_and_bounds_fine_source_ownersh
         r.set_transform_preview(Some(&preview)).unwrap();frame.time_seconds+=1./60.;crate::memory::memory_tests::legacy_scene_frame(&mut r, frame);crate::test_support::submit_ready(&mut r, frame).unwrap();
         assert!(bounded_owned(&r)<=CACHE_BYTES,"pending composition/fine owners stay within608MiB: {}",bounded_owned(&r));
         r.wait_idle().unwrap();
-        preparation_trace.push((r.scale_display.as_ref().and_then(|cache|cache.evaluation.fine_capacity()),r.object_deferred,
-            r.transforms.as_ref().unwrap().fine_progress_bytes(),r.navigator_pending()));
+        preparation_trace.push((r.scale_display.as_ref().and_then(|cache|cache.evaluation.fine_capacity()),crate::scene::scale::tests::publication_pending(&r),
+            r.transforms.as_ref().unwrap().fine_progress_bytes(),r.navigator.pending()));
         if !r.has_pending_work() {break;}
     }
     assert!(!r.has_pending_work(),"immutable fine inputs finish without canceling current-pose progress: {preparation_trace:?}");
@@ -2185,7 +2363,7 @@ fn fitted_projective_preview_reuses_coarse_pixels_and_bounds_fine_source_ownersh
         r.set_transform_preview(Some(&preview)).unwrap();frame.time_seconds+=1./60.;crate::memory::memory_tests::legacy_scene_frame(&mut r, frame);crate::test_support::submit_ready(&mut r, frame).unwrap();
         assert!(bounded_owned(&r)<=CACHE_BYTES,"pending composition/fine owners stay within608MiB: {}",bounded_owned(&r));
         r.wait_idle().unwrap();
-        assert!(!r.object_deferred && r.composite_revision!=previous,"each moving pose must publish fresh pixels instead of submitting its old display backup");
+        assert!(!crate::scene::scale::tests::publication_pending(&r) && r.composite_revision!=previous,"each moving pose must publish fresh pixels instead of submitting its old display backup");
         assert!(matches!(r.scale_display.as_ref().unwrap().evaluation,Evaluation::Tiled(_)));
     }
     let cache=r.scale_display.as_ref().unwrap();
@@ -2193,14 +2371,14 @@ fn fitted_projective_preview_reuses_coarse_pixels_and_bounds_fine_source_ownersh
     assert_eq!(cache.plan.level,1);
     let scene=r.scene.as_ref().unwrap();
     let owned=resident_bytes(cache,scene).saturating_sub(cache.resident_bytes())+r.navigator.storage_bytes()+r.transforms.as_ref().unwrap().storage_bytes()
-        +r.display_backup.as_ref().map_or(0,|backup|backup.bytes)+r.retired_display_bytes.load(std::sync::atomic::Ordering::Acquire);
+        +r.retired_display_bytes.load(std::sync::atomic::Ordering::Acquire);
     assert!(owned<=CACHE_BYTES,"bounded composition/fine-source owners stay within608MiB: {owned}");
     let accepted=r.composite_revision;
     preview.transform.placement=layer_core::LayerPlacement::from_projective(layer_core::Projective::rect_to_quad(
         layer_core::Rect {min:Default::default(),max:layer_core::Point {x:6000.,y:4000.}},
         [[2900.,100.],[3100.,100.],[5990.,3990.],[10.,3990.]].map(|[x,y]|layer_core::Point {x,y})).unwrap());
     r.set_transform_preview(Some(&preview)).unwrap();frame.time_seconds+=1./60.;crate::memory::memory_tests::legacy_scene_frame(&mut r, frame);crate::test_support::submit_ready(&mut r, frame).unwrap();
-    assert!(r.object_deferred && r.transforms.as_ref().unwrap().fine_progress_bytes()>0,"deep projective planning retains a partial private output");
+    assert!(crate::scene::scale::tests::publication_pending(&r) && r.transforms.as_ref().unwrap().fine_progress_bytes()>0,"deep projective planning retains a partial private output");
     assert_eq!(r.composite_revision,accepted,"partial output must not replace the accepted display");
     assert!(bounded_owned(&r)<=CACHE_BYTES);
     r.set_transform_preview(None).unwrap();frame.time_seconds+=1./60.;crate::memory::memory_tests::legacy_scene_frame(&mut r, frame);crate::test_support::submit_ready(&mut r, frame).unwrap();r.wait_idle().unwrap();
@@ -2223,11 +2401,6 @@ fn fine_memory_admission_cannot_override_a_visible_native_effect() {
     assert!(!requires_native_effects(doc.scene(),1),"ordinary Paper does not require native filter evaluation");
     let target=crate::layer_tests::placement::target(&doc);
     let preview=layer_render::TransformPreview {transaction:1,moving:true,target,selection:None,transform:Default::default()};
-    let frame=packet(doc.scene(),[6000,4000]);
-    let space=doc.composition().color.space;
-    assert!(graph::scratch_images(frame,1,space,None,None).unwrap()>1);
-    assert_eq!(graph::scratch_images(frame,1,space,None,Some(target)).unwrap(),1);
-    assert!(graph::scratch_images(frame,1,space,None,Some(SourceTarget::Paint(layer_core::PaintHandle::from_index(99)))).unwrap()>1);
     assert!(fine_source(Evaluation::Tiled(48),Some(&preview),target));
     assert!(!fine_source(Evaluation::Display,Some(&preview),target));
     assert!(!fine_source(Evaluation::Native,Some(&preview),target));
@@ -2241,3 +2414,6 @@ fn fine_memory_admission_cannot_override_a_visible_native_effect() {
     remove_occurrence(&mut doc,effect);
     assert!(!requires_native_effects(doc.scene(),1));
 }
+
+#[path = "batch_failure_tests.rs"]
+mod batch_failure;

@@ -94,11 +94,13 @@ fn dry_preview_end_owns_its_contact_before_main_only_dabs() {
                         r.preview_pages
                             .iter()
                             .map(|page| {
+                                let expected = r.preview_expected(doc.working.target.unwrap(), layer_core::raster::RasterPlane::Color, page.coordinate, scene::PreviewStage::Final).unwrap();
+                                let read = page.active().read(expected, None).unwrap();
                                 assert_eq!(
-                                    page.active().texture.format(),
+                                    read.value().texture.format(),
                                     wgpu::TextureFormat::Rgba32Float
                                 );
-                                (page.coordinate, page_bytes(&r, &page.active().texture))
+                                (page.coordinate, page_bytes(&r, &read.value().texture))
                             })
                             .collect::<Vec<_>>()
                     };
@@ -246,7 +248,10 @@ fn unchanged_dry_preview_keeps_pages_and_encodes_no_gpu_work() {
         let pages = |r: &WgpuRasterizer| {
             r.preview_pages
                 .iter()
-                .map(|p| (p.coordinate, page_bytes(r, &p.active().texture)))
+                .map(|p| {
+                    let expected = r.preview_expected(target, layer_core::raster::RasterPlane::Color, p.coordinate, scene::PreviewStage::Final).unwrap();
+                    (p.coordinate, page_bytes(r, &p.active().read(expected, None).unwrap().value().texture))
+                })
                 .collect::<Vec<_>>()
         };
         let expected = pages(&r);
@@ -422,11 +427,13 @@ fn dry_preview_ownership_uses_the_original_end_across_compacted_pages() {
             .preview_pages
             .iter()
             .map(|page| {
+                let expected = r.preview_expected(doc.working.target.unwrap(), layer_core::raster::RasterPlane::Color, page.coordinate, scene::PreviewStage::Final).unwrap();
+                let read = page.active().read(expected, None).unwrap();
                 assert_eq!(
-                    page.active().texture.format(),
+                    read.value().texture.format(),
                     wgpu::TextureFormat::Rgba32Float
                 );
-                (page.coordinate, page_bytes(&r, &page.active().texture))
+                (page.coordinate, page_bytes(&r, &read.value().texture))
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         pages
@@ -594,11 +601,13 @@ fn dry_continuation_coverage(
         .preview_pages
         .iter()
         .flat_map(|page| {
+            let expected = renderer.preview_expected(target, layer_core::raster::RasterPlane::Color, page.coordinate, scene::PreviewStage::Final).unwrap();
+            let read = page.active().read(expected, None).unwrap();
             assert_eq!(
-                page.active().texture.format(),
+                read.value().texture.format(),
                 wgpu::TextureFormat::Rgba32Float
             );
-            page_bytes(renderer, &page.active().texture)
+            page_bytes(renderer, &read.value().texture)
                 .chunks_exact(16)
                 .enumerate()
                 .filter_map(|(index, pixel)| {
@@ -716,7 +725,10 @@ fn canonical_dry_lift(
         .backend()
         .preview_pages
         .iter()
-        .map(|page| (page.coordinate, page.active().texture.clone()))
+        .map(|page| {
+            let expected = engine.backend().preview_expected(target, layer_core::raster::RasterPlane::Color, page.coordinate, scene::PreviewStage::Final).unwrap();
+            (page.coordinate, page.active().read(expected, None).unwrap().value().texture.clone())
+        })
         .collect();
     let before = canonical_paint(engine.backend_mut(), preview, color);
     assert!(
@@ -771,6 +783,7 @@ fn canonical_dry_lift(
         .copied()
         .expect("actual authored input replay ends with a completion");
     let display_after = engine.backend_mut().readback_srgb_rgba8().unwrap();
+    let stored_versions = engine.backend().raster_versions(engine.document().scene(), target).unwrap();
     let stored = engine
         .backend()
         .paint_layers
@@ -779,7 +792,7 @@ fn canonical_dry_lift(
         .unwrap()
         .pages
         .iter()
-        .map(|page| (page.coordinate, page.active().texture.clone()))
+        .map(|page| (page.coordinate, page.active().read(stored_versions.tile(layer_core::raster::RasterPlane::Color, page.coordinate), None).unwrap().value().texture.clone()))
         .collect();
     let after = canonical_paint(engine.backend_mut(), stored, color);
     let mut maximum = [0u8; 4];

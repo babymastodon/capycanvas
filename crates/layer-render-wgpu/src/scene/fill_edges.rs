@@ -340,7 +340,7 @@ impl WgpuRasterizer {
             let scalar_bytes=u64::from(SIDE).pow(2)*u64::from(self.device.scalar_format().block_copy_size(None).unwrap());
             let scratch_bytes=scratch_count as u64*u64::from(SIDE)*u64::from(SIDE+1)*u64::from(self.device.working_format().block_copy_size(None).unwrap());
             let bytes=(steps.iter().filter(|step|matches!(step,Step::Page(..))).count() as u64).checked_mul(2*scalar_bytes).and_then(|bytes|bytes.checked_add(scratch_bytes+scalar_bytes));
-            let failure=bytes.ok_or(GpuRasterError::SourceWorkingSetExceeded).and_then(|bytes|self.admit_preparation_bytes(self.projected_restore_bytes(),bytes)).err();
+            let failure=bytes.ok_or(GpuRasterError::SizeOverflow).and_then(|bytes|self.admit_preparation_bytes(self.projected_restore_bytes(),bytes)).err();
             let scratch_count=if failure.is_none(){scratch_count}else{0};
             let line_seeds=inputs.iter().map(|input|create_color_target(&self.device,[1,input.external.len().max(1) as u32],"prepared fill line seeds").0).collect();
             FillEdgesPreflight {owner:packet.scene.owner(),color:self.document_color(),inputs,steps,next:0,capture:Default::default(),scene:None,
@@ -351,7 +351,7 @@ impl WgpuRasterizer {
         if state.pending() {
             let mut encoder=submission::CommandEncoder::new(&self.device,&Default::default());
             let result=self.drain_image_decodes(&mut encoder).and_then(|()|state.advance(self,packet,&mut encoder));
-            if let Err(error)=result && !matches!(error,GpuRasterError::DeferredObjectWork) {state.failure=Some(error);}
+            if let Err(error)=result && !matches!(error,GpuRasterError::NotReady) {state.failure=Some(error);}
             if encoder.has_work() {self.uploads.finish(&encoder);self.last_submission=Some(encoder.submit(&self.queue));}
         }
         let ready=!state.pending();self.fill_edges_preflight=Some(state);ready
@@ -436,7 +436,7 @@ mod tests {
             }else{None};
             let batch=commit(&mut document,target,operation);r.set_fill_preview(None);
             let frame=FramePacket {dab_batches:std::slice::from_ref(&batch),..packet(document.scene(),[384;2])};
-            crate::test_support::prepare_raster(&mut r,|r|if r.raster_dependencies_ready(frame,None){Ok(())}else{Err(GpuRasterError::DeferredObjectWork)}).unwrap();
+            crate::test_support::prepare_raster(&mut r,|r|if r.raster_dependencies_ready(frame,None){Ok(())}else{Err(GpuRasterError::NotReady)}).unwrap();
             if let Some((seeds,steps,next))=retained {
                 let state=r.fill_edges_preflight.as_ref().unwrap();assert_eq!(state.line_seeds,seeds);
                 assert_eq!((state.steps.len(),state.next),(steps,next));assert_eq!(next,steps);
@@ -479,7 +479,7 @@ mod tests {
             let before=r.readback_srgb_rgba8().unwrap();
             let batch=commit(&mut document,target,operation);
             let frame=FramePacket {dab_batches:std::slice::from_ref(&batch),..packet(document.scene(),[384;2])};
-            crate::test_support::prepare_raster(&mut r,|r|if r.raster_dependencies_ready(frame,None){Ok(())}else{Err(GpuRasterError::DeferredObjectWork)}).unwrap();
+            crate::test_support::prepare_raster(&mut r,|r|if r.raster_dependencies_ready(frame,None){Ok(())}else{Err(GpuRasterError::NotReady)}).unwrap();
             let state=r.fill_edges_preflight.as_ref().unwrap();
             assert!(!state.pending());assert_eq!(state.inputs[0].external,[true;3]);assert!(!state.pages.is_empty());
             if live {r.fill_edges_preflight=None;}
@@ -510,8 +510,8 @@ mod tests {
         let pressure=budget.admit_import(budget.import_headroom_bytes()).unwrap();r.refresh_memory_limits();
         let preview=layer_render::FillPreview {transaction:42,revision:0,target,operation};
         r.set_fill_preview(Some(preview.clone()));
-        crate::test_support::prepare_raster(&mut r,|r|if r.prepare_fill_edges(frame){Ok(())}else{Err(GpuRasterError::DeferredObjectWork)}).unwrap();
-        assert!(matches!(r.submit(frame),Err(GpuRasterError::SourceWorkingSetExceeded|GpuRasterError::DeferredObjectWork)));
+        crate::test_support::prepare_raster(&mut r,|r|if r.prepare_fill_edges(frame){Ok(())}else{Err(GpuRasterError::NotReady)}).unwrap();
+        assert!(matches!(r.submit(frame),Err(GpuRasterError::SourceWorkingSetExceeded|GpuRasterError::NotReady)));
         drop(pressure);r.refresh_memory_limits();crate::test_support::prepare_raster(&mut r,|r|submit_ready(r,frame)).unwrap();
         let pixels=r.readback_srgb_rgba8().unwrap();
         let mut control=WgpuRasterizer::new_native_headless(Default::default()).unwrap();

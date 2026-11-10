@@ -3,7 +3,7 @@ use crate::layer_tests::placement::{paint_document, paint_mut, target};
 use crate::test_support::{packet, submit_ready, submit_settled};
 
 fn refining(r: &WgpuRasterizer) -> bool {
-    r.object_deferred || r.scale_display.as_ref().is_some_and(|cache| cache.has_pending_work(r))
+    crate::scene::scale::tests::publication_pending(&r) || r.scale_display.as_ref().is_some_and(|cache| cache.has_pending_work(r))
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn retained_fade_preserves_pending_refinement_and_accepts_camera_and_paint() {
     let submissions = r.metrics.submissions;
     let preparation = r.preparation_progress();
     let damage = r.document_damage.clone();
-    let deferred = r.object_deferred;
+    let deferred = crate::scene::scale::tests::publication_pending(&r);
     for alpha in [1., 0.5, 0.125] {
         r.set_canvas_transition(layer_render::CanvasFade {drawing:Some(alpha),navigator:None});
         assert!(r.retained_transition_frame(idle, None));
@@ -74,7 +74,7 @@ fn retained_fade_preserves_pending_refinement_and_accepts_camera_and_paint() {
         assert_eq!(r.metrics.submissions, submissions);
         assert_eq!(r.preparation_progress(), preparation);
         assert_eq!(r.document_damage, damage);
-        assert_eq!(r.object_deferred, deferred);
+        assert_eq!(crate::scene::scale::tests::publication_pending(&r), deferred);
         assert!(refining(&r));
     }
 

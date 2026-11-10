@@ -21,7 +21,7 @@ use layer_render::{
     CanvasRenderer, Dab, DabBatch, DabBatchKind, DabStyle, FramePacket, RetouchPreparation,
     ViewState,
 };
-use std::{collections::VecDeque, fmt, sync::Arc};
+use std::{collections::VecDeque, fmt, sync::Arc, task::Poll};
 
 #[path = "corrections.rs"]
 mod corrections;
@@ -398,6 +398,7 @@ impl<B: CanvasRenderer> CanvasEngine<B> {
         self.rebuild_all = true;
         self.composite_all = true;
         self.prepared_retouch = None;
+        backend.adopt_committed_pages(&mut self.backend);
         Ok(std::mem::replace(&mut self.backend, backend))
     }
 
@@ -1652,10 +1653,6 @@ impl<B: CanvasRenderer> CanvasEngine<B> {
             composite_all: self.composite_all,
             blend_space: self.editor.document().composition().blend,
         };
-        if !self.backend.raster_dependencies_ready(packet, self.transform_preview.as_ref()) {
-            self.pending_frame = Some(frame);
-            return Ok(());
-        }
         let selection = self.display_selection().map(|s| s.into_owned());
         self.backend.set_vector_selection(self.editor.document().working.vector_items.as_ref());
         let result = self
@@ -1664,9 +1661,15 @@ impl<B: CanvasRenderer> CanvasEngine<B> {
             .and_then(|_| {
                 self.backend
                     .set_transform_preview(self.transform_preview.as_ref())
-            })
-            .and_then(|_| self.backend.submit(packet))
-            .map_err(EngineError::Backend);
+            });
+        let result = match result {
+            Ok(()) => self.backend.submit_when_ready(packet, self.transform_preview.as_ref()),
+            Err(error) => Poll::Ready(Err(error)),
+        };
+        let result = match result {
+            Poll::Pending => { self.pending_frame = Some(frame); return Ok(()); }
+            Poll::Ready(result) => result.map_err(EngineError::Backend),
+        };
 
         self.metrics.frames = self.metrics.frames.saturating_add(1);
         if result.is_ok() && !commit_rasters {
@@ -3095,6 +3098,7 @@ mod tests {
     #[derive(Debug)]
     struct PreviewField;
     impl layer_core::liquify::Field for PreviewField {
+    fn content_version(&self)->layer_core::raster::ContentVersion {layer_core::raster::ContentVersion::derive(0,&[])}
         fn as_any(&self) -> &dyn std::any::Any { self }
         fn resources(&self, _: &mut dyn FnMut(u64, usize)) {}
         fn tiles(&self) -> Vec<[u32; 2]> { vec![[0, 0]] }
@@ -3377,6 +3381,7 @@ mod tests {
         time_seconds: f32,
         phases: Vec<(layer_core::authored::EffectHandle, f32)>,
         fail_submit: bool,
+        pending_preparation: bool,
         fail_resize: bool,
         size: [u32; 2],
         persistent_dabs: usize,
@@ -3424,7 +3429,7 @@ mod tests {
         }
         fn has_pending_submission(&self) -> bool { self.unrelated_submission }
         fn raster_dependencies_ready(&mut self, _packet: FramePacket<'_>, _preview: Option<&layer_render::TransformPreview>) -> bool {
-            !self.restore_blocked
+            !std::mem::take(&mut self.pending_preparation) && !self.restore_blocked
         }
         fn can_capture_raster(&self) -> bool {
             !self.capture_blocked
@@ -5326,6 +5331,35 @@ mod tests {
         assert!(engine.prepare_color_transition(ColorTransition::Apply {
             edit: Box::new(color_edit(engine.document(), target)),
         }).is_err());
+    }
+
+    #[test]
+    fn preparation_pending_retains_the_prepared_stroke_and_up_until_one_submission() {
+        let (mut input, mut engine) = engine("pending submission", 64, 64);
+        engine.render_frame().unwrap();
+        let frames = engine.metrics().frames;
+        engine.backend_mut().pending_preparation = true;
+        input.push(event(1, PenPhase::Down, 8.)).unwrap();
+        input.push(event(2, PenPhase::Up, 24.)).unwrap();
+        engine.render_frame().unwrap();
+        assert!(engine.pending_frame.is_some());
+        assert!(!engine.dabs.is_empty() && !engine.batches.is_empty());
+        assert_eq!(engine.backend().persistent_dabs, 0);
+        assert_eq!(engine.metrics().frames, frames);
+        assert!(active_paint(engine.document()).raster.try_data().is_none());
+        let dabs = engine.dabs.clone();
+        let batches = engine.batches.len();
+        input.push(event(3, PenPhase::Down, 32.)).unwrap();
+        engine.render_frame().unwrap();
+        assert!(engine.pending_frame.is_none());
+        assert!(engine.dabs.is_empty() && engine.batches.is_empty());
+        assert_eq!(engine.metrics().input_events, 2);
+        assert_eq!(engine.metrics().frames, frames + 1);
+        assert_eq!(engine.backend().persistent, dabs);
+        assert_eq!(engine.backend().persistent_batches.len(), batches);
+        assert!(active_paint(engine.document()).raster.host_backed());
+        assert!(!engine.has_active_stroke());
+        assert_eq!(engine.metrics().committed_strokes, 1);
     }
 
     #[test]

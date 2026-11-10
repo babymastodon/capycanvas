@@ -154,10 +154,9 @@ impl SnapshotGpu {
                 if let Some(id) = target {
                     snapshot.with_region_gpu(region, 32, |r, packet, region, encoder| {
                         let coordinate = [x / PAGE_SIZE, y / PAGE_SIZE];
-                        let (texture, mask) = if let Some(mask) = r.layer_masks.definitions.get(&id) {
-                            let page = r.layer_masks.pages.get(&(id, coordinate));
-                            (page.map(|p| p.texture.clone()), Some((snapshot_mask_inverted, page.is_none().then_some(mask.default_coverage))))
-                        } else { (r.raw_layer_tile(id, coordinate, encoder)?.map(|p| p.texture), None) };
+                        let default = r.layer_masks.definitions.get(&id).map(|mask| mask.default_coverage);
+                        let texture = r.raw_layer_tile(id, coordinate, encoder)?.map(|page| page.texture);
+                        let mask = default.map(|coverage| (snapshot_mask_inverted, texture.is_none().then_some(coverage)));
                         let texture = texture.unwrap_or_else(|| r._empty_texture.clone());
                         if let Some(selection) = &selection {
                             r.selection_clip.prepare_region(&r.device, encoder, packet.document_extent, selection, Some(region))?;

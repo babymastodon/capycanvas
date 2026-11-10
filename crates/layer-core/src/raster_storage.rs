@@ -325,7 +325,8 @@ impl RetainedTiles {
         for raster in &self.rasters {
             let current=self.authored_rasters.contains(&raster.identity());
             match raster.try_data() {
-                Some(Ok(data))=>{let mut pending=0usize;for tile in data.tiles.values() {
+                Some(Ok(data))=>{for (identity,bytes) in data.tiles.metadata_owners() {charge(owners,(5,identity),bytes,current);}
+                    let mut pending=0usize;for tile in data.tiles.values() {
                     if let Some(Ok(backing))=tile.try_backing() {blob(owners,&backing,current);}
                     else {pending=pending.saturating_add(crate::raster::MAX_COMPRESSED_TILE_BYTES);}
                 }charge(owners,(3,raster.identity()),pending,current);},

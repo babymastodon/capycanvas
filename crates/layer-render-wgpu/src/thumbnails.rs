@@ -339,7 +339,6 @@ struct PreparedPreview {
     revision: (u64, u64),
     rendition: [f32; 8],
     sources: Vec<Option<[u32; 2]>>,
-    mask: bool,
     placed: bool,
     generator: Option<OccurrenceHandle>,
     objects: Option<OccurrenceHandle>,
@@ -583,6 +582,8 @@ impl PreviewPipeline {
                     .filter(|((target, _), _)| *target == id)
                     .map(|((_, c), _)| *c),
             );
+            coordinates.extend(r.native_backing(id).into_iter().flat_map(|data| data.tiles.keys())
+                .filter(|key| key.plane == layer_core::raster::RasterPlane::Mask).map(|key| key.coordinate));
         } else if generator.is_some() || objects.is_some() {
             coordinates.insert([0; 2]);
         } else if let Some(layer) = r.paint_layers.iter().find(|l| l.id == id) {
@@ -651,7 +652,7 @@ impl PreviewPipeline {
             r.device.working_format(), "layer thumbnail");
         PreparedPreview { id:target, revision: (r.artwork_revision, r.selection_paint_revision),
             rendition: r.ui_rendition_parameters(), measure: if full { sources.len() } else { 1 },
-            sources, mask: mask.is_some(), placed, generator, objects, reduced, generated: Vec::new(), records, stride: stride as u32, read, write, result, draw: 0,
+            sources, placed, generator, objects, reduced, generated: Vec::new(), records, stride: stride as u32, read, write, result, draw: 0,
             valid: Arc::new(std::sync::atomic::AtomicBool::new(true)) }
     }
     fn prepare(&mut self, r: &mut WgpuRasterizer, target: ThumbnailTarget,
@@ -709,7 +710,6 @@ impl PreviewPipeline {
                         },
                         Some(_) if prepared.objects.is_some() || prepared.reduced.is_some() => prepared.generated[0].1.clone(),
                         Some(c) if prepared.placed => capture.thumbnail_tile(r,target,*c,encoder)?.view,
-                        Some(c) if prepared.mask => r.layer_masks.pages[&(id, *c)].view.clone(),
                         Some(c) => {
                             r.raw_layer_tile(id, *c, encoder)?
                                 .ok_or(GpuRasterError::MissingPaintLayer(id))?
@@ -780,7 +780,7 @@ impl PreviewPipeline {
         }
         Ok(())
         })();
-        let pending = match work { Ok(()) => false, Err(GpuRasterError::DeferredObjectWork) => true, Err(error) => return Err(error) };
+        let pending = match work { Ok(()) => false, Err(error) if error.is_preparation_pending() => true, Err(error) => return Err(error) };
         write.track(encoder);
         prepared.valid = write.validity();
         let ready = !pending && prepared.draw == prepared.sources.len();
@@ -792,7 +792,7 @@ impl PreviewPipeline {
         encoder: &mut crate::submission::CommandEncoder,
     ) -> Result<PageSurface, GpuRasterError> {
         if !self.prepare(r, target, encoder, usize::MAX, usize::MAX)? {
-            return Err(GpuRasterError::DeferredObjectWork);
+            return Err(GpuRasterError::NotReady);
         }
         Ok(self.prepared.pop_back().unwrap().result)
     }

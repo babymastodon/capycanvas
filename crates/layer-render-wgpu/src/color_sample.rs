@@ -127,7 +127,7 @@ impl WgpuRasterizer {
                 &mut encoder,
             );
             self.color_sampler.capture = capture;
-            if matches!(result, Err(GpuRasterError::DeferredObjectWork)) {
+            if matches!(result, Err(GpuRasterError::NotReady)) {
                 self.uploads.finish(&encoder);
                 encoder.submit(&self.queue);
                 self.color_sampler.waiting = Some((request, Some(frame)));
@@ -149,7 +149,7 @@ impl WgpuRasterizer {
                         let mut capture = mem::take(&mut self.color_sampler.capture);
                         let result=match &frame {Some(frame)=>capture.layer_tile_at(self,frame,id,[tx,ty],&mut encoder),None=>Err(GpuRasterError::InvalidExtent)};
                         self.color_sampler.capture = capture;
-                        if matches!(result, Err(GpuRasterError::DeferredObjectWork)) {
+                        if matches!(result, Err(GpuRasterError::NotReady)) {
                             self.uploads.finish(&encoder);
                             encoder.submit(&self.queue);
                             self.color_sampler.waiting = Some((request, frame));

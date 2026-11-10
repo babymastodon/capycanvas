@@ -154,7 +154,9 @@ impl ReadCompletion {
     pub fn complete(mut self, result: Result<Arc<[u8]>, String>) {
         self.finish(result.map(ByteRange::whole));
     }
+    #[cfg(any(test,not(target_arch="wasm32")))]
     pub(crate) fn complete_range(mut self,result:Result<ByteRange,String>) {self.finish(result);}
+    #[cfg(any(test,not(target_arch="wasm32")))]
     pub(crate) fn buffer(&mut self,length:usize)->Arc<[u8]> {
         if let Some(buffer)=self.buffer.take() {assert_eq!(buffer.len(),buffer_class(length));return buffer;}
         let class=buffer_class(length);let mut state=self.cache.0.state.lock().unwrap();

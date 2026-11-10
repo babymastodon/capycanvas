@@ -204,22 +204,6 @@ impl Scene {
         let other = if display { &self.exact_object_results } else { &self.object_results };
         r.memory.scene_limit().saturating_sub(other.required_bytes())
     }
-    pub(crate) fn live_objects_cold(&mut self, r: &WgpuRasterizer, scene: SceneView<'_>, bounds: DocRect, side: f64) -> Result<bool, GpuRasterError> {
-        self.object_spatial.prepare(scene);
-        let mapping = Affine64([side, 0., 0., side, bounds.min[0] as f64, bounds.min[1] as f64]);
-        let level = side.max(1.).log2().ceil() as u32;
-        let format=crate::MovingProjection::format_for(r.moving_projection.as_ref(),scene);
-        for &owner in scene.order() {
-            if !scene.visible(owner) || scene.object_layer(owner).is_none() { continue; }
-            let Some(content) = self.object_spatial.content(scene, owner) else { continue; };
-            for key in content.query_at(bounds, level) {
-                let object = scene.object(key.handle).ok_or(GpuRasterError::InvalidExtent)?;
-                let inverse = key.placement().inverse().ok_or(GpuRasterError::InvalidTransform("Invalid image object affine"))?.compose(mapping).0;
-                if Self::preview_source(r, key.image, object.image.storage(), key.nearest, format, inverse, bounds.size()?.map(|size|(f64::from(size)/side).ceil().max(1.) as u32)).is_none() { return Ok(true); }
-            }
-        }
-        Ok(false)
-    }
     pub(crate) fn capture_source_bytes(&mut self,scene:SceneView<'_>,region:PixelRect)->Result<u64,GpuRasterError> {
         if matches!(scene.scope(),Some(layer_core::SceneScope::Raw(_))) {return Ok(0);}
         self.object_spatial.prepare(scene);
@@ -297,7 +281,7 @@ impl Scene {
                 let workspace = self.object_workspace(r, display);
                 let cache = if display { &mut self.object_results } else { &mut self.exact_object_results };
                 cache.set_workspace(workspace);
-                ready &= cache.prepare_collection(r, packet.scene, &request)?;
+                ready &= cache.prepare_collection(r, packet.scene, &request,self.inputs.as_mut())?;
             }
         }
         Ok(ready)
@@ -305,7 +289,7 @@ impl Scene {
     pub(super) fn canonical_cover(&mut self, r: &WgpuRasterizer, packet: FramePacket<'_>, content: &object_spatial::Content,
         request: &CollectionJob,
     ) -> Result<Option<Vec<(wgpu::TextureView, DocRect)>>, GpuRasterError> {
-        let (pieces, mut ready, missing) = self.object_results.cover(request);
+        let (pieces, mut ready, missing) = self.object_results.cover(request,self.inputs.as_mut());
         let offset = packet.scene.evaluation_offset64();
         for rect in missing {
             let size = rect.size()?.map(|v| (f64::from(v) / request.window.side) as u32);
@@ -314,7 +298,7 @@ impl Scene {
             part.live = request.live; part.display = request.display;
             if part.keys.is_empty() { continue; }
             self.object_results.set_workspace(self.object_workspace(r, true));
-            self.object_results.resolve_collection(r, packet.scene, &part)?;
+            self.object_results.resolve_collection(r, packet.scene, &part,self.inputs.as_mut())?;
             ready = false;
         }
         Ok(ready.then_some(pieces))
@@ -348,7 +332,7 @@ impl Scene {
         } else {&r.scene_pipelines.objects.preview}).filter(|pipeline|!pipeline.ready()).cloned().collect(),..Default::default()};
         if !required.require(&r.compilation,startup::DOCUMENT) {
             self.pending_pipelines=required;
-            return Err(GpuRasterError::DeferredObjectWork);
+            return Err(GpuRasterError::NotReady);
         }
         Ok(Some((sources, objects)))
     }
@@ -381,10 +365,11 @@ impl Scene {
         r.drain_image_decodes(encoder)?;
         self.object_results.retain(packet.scene, request.blend, r.device.working_space());
         let mut results = std::mem::take(&mut self.object_results);
-        let advanced = results.advance(r, self, encoder, false);
+        let composition=r.composition_memory(Some(self));
+        let advanced = results.advance_with_memory(r, self, encoder, false,composition);
         self.object_results = results;
         self.object_results.set_workspace(self.object_workspace(r, true));
-        let canonical = advanced.and_then(|_| self.object_results.resolve_collection(r, packet.scene, &request));
+        let canonical = advanced.and_then(|_| self.object_results.resolve_collection(r, packet.scene, &request,self.inputs.as_mut()));
         self.object_query = false;
         let Some(view) = canonical? else { return Ok(None); };
         encoder.copy_texture_to_texture(view.texture().as_image_copy(), target.0.as_image_copy(),
@@ -404,14 +389,14 @@ impl Scene {
         let workspace = self.object_workspace(r, display);
         let cache = if display { &mut self.object_results } else { &mut self.exact_object_results };
         cache.set_workspace(workspace);
-        let canonical=cache.resolve_collection(r,packet.scene,&request)?;
+        let canonical=cache.resolve_collection(r,packet.scene,&request,self.inputs.as_mut())?;
         if let Some(view)=canonical {
             let output=self.reserve(r)?;
             self.jobs.push(Job::Copy {source:view.texture().clone(),source_origin:[0;2],destination:self.pool[output].texture.clone(),origin:[0;2],width:PAGE_SIZE,height:PAGE_SIZE});
             return Ok(output);
         }
         let Some((sources,objects))=(if self.object_display {self.collection_preview(r,&request)?} else {None}) else {
-            self.discard_unencoded_jobs();return Err(GpuRasterError::DeferredObjectWork);
+            return Err(GpuRasterError::NotReady);
         };
         let output=self.reserve(r)?;
         let held=self.own(output);
@@ -428,13 +413,17 @@ impl Scene {
         let (texture,view)=self.inline_objects.result.get_or_insert_with(||create_color_target(&r.device,[PAGE_SIZE;2],"inline object result")).clone();
         self.jobs.push(Job::Sampling(Box::new(SamplingStep::Begin {inverse:job.inverse,size:job.size,nearest:job.nearest,extent:job.source.extent})));
         for coordinate in page_coordinates(bounds) {
-            let (tile,pending)=r.source_tiles.borrow_mut().plan_exact(r,&job.source,coordinate)?;
-            if let Some(pending)=pending {self.jobs.push(Job::DecodedTile(Arc::new(pending)));}
-            let (tile,pending)=r.source_tiles.borrow_mut().promote(r,tile)?;
-            if let Some(pending)=pending {self.jobs.push(Job::DecodedTile(Arc::new(pending)));}
+            let view=if let Some(inputs)=&self.inputs {
+                let read=sources::accepted_image(inputs,&job.source,coordinate)?;self.read_input(read)
+            }else {
+                let (tile,pending)=r.source_tiles.borrow_mut().plan_exact(r,&job.source,coordinate)?;
+                if let Some(pending)=pending {self.enqueue_source_decode(pending);}
+                let (tile,pending)=r.source_tiles.borrow_mut().promote(r,tile)?;
+                if let Some(pending)=pending {self.enqueue_source_decode(pending);}tile.view
+            };
             let origin=coordinate.map(|v|v*PAGE_SIZE);
             let extent=std::array::from_fn(|axis|(job.source.extent[axis]-origin[axis]).min(PAGE_SIZE));
-            self.jobs.push(Job::Sampling(Box::new(SamplingStep::Contribute {source:tile.view,origin:origin.map(|v|v as i32),extent})));
+            self.jobs.push(Job::Sampling(Box::new(SamplingStep::Contribute {source:view,origin:origin.map(|v|v as i32),extent})));
         }
         self.jobs.push(Job::Sampling(Box::new(SamplingStep::Normalize)));
         let output=self.reserve(r)?;
@@ -458,16 +447,6 @@ pub(super) fn decode(r: &mut WgpuRasterizer, encoder: &mut crate::submission::Co
     promote(r, encoder, tile)
 }
 
-pub(super) fn decode_live(r: &mut WgpuRasterizer, encoder: &mut crate::submission::CommandEncoder, id: PortableId, source: &Arc<SourceImage>, coordinate: [u32; 2],
-) -> Result<Option<crate::source_access::RawTile>, GpuRasterError> {
-    let view = r.source_tiles.borrow().prepared_view(source, coordinate).cloned();
-    if let Some(view) = view {
-        return promote(r, encoder, crate::source_access::RawTile { texture: view.texture().clone(), view }).map(Some);
-    }
-    r.request_exact_image_decode(id,source.clone(),coordinate)?;
-    Ok(None)
-}
-
 #[cfg(test)]
 pub(crate) fn decode_prepared(r: &mut WgpuRasterizer, encoder: &mut crate::submission::CommandEncoder,
     source: &Arc<SourceImage>, coordinate: [u32; 2], pixels: sources::PreparedSourcePixels,
@@ -487,9 +466,9 @@ pub(crate) fn decode_prepared_raster(r: &mut WgpuRasterizer, encoder: &mut crate
     let result = r.source_tiles.borrow_mut().plan_raster(r, blob, space, destination);
     r.source_tiles.get_mut().flush_retired(encoder);
     let (tile, pending) = result?;
-    if let Some(mut pending) = pending {
-        pending.prepared_pixels = Some(pixels);
-        encode_pending(r, encoder, pending)?;
+    if let Some(pending) = pending {
+        pending.set_prepared(Some(pixels));
+        sources::encode_pending(r, encoder, pending)?;
     }
     promote(r, encoder, tile)
 }
@@ -499,12 +478,12 @@ pub(crate) fn promote(r: &mut WgpuRasterizer, encoder: &mut crate::submission::C
 ) -> Result<crate::source_access::RawTile, GpuRasterError> {
     if tile.texture.format() != wgpu::TextureFormat::Rgba32Float
         && !r.compilation.require([r.scene_pipelines.source.for_format(tile.texture.format())], startup::VALIDATION) {
-        return Err(GpuRasterError::DeferredObjectWork);
+        return Err(GpuRasterError::NotReady);
     }
     let result = r.source_tiles.borrow_mut().promote(r, tile);
     r.source_tiles.get_mut().flush_retired(encoder);
     let (tile, pending) = result?;
-    if let Some(pending) = pending { encode_pending(r, encoder, pending)?; }
+    if let Some(pending) = pending { sources::encode_pending(r, encoder, pending)?; }
     Ok(tile)
 }
 
@@ -514,33 +493,14 @@ fn decode_inner(r: &mut WgpuRasterizer, encoder: &mut crate::submission::Command
     let result=match use_ {sources::SourceUse::Display=>r.source_tiles.borrow_mut().plan(r,source,coordinate),sources::SourceUse::Exact=>r.source_tiles.borrow_mut().plan_exact(r,source,coordinate)};
     r.source_tiles.get_mut().flush_retired(encoder);
     let (tile, pending) = result?;
-    if let Some(mut pending) = pending {
-        pending.prepared_pixels = pixels;
+    if let Some(pending) = pending {
+        pending.set_prepared(pixels);
         if r.source_tiles.borrow().uploads_full() { Scene::submit_source_uploads(r, encoder)?; }
-        encode_pending(r, encoder, pending)?;
+        sources::encode_pending(r, encoder, pending)?;
     }
     Ok(tile)
 }
 
-fn encode_pending(r: &mut WgpuRasterizer, encoder: &mut crate::submission::CommandEncoder,
-    pending: sources::PendingTile,
-) -> Result<(), GpuRasterError> {
-        if let Some(pipeline) = pending.pipeline(&r.scene_pipelines.source)
-            && !r.compilation.require([pipeline], startup::VALIDATION) { return Err(GpuRasterError::DeferredObjectWork); }
-        let binding = if pending.pipeline(&r.scene_pipelines.source).is_some() {
-            let records = r.device.create_buffer(&wgpu::BufferDescriptor { label: Some("source normalization records"),
-                size: 144, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            let binding = uniform_binding(&r.device, &r.scene_pipelines.uniforms, &records);
-            let mut data = [0; 144];
-            if let Some(values)=pending.normalization_parameters() {values.write_uniform(&mut data);}
-            r.uploads.write_at(encoder, &records, 0, &data)?;
-            Some(binding)
-        } else { None };
-        let bytes = r.source_tiles.get_mut().encode(&r.device, &mut r.uploads, &r.scene_pipelines.source, encoder, &pending,r.snapshot_worker, binding.as_ref(), 0)?;
-        let in_flight = r.source_tiles.borrow().charge_upload(encoder, bytes);
-        r.metrics.source_upload_peak_bytes = r.metrics.source_upload_peak_bytes.max(in_flight);
-    Ok(())
-}
 
 #[cfg(test)]
 #[path = "objects_tests.rs"]

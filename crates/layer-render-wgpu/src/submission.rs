@@ -23,6 +23,7 @@ impl CacheWrite {
     pub fn validity(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         self.valid.clone()
     }
+    pub fn recorded(&self)->bool {self.tracked.load(std::sync::atomic::Ordering::Acquire)}
     pub fn track(&self, encoder: &wgpu::CommandEncoder) {
         use std::sync::atomic::Ordering;
         assert!(!self.tracked.swap(true, Ordering::Relaxed));
@@ -54,14 +55,20 @@ impl Drop for DiscardedCacheWrite {
 
 #[derive(Clone)]
 pub(crate) struct Submission(std::sync::Arc<std::sync::atomic::AtomicU8>);
+#[repr(u8)]
+enum SubmissionState { Encoding, Submitted, Discarded, Complete }
 impl Submission {
-    pub fn submitted(&self)->bool {self.0.load(std::sync::atomic::Ordering::Acquire)==1}
-    pub fn discarded(&self)->bool {self.0.load(std::sync::atomic::Ordering::Acquire)==2}
+    pub fn same(&self, other: &Self) -> bool { std::sync::Arc::ptr_eq(&self.0, &other.0) }
+    #[cfg(test)]
+    pub(crate) fn observation_id(&self)->usize {std::sync::Arc::as_ptr(&self.0) as usize}
+    pub fn submitted(&self)->bool {matches!(self.0.load(std::sync::atomic::Ordering::Acquire),value if value==SubmissionState::Submitted as u8 || value==SubmissionState::Complete as u8)}
+    pub fn discarded(&self)->bool {self.0.load(std::sync::atomic::Ordering::Acquire)==SubmissionState::Discarded as u8}
+    pub fn pending(&self)->bool {self.0.load(std::sync::atomic::Ordering::Acquire)<SubmissionState::Discarded as u8}
 }
 struct PendingSubmission(Submission);
 impl Drop for PendingSubmission {
     fn drop(&mut self) {
-        let _=self.0.0.compare_exchange(0,2,std::sync::atomic::Ordering::AcqRel,std::sync::atomic::Ordering::Acquire);
+        let _=self.0.0.compare_exchange(SubmissionState::Encoding as u8,SubmissionState::Discarded as u8,std::sync::atomic::Ordering::AcqRel,std::sync::atomic::Ordering::Acquire);
     }
 }
 
@@ -98,7 +105,7 @@ impl CommandEncoder {
         }
     }
     pub fn submission(&mut self)->Submission {
-        self.submission.get_or_insert_with(||PendingSubmission(Submission(std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0))))).0.clone()
+        self.submission.get_or_insert_with(||PendingSubmission(Submission(std::sync::Arc::new(std::sync::atomic::AtomicU8::new(SubmissionState::Encoding as u8))))).0.clone()
     }
     fn begin_pass(&mut self) {
         self.reserve_passes(1);
@@ -156,7 +163,7 @@ impl CommandEncoder {
         }
         self.compute.as_mut().unwrap()
     }
-    /// Commands that run before every other command of this encoder, such as
+    /// RegionRecords that run before every other command of this encoder, such as
     /// uploads to storage that nothing earlier in it reads.
     pub fn prologue(&mut self) -> &mut wgpu::CommandEncoder {
         self.resource_work = true;
@@ -174,12 +181,18 @@ impl CommandEncoder {
     /// belong to the final encoder, after every earlier chunk on this queue.
     pub fn submit(mut self, queue: &wgpu::Queue) -> wgpu::SubmissionIndex {
         self.compute = None;
+        if let Some(pending)=&self.submission {
+            let receipt=pending.0.clone();
+            self.current.on_submitted_work_done(move||receipt.0.store(SubmissionState::Complete as u8,std::sync::atomic::Ordering::Release));
+        }
         let mut chunks = self.earlier.into_iter().chain([self.current]);
         let mut index = submit_traced(queue, self.prologue.take().into_iter().chain(chunks.next()), !self.resource_work);
         for encoder in chunks {
             index = submit_traced(queue, [encoder], !self.resource_work);
         }
-        if let Some(pending)=self.submission.take() {pending.0.0.store(1,std::sync::atomic::Ordering::Release);}
+        if let Some(pending)=self.submission.take() {
+            let _=pending.0.0.compare_exchange(SubmissionState::Encoding as u8,SubmissionState::Submitted as u8,std::sync::atomic::Ordering::AcqRel,std::sync::atomic::Ordering::Acquire);
+        }
         index
     }
 }
@@ -231,6 +244,10 @@ impl ColorPass for CommandEncoder {
         self.current.color_pass(label, view, load)
     }
 }
+
+#[cfg(test)]
+#[path = "resident_tests.rs"]
+mod resident_tests;
 
 #[cfg(test)]
 mod tests {

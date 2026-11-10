@@ -29,9 +29,9 @@ impl WgpuRasterizer {
                 self.drain_image_decodes(encoder)?;
                 match capture.region(self, frame.packet(self.document_extent), region, [PAGE_SIZE;2], encoder) {
                     Ok(source) => break source,
-                    Err(GpuRasterError::DeferredObjectWork) => {
+                    Err(GpuRasterError::NotReady) => {
                         #[cfg(target_arch = "wasm32")]
-                        return Err(GpuRasterError::DeferredObjectWork);
+                        return Err(GpuRasterError::NotReady);
                         #[cfg(not(target_arch = "wasm32"))]
                         {
                             scene::Scene::submit_chunk(self, encoder, "explicit artwork source preparation")?;

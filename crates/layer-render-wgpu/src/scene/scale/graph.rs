@@ -18,6 +18,23 @@ pub(super) enum Expression {
 }
 impl Expression {
     fn color(value: [f32; 4]) -> Node { Arc::new(Self::Color(value.map(f32::to_bits))) }
+    fn content(node:&Node)->Node {
+        match node.as_ref() {
+            Self::Opacity {input,opacity}=>{
+                let normalized=Self::content(input);
+                if Arc::ptr_eq(input,&normalized) {node.clone()}else {Arc::new(Self::Opacity {input:normalized,opacity:*opacity})}
+            }
+            Self::Combine {front,back,blend,flags}=>{
+                let a=Self::content(front);let b=Self::content(back);
+                if Arc::ptr_eq(front,&a) && Arc::ptr_eq(back,&b) {node.clone()}
+                else {Arc::new(Self::Combine {front:a,back:b,blend:*blend,flags:*flags})}
+            }
+            Self::Effect {input,chain,masks,..}=>Arc::new(Self::Effect {input:Self::content(input),chain:chain.clone(),
+                masks:masks.iter().map(|mask|mask.as_ref().map(Self::content)).collect(),radius:None}),
+            _=>node.clone(),
+        }
+    }
+
     pub(super) fn is_clear(node: &Node) -> bool { matches!(node.as_ref(), Self::Color(c) if *c == [0; 4]) }
     fn combine(front: Node, back: Node, blend: layer_core::LayerBlend, flags: u32) -> Node {
         if blend == layer_core::LayerBlend::Normal && flags == 0 {
@@ -81,35 +98,6 @@ impl Expression {
             }
         }
     }
-    pub(super) fn damage(&self, sources: &Sources, plan: display_mips::Plan) -> Damage {
-        Damage::from_regions(self.document_damage(sources, plan).into_iter().map(|region| region.in_frame(plan.extent)))
-    }
-    fn document_damage(&self, sources: &Sources, plan: display_mips::Plan) -> Vec<DocRect> {
-        match self {
-            Self::Color(_) => Vec::new(),
-            Self::Objects {content,..} => [None, Some(content.owner())].into_iter().flat_map(|owner| sources.object_damage.get(&owner).into_iter()
-                .chain(sources.object_refinements.get(&(plan.level, owner)))).flat_map(|damage| damage.regions.iter()).copied().map(DocRect::from).collect(),
-            Self::Vector { owner, .. } => [None, Some(*owner)].into_iter().flat_map(|owner| sources.object_damage.get(&owner).into_iter())
-                .flat_map(|damage| damage.regions.iter()).copied().map(DocRect::from).collect(),
-            Self::VectorPreview { .. } => sources.preview_damage.clone(),
-            Self::VectorMotion { .. } => sources.motion_damage.clone(),
-            Self::Source { id, frame, .. } => sources.entries.get(id).map_or_else(|| vec![plan.doc_bounds], |source| {
-                let local = if frame.aligned() { source.damage.clone() } else {
-                    source.damage.expand(1 << source_level(plan.level, *frame), frame.extent(source.extent))
-                };
-                local.regions.iter().map(|region| frame.document(*region)
-                    .expand(source.watercolor.map_or(0, |w| w.radius()))).collect()
-            }),
-            Self::Opacity { input, .. } => input.document_damage(sources, plan),
-            Self::Combine { front, back, .. } => front.document_damage(sources, plan).into_iter().chain(back.document_damage(sources, plan)).collect(),
-            Self::Effect { input, masks, radius, .. } => {
-                let input = input.document_damage(sources, plan);
-                let mut damage = if input.is_empty() { Vec::new() } else { radius.map_or_else(|| vec![plan.doc_bounds], |radius| input.into_iter().map(|region| region.expand(radius)).collect()) };
-                for mask in masks.iter().flatten() { damage.extend(mask.document_damage(sources, plan)); }
-                damage
-            }
-        }
-    }
     pub(super) fn required(&self, region: Damage, plan: display_mips::Plan) -> Damage {
         match self {
             Self::Color(_) => Damage::EMPTY,
@@ -139,6 +127,15 @@ impl Expression {
         visit(self, scene, false, &mut domains);
         domains
     }
+    pub(super) fn native_capture(&self, scene: SceneView<'_>, level: u32) -> bool {
+        match self {
+            Self::Opacity { input, .. } => input.native_capture(scene, level),
+            Self::Combine { front, back, .. } => front.native_capture(scene, level) || back.native_capture(scene, level),
+            Self::Effect { input, chain, masks, .. } => super::effects::native_alpha_capture(scene, &chain.iter().map(|(handle, ..)| *handle).collect::<Vec<_>>(), level)
+                || input.native_capture(scene, level) || masks.iter().flatten().any(|mask| mask.native_capture(scene, level)),
+            _ => false,
+        }
+    }
     fn visit(node: &Node, all: &mut HashSet<Node>) {
         if !all.insert(node.clone()) { return; }
         match node.as_ref() {
@@ -149,19 +146,6 @@ impl Expression {
                 for mask in masks.iter().flatten() { Self::visit(mask, all); }
             }
             _ => {}
-        }
-    }
-    pub(super) fn deferred(&self, r: &WgpuRasterizer, scene: SceneView<'_>, batches: &[DabBatch]) -> bool {
-        match self {
-            Self::Source { id, frame, .. } => {
-                if let Some(transforms) = r.transforms.as_ref().filter(|t| t.display_source(*id)) {
-                    return transforms.direct_source(*id);
-                }
-                r.watercolor_style(*id, batches).is_none() && (r.moving_layer == scene.source_owner(*id) || !frame.aligned())
-            }
-            Self::Opacity { input, .. } => input.deferred(r, scene, batches),
-            Self::Combine { front, back, blend: 0, flags: 0 } => matches!(back.as_ref(), Self::Color(_)) && front.deferred(r, scene, batches),
-            _ => false,
         }
     }
     fn fused_target(&self)->Option<SourceTarget> {
@@ -177,22 +161,14 @@ impl Expression {
     }
 }
 
-pub(super) struct Branch {
-    image: Option<Image>,
-    valid: BTreeSet<[u32; 2]>,
-    initialized:BTreeSet<[u32;2]>,
-    stale: BTreeSet<[u32; 2]>,
-}
 #[derive(Default)]
 pub(super) struct Graph {
     pub root: Option<Node>,
+    pub content: Option<Node>,
     pub motion: Option<[Node; 2]>,
     pub prepared: Option<[Node; 2]>,
     pub split_changed: bool,
-    branches: HashMap<Node, Branch>,
-    /// Images of branches no longer wanted, kept within the branch budget for
-    /// the next ones, such as a later selection's halves.
-    spare: Vec<Image>,
+    cached: HashSet<Node>,
     effects: HashMap<OccurrenceHandle, (metadata::Metadata, u64)>,
     revision: u64,
     blend_space: layer_core::BlendSpace,
@@ -200,13 +176,14 @@ pub(super) struct Graph {
 }
 impl Graph {
     pub fn objects(&self)->&object_spatial::SpatialIndex {&self.objects}
+    pub fn blend_space(&self)->layer_core::BlendSpace {self.blend_space}
     pub fn without_pixels(&self) -> Self {
-        Self { root: self.root.clone(), motion: None, prepared: None, split_changed: false, branches: HashMap::new(), spare: Vec::new(), effects: self.effects.clone(),
+        Self { root: self.root.clone(), content:self.content.clone(), motion: None, prepared: None, split_changed: false, cached: HashSet::new(), effects: self.effects.clone(),
             revision: self.revision, blend_space: self.blend_space, objects:self.objects.clone() }
     }
-    pub fn prepare(&mut self, r: &WgpuRasterizer, packet: FramePacket<'_>, sources: &Sources, plan: display_mips::Plan, budget: u64) -> Result<(), GpuRasterError> {
+    pub fn prepare(&mut self, r: &WgpuRasterizer, packet: FramePacket<'_>, sources: &Sources, plan: display_mips::Plan) -> Result<(), GpuRasterError> {
         self.objects.prepare(packet.scene);
-        if std::mem::replace(&mut self.blend_space, packet.blend_space) != packet.blend_space { self.branches.clear(); }
+        self.blend_space=packet.blend_space;
         self.effects.retain(|id, _| packet.scene.effect(*id).is_some());
         for &handle in packet.scene.order().iter().filter(|handle| packet.scene.effect(**handle).is_some()) {
             let metadata = metadata::Metadata::new(packet.scene, handle);
@@ -236,58 +213,20 @@ impl Graph {
             _ => None,
         }).collect();
         all.extend(unmoved);
-        let mut eligible: Vec<_> = all.into_iter().filter(|n| !Arc::ptr_eq(n, &root)
+        self.cached = all.into_iter().filter(|n| !Arc::ptr_eq(n, &root)
             && matches!(n.as_ref(), Expression::Objects {..} | Expression::Vector { .. } | Expression::Combine { .. } | Expression::Effect { .. })
             && !matches!(n.as_ref(), Expression::Combine { front, .. } if matches!(front.as_ref(), Expression::VectorPreview { .. } | Expression::VectorMotion { .. }))).collect();
-        let split = |n: &Node| self.motion.iter().chain(&self.prepared).flat_map(|halves| halves.iter().position(|half| half == n)).min().unwrap_or(2);
-        eligible.sort_by_cached_key(|n| (split(n), n.damage(sources, plan).area(), std::cmp::Reverse(n.cost().0), n.clone()));
-        let capacity = (budget / plan.level_bytes(plan.level)) as usize;
-        eligible.truncate(capacity);
-        let wanted: HashSet<_> = eligible.into_iter().collect();
-        let mut reusable: Vec<_> = self.branches.extract_if(|node, _| !wanted.contains(node))
-            .filter_map(|(_, branch)| branch.image).chain(self.spare.drain(..)).filter(|image| image.plan == plan).collect();
-        for node in wanted {
-            let dirty = node.damage(sources, plan);
-            let branch = self.branches.entry(node).or_insert_with(|| Branch { image: reusable.pop(), valid: BTreeSet::new(),initialized:BTreeSet::new(), stale: BTreeSet::new() });
-            if branch.image.as_ref().is_some_and(|image| image.plan != plan) { branch.image = None; branch.valid.clear();branch.initialized.clear(); }
-            let before = branch.valid.len();
-            branch.stale.clear();
-            if before > 0 { branch.stale.extend(branch.valid.iter().copied().filter(|c| dirty.intersects(page_rect(*c)))); }
-            branch.valid.retain(|c| !dirty.intersects(page_rect(*c)));
-        }
-        reusable.truncate(capacity.saturating_sub(self.branches.len()));
-        self.spare = reusable;
+        if self.root.as_ref()!=Some(&root) {self.content=Some(Expression::content(&root));}
         self.root = Some(root);
         Ok(())
     }
-    pub fn branch_image(&self, node: &Node, pages: &[[u32; 2]]) -> Option<(&wgpu::TextureView, display_mips::Plan)> {
-        let branch = self.branches.get(node)?;
-        let image = branch.image.as_ref()?;
-        pages.iter().all(|page| branch.valid.contains(page)).then_some((&image.view, image.plan))
-    }
-    pub fn caches(&self, node: &Node) -> bool { self.branches.contains_key(node) }
-    pub fn branch_valid(&self, node: &Node, page: [u32; 2]) -> bool {
-        self.branches.get(node).is_some_and(|branch| branch.image.is_some() && branch.valid.contains(&page))
-    }
-    #[cfg(test)]
-    pub fn cached_branches(&self) -> usize { self.branches.values().filter(|branch| branch.image.is_some()).count() }
-    #[cfg(test)]
-    pub fn spare_textures(&self) -> Vec<wgpu::Texture> { self.spare.iter().map(|image| image.texture.clone()).collect() }
-    #[cfg(test)]
-    pub fn branch_textures(&self) -> Vec<wgpu::Texture> { self.branches.values().filter_map(|branch| branch.image.as_ref().map(|image| image.texture.clone())).collect() }
-    pub fn reserved_bytes(&self, plan: display_mips::Plan) -> u64 { self.branches.len() as u64 * plan.level_bytes(plan.level) }
-    pub fn storage_bytes(&self) -> u64 {
-        self.branches.values().filter_map(|b| b.image.as_ref()).chain(&self.spare).map(|i| texture_bytes(&i.texture)).sum::<u64>() + self.objects.storage_bytes()
-    }
+    pub fn caches(&self, node: &Node) -> bool { self.cached.contains(node) }
+    pub fn storage_bytes(&self) -> u64 { self.objects.storage_bytes() }
+
 }
 
-pub(super) fn scratch_images(packet: FramePacket<'_>, level: u32, space: layer_core::color::RgbSpace, objects:Option<&object_spatial::SpatialIndex>, fine:Option<SourceTarget>) -> Result<u64, GpuRasterError> {
-    let mut objects=objects.cloned().unwrap_or_default();
-    let root=compose(packet,None,None,level,space,Some(&mut objects),None)?;
-    Ok(if fine.is_some() && root.fused_target()==fine {1} else {u64::from(root.cost().1)+1})
-}
 
-fn compose(
+pub(super) fn compose(
     packet: FramePacket<'_>, sources: Option<&Sources>, effects: Option<&HashMap<OccurrenceHandle, (metadata::Metadata, u64)>>,
     level: u32, space: layer_core::color::RgbSpace, objects:Option<&mut object_spatial::SpatialIndex>, moving: Option<&(OccurrenceHandle, Moving)>,
 ) -> Result<Node, GpuRasterError> {
@@ -393,26 +332,65 @@ impl stack::Compositor for Builder<'_> {
 }
 
 impl Cache {
-    pub(super) fn initialized_pages(&self,target:&Target)->Option<&BTreeSet<[u32;2]>> {
-        match target.slot {
-            Some(Slot::Root)=>Some(&self.valid),
-            None=>self.graph.branches.values().find_map(|b|b.image.as_ref()
-                .filter(|image|image.view==target.view && image.plan==target.plan).map(|_|&b.initialized)),
-            _=>None,
-        }
+    pub(super) fn initialized_pages(&self,target:&Target)->Option<BTreeSet<[u32;2]>> {
+        self.pages.lock().unwrap().initialized_view(&target.view,target.plan.bounds)
+
     }
 }
 impl Evaluator<'_> {
-    pub(super) fn evaluate_root(&mut self, node: &Node, direct: bool) -> Result<Value, GpuRasterError> {
-        let deferred = if direct && self.cache.plan.level > 0 && self.cache.plan.bounds == PixelRect::full(self.cache.plan.extent)
-            && node.deferred(self.r, self.packet.scene, self.packet.dab_batches) { Some(self.evaluate(node)?) } else { None };
-        if matches!(deferred, Some(Value::Placed(_) | Value::Transform(_))) { return Ok(deferred.unwrap()); }
-        self.cache.pixels.ensure_root(self.r, self.cache.plan, "composition level");
-        let image = self.cache.pixels.root().unwrap();
-        let output = Target { view: image.view.clone(), slot: Some(Slot::Root), plan: image.plan };
-        let value = match deferred { Some(value) => value, None => self.evaluate_into(node, Some(output.clone()))? };
-        self.materialize(value, Some(output))
+    pub(super) fn evaluate_root(&mut self, node: &Node, _direct: bool) -> Result<Value, GpuRasterError> {
+        self.evaluate_page(node,false)?.ok_or(GpuRasterError::NotReady)
     }
+    fn evaluate_page(&mut self,node:&Node,optional:bool)->Result<Option<Value>,GpuRasterError> {
+        let region=self.region.in_frame(self.cache.plan.extent);
+        let required_input_level=if self.cache.evaluation==Evaluation::Native {0}else {self.input.level};
+        let mut key=self.cache.page_key(node.clone(),region);
+        let cached={
+            let mut store=self.cache.pages.lock().unwrap();
+            store.get(&key,region,pages::Accuracy::Display,required_input_level).or_else(||store.get(&key,region,pages::Accuracy::Exact,0)).map(|image| {
+                let exact=store.get(&key,region,pages::Accuracy::Exact,0).is_some();(image,exact)
+            })
+        };
+        if let Some((image,exact))=cached {
+            if self.cache.graph.content.as_ref()==Some(&key.expression) {self.cache.pages.lock().unwrap().set_visible(&key);}
+            self.approximate|=!exact;
+            self.unit.reads.push((pages::Key {format:image.texture.format(),..key.clone()},image.clone()));
+            return Ok(Some(Target {view:image.view.clone(),slot:Some(Slot::Root),plan:image.plan}.value()));
+        }
+        if !self.cache.pages.lock().unwrap().coverage(&key,region,required_input_level).needs(region,pages::Accuracy::Display) {
+            return Err(GpuRasterError::NotReady);
+        }
+        let reduction=self.cache.pages.lock().unwrap().reduction(&key,required_input_level);
+        if matches!(&reduction,Some((_,pages::Accuracy::Exact,_))) {key.format=wgpu::TextureFormat::Rgba32Float;}
+        let Some(image)=self.cache.claim_page(self.scene,self.r,key.clone(),self.retained,optional)? else {return Ok(None);};
+        self.unit.reads.push((key.clone(),image.clone()));
+        if let Some((inputs,accuracy,freshness))=reduction {
+            let write=self.cache.pages.lock().unwrap().prepare_write(key.clone(),image.plan.bounds,accuracy,freshness,required_input_level)?;
+            for (input_key,input) in inputs {
+                let covered=input.plan.bounds.intersect(image.plan.bounds);
+                let side=1<<image.plan.level;
+                let [x,y,width,height]=paint_transform::texel_rect(covered.window_local(image.plan.bounds),side);
+                let sources=[input.view.clone(),self.r.empty_view.clone(),self.r.empty_view.clone(),self.r.empty_view.clone()];
+                let binding=RegionRecords::inputs(self.r,sources.each_ref(),&image.view);
+                let mut values=[0;20];
+                values[..8].copy_from_slice(&[x,y,width,height,input.plan.bounds.width(),input.plan.bounds.height(),2,(input.plan.level<<8)|8]);
+                values[14]=((x*2) as f32).to_bits();values[15]=((y*2) as f32).to_bits();
+                self.scene.jobs.push(Job::Reduce {binding,sources,values,size:[width,height],kernel:Reduction::Pages,format:image.texture.format()});
+                self.unit.reads.push((input_key,input));
+            }
+            self.approximate|=accuracy==pages::Accuracy::Display || freshness==pages::Freshness::Stale;
+            self.unit.pages.push(write);
+            return Ok(Some(Target {view:image.view.clone(),slot:Some(Slot::Root),plan:image.plan}.value()));
+        }
+        let write=self.cache.pages.lock().unwrap().prepare_write(key.clone(),region,pages::Accuracy::Display,pages::Freshness::Current,required_input_level)?;
+        let output=Target {view:image.view.clone(),slot:Some(Slot::Root),plan:image.plan};
+        let direct=(image.texture.format()==wgpu::TextureFormat::Rgba32Float).then(||output.clone());
+        let value=self.evaluate_uncached(node,direct)?;
+        let value=self.materialize(value,Some(output))?;
+        self.unit.pages.push(write);
+        Ok(Some(value))
+    }
+
     fn combine(&mut self, front: &Node, back: &Node, blend: u32, flags: u32, output: Option<Target>) -> Result<Value, GpuRasterError> {
         let (front, back) = if front.cost().1 >= back.cost().1 {
             let front = self.evaluate(front)?;
@@ -428,93 +406,32 @@ impl Evaluator<'_> {
         self.evaluate_into(node, None)
     }
     fn evaluate_into(&mut self, node: &Node, output: Option<Target>) -> Result<Value, GpuRasterError> {
-        let region = self.region.in_frame(self.cache.plan.extent);
-        if let Some(branch) = self.cache.graph.branches.get(node)
-            && self.region.min.iter().all(|n| *n >= 0) && self.region.max.iter().zip(self.cache.plan.extent).all(|(n, e)| *n <= i64::from(e))
-            && page_coordinates(region).all(|c| branch.valid.contains(&c))
-            && let Some(image) = &branch.image {
-                return Ok(Value::Image { view: image.view.clone(), slot: None, opacity: 1., plan: image.plan, preview: None, encode: false });
-        }
-        let append = matches!(node.as_ref(), Expression::Vector { .. }) && self.cache.graph.branches.get(node).is_some_and(|branch| branch.image.is_some()
-            && !branch.stale.is_empty() && page_coordinates(region).all(|c| branch.stale.contains(&c) || branch.valid.contains(&c)));
-        let output = if let Some(branch) = self.cache.graph.branches.get_mut(node) {
-            let image = branch.image.get_or_insert_with(|| Image::new(self.r, self.input, "composition branch"));
-            Some(Target { view: image.view.clone(), slot: None, plan: image.plan })
-        } else { output };
-        let evaluation=self.cache.graph.branches.get(node).filter(|branch| self.region == DocRect::from(region)
-            && branch.image.as_ref().unwrap().plan.doc_bounds == DocRect::from(branch.image.as_ref().unwrap().plan.bounds)
-            && matches!(node.as_ref(),Expression::Effect {chain,..}
-            if self.cache.plan.level>0 && chain.iter().any(|(h,..)|native_pointwise_alpha(self.packet.scene.effect(*h).unwrap().program))))
-            .map_or(self.region,|branch|page_coordinates(region).filter(|c|!branch.initialized.contains(c))
-                .fold(region,|bounds,c|bounds.union(page_rect(c).intersect(branch.image.as_ref().unwrap().plan.bounds))).into());
-        let outer_approximate = std::mem::replace(&mut self.approximate, false);
-        let result = self.with_region(evaluation,|compositor| match node.as_ref() {
-            Expression::Color(c) => Ok(Value::Color(c.map(f32::from_bits))),
-            Expression::Objects {content,preview} => compositor.objects(content,*preview,output),
-            Expression::Vector { owner, moving, .. } => compositor.vector(*owner, moving.as_ref(), output, append),
-            Expression::VectorPreview { owner } => compositor.vector_preview(*owner, output),
-            Expression::VectorMotion { owner } => compositor.vector_motion(*owner, output),
-            Expression::Source { id, frame, extent, outside } => compositor.source(*id, *frame, *extent, f32::from_bits(*outside)),
-            Expression::Opacity { input, opacity } => compositor.evaluate(input).map(|value| value.with_opacity(f32::from_bits(*opacity))),
-            Expression::Combine { front, back, blend, flags } => compositor.combine(front, back, *blend, *flags, output),
-            Expression::Effect { input, chain, masks, .. } => compositor.effect(input, chain, masks, output),
-        });
-        let approximate = self.approximate;
-        self.approximate |= outer_approximate;
-        let result = result?;
-        if let Some(branch) = self.cache.graph.branches.get_mut(node) {
-            let bounds = branch.image.as_ref().unwrap().plan.doc_bounds.in_frame(self.cache.plan.extent);
-            let complete:Vec<_>=page_coordinates(evaluation.in_frame(self.cache.plan.extent)).filter(|c|page_rect(*c).intersect(bounds).intersect(evaluation.in_frame(self.cache.plan.extent))==page_rect(*c).intersect(bounds)).collect();
-            for c in &complete { branch.stale.remove(c); }
-            if approximate { for coordinate in &complete { branch.valid.remove(coordinate); } }
-            else { branch.valid.extend(complete.iter().copied()); }
-            branch.initialized.extend(complete);
-        }
-        Ok(result)
+        let region=self.region.in_frame(self.cache.plan.extent);
+        if output.is_none() && self.cache.graph.caches(node)
+            && DocRect::from(region)==self.region && self.cache.page_key(node.clone(),region).plan().bounds==region
+            && let Some(value)=self.evaluate_page(node,true)? {return Ok(value);}
+        self.evaluate_uncached(node,output)
     }
-}
+    fn evaluate_uncached(&mut self,node:&Node,output:Option<Target>)->Result<Value,GpuRasterError> {
+        let outer_approximate=std::mem::replace(&mut self.approximate,false);
+        let result=match node.as_ref() {
+            Expression::Color(c)=>Ok(Value::Color(c.map(f32::from_bits))),
+            Expression::Objects {content,preview}=>self.objects(content,*preview,output),
+            Expression::Vector {owner,moving,..}=>self.vector(*owner,moving.as_ref(),output,false),
+            Expression::VectorPreview {owner}=>self.vector_preview(*owner,output),
+            Expression::VectorMotion {owner}=>self.vector_motion(*owner,output),
+            Expression::Source {id,frame,extent,outside}=>self.source(*id,*frame,*extent,f32::from_bits(*outside)),
+            Expression::Opacity {input,opacity}=>self.evaluate(input).map(|value|value.with_opacity(f32::from_bits(*opacity))),
+            Expression::Combine {front,back,blend,flags}=>self.combine(front,back,*blend,*flags,output),
+            Expression::Effect {input,chain,masks,..}=>self.effect(input,chain,masks,output),
+        };
+        self.approximate|=outer_approximate;
+        match result {
+            Err(GpuRasterError::NotReady)=>{self.unit.waiting=true;Ok(Value::Color([0.;4]))},
+            result=>result,
+        }
+    }
 
-impl Cache {
-    pub(super) fn prepare_native_branches(
-        &mut self, scene: &mut Scene, r: &mut WgpuRasterizer, packet: FramePacket<'_>, regions: &[PixelRect],
-        input: display_mips::Plan, encoding: &mut Encoding<'_>,
-    ) -> Result<(), GpuRasterError> {
-        if self.plan.level != 0 || input.doc_bounds != DocRect::from(input.bounds) { return Ok(()); }
-        let mut pending = vec![self.graph.root.clone().unwrap()]; let mut wanted = BTreeSet::new();
-        while let Some(node) = pending.pop() {
-            match node.as_ref() {
-                graph::Expression::Opacity { input, .. } => pending.push(input.clone()),
-                graph::Expression::Combine { front, back, .. } => pending.extend([front.clone(), back.clone()]),
-                graph::Expression::Effect { chain, .. } if self.graph.branches.contains_key(&node)
-                    && super::effects::native_alpha_capture(packet.scene, &chain.iter().map(|(h, ..)| *h).collect::<Vec<_>>(), 0) => { wanted.insert(node); }
-                _ => {}
-            }
-        }
-        if wanted.is_empty() { return Ok(()); }
-        let Encoding { encoder, commands } = encoding;
-        commands.flush(r, encoder)?; if !scene.jobs.is_empty() { scene.encode_jobs(r, encoder)?; }
-        for node in wanted {
-            let graph::Expression::Effect { chain, .. } = node.as_ref() else { unreachable!() };
-            let branch = self.graph.branches.get_mut(&node).unwrap();
-            let image = branch.image.get_or_insert_with(|| Image::new(r, input, "composition branch"));
-            let target = Target { view: image.view.clone(), slot: None, plan: image.plan };
-            let mut pages: Vec<_> = regions.iter().flat_map(|region| page_coordinates(region.intersect(target.plan.bounds)))
-                .filter(|page| !branch.valid.contains(page)).collect::<BTreeSet<_>>().into_iter().collect();
-            pages.sort_by_key(|[x, y]| (*y, *x));
-            crate::artwork::resident_first(r, packet.scene, &mut pages);
-            let mut first = 0;
-            while first < pages.len() {
-                let mut end = first + 1;
-                while end < pages.len() && end - first < SOURCE_SLOTS
-                    && pages[end][1] == pages[first][1] && pages[end][0] == pages[end - 1][0] + 1 { end += 1; }
-                let regions: Vec<DocRect> = pages[first..end].iter().map(|page| page_rect(*page).intersect(target.plan.bounds).into()).collect();
-                super::effects::capture_native_effect(scene, r, packet, chain.last().unwrap().0, &target, &regions, None, encoder)?;
-                branch.valid.extend(pages[first..end].iter().copied()); branch.initialized.extend(pages[first..end].iter().copied());
-                first = end;
-            }
-        }
-        Ok(())
-    }
 }
 
 
@@ -528,6 +445,13 @@ mod reuse_tests {
     use layer_core::{EffectValue, Point, Selection};
     use layer_core::color::RgbColor;
 
+    fn retained_branch_pages(cache:&Cache)->Vec<pages::RetainedPage> {
+        cache.pages.lock().unwrap().retained_pages().into_iter().filter(|page|page.key.source.is_none()
+            && page.key.level==cache.plan.level && !page.written.is_empty()
+            && Some(&page.key.expression)!=cache.graph.root.as_ref() && Some(&page.key.expression)!=cache.graph.content.as_ref()
+            && cache.graph.caches(&page.key.expression)).collect()
+    }
+
     #[test]
     fn fill_edits_reuse_branch_textures_without_reusing_old_pixels() {
         let mut doc = document_at([517, 259]);
@@ -535,6 +459,9 @@ mod reuse_tests {
         doc.artwork.occurrences.get_mut(paint).unwrap().opacity = 0.37;
         let color = |rgb, alpha| RgbColor::from_linear(doc.composition().color.space, [rgb, 0.27, 0.61, alpha]).unwrap();
         let initial = color(0.13, 0.43);
+        let unchanged=effect_occurrence(&mut doc,layer_core::EffectInstance::new(crate::tests::fixture("exposure").program()),"Unchanged paint");
+        doc.artwork.occurrences.get_mut(unchanged).unwrap().attachment=Attachment::Effect;
+        insert_occurrence(&mut doc,unchanged,0);
         let fill = add_fill(&mut doc, initial);
         coverage_mask(&mut doc, fill, [0, 0], Some(Selection::polygon(vec![
             Point { x: 0., y: 0. }, Point { x: 301., y: 0. },
@@ -543,22 +470,30 @@ mod reuse_tests {
         let mut renderer = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
         let extent = doc.composition().size;
         let mut previous_pixels: Option<Vec<[f32; 4]>> = None;
-        let mut previous_textures = Vec::new();
-        for (step, (red, alpha)) in [(0.13, 0.43), (0.83, 0.71), (0.31, 0.19)].into_iter().enumerate() {
+        let mut previous_pages:Vec<(pages::Key,std::sync::Weak<Image>)>=Vec::new();
+        for (red, alpha) in [(0.13, 0.43), (0.83, 0.71), (0.31, 0.19)] {
             let value = RgbColor::from_linear(doc.composition().color.space, [red, 0.27, 0.61, alpha]).unwrap();
             set_effect_value(&mut doc, fill, "color", EffectValue::Color(value));
             let mut frame = crate::test_support::packet(doc.scene(), extent);
             frame.view.document_to_surface = [0.125, 0., 0., 0.125, 0., 0.];
             submit_published(&mut renderer, frame);
             let cache = renderer.scale_display.as_ref().unwrap();
-            let textures: Vec<_> = cache.graph.branches.values().filter_map(|branch|
-                branch.image.as_ref().map(|image| image.texture.clone())).collect();
-            assert!(!textures.is_empty(), "fixture must materialize cached effect branches");
-            if step > 0 {
-                assert_eq!(textures.len(), previous_textures.len());
-                assert!(textures.iter().all(|texture| previous_textures.contains(texture)),
-                    "same-plan Fill edits must reuse all retired branch textures");
+            let pages=retained_branch_pages(cache);
+            assert!(!pages.is_empty(),"fixture must commit optional branch pages");
+            assert!(cache.storage_bytes()<=CACHE_BYTES);
+            let mut store=cache.pages.lock().unwrap();
+            for (key,before) in &previous_pages {
+                let current=store.get(key,key.plan().bounds,pages::Accuracy::Display,key.level).expect("an unchanged sub-expression stays current");
+                assert!(Arc::ptr_eq(&before.upgrade().expect("an unchanged sub-expression stays retained"),&current),
+                    "same-key unchanged branch pages must retain their image");
             }
+            previous_pages=pages.iter().filter(|page|matches!(page.key.expression.as_ref(),Expression::Effect {chain,..}
+                if chain.iter().any(|(handle,..)|*handle==unchanged))).map(|page| {
+                    let image=store.get(&page.key,page.key.plan().bounds,pages::Accuracy::Display,page.key.level).unwrap();
+                    (page.key.clone(),Arc::downgrade(&image))
+                }).collect();
+            assert!(!previous_pages.is_empty(),"fixture must commit the unchanged sub-expression");
+            drop(store);
             let actual = display_pixels(&renderer);
             let mut fresh = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
             submit_published(&mut fresh, frame);
@@ -569,7 +504,6 @@ mod reuse_tests {
                 assert!(crate::test_support::max_error(&actual, &previous) > 0.01, "visible Fill edits must change pixels");
             }
             previous_pixels = Some(actual);
-            previous_textures = textures;
         }
     }
 #[test]
@@ -588,24 +522,17 @@ fn native_level_retained_branches_batch_live_graph_pages_and_keep_islands_separa
         let mut scene = r.scene.take().unwrap(); let mut cache = r.scale_display.take().unwrap();
         r.document_damage.clear(); r.transform_damage.clear();
         assert_eq!(cache.plan.level, 0); assert_eq!(cache.plan.bounds, PixelRect::full(extent));
-        assert!(cache.graph.branches.keys().any(|node| matches!(node.as_ref(), graph::Expression::Effect { .. })));
+        assert!(retained_branch_pages(&cache).iter().any(|page|matches!(page.key.expression.as_ref(),Expression::Effect {..})));
         for sparse in [false, true] {
-            for source in scene.scale_sources.entries.values_mut() { source.damage = Damage::EMPTY; }
-            cache.valid.clear();
-            for branch in cache.graph.branches.values_mut() { branch.valid.clear(); }
-            let regions = if sparse { vec![PixelRect::new(11, 17, 29, 37), PixelRect::new(extent[0] - 19, 71, extent[0] - 3, 91)] }
-                else { vec![PixelRect::full(extent)] };
+            if !sparse {tests::evict_composite_pages(&cache,&[PixelRect::full(extent)]);}
             if sparse {
-                cache.valid.extend((1..count - 1).map(|x| [x, 0]));
-                for branch in cache.graph.branches.values_mut() { branch.valid.extend((1..count - 1).map(|x| [x, 0])); }
-                let target = doc.scene().source_target(doc.scene().order()[1]).unwrap();
-                scene.scale_sources.entries.get_mut(&target).unwrap().damage = Damage::from_regions(regions);
+                tests::evict_composite_pages(&cache,&[[0,0],[count-1,0]].map(page_rect));
             }
-            let mut encoder = submission::CommandEncoder::new(&r.device, &Default::default()); let mut commands = Commands::new(&r);
+            let mut encoder = submission::CommandEncoder::new(&r.device, &Default::default()); let mut commands = RegionRecords::new(&r);
             let work = r.metrics.composited_pixels;
             cache.render_graph(&mut scene, &mut r, frame, PixelRect::EMPTY,
-                &mut Encoding { encoder: &mut encoder, commands: &mut commands }, Destination::View, Some(&BTreeSet::new())).unwrap();
-            commands.flush(&mut r, &mut encoder).unwrap();
+                &mut Encoding { encoder: &mut encoder, commands: &mut commands, retained:[0;2] }, Destination::View, Some(&BTreeSet::new()), 0).unwrap();
+            scene.encode_jobs(&mut r, &mut encoder).unwrap();
             let passes = encoder.pass_count(); let pages = if sparse { 2 } else { count };
             let batches = if sparse { 2 } else { count.div_ceil(SOURCE_SLOTS as u32) };
             assert!(passes <= u64::from(batches + pages.div_ceil(32) + 1),
@@ -616,9 +543,14 @@ fn native_level_retained_branches_batch_live_graph_pages_and_keep_islands_separa
             for (i, (actual, expected)) in actual.iter().zip(&reference).enumerate() {
                 assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits), "{name} count={count} sparse={sparse} pixel={i}");
             }
-            for (node, branch) in &cache.graph.branches {
-                if matches!(node.as_ref(), graph::Expression::Effect { .. }) { assert_eq!(branch.valid.len(), count as usize); }
-            }
+            let effects=retained_branch_pages(&cache).into_iter().filter(|page|matches!(page.key.expression.as_ref(),Expression::Effect {..}))
+                .map(|page|page.key.expression).collect::<HashSet<_>>();
+            assert!(!effects.is_empty());
+            for node in effects {for coordinate in pages::coordinates(cache.plan.bounds,cache.plan.level) {
+                let key=cache.page_key(node.clone(),pages::bounds(coordinate,cache.plan.level,extent));
+                assert!(cache.pages.lock().unwrap().get(&key,key.plan().bounds,pages::Accuracy::Display,key.level).is_some(),
+                    "every retained effect branch page must remain committed and current");
+            }}
         }
         r.scene = Some(scene); r.scale_display = Some(cache);
     }}
@@ -649,10 +581,9 @@ mod object_reuse_tests {
         let painted=build(&doc,&mut cache);
         assert!(before==painted);
         let packet=crate::test_support::packet(doc.scene(),doc.composition().size);
-        assert!(scratch_images(packet,2,doc.composition().color.space,Some(&cache),None).unwrap()>=4);
         let mut planning=cache.clone();
         let planned=collection(&compose(packet,None,None,2,doc.composition().color.space,Some(&mut planning),None).unwrap(),owner);
-        assert!(before==planned,"scratch planning and display retain the same collection index after a paint edit");
+        assert!(before==planned,"requested levels retain the same collection index after a paint edit");
         if let (Expression::Objects {content:a,..},Expression::Objects {content:b,..})=(before.as_ref(),painted.as_ref()) {
             assert!(Arc::ptr_eq(&a.keys(),&b.keys()));
             assert_eq!(b.query_at(DocRect {min:[-4,-4],max:[12,12]},0).len(),1);

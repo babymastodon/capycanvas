@@ -85,7 +85,6 @@ impl WgpuRasterizer {
     pub(crate) fn analysis_changed(&mut self) {
         self.analysis_dirty = true;
         if let Some(scene) = &mut self.scene { scene.analysis_changed(); }
-        self.scale_display = None;
     }
     #[cfg(target_arch = "wasm32")]
     pub fn set_analysis_backing_waiter(&mut self, waiter: BackingWaiter) { self.analysis_backing_waiter = Some(waiter); }

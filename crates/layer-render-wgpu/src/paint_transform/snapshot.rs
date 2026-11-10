@@ -5,14 +5,52 @@ use super::*;
 use pixel_transform::{TRANSFORM_SLOTS, TransformSource, TransformTile};
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
 pub(super) struct SnapshotPage {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    named: (crate::resident::Resident<SnapshotPixels>, layer_core::raster::ContentVersion),
+}
+#[derive(Clone)]
+pub(super) struct SnapshotPixels { texture:wgpu::Texture, view:wgpu::TextureView }
+impl crate::resident::Storage for SnapshotPixels { fn storage_bytes(&self)->u64 {crate::texture_bytes(&self.texture)} }
+impl crate::resident::TextureStorage for SnapshotPixels {
+    fn texture(&self)->&wgpu::Texture {&self.texture}
+    fn view(&self)->&wgpu::TextureView {&self.view}
 }
 impl SnapshotPage {
-    pub fn of(texture: &wgpu::Texture, view: &wgpu::TextureView) -> Self {
-        Self { texture: texture.clone(), view: view.clone() }
+    pub fn captured<T:crate::resident::TextureStorage>(read:crate::resident::Read<'_,T>)->Result<Self,GpuRasterError> {
+        let expected=read.version().clone();
+        let texture=read.value().texture().clone();let view=read.value().view().clone();
+        let named=read.alias(SnapshotPixels {texture:texture.clone(),view:view.clone()}).ok_or(GpuRasterError::Invariant("snapshot aliases different physical storage"))?;
+        Ok(Self {texture,view,named:(named,expected)})
     }
+    pub(super) fn readable(&self,receipt:&crate::submission::Submission)->bool {
+        self.named.0.read(&self.named.1,Some(receipt)).is_some()
+    }
+    pub fn unwritten(texture:wgpu::Texture,view:wgpu::TextureView)->Self {
+        let expected=layer_core::raster::ContentName::fresh().into();
+        let resident=crate::resident::Resident::unwritten(SnapshotPixels {texture:texture.clone(),view:view.clone()});
+        Self {texture,view,named:(resident,expected)}
+    }
+    pub fn written(&mut self,receipt:&crate::submission::Submission)->Result<(),GpuRasterError> {
+        let (resident,expected)=&mut self.named;
+        let written=resident.overwrite(receipt).ok_or(GpuRasterError::Invariant("accepted destination is not writable"))?.publish(layer_core::raster::ContentName::fresh());
+        *expected=written.version().clone();Ok(())
+    }
+    pub fn copy_named(&self,r:&WgpuRasterizer,encoder:&mut crate::submission::CommandEncoder,reusable:Option<Self>)->Result<Self,GpuRasterError> {
+        let receipt=encoder.submission();
+        let (resident,expected)=&self.named;
+        let read=resident.read(expected,Some(&receipt)).ok_or(GpuRasterError::NotReady)?;
+        let mut capture=reusable.filter(|page|page.texture!=self.texture && page.texture.format()==self.texture.format())
+            .unwrap_or_else(||super::snapshot_page(&r.device,self.texture.format()));
+        let (resident,captured)=&mut capture.named;
+        let write=resident.overwrite(&receipt).ok_or(GpuRasterError::Invariant("accepted destination is not writable"))?;
+        encoder.copy_texture_to_texture(read.value().texture.as_image_copy(),write.value().texture.as_image_copy(),read.value().texture.size());
+        write.publish(expected.clone());*captured=expected.clone();
+        Ok(capture)
+    }
+
 }
 pub(super) struct TileSnapshot {
     pub pages: BTreeMap<[u32; 2], SnapshotPage>,
@@ -98,7 +136,8 @@ impl TileSnapshot {
     pub fn prepare_pages(&self, r: &mut WgpuRasterizer, coordinates: &[[u32;2]], encoder: &mut crate::submission::CommandEncoder) -> Result<Vec<crate::scene::sources::Lease>, GpuRasterError> {
         let mut leases = Vec::new();
         let mut pending = false;
-        for coordinate in coordinates.iter().copied().filter(|c| self.contains(*c) && !self.pages.contains_key(c)) {
+        let receipt=encoder.submission();
+        for coordinate in coordinates.iter().copied().filter(|c| self.contains(*c) && !self.pages.get(c).is_some_and(|page|page.readable(&receipt))) {
             #[cfg(not(target_arch="wasm32"))]
             if let Some((data, space, plane)) = &self.backing
                 && let Some(tile) = data.tiles.get(&layer_core::raster::TileKey {plane:*plane,coordinate}) {
@@ -112,7 +151,7 @@ impl TileSnapshot {
                     let tile=crate::scene::Scene::promote_source(r,encoder,crate::source_access::RawTile {texture:view.texture().clone(),view})?;
                     leases.extend(r.source_tiles.borrow().lease(&tile.view));
                 }
-                else {r.request_raster_decode(blob, *space)?;pending=true;}
+                else {r.request_raster_decode_to(blob, *space,r.device.working_space())?;pending=true;}
                 continue;
             }
             if let Some(base) = &self.base {
@@ -127,7 +166,7 @@ impl TileSnapshot {
                 if ready && let Some(tile) = r.paint_base_tile(base,coordinate,encoder)? {leases.extend(r.source_tiles.borrow().lease(&tile.view));}
             }
         }
-        if pending {Err(GpuRasterError::DeferredObjectWork)} else {Ok(leases)}
+        if pending {Err(GpuRasterError::NotReady)} else {Ok(leases)}
     }
     /// The original page at `coordinate`, decoded if it is not captured, or
     /// None where the layer has no pixels.
@@ -137,7 +176,7 @@ impl TileSnapshot {
         coordinate: [u32; 2],
         encoder: &mut crate::submission::CommandEncoder,
     ) -> Result<Option<crate::source_access::RawTile>, GpuRasterError> {
-        if let Some(page) = self.pages.get(&coordinate) {
+        if let Some(page) = self.pages.get(&coordinate).filter(|page|page.readable(&encoder.submission())) {
             return Ok(Some(crate::source_access::RawTile {
                 texture: page.texture.clone(),
                 view: page.view.clone(),
@@ -150,10 +189,13 @@ impl TileSnapshot {
                 coordinate,
             })
         {
+            if let Some((_,expected))=self.pages.get(&coordinate).map(|page|&page.named)
+                && tile.content_version().matches(expected)!=Some(true) {return Err(GpuRasterError::NotReady);}
             let blob = if r.snapshot_worker {tile.wait_backing().map_err(GpuRasterError::Effect)?}
-                else {tile.try_backing().ok_or(GpuRasterError::DeferredObjectWork)?.map_err(GpuRasterError::Effect)?};
+                else {tile.try_backing().ok_or(GpuRasterError::NotReady)?.map_err(GpuRasterError::Effect)?};
             return r.backed_raster_tile(&blob, *space, encoder).map(Some);
         }
+        if self.pages.contains_key(&coordinate) && self.base.is_none() {return Err(GpuRasterError::NotReady);}
         match &self.base {
             Some(original) => r.paint_base_tile(original, coordinate, encoder),
             None => Ok(None),
@@ -517,7 +559,6 @@ pub(crate) struct DisplayInputs {
     pub kept: Option<display_mips::Image>,
     pub sampling: [wgpu::TextureView; 2],
     uniforms: wgpu::Buffer,
-    binding: Option<wgpu::BindGroup>,
     pub fine: Option<super::fine::FineInputs>,
     pub pending: Option<std::collections::VecDeque<PixelRect>>,
 }
@@ -543,7 +584,6 @@ impl DisplayInputs {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            binding: None,
             fine: None,
             pending: None,
         }
@@ -569,16 +609,11 @@ impl DisplayInputs {
         texels: [u32; 4],
         mesh: Option<&MeshBuffers>,
     ) -> Result<(), GpuRasterError> {
-        if let Some(fine)=&self.fine {
-            fine.write_directory(r,encoder,self.phase)?;
-            r.uploads.write(encoder,&self.uniforms,values)?;
-            let binding=pass.fine_binding(&r.device,&self.uniforms,&self.sampling,&fine.view,&fine.directory);
-            pass.encode_mesh(encoder,&binding,level,texels,mesh.map(|mesh|(mesh,mesh.range_for_region(layer_core::Rect::UNBOUNDED))),self.kept.is_some());
-            return Ok(());
-        }
-        r.uploads.write(encoder, &self.uniforms, values)?;
-        let binding = self.binding.get_or_insert_with(|| pass.mesh_binding(&r.device, &self.uniforms, &self.sampling));
-        pass.encode_mesh(encoder, binding, level, texels, mesh.map(|mesh|(mesh,mesh.range_for_region(layer_core::Rect::UNBOUNDED))), self.kept.is_some());
+        let fine=self.fine.as_ref().unwrap();
+        fine.write_directory(r,encoder,self.phase)?;
+        r.uploads.write(encoder,&self.uniforms,values)?;
+        let binding=pass.fine_binding(&r.device,&self.uniforms,&self.sampling,&fine.view,&fine.directory);
+        pass.encode_mesh(encoder,&binding,level,texels,mesh.map(|mesh|(mesh,mesh.range_for_region(layer_core::Rect::UNBOUNDED))),self.kept.is_some());
         Ok(())
     }
 
@@ -590,6 +625,27 @@ mod tests {
     use super::*;
     use crate::test_support::preimage;
     use layer_core::{ImageTransform, Point, Projective, Rect, LayerPlacement};
+
+    #[test]
+    fn captured_mask_aliases_reject_other_storage_and_overwritten_history() {
+        let mut r=WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+        let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+        let receipt=encoder.submission();
+        let original=layer_core::raster::ContentName::fresh();
+        let mut page=crate::layer_masks::MaskPage::new(&r.device);
+        page.clear(&mut encoder,0.25,original).unwrap();
+        let other=super::super::snapshot_page(&r.device,r.device.scalar_format());
+        assert!(page.read(original,Some(&receipt)).unwrap().alias(SnapshotPixels {texture:other.texture,view:other.view}).is_none());
+        let read=page.read(original,Some(&receipt)).unwrap();
+        let texture=read.value().texture.clone();
+        assert!(read.alias(SnapshotPixels {view:texture.create_view(&Default::default()),texture}).is_none());
+        let captured=SnapshotPage::captured(page.read(original,Some(&receipt)).unwrap()).unwrap();
+        let snapshot=TileSnapshot {pages:[([0,0],captured)].into(),base:None,backing:None,bounds:PixelRect::full([PAGE_SIZE;2]),decode_id:layer_core::PortableId::random()};
+        assert!(snapshot.original_page(&mut r,[0,0],&mut encoder).unwrap().is_some());
+        page.clear(&mut encoder,0.75,layer_core::raster::ContentName::fresh()).unwrap();
+        assert!(matches!(snapshot.original_page(&mut r,[0,0],&mut encoder),Err(GpuRasterError::NotReady)));
+        encoder.submit(&r.queue);crate::test_support::complete(&r);
+    }
 
     const EXTENT: [u32; 2] = [6000, 4000];
 

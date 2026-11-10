@@ -98,7 +98,8 @@ impl BakePreflight {
                 }
             }
             let mut objects=std::mem::take(&mut compositor.exact_object_results);
-            let advanced=objects.advance(r,compositor,&mut encoder,false);
+            let composition=r.composition_memory(Some(compositor));
+            let advanced=objects.advance_with_memory(r,compositor,&mut encoder,false,composition);
             compositor.exact_object_results=objects;advanced?;
             compositor.object_display=false;compositor.object_query=false;compositor.object_live=false;
             if !compositor.prepare_object_pages(r,source,None,page_coordinates(window.in_frame(input.key.extent)))? {return Ok(());}
@@ -117,7 +118,7 @@ impl BakePreflight {
                 }
                 Ok(())
             })();
-            match prepared {Err(GpuRasterError::DeferredObjectWork)=>Ok(()),result=>result,}
+            match prepared {Err(GpuRasterError::NotReady)=>Ok(()),result=>result,}
         })();
         let finished=self.windowed && self.pages.len()>completed && self.steps.get(self.coordinate).is_none_or(|next|next.1!=output);
         if finished {
@@ -152,7 +153,7 @@ impl WgpuRasterizer {
             let columns=u64::from(damage.max_x().div_ceil(PAGE_SIZE).saturating_sub(damage.min_x()/PAGE_SIZE));
             let rows=u64::from(damage.max_y().div_ceil(PAGE_SIZE).saturating_sub(damage.min_y()/PAGE_SIZE));
             columns.checked_mul(rows).and_then(|pages|pages.checked_mul(u64::from(PAGE_SIZE).pow(2)*u64::from(self.device.working_format().block_copy_size(None).unwrap())))
-                .and_then(|added|bytes.checked_add(added)).ok_or(GpuRasterError::SourceWorkingSetExceeded)
+                .and_then(|added|bytes.checked_add(added)).ok_or(GpuRasterError::SizeOverflow)
         }).and_then(|bytes|self.admit_preparation_bytes(self.projected_restore_bytes(),bytes).map(|()|bytes));
         let mut state=self.bake_preflight.take().filter(|old|old.color==self.document_color() && old.inputs.iter().map(|input|&input.key).eq(inputs.iter().map(|input|&input.key)))
             .unwrap_or(BakePreflight {color:self.document_color(),owner:packet.scene.owner(),revision:packet.scene.revision(),inputs,next:0,renderer:None,pipelines:None,scene:None,source:None,initialized:false,windowed:false,steps:Vec::new(),retiring:None,coordinate:0,

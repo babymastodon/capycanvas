@@ -351,14 +351,6 @@ impl Scene {
         Ok(target)
     }
     pub(super) fn vector_damage(&mut self, r: &WgpuRasterizer, packet: FramePacket<'_>) {
-        self.scale_sources.vector_preview = r.vector_preview.as_ref().zip(r.vector_preview_shown).map(|(p, (_, _, bounds))| (p.owner, p.path.clone(), bounds));
-        self.scale_sources.preview_damage = r.vector_preview_damage.clone();
-        self.scale_sources.vector_motion = r.vector_motion_drawn.clone().filter(|_| r.vector_motion_split.is_none());
-        self.scale_sources.motion_split = r.vector_motion_split.clone();
-        self.scale_sources.motion_damage = r.vector_motion_damage.clone();
-        self.scale_sources.exclusion_damage = r.vector_exclusion_damage.clone();
-        self.scale_sources.moving = r.vector_motion_drawn.as_ref().map(|(motion, _)| (motion.owner, Moving(motion.items.clone())));
-        self.scale_sources.prepared = r.vector_prepared.as_ref().map(|(prepared, ..)| prepared.clone());
         self.vectors.begin_frame();
         self.vectors.retain(packet.scene);
         let palette = Self::vector_palette(r, packet);
@@ -468,13 +460,18 @@ impl Vectors {
         let size = plan.size.map(|n| n.div_ceil(256) * 256);
         let fits = |image: &super::Image| image.texture.width() >= plan.size[0] && image.texture.height() >= plan.size[1]
             && u64::from(image.texture.width()) * u64::from(image.texture.height()) <= 4 * u64::from(size[0]) * u64::from(size[1]);
-        let image = self.spare_motion.take().filter(fits)
-            .unwrap_or_else(|| super::Image::new(r, display_mips::Plan { size, ..plan }, "vector motion"));
+        if self.spare_motion.as_ref().is_none_or(|image|!fits(image)) {
+            self.spare_motion = Some(super::Image::new(r, display_mips::Plan { size, ..plan }, "vector motion"));
+        }
+        let image = self.spare_motion.as_ref().unwrap().clone();
         super::Image { plan, ..image }
     }
     pub(super) fn replace_motion(&mut self, motion: MotionImage) {
+        if self.spare_motion.as_ref().is_some_and(|image|image.texture==motion.image.texture) { self.spare_motion = None; }
         self.motion_revision += 1;
-        if let Some(old) = self.motion.replace(MotionImage { revision: self.motion_revision, ..motion }) { self.spare_motion = Some(old.image); }
+        let texture = motion.image.texture.clone();
+        if let Some(old) = self.motion.replace(MotionImage { revision: self.motion_revision, ..motion })
+            && old.image.texture != texture { self.spare_motion = Some(old.image); }
     }
     fn release_motion(&mut self) {
         if let Some(old) = self.motion.take() { self.spare_motion = Some(old.image); }
@@ -577,7 +574,6 @@ impl Vectors {
         let Some((handle, slots, offset)) = self.window_slots(scene, Waiting { owner, origin, level, size, extent }, palette, None) else { return true };
         self.derive_within_deadline(handle, slots, offset, level, extent)
     }
-    pub fn deriving(&self) -> bool { self.deadline.is_none_or(|deadline| web_time::Instant::now() <= deadline) }
     pub fn damage(&mut self, scene: SceneView<'_>, owner: OccurrenceHandle, palette: (layer_core::color::RgbSpace, layer_core::BlendSpace)) -> Vec<DocRect> {
         let Some(handle) = scene.vector_handle(owner) else { return Vec::new() };
         let Some(object) = scene.vector(handle) else { return Vec::new() };
@@ -844,7 +840,7 @@ impl Vectors {
     }
     pub fn encode(&mut self, r: &mut WgpuRasterizer, encoder: &mut crate::submission::CommandEncoder, job: &VectorJob) -> Result<(), GpuRasterError> {
         if job.batch.tile_count() > 0 && !r.compilation.require([r.scene_pipelines.vector.pipeline()], startup::DOCUMENT) {
-            return Err(GpuRasterError::DeferredObjectWork);
+            return Err(GpuRasterError::NotReady);
         }
         r.metrics.vector_tiles += job.batch.tile_count() as u64;
         let pool = self.pool.get_or_insert_with(|| Pool::new(POOL_BYTES));

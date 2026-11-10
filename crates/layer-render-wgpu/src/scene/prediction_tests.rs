@@ -127,10 +127,20 @@ fn prediction_covers_normal_and_fallback_fragment_bindings() {
             let targets: Vec<_> = r.paint_layers.iter().map(|layer| layer.id).collect();
             for target in targets {
                 let mut page = r.create_page([0; 2], "prediction paint");
-                page.primary_needs_clear = false;
                 let pixels = [0.125_f32, 0.25, 0.5, 0.75].into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>().repeat(PAGE_SIZE.pow(2) as usize);
-                crate::test_support::upload_page(&r, &page.primary.texture, &pixels);
+                let intent = r.raster_intent(target, layer_core::raster::RasterPlane::Color, [0; 2]).unwrap();
+                let name = layer_core::raster::ContentName::fresh();
+                let mut encoder = submission::CommandEncoder::new(&r.device, &Default::default());
+                let receipt = encoder.submission();
+                let write = page.primary.initialize(&receipt).unwrap();
+                crate::test_support::upload_written_page(&mut r.uploads, &mut encoder, &write, &pixels);
+                write.encoded(name).publish(&receipt);
+                let written = page.primary.read(name, Some(&receipt)).unwrap().replace(&intent, &receipt);
+                page.primary_needs_clear = false;
                 r.paint_layers.iter_mut().find(|layer| layer.id == target).unwrap().pages = vec![page];
+                r.record_raster_write(target, written).unwrap();
+                r.uploads.finish(&encoder);
+                encoder.submit(&r.queue);
             }
             crate::test_support::prepare_scene_effects(&mut r, frame);
             let mut batches = Vec::new();
@@ -180,7 +190,7 @@ fn coverage_prediction_prepares_bake_and_erase_before_binding() {
                 let predicted: Vec<_> = r.scene_pipelines.for_scene(&r, document.scene(), &[]).cloned().collect();
                 assert!(predicted.iter().any(|pipeline| pipeline.identity() == scene.pipeline[2].identity()));
                 let mut encoder = submission::CommandEncoder::new(&r.device, &Default::default());
-                assert!(matches!(scene.encode_query_jobs(&mut r, &mut encoder, None), Err(GpuRasterError::DeferredObjectWork)));
+                assert!(matches!(scene.encode_query_jobs(&mut r, &mut encoder, None), Err(GpuRasterError::NotReady)));
                 assert_eq!(encoder.pass_count(), 0);
                 assert!(scene.pending_pipelines.render.iter().any(|pipeline| pipeline.identity() == scene.pipeline[2].identity()));
                 pollster::block_on(r.compilation.prepare_all(&predicted)).unwrap();

@@ -60,7 +60,7 @@ impl FineInputs {
     }
     pub fn assign(&mut self,coordinate:[u32;2])->Result<usize,GpuRasterError> {
         let index=super::region_batches::slot_for(self.slots.iter().map(|page|page.as_ref().map(|page|page.coordinate)),&self.desired,coordinate)
-            .ok_or(GpuRasterError::DeferredObjectWork)?;
+            .ok_or(GpuRasterError::NotReady)?;
         if self.slots[index].as_ref().is_some_and(|page|page.coordinate==coordinate) {return Ok(index);}
         self.slots[index]=Some(Page {coordinate,valid:Arc::new(AtomicBool::new(false))});
         Ok(index)
@@ -85,7 +85,7 @@ impl FineInputs {
         self.track(encoder);
     }
     pub fn write_directory(&self,r:&mut WgpuRasterizer,encoder:&mut crate::submission::CommandEncoder,phase:[u32;2])->Result<(),GpuRasterError> {
-        if self.desired.iter().any(|c|!self.resident(*c)) {return Err(GpuRasterError::DeferredObjectWork);}
+        if self.desired.iter().any(|c|!self.resident(*c)) {return Err(GpuRasterError::NotReady);}
         let count=(self.directory.size() as usize-32)/16;
         let mut table=vec![[u32::MAX;4];count];
         for (index,page) in self.slots.iter().enumerate().filter_map(|(index,page)|page.as_ref().map(|page|(index,page))) {

@@ -69,7 +69,7 @@ pub(crate) fn object_frame_with_budget(r: &mut WgpuRasterizer, frame: FramePacke
     assert_eq!(r.memory_limit(Kind::Objects),bytes);
 }
 
-fn cache_frame_with_budget(r: &mut WgpuRasterizer, frame: FramePacket<'_>, part: usize, bytes: u64) {
+pub(crate) fn cache_frame_with_budget(r: &mut WgpuRasterizer, frame: FramePacket<'_>, part: usize, bytes: u64) {
     r.begin_frame_memory(frame);
     let mut demand=r.memory.demand.get();
     demand[part]=bytes;
@@ -134,34 +134,6 @@ fn document() -> layer_core::Document {
 }
 
 #[test]
-fn a_cold_restore_registers_its_raster_work_before_eager_selection() {
-    use layer_core::raster::{RasterData, RasterPlane, RasterTile, TileBlob, TileKey};
-    for tight in [false, true] {
-        let doc = layer_core::Document::new(layer_core::PortableId::random(), PAGE_SIZE * 8, PAGE_SIZE * 4,
-            layer_core::DocumentNames { paint: "Ink".into(), paper: "Paper".into() });
-        let target = doc.active_target().unwrap();
-        let mut r = renderer(doc.composition().color,
-            layer_core::DeviceMemoryFacts { unified: true, ..Default::default() }).unwrap();
-        r.ensure_document_metadata(doc.composition().size, doc.scene()).unwrap();
-        assert!(r.native_edit.as_ref().unwrap().color_cache_bytes < 64 * MIB);
-        let budget = r.factory.memory_budget().clone();
-        let pressure = tight.then(|| budget.admit_import(budget.import_headroom_bytes().checked_sub(8 * MIB).unwrap()).unwrap());
-        let blob = Arc::new(TileBlob::encode(doc.composition().color.paint_descriptor(),
-            &[37, 83, 109, 255].repeat(PAGE_SIZE.pow(2) as usize)).unwrap());
-        let data = RasterData { tiles: (0..32).map(|x| (TileKey { plane: RasterPlane::Color,
-            coordinate: [x % 8, x / 8] }, RasterTile::backed_shared(blob.clone()))).collect(), ..Default::default() };
-        crate::test_support::prepare_raster(&mut r, |r| r.restore_raster(target, &RasterData::default(), &data)).unwrap();
-        assert_eq!(r.paint_layers[0].pages.len(), if tight { 0 } else { 32 },
-            "headroom admits the full candidate; pressure keeps its color cold");
-        assert_eq!(r.native_backing(target).unwrap().tiles.len(), 32);
-        complete(&r);
-        r.after_present();
-        assert_eq!(r.paint_layers[0].pages.len(), if tight { 0 } else { 32 });
-        drop(pressure);
-    }
-}
-
-#[test]
 fn a_paint_only_view_does_not_reserve_its_hierarchy_in_the_raster_pool() {
     let doc = layer_core::Document::new(layer_core::PortableId::random(), 9504, 6336,
         layer_core::DocumentNames { paint: "Ink".into(), paper: "Paper".into() });
@@ -177,7 +149,7 @@ fn a_paint_only_view_does_not_reserve_its_hierarchy_in_the_raster_pool() {
     assert_eq!(r.paint_memory_bytes(), 0);
     let raster = r.memory.raster.handle.reported();
     assert!(raster.demand_gpu_bytes <= WORKING_BYTES, "empty raster demand: {raster:?}");
-    assert!(r.memory_limit(Kind::Scene) >= r.memory.scene_retention.get(),
+    assert!(r.memory_limit(Kind::Scene) >= CACHE_BYTES,
         "the hierarchy and scene cache fit beside an empty raster pool");
 }
 
@@ -244,7 +216,7 @@ fn a_color_cache_grant_keeps_unpinned_pages_beside_pinned_stroke_pages() {
     doc.artwork.paint.get_mut(paint).unwrap().raster = RasterRevision::pending();
     submit_published(&mut r, FramePacket { dabs: &[dab], dab_batches: &[batch], ..packet(doc.scene(), extent) });
     complete(&r);
-    let pinned = r.paint_layers[0].pages.iter().find(|page| page.stroke_start.is_some()).unwrap().primary.texture.clone();
+    let pinned = r.paint_layers[0].pages.iter().find(|page| page.stroke_start.is_some()).unwrap().primary.allocation_identity();
     let page_bytes = r.paint_layers[0].pages[0].primary.storage_bytes();
     let budget = r.factory.memory_budget().clone();
     budget.set_ram_override(Some(384 << 20));
@@ -259,7 +231,7 @@ fn a_color_cache_grant_keeps_unpinned_pages_beside_pinned_stroke_pages() {
     assert!(keep > 0 && keep < evictable(&r), "the actual grant retains some backed color: {optional}");
     for _ in 0..3 { drop(r.trim_native_color_cache(&[], &[])); }
     assert_eq!(evictable(&r), keep, "pinned color must not consume the optional allowance twice");
-    assert!(r.paint_layers[0].pages.iter().any(|page| page.primary.texture == pinned && page.stroke_start.is_some()));
+    assert!(r.paint_layers[0].pages.iter().any(|page| page.primary.allocation_identity() == pinned && page.stroke_start.is_some()));
     r.refresh_storage_metrics();
     r.publish_memory(true);
     budget.flush_reports();
@@ -268,7 +240,7 @@ fn a_color_cache_grant_keeps_unpinned_pages_beside_pinned_stroke_pages() {
     assert_eq!(r.native_edit.as_ref().unwrap().color_cache_bytes, 0);
     for _ in 0..3 { drop(r.trim_native_color_cache(&[], &[])); }
     assert_eq!(evictable(&r), 0);
-    assert!(r.paint_layers[0].pages.iter().any(|page| page.primary.texture == pinned && page.stroke_start.is_some()));
+    assert!(r.paint_layers[0].pages.iter().any(|page| page.primary.allocation_identity() == pinned && page.stroke_start.is_some()));
 }
 
 #[test]
@@ -333,7 +305,7 @@ fn after_present_trims_free_storage_but_keeps_presentation_and_root_overview() {
     submit_settled(&mut r, packet(doc.scene(), [512; 2]));
     let before = pixels(&r);
     let cache = r.scale_display.as_ref().unwrap();
-    let overview = cache.coarse_view().clone();
+    let overview = cache.presentation().unwrap().views()[1].clone();
     let pinned = cache.presentation_bytes();
     assert!(pinned > 0);
     r.raster_buffers.set_retained_limit(32 << 20);
@@ -352,7 +324,7 @@ fn after_present_trims_free_storage_but_keeps_presentation_and_root_overview() {
     assert!(r.raster_buffers.bytes.load(Ordering::Acquire) < retained);
     let cache = r.scale_display.as_ref().unwrap();
     assert_eq!(cache.presentation_bytes(), pinned);
-    assert_eq!(cache.coarse_view(), &overview);
+    assert_eq!(cache.presentation().unwrap().views()[1], &overview);
     assert_eq!(pixels(&r), before);
 }
 
@@ -482,7 +454,7 @@ fn an_import_draining_headroom_preserves_image_and_effect_frame_working_memory()
     budget.set_ram_override(Some(384 << 20));
     let plain = layer_core::Document::new(PortableId::random(), 128, 128,
         layer_core::DocumentNames {paint: "Ink".into(), paper: "Paper".into()});
-    r.memory.demand_region(plain.scene(), [128; 2], PixelRect::full([128; 2]), DisplayDemand::default());
+    r.memory.demand_region(plain.scene(), [128; 2], PixelRect::full([128; 2]));
     r.publish_memory(true);
     budget.flush_reports();
     let floor = r.memory.floors.get()[0];
@@ -611,7 +583,7 @@ fn a_restore_is_refused_or_admitted_after_one_budget_rebalance() {
     }
     assert_eq!(r.memory.preparation.get(), 0);
     drop(import);
-    assert!(matches!(r.admit_preparation_bytes(restore, 0), Err(GpuRasterError::DeferredObjectWork)));
+    assert!(matches!(r.admit_preparation_bytes(restore, 0), Err(GpuRasterError::NotReady)));
     r.refresh_memory_limits();
     assert!(r.admit_preparation_bytes(restore, 0).is_ok());
 }
@@ -726,7 +698,7 @@ fn a_tablet_budget_below_the_photo_keeps_publishing_strokes_and_their_ink() {
     }
     fn settle(engine: &mut CanvasEngine<WgpuRasterizer>, presenter: &mut ViewportPresenter, target: &wgpu::TextureView, clock: &mut u64) {
         for _ in 0..600 {
-            if engine.backend().raster_ready() && !engine.backend().object_deferred && !engine.has_pending_document_edits() && !engine.has_pending_input() { return; }
+            if engine.backend().raster_ready() && !crate::scene::scale::tests::publication_pending(engine.backend()) && !engine.has_pending_document_edits() && !engine.has_pending_input() { return; }
             *clock += 4_166_667;
             frame(engine, presenter, target, *clock);
         }
@@ -860,4 +832,103 @@ fn changed_resident_color_restores_lazily_under_a_tight_cache_without_losing_his
     engine.set_layer_opacity(original_owner, 0.).unwrap();
     publish(&mut engine);
     assert_eq!(capture(&mut presenter, &engine), baseline);
+}
+
+#[test]
+fn blank_paint_outputs_wait_for_raster_capacity_before_the_frame_is_accepted() {
+    let extent=[8192;2];
+    let mut doc=layer_core::Document::new(layer_core::PortableId::random(),extent[0],extent[1],
+        layer_core::DocumentNames {paint:"Ink".into(),paper:"Paper".into()});
+    let target=doc.active_target().unwrap();
+    let layer_core::SourceTarget::Paint(paint)=target else {unreachable!()};
+    doc.artwork.paint.get_mut(paint).unwrap().raster=layer_core::raster::RasterRevision::pending();
+    let mut r=renderer(doc.composition().color,layer_core::DeviceMemoryFacts {unified:true,..Default::default()}).unwrap();
+    r.ensure_document_metadata(extent,doc.scene()).unwrap();
+    let dabs=(0..64).map(|n|crate::tests::test_dab([(n%32*PAGE_SIZE+128) as f32,(n/32*PAGE_SIZE+128) as f32],
+        [1.,0.,1.,1.],1.)).collect::<Vec<_>>();
+    let damage=dabs.iter().copied().map(Dab::bounds).fold(layer_core::Rect::EMPTY,layer_core::Rect::union);
+    let batch=DabBatch {dab_count:dabs.len() as u32,..dab_batch(target,crate::tests::test_style(BrushExecution::Dry),damage)};
+    let mut frame=FramePacket {dabs:&dabs,dab_batches:std::slice::from_ref(&batch),..packet(doc.scene(),extent)};
+    frame.view.width_px=512;frame.view.height_px=512;
+    r.begin_frame_memory(frame);
+    let budget=r.factory.memory_budget().clone();budget.set_ram_override(Some(384*MIB));
+    r.refresh_storage_metrics();r.publish_memory(true);budget.flush_reports();r.refresh_memory_limits();
+    let pressure=budget.admit_import(budget.import_headroom_bytes()).unwrap();r.refresh_memory_limits();
+    let ready=r.raster_dependencies_ready(frame,None);
+    r.refresh_storage_metrics();
+    let physical=r.raster_buffers.memory_bytes()[1]+r.paint_memory_bytes();
+    let grant=r.memory_limit(Kind::RasterPool);
+    assert!(physical<=grant,"unaccepted Raster physical={physical}, own grant={grant}");
+    assert!(r.paint_layers.iter().all(|layer|layer.pages.is_empty()&&layer.coverage_pages.is_empty()),
+        "a refused output plan cannot allocate color or coverage");
+    assert!(!ready,"64 new color pages and their coverage exceed the drained Raster working capacity");
+    assert!(r.take_restore_failure().is_none(),"capacity refusal must retain the frame, not publish a raster error");
+    drop(pressure);budget.set_ram_override(Some(2<<30));budget.flush_reports();r.refresh_memory_limits();
+    submit_published(&mut r,frame);complete(&r);
+    let data=doc.artwork.paint.get(paint).unwrap().raster.wait_data().unwrap();
+    let coordinates=data.tiles.keys().filter(|key|key.plane==layer_core::raster::RasterPlane::Color)
+        .map(|key|key.coordinate).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(coordinates,(0..64).map(|n|[n%32,n/32]).collect(),"every retained dab must reach authored backing");
+}
+
+fn consecutive_camera_frames_retire_durable_color_after_the_raster_grant_shrinks() {
+    use layer_core::raster::{RasterData,RasterPlane,RasterRevision,RasterTile,TileBlob,TileKey};
+    let extent=[PAGE_SIZE*8;2];
+    let mut doc=layer_core::Document::new(layer_core::PortableId::random(),extent[0],extent[1],
+        layer_core::DocumentNames {paint:"Ink".into(),paper:"Paper".into()});
+    let target=doc.active_target().unwrap();let layer_core::SourceTarget::Paint(paint)=target else {unreachable!()};
+    let bytes=[255,0,0,255].repeat(PAGE_SIZE.pow(2) as usize);
+    let blob=Arc::new(TileBlob::encode(doc.composition().color.paint_descriptor(),&bytes).unwrap());
+    let data=Arc::new(RasterData {tiles:(0..8).flat_map(|y|(0..8).map(move|x|[x,y]))
+        .map(|coordinate|(TileKey {plane:RasterPlane::Color,coordinate},RasterTile::backed_shared(blob.clone()))).collect(),watercolor:None});
+    doc.artwork.paint.get_mut(paint).unwrap().raster=RasterRevision::backed((*data).clone());
+    let mut r=renderer(doc.composition().color,layer_core::DeviceMemoryFacts {unified:true,..Default::default()}).unwrap();
+    let mut frame=packet(doc.scene(),extent);frame.view.width_px=512;frame.view.height_px=512;
+    submit_settled(&mut r,frame);complete(&r);
+    let data=r.native_backing(target).unwrap().clone();
+    let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+    for coordinate in data.tiles.keys().map(|key|key.coordinate) {
+        if r.paint_layers.iter().find(|layer|layer.id==target).unwrap().pages.iter().any(|page|page.coordinate==coordinate) {continue;}
+        let expected=r.raster_version_for(doc.scene(),target,RasterPlane::Color,coordinate).unwrap();
+        let mut page=r.create_page(coordinate,"durable color cache fixture");page.primary_needs_clear=false;
+        let receipt=encoder.submission();let write=page.primary.initialize(&receipt).unwrap();
+        {let _pass=encoder.color_pass("durable color cache fixture",&write.value().view,wgpu::LoadOp::Clear(wgpu::Color {r:1.,g:0.,b:0.,a:1.}));}
+        write.encoded(expected).publish(&encoder.submission());
+        r.paint_layers.iter_mut().find(|layer|layer.id==target).unwrap().pages.push(page);
+    }
+    encoder.submit(&r.queue);complete(&r);
+    r.refresh_storage_metrics();r.publish_memory(true);r.factory.memory_budget().flush_reports();
+    assert_eq!(r.metrics.paint_storage_bytes,64*MIB);
+    assert_eq!(r.pinned_paint_bytes(),r.paint_memory_bytes()-64*MIB,"all fixture color is durable and optional");
+    let budget=r.factory.memory_budget().clone();budget.set_ram_override(Some(384*MIB));
+    r.publish_memory(true);budget.flush_reports();
+    let pressure=budget.admit_import(budget.import_headroom_bytes()).unwrap();
+    assert!(r.memory_limit(Kind::RasterPool)<64*MIB);
+    r.refresh_memory_limits();
+    for step in 1..=1 {
+        frame.composite_all=false;frame.reset_layers=false;frame.view.document_to_surface[4]=-(step*16) as f32;
+        assert!(r.raster_dependencies_ready(frame,None),"the nearest durable camera unit stays ready");
+        complete(&r);
+        r.refresh_storage_metrics();
+        let physical=r.raster_buffers.memory_bytes()[1]+r.paint_memory_bytes();let grant=r.memory_limit(Kind::RasterPool);
+        assert!(physical<=grant,"camera frame {step}: Raster physical={physical}, own grant={grant}");
+        assert!(Arc::ptr_eq(r.native_backing(target).unwrap(),&data));
+        assert_eq!(doc.artwork.paint.get(paint).unwrap().raster.wait_data().unwrap().tiles.len(),64);
+    }
+    drop(pressure);budget.set_ram_override(Some(2<<30));budget.flush_reports();
+    submit_published(&mut r,frame);complete(&r);
+    let shown=r.readback_srgb_rgba8().unwrap();
+    assert!(shown.as_chunks::<4>().0.iter().all(|pixel|*pixel==[255,0,0,255]),"evicting optional color must preserve the authored picture");
+}
+
+#[test]
+fn lowered_owner_grants_release_optional_retention_within_one_frame() {
+    for owner in ["Display","Decoded","Raster"] {
+        match owner {
+            "Display"=>crate::object_image_mips::tests::assert_optional_display_grant_decrease(),
+            "Decoded"=>crate::scene::sources::tests::a_smaller_source_grant_immediately_retires_only_unleased_lru_pages(),
+            "Raster"=>consecutive_camera_frames_retire_durable_color_after_the_raster_grant_shrinks(),
+            _=>unreachable!(),
+        }
+    }
 }

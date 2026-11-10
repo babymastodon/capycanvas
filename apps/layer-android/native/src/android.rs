@@ -753,9 +753,9 @@ impl App {
             let frame = surface.submitted_frames;
             let observer = surface.completion_observer.clone();
             let raster_frame = observer.as_ref().map_or(0, |_| gpu.submitted_updates());
-            let object_revision = observer.as_ref().and_then(|_| gpu.evaluated_object_revision()).unwrap_or(u64::MAX);
+            let object_revision = observer.as_ref().map_or(u64::MAX,|_|gpu.canvas_preview_revision());
             if object_revision != u64::MAX {
-                unsafe { ndk_sys::ATrace_setCounter(c"Capy object evaluated revision".as_ptr(), object_revision as i64); }
+                unsafe { ndk_sys::ATrace_setCounter(c"Capy artwork revision".as_ptr(), object_revision as i64); }
             }
             gpu.queue().on_submitted_work_done(move || {
                 complete.fetch_max(frame, Ordering::Release);

@@ -547,10 +547,7 @@ impl WgpuRasterizer {
                     .map(|s| s.effects.fork())
                     .or_else(|| self.validated_effects.as_ref().map(effects::Effects::fork))
                     .unwrap_or_else(|| self.scene_pipelines.effects(self));
-                let gpu = effects::Context {
-                    device: self.device.for_compilation(),
-                    queue: self.queue.clone(),
-                };
+                let gpu = effects::Context { device: self.device.for_compilation() };
                 let (tx, rx) = mpsc::channel();
                 let snapshot = document.snapshot();
                 let work = move || {
@@ -769,7 +766,7 @@ mod tests {
         assert_eq!(renderer.submitted_updates(), submitted);
         renderer.submit(packet).unwrap();
         assert_eq!(renderer.submitted_updates(), submitted + 1);
-        assert!(renderer.object_deferred);
+        assert!(crate::scene::scale::tests::publication_pending(&renderer));
         assert!(renderer.presentation_views().is_none());
         assert!(renderer.scene_pipelines.scale_pipelines().iter().all(|pipeline| !pipeline.ready()));
         release.send(()).unwrap();
@@ -780,7 +777,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         crate::test_support::submit_published(&mut renderer, packet);
-        assert!(!renderer.object_deferred);
+        assert!(!crate::scene::scale::tests::publication_pending(&renderer));
         assert!(renderer.presentation_views().is_some());
         let pixels = crate::test_support::float_pixels(&renderer, crate::test_support::document_texture(&renderer));
         assert_eq!(pixels.len(), 64 * 64);
@@ -1203,7 +1200,7 @@ mod gpu_tests {
         let compiler=&renderer.startup.as_ref().unwrap().compiler;
         compiler.enqueue(DOCUMENT,move||{let _=entered.send(());let _=held.recv();Ok(())});
         entry.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(matches!(renderer.prepare_raster_uploads(&[(blob,RgbSpace::Srgb,RgbSpace::Srgb)]),Err(GpuRasterError::DeferredObjectWork)));
+        assert!(matches!(renderer.prepare_raster_uploads(&[(blob,RgbSpace::Srgb,RgbSpace::Srgb)]),Err(GpuRasterError::NotReady)));
         assert!(!renderer.scene_pipelines.source.integer.ready());
         assert!(compile::tests::requested(&renderer.compilation,&renderer.scene_pipelines.source.integer,VALIDATION));
         release.send(()).unwrap();

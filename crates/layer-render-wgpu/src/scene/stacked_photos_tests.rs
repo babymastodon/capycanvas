@@ -43,7 +43,7 @@ fn stacked_photos_reuse_canonical_regions_within_the_retained_budget() {
             let count=requests.entry((owner,window.origin.map(f64::to_bits),window.side.to_bits(),window.size)).or_insert(0usize);
             repeated+=usize::from(*count>0);*count+=1;leases.push(lease);
         }
-        let exact=r.has_presentable_frame() && !cache.approximating() && !r.object_deferred
+        let exact=r.has_presentable_frame() && !cache.approximating() && !crate::scene::scale::tests::publication_pending(&r)
             && !r.scene.as_ref().unwrap().object_results.pending() && !r.has_pending_work();
         let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
         r.scene.as_mut().unwrap().trim_memory(u64::MAX,object_grant,&mut encoder);

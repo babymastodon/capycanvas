@@ -232,13 +232,14 @@ impl WgpuRasterizer {
     pub(super) fn material_source_binding(
         &mut self,
         batch: &DabBatch,
+        batch_index:usize,
         coordinate: [u32; 2],
-        preview: bool,
+        target: BrushEncodingTarget,
         display: Option<usize>,
         encoder: &mut crate::submission::CommandEncoder,
     ) -> Result<(wgpu::BindGroup, Option<wgpu::BindGroup>), GpuRasterError> {
         let started = self.telemetry.enabled.then(web_time::Instant::now);
-        let result = self.material_bind_group(batch, coordinate, preview, MaterialInputs::Neighborhood, display, encoder);
+        let result = self.material_bind_group(batch,batch_index, coordinate, target, MaterialInputs::Neighborhood, display, encoder);
         self.metrics.material_cpu_ms[4] += elapsed(started);
         result
     }
@@ -256,14 +257,15 @@ impl WgpuRasterizer {
     pub(super) fn clone_source_binding(
         &mut self,
         batch: &DabBatch,
+        batch_index:usize,
         coordinate: [u32; 2],
         mapping: &crate::retouch_sources::Mapping,
-        preview: bool,
+        target: BrushEncodingTarget,
         display: Option<usize>,
         encoder: &mut crate::submission::CommandEncoder,
     ) -> Result<(wgpu::BindGroup, Option<wgpu::BindGroup>), GpuRasterError> {
         let pages = self.retouch_pages(mapping, encoder)?;
-        self.material_bind_group(batch, coordinate, preview, MaterialInputs::Retouch(&pages), display, encoder)
+        self.material_bind_group(batch,batch_index, coordinate, target, MaterialInputs::Retouch(&pages), display, encoder)
     }
 }
 

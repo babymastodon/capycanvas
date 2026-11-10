@@ -217,9 +217,9 @@ fn live_page(r: &WgpuRasterizer, page: [u32; 2]) -> Vec<[f32; 4]> {
         .find(|l| l.id == TARGET)
         .and_then(|l| l.pages.iter().find(|p| p.coordinate == page))
         .unwrap()
-        .active()
-        .texture
-        .clone();
+        .active();
+    let expected=r.current_raster_version(TARGET,layer_core::raster::RasterPlane::Color,page).unwrap();
+    let texture=texture.read(expected,None).unwrap().value().texture.clone();
     floats(&crate::layer_tests::page_bytes(r, &texture))
 }
 
@@ -228,7 +228,7 @@ fn layer_page(r: &WgpuRasterizer, layer: SourceTarget, page: [u32; 2]) -> Vec<[f
         .iter()
         .find(|l| l.id == layer)
         .and_then(|l| l.pages.iter().find(|p| p.coordinate == page))
-        .map_or_else(|| vec![[0.; 4]; (PAGE_SIZE * PAGE_SIZE) as usize], |p| floats(&crate::layer_tests::page_bytes(r, &p.active().texture)))
+        .map_or_else(|| vec![[0.; 4]; (PAGE_SIZE * PAGE_SIZE) as usize], |p| floats(&crate::layer_tests::page_bytes(r, &r.read_color_page(layer,p,false,None).unwrap().value().texture)))
 }
 
 fn pixel(r: &WgpuRasterizer, layer: SourceTarget, x: u32, y: u32) -> [f32; 4] {
@@ -315,7 +315,9 @@ fn retouch_source_preserves_unmixed_perceptual_pixels() {
         let r = engine.backend();
         let expected = if opacity == 0. {
             let cache = &r.retouch.as_ref().unwrap().cache;
-            let texture = &cache.slots[cache.pages[&[0, 0]]].page.texture;
+            let (slot,expected)=&cache.pages[&[0,0]];
+            let read=cache.slots[*slot].page.read(expected,None).unwrap();
+            let texture=&read.value().texture;
             floats(&crate::layer_tests::page_bytes(r, texture))
         } else { live_page(r, [0, 0]) };
         let error = actual.iter().flatten().zip(expected.iter().flatten()).map(|(a,b)| (a-b).abs()).fold(0., f32::max);
@@ -556,4 +558,40 @@ fn retouch_reference_reads_arbitrary_base_offset_and_transparent_tile_override()
     }
     let (pixels,complete)=sample(&mut r,[1,1],[0.;2]);assert!(complete);
     assert!(pixels.iter().all(|p|*p==[0.;4]));
+}
+
+#[test]
+fn a_clone_preview_from_persistent_accepts_the_captured_inputs_before_submit() {
+    let extent=[256;2];
+    let doc=document(extent);
+    let mut r=WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
+    let retouch=Retouch {source:RetouchSource::Editing,offset:[64.,0.],..Default::default()};
+    r.prepare_retouch(Some(&RetouchPreparation {execution:layer_core::BrushExecution::Clone,
+        target:PHOTO,retouch:retouch.clone(),points:vec![Point {x:160.,y:96.}]}));
+    let packet=crate::test_support::packet(doc.scene(),extent);
+    crate::test_support::submit_settled(&mut r,packet);
+    let (source,complete)=sample(&mut r,[0;2],retouch.offset);
+    assert!(complete);
+    let before=r.current_raster_versions(PHOTO).unwrap();
+    let mut style=crate::layer_tests::preset_style(layer_core::DefaultBrushPreset::CloneStamp);
+    style.retouch=Some(retouch);
+    let mut dab=crate::layer_tests::dab([0.,0.,0.,1.]);
+    dab.center=Point {x:96.,y:96.};dab.radii=[24.;2];
+    let batch=crate::test_support::dab_batch(PHOTO,style,dab.bounds());
+    for kind in [DabBatchKind::Preview,DabBatchKind::Persistent] {
+        let batch=DabBatch {kind,..batch.clone()};
+        let batches=std::slice::from_ref(&batch);
+        let frame=FramePacket {dabs:std::slice::from_ref(&dab),dab_batches:batches,composite_all:false,..packet};
+        if kind==DabBatchKind::Preview {assert!(r.preview_from_persistent(batches));}
+        crate::test_support::submit_ready(&mut r,frame).unwrap_or_else(|error|panic!("{kind:?} clone batch after readiness: {error:?}"));
+        if kind==DabBatchKind::Preview {
+            let page=r.preview_pages.iter().find(|page|page.coordinate==[0;2]).unwrap();
+            let read=r.read_color_page(PHOTO,page,true,None).unwrap();
+            let pixels=crate::test_support::float_pixels(&r,&read.value().texture);
+            assert!(close(pixels[96*256+96],source[96*256+96]),"the preview must use its captured clone source");
+            assert_eq!(before.root(layer_core::raster::RasterPlane::Color).matches(&r.current_raster_versions(PHOTO).unwrap().root(layer_core::raster::RasterPlane::Color)),Some(true),"preview must preserve authored pixels");
+        }else {
+            assert!(close(pixel(&r,PHOTO,96,96),source[96*256+96]),"the committed clone must use the same captured source");
+        }
+    }
 }

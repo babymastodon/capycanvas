@@ -1585,9 +1585,19 @@ fn native_document_tabs_canvas_transition() {
 #[test]
 #[ignore = "private hardware compositor, M3 own-store cold motion"]
 fn native_document_tabs_cold_store_motion() {
+    cold_store_motion(None);
+}
+
+#[test]
+#[ignore = "private hardware compositor, own-store cold stroke at 38 percent"]
+fn native_document_tabs_cold_store_stroke_38_percent() {
+    cold_store_motion(Some(0.38));
+}
+
+fn cold_store_motion(zoom: Option<f32>) {
     use layer_core::authored::{Occurrence, OccurrenceContent, PaintSource, PortableId};
     use layer_core::color::{RgbSpace, SampleDepth};
-    use std::{collections::BTreeMap, os::fd::AsRawFd, sync::Arc};
+    use std::{os::fd::AsRawFd, sync::Arc};
     use serde_json::json;
     let output=std::path::PathBuf::from(std::env::var_os("LAYER_NATIVE_CAPTURE_DIR").unwrap());
     let (project,held,decoded_bytes,encoded_bytes,first_tile)=glib::MainContext::default().block_on(gtk::gio::spawn_blocking(|| {
@@ -1608,7 +1618,7 @@ fn native_document_tabs_cold_store_motion() {
                 project.artwork.stacks.get_mut(stack).unwrap().entries.push(occurrence);
                 occurrence
             };
-            let mut tiles=BTreeMap::new();
+            let mut tiles=RasterTiles::default();
             for y in 0..12u32 {for x in 0..17u32 {
                 let mut bytes=Vec::with_capacity(256*256*8);
                 let mut random=0x1357abcdu32^(layer*7919)^((x+y*17)*101);
@@ -1648,6 +1658,7 @@ fn native_document_tabs_cold_store_motion() {
     new_photo::ready(&w);
     until(||!ui_session(&w).wants_continuous_frames(),"warm raster presentation settled");
     let baseline=glib::MainContext::default().block_on(read_canvas_pixels(&w,8300)).unwrap().bytes;
+    if let Some(zoom)=zoom {w.dispatch(UiAction::SetZoom {zoom});new_photo::ready(&w);}
     let [x,y]=super::canvas_bar_tests::canvas_point(&w,[384.,128.]);
     let point=w.window.compute_point(&w.surface,&gtk::graphene::Point::new(x,y)).unwrap();
     let first=w.documents.selected();let recovery=w.recovery();
@@ -1658,7 +1669,8 @@ fn native_document_tabs_cold_store_motion() {
     let [hx,hy]=super::canvas_bar_tests::canvas_point(&w,[128.,128.]);
     let held_point=w.window.compute_point(&w.surface,&gtk::graphene::Point::new(hx,hy)).unwrap();
     let other=w.documents.selected();
-    for (phase,nonce) in [("pan",8310),("stroke",8320)] {
+    let phases:&[(&str,u32)]=if zoom.is_some() {&[("stroke",8320)]}else {&[("pan",8310),("stroke",8320)]};
+    for &(phase,nonce) in phases {
         until(||w.documents.parked_memory()==(0,true),"cold drawing pressure writes and renderer retirement completed");
         glib::MainContext::default().block_on(recovery.flush()).unwrap();
         assert_eq!(first_tile.resident_bytes(),0,"selected old raster range is store-backed, not a resident compressed copy");

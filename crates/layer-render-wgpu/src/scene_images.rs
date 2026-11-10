@@ -418,10 +418,7 @@ impl Scene {
             let damage = if reset||changed.contains(&h){bounds.into()}else if painting&&(unidentified_paint
                 ||self.images.preview_layer.is_some_and(changed_target)||r.preview_layer_id.is_some_and(changed_target)
                 ||r.transform_damage.iter().any(|(t,_)|changed_target(*t))||packet.dab_batches.iter().any(|b|changed_target(b.target))) {
-                let sources = scale::Damage::from_regions(target.into_iter().chain(mask).flat_map(|target| {
-                    self.scale_sources.document_damage(scene, target).map_or_else(|| sparse.regions.clone(), |damage| damage.map(|region| region.in_frame(extent)).collect())
-                }));
-                sources.intersect(bounds)
+                sparse.clone()
             }else{scale::Damage::default()};
             (h,damage)
         }).collect();
@@ -446,7 +443,7 @@ impl Scene {
             let prepared = (0..effect.program.passes.len().max(1)).map(|pass|
                 self.effects.prepare(r, scene, &[handle], effects::Execution::Image(pass), packet.time_seconds,
                     output_grid.level, packet.blend_space)).collect::<Result<Vec<_>,_>>()?;
-            if !self.effects.enqueue(&r.compilation,startup::DOCUMENT) { return Err(GpuRasterError::DeferredObjectWork); }
+            if !self.effects.enqueue(&r.compilation,startup::DOCUMENT) { return Err(GpuRasterError::NotReady); }
             let input=Convert::filter_input(packet,effect.program.space);
             let previous = if let Some(owner) = scene.effect_owner(handle) {
                 scene.attached_effects(owner).iter().copied().take_while(|h|*h!=handle).filter(|h|scene.visible(*h)).last()
@@ -525,7 +522,6 @@ impl Scene {
                     let mut next = cached.input_gather.as_ref().unwrap().pages.first().copied();
                     let mut waiting = false;
                     while let Some(tile) = next {
-                        self.decode_wait = false;
                         let result = (|| {
                             let pixels = self.group(r, packet, layer_core::composite_input_scope(scene, handle), tile)?;
                             self.capture_tile(r, pixels, &cached.input, tile, input)?;
@@ -535,17 +531,18 @@ impl Scene {
                         next = pages.range((std::ops::Bound::Excluded(tile), std::ops::Bound::Unbounded)).next().copied();
                         let failure = match result {
                             Ok(()) => { pages.remove(&tile); None }
-                            Err(GpuRasterError::DeferredObjectWork) if self.decode_wait && next.is_some() && r.decode_queue_has_room() => {
+                            Err(error) if error.is_preparation_pending() && next.is_some() && r.decode_queue_has_room() => {
+                                self.discard_unencoded_jobs();
                                 self.object_results.reset_used(); self.exact_object_results.reset_used();
                                 waiting = true;
                                 None
                             }
                             Err(error) => Some(error),
-                        }.or_else(|| (waiting && next.is_none()).then_some(GpuRasterError::DeferredObjectWork));
+                        }.or_else(|| (waiting && next.is_none()).then_some(GpuRasterError::NotReady));
                         if let Some(error) = failure {
                             self.stop_before = None;
                             self.object_results.reset_used(); self.exact_object_results.reset_used();
-                            if matches!(error, GpuRasterError::DeferredObjectWork) {
+                            if error.is_preparation_pending() {
                                 for stage in &mut self.images.stages {
                                     if scene.position(stage.id).unwrap() < scene.position(handle).unwrap() { stage.valid = false; }
                                 }

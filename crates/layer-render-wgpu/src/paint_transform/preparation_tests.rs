@@ -17,7 +17,7 @@ fn cold_reduced_preview_retains_its_cursor_across_more_than_sixty_four_sources()
         r.uploads.finish(&encoder);encoder.submit(&r.queue);
         match result {
             Ok(())=>break,
-            Err(GpuRasterError::DeferredObjectWork)=>{
+            Err(GpuRasterError::NotReady)=>{
                 assert!(state.reduced.as_ref().unwrap().pending.is_some());
                 assert!(std::time::Instant::now()<deadline);
                 r.wait_idle().unwrap();std::thread::sleep(Duration::from_millis(1));

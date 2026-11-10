@@ -555,7 +555,7 @@ mod waveform {
 }
 
 #[test]
-fn half_float_fit_levels_keep_each_lane_clipped_or_in_range() {
+fn float_fit_levels_keep_each_lane_clipped_or_in_range() {
     use layer_render::CanvasRenderer;
     let extent = [64, 64];
     let view = layer_render::ViewState { width_px: 16, height_px: 16, document_to_surface: [0.25, 0., 0., 0.25, 0., 0.] };
@@ -565,7 +565,7 @@ fn half_float_fit_levels_keep_each_lane_clipped_or_in_range() {
         let frame = layer_render::FramePacket { view, blend_space: doc.composition().blend, ..crate::test_support::packet(doc.scene(), extent) };
         r.submit(frame).unwrap();
         while r.has_pending_work() { r.wait_idle().unwrap(); r.submit(layer_render::FramePacket { composite_all: false, ..frame }).unwrap(); }
-        assert!(r.presentation_views().unwrap()[0].texture().format() == wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(r.presentation_views().unwrap()[0].texture().format(),wgpu::TextureFormat::Rgba32Float);
         let mut presenter = crate::test_support::float_presenter(&r);
         let (texture, target) = crate::create_target(&r.device, [16, 16], wgpu::TextureFormat::Rgba32Float, "half-float clipping");
         presenter.present(&r, &target, view, [0.; 4]).unwrap();

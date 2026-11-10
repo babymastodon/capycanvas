@@ -15,14 +15,14 @@ impl WgpuRasterizer {
         if self.transform_preview.is_some() || self.transforms.as_ref().is_some_and(|transform| transform.has_preview()) { return 0; }
         let required = self.restore_preflight.as_ref().map_or(&[][..], |restore| restore.dependencies());
         self.paint_layers.iter().map(|layer| {
-            let changed = self.raster.as_ref().and_then(|raster| raster.targets.get(&layer.id)).map(|target| &target.changed);
+            let contents = self.raster.as_ref().and_then(|raster| raster.targets.get(&layer.id)).map(|target| &target.contents);
             layer.pages.iter().filter(|page| {
                 page.stroke_start.is_none()
-                    && !changed.is_some_and(|coordinates| coordinates.contains(&page.coordinate))
+                    && !contents.is_some_and(|contents| contents.modified(page.coordinate))
                     && !required.iter().any(|(target, coordinates)| *target == layer.id && coordinates.binary_search(&page.coordinate).is_ok())
                     && native.backing.get(&layer.id).and_then(|data| data.tiles.get(&TileKey { plane: RasterPlane::Color, coordinate: page.coordinate }))
                         .is_some_and(|tile| matches!(tile.try_backing(), Some(Ok(_))))
-            }).map(|page| page.primary.storage_bytes() + page.secondary.as_ref().map_or(0, PageSurface::storage_bytes)).sum::<u64>()
+            }).map(|page| page.primary.storage_bytes() + page.secondary.as_ref().map_or(0, |surface|surface.storage_bytes())).sum::<u64>()
         }).sum::<u64>()
     }
     pub(crate) fn native_backing(&self, id: SourceTarget) -> Option<&Arc<RasterData>> {
@@ -39,11 +39,25 @@ impl WgpuRasterizer {
 
     pub(crate) fn native_plane_tile(&self, id: SourceTarget, plane: RasterPlane, coordinate: [u32; 2])
         -> Result<Option<Arc<TileBlob>>, GpuRasterError> {
-        let Some(tile) = self.native_backing(id).and_then(|data| {
-            data.tiles.get(&TileKey { plane, coordinate })
-        }) else {
+        if plane==RasterPlane::Mask && let Some(source)=self.layer_masks.definitions.get(&id) {
+            let data=self.mask_data(id,source)?;
+            let Some(tile)=data.tiles.get(&TileKey {plane,coordinate}) else {
+                if self.mask_version(id,source,coordinate)?.matches(&contents::mask_default(source.domain,source.default_coverage,coordinate))!=Some(true) {return Err(GpuRasterError::NotReady);}
+                return Ok(None);
+            };
+            if tile.content_version().matches(&self.mask_version(id,source,coordinate)?)!=Some(true) {return Err(GpuRasterError::NotReady);}
+            return tile.try_backing().ok_or(GpuRasterError::NotReady)?.map(Some).map_err(GpuRasterError::Effect);
+        }
+        let selected=self.raster.as_ref().and_then(|runtime|runtime.targets.get(&id));
+        let data=selected.map(|target|target.contents.data()).or_else(||self.native_backing(id));
+        let key=TileKey {plane,coordinate};
+        let Some(tile)=data.and_then(|data|data.tiles.get(&key)) else {
+            if let Some(selected)=selected && selected.contents.version(key).matches(&selected.contents.selected_version(key))!=Some(true) {return Err(GpuRasterError::NotReady);}
             return Ok(None);
         };
+        if let Some(selected)=selected && tile.content_version().matches(&selected.contents.version(TileKey {plane,coordinate}))!=Some(true) {
+            return Err(GpuRasterError::NotReady);
+        }
         tile.try_backing()
             .ok_or_else(|| GpuRasterError::Effect("Native raster backing is not ready".into()))?
             .map(Some)
@@ -64,7 +78,7 @@ impl WgpuRasterizer {
     pub(crate) fn base_copy(&self, scene: SceneView<'_>, id: SourceTarget, coordinate: [u32; 2]) -> bool {
         scene.paint_base(id).is_some_and(|base| source_access::paint_base_contains(base, coordinate))
             && !self.native_backing(id).is_some_and(|data| data.tiles.contains_key(&TileKey { plane: RasterPlane::Color, coordinate }))
-            && !self.raster.as_ref().and_then(|raster| raster.targets.get(&id)).is_some_and(|target| target.changed.contains(&coordinate))
+            && !self.raster.as_ref().and_then(|raster| raster.targets.get(&id)).is_some_and(|target| target.contents.modified(coordinate))
     }
 
     /// Forget `target`'s pages, in every plane, where `keep` is false. A
@@ -83,7 +97,7 @@ impl WgpuRasterizer {
             }
         };
         if let Some(current) = self.raster.as_mut().and_then(|r| r.targets.get_mut(&target)) {
-            prune(&mut current.data);
+            current.contents.retain(&keep);
         }
         if let Some(backing) = self.native_edit.as_mut().and_then(|n| n.backing.get_mut(&target)) {
             prune(backing);
@@ -108,61 +122,36 @@ impl WgpuRasterizer {
         data: &Arc<RasterData>,
     ) -> Result<(), GpuRasterError> {
         if !self.snapshot_worker { return self.publish_prepared_restore(target,data); }
-        let (before,selected)=self.select_restore_data(target,previous,data,&BTreeSet::new(),0);
+        let (before,selected)=self.select_restore_data(target,previous,data,&BTreeSet::new());
         self.restore_raster(target,&before,&selected)?;
         if let Some(native)=&mut self.native_edit {native.backing.insert(target,data.clone());}
         Ok(())
     }
 
-    pub(super) fn select_restore_data(&mut self,target:SourceTarget,previous:&RasterData,data:&RasterData,required:&BTreeSet<[u32;2]>,reserved_color_bytes:u64)->(RasterData,RasterData) {
+    pub(super) fn select_restore_data(&mut self,target:SourceTarget,previous:&RasterData,data:&RasterData,required:&BTreeSet<[u32;2]>)->(RasterData,RasterData) {
         if self.native_edit.is_some() {
             let paint = self.paint_layers.iter().find(|l| l.id == target);
             let resident: BTreeSet<_> = paint
                 .into_iter()
-                .flat_map(|l| &l.pages)
-                .map(|p| p.coordinate)
+                .flat_map(|layer| layer.pages.iter().map(|page|page.coordinate)
+                    .chain(layer.coverage_pages.iter().map(|page|page.coordinate))
+                    .chain(layer.watercolor_wetness_pages.iter().map(|page|page.coordinate)))
+                .chain(self.layer_masks.pages.keys().filter_map(|(id,coordinate)|(*id==target).then_some(*coordinate)))
                 .chain(required.iter().copied()).collect();
-            let other_bytes: u64 = self
-                .paint_layers
-                .iter()
-                .filter(|l| l.id != target)
-                .flat_map(|l| &l.pages)
-                .map(color_page_bytes)
-                .sum();
-            let colors = data
-                .tiles
-                .keys()
-                .filter(|key| key.plane == RasterPlane::Color)
-                .count() as u64;
-            // Reserve both mutable color surfaces, including a future blend
-            // companion, before deciding whether an eager restore fits.
-            let candidate = other_bytes.saturating_add(reserved_color_bytes).saturating_add(
-                colors.saturating_mul(2 * PAGE_SIZE as u64 * PAGE_SIZE as u64 * 16),
-            );
-            if colors != 0 && !self.snapshot_worker && candidate > self.native_edit.as_ref().unwrap().color_cache_bytes {
-                self.prepare_raster_working(candidate);
-            }
-            let eager = candidate <= self.native_edit.as_ref().unwrap().color_cache_bytes;
-            let selected = RasterData {
+            let select = |data: &RasterData| RasterData {
                 watercolor: data.watercolor,
-                tiles: data
-                    .tiles
-                    .iter()
-                    .filter(|(key, tile)| {
-                        key.plane != RasterPlane::Color
-                            || eager
-                            || required.contains(&key.coordinate)
-                            || resident.contains(&key.coordinate)
-                                && previous.tiles.get(key).is_some_and(|old|old.same_capture(tile))
-                    })
-                    .map(|(key, tile)| (*key, tile.clone()))
-                    .collect(),
+                tiles: resident.iter().flat_map(|coordinate| {
+                    [RasterPlane::Color, RasterPlane::Mask, RasterPlane::WatercolorWetness].into_iter()
+                        .filter_map(move |plane| {
+                            let key = TileKey { plane, coordinate: *coordinate };
+                            data.tiles.get(&key).filter(|tile| plane != RasterPlane::Color
+                                || required.contains(coordinate)
+                                || previous.tiles.get(&key).is_some_and(|old|old.same_capture(tile)))
+                                .map(|tile| (key, tile.clone()))
+                        })
+                }).collect(),
             };
-            let mut before = previous.clone();
-            before.tiles.retain(|key, _| {
-                key.plane != RasterPlane::Color || resident.contains(&key.coordinate)
-            });
-            return (before,selected);
+            return (select(previous),select(data));
         }
         (previous.clone(),data.clone())
     }
@@ -190,29 +179,30 @@ impl WgpuRasterizer {
         let mut bytes = self.color_memory_bytes();
         if bytes <= limit { return retired; }
         let destinations = self.destination_pages(batches, tiles);
+        let required = self.restore_preflight.as_ref().map_or(&[][..], |restore| restore.dependencies());
         for layer in &mut self.paint_layers {
             for page in &mut layer.pages {
                 if bytes <= limit || retired.len() == SOURCE_SLOTS { return retired; }
-                if page.stroke_start.is_some() || destinations.contains(&(layer.id, page.coordinate)) { continue; }
+                if page.stroke_start.is_some() || destinations.contains(&(layer.id, page.coordinate))
+                    || required.iter().any(|(target,coordinates)|*target==layer.id && coordinates.binary_search(&page.coordinate).is_ok()) { continue; }
                 let Some(mut spare) = page.secondary.take() else { continue; };
                 if page.active_secondary {
                     std::mem::swap(&mut page.primary, &mut spare);
                     page.primary_needs_clear = false;
                 }
                 page.active_secondary = false;
-                bytes -= spare.storage_bytes();retired.push(spare);
+                bytes -= spare.storage_bytes();retired.push(spare.retire());
                 for coverage in layer.coverage_pages.iter().filter(|p| p.coordinate == page.coordinate) { coverage.release_color_bindings(); }
             }
         }
-        let required = self.restore_preflight.as_ref().map_or(&[][..], |restore| restore.dependencies());
         for layer in &mut self.paint_layers {
             let Some(data) = native.backing.get(&layer.id) else { continue; };
-            let changed = self.raster.as_ref().and_then(|r| r.targets.get(&layer.id)).map(|target| &target.changed);
+            let contents = self.raster.as_ref().and_then(|r| r.targets.get(&layer.id)).map(|target| &target.contents);
             let mut index = 0;
             while index < layer.pages.len() {
                 if bytes <= limit || retired.len() == SOURCE_SLOTS { return retired; }
                 let page = &layer.pages[index];
-                let keep = changed.is_some_and(|coordinates| coordinates.contains(&page.coordinate))
+                let keep = contents.is_some_and(|contents| contents.modified(page.coordinate))
                     || page.stroke_start.is_some() || destinations.contains(&(layer.id, page.coordinate))
                     || required.iter().any(|(target, coordinates)| *target == layer.id && coordinates.binary_search(&page.coordinate).is_ok());
                 let ready = data.tiles.get(&TileKey { plane: RasterPlane::Color, coordinate: page.coordinate })
@@ -222,7 +212,7 @@ impl WgpuRasterizer {
                 for coverage in layer.coverage_pages.iter().filter(|p| p.coordinate == page.coordinate) { coverage.release_color_bindings(); }
                 let page = layer.pages.swap_remove(index);
                 bytes -= color_page_bytes(&page);
-                retired.push(page.primary);retired.extend(page.secondary);
+                retired.push(page.primary.retire());retired.extend(page.secondary.map(resident::Resident::retire));
             }
         }
         retired
@@ -232,9 +222,9 @@ impl WgpuRasterizer {
 
 fn color_page_bytes(page: &LayerPage) -> u64 {
     page.primary.storage_bytes()
-        + page.stroke_start.as_ref().map_or(0, |(_, start)| start.storage_bytes())
+        + page.stroke_start.as_ref().map_or(0,StrokeStart::storage_bytes)
         + page
             .secondary
             .as_ref()
-            .map_or(0, PageSurface::storage_bytes)
+            .map_or(0, |surface|surface.storage_bytes())
 }

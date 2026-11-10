@@ -497,8 +497,9 @@ fn in_place_dry_strokes_match_ping_pong_pages() {
         stroke.style = style;
         stroke.damage = ink.bounds();
         crate::test_support::submit_ready(&mut r, FramePacket { dabs: &[ink], dab_batches: &[stroke], ..packet(document.scene(), extent) }).unwrap();
+        let versions = r.raster_versions(document.scene(), target(&document)).unwrap();
         let mut pages: Vec<_> = r.paint_layers.iter().find(|l| l.id == target(&document)).unwrap().pages.iter()
-            .map(|p| (p.coordinate, page_bytes(&r, &p.active().texture))).collect();
+            .map(|p| (p.coordinate, page_bytes(&r, &p.active().read(versions.tile(layer_core::raster::RasterPlane::Color, p.coordinate), None).unwrap().value().texture))).collect();
         pages.sort_by_key(|(coordinate, _)| *coordinate);
         pages
     };
@@ -544,7 +545,10 @@ fn display_predictions_wider_than_the_input_sets_match_single_page_predictions()
         stroke.stroke_end = false;
         crate::test_support::submit_ready(&mut r, FramePacket { dabs: &ink, dab_batches: std::slice::from_ref(&stroke), composite_all: false, ..frame }).unwrap();
         assert!(r.dry_display_gathers(&stroke), "the prediction averages its inputs at display resolution");
-        let predicted: Vec<_> = predicted.iter().map(|&page| page_bytes(&r, &r.preview_page(page).unwrap().active().texture)).collect();
+        let predicted: Vec<_> = predicted.iter().map(|&page| {
+            let expected = r.preview_expected(target(&document), layer_core::raster::RasterPlane::Color, page, scene::PreviewStage::Final).unwrap();
+            page_bytes(&r, &r.preview_page(page).unwrap().active().read(expected, None).unwrap().value().texture)
+        }).collect();
         (r.dry_display_inputs.len(), predicted)
     };
     let (sets, together) = predict(&pages);
@@ -578,8 +582,10 @@ fn reduced_color_live_strokes_constrain_pixels_before_publication() {
             assert!(paint(&document).raster.is_empty());
             let pages = &r.paint_layers.iter().find(|p| p.id == target(&document)).unwrap().pages;
             assert!(!pages.is_empty());
+            let versions = r.raster_versions(document.scene(), target(&document)).unwrap();
             for page in pages {
-                for pixel in page_bytes(&r, &page.active().texture).as_chunks::<16>().0 {
+                let read = page.active().read(versions.tile(layer_core::raster::RasterPlane::Color, page.coordinate), None).unwrap();
+                for pixel in page_bytes(&r, &read.value().texture).as_chunks::<16>().0 {
                     let channels = std::array::from_fn::<_, 4, _>(|c| f32::from_le_bytes(pixel[c * 4..c * 4 + 4].try_into().unwrap()));
                     assert_eq!(channels[0], channels[1], "{mode:?} {preset:?}");
                     assert_eq!(channels[1], channels[2], "{mode:?} {preset:?}");
@@ -618,7 +624,7 @@ pub(crate) fn reduced_color_scaled_preview(mut r: WgpuRasterizer, mode: layer_co
     stroke.damage = ink.bounds(); stroke.kind = DabBatchKind::Preview; stroke.stroke_end = false;
     send(&mut r, &mut document, &[ink], &[stroke.clone()], false);
     assert!(r.preview_level > 0);
-    assert!(r.preview_pages.iter().all(|p| p.active().texture.width() < 256));
+    assert!(r.preview_pages.iter().all(|p| p.active().size().width < 256));
     let prediction = crate::scene::scale::tests::display_pixels(&r);
     assert_ne!(prediction, original);
     for pixel in &prediction {

@@ -160,8 +160,11 @@ impl DoubleEndedIterator for AnchorIter<'_> {
 }
 impl ExactSizeIterator for AnchorIter<'_> {}
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct PathGeometry { subpaths: Box<[Subpath]>, hull: [f64; 4], anchors: usize, segments: usize }
+#[derive(Clone, Debug)]
+pub struct PathGeometry { subpaths: Box<[Subpath]>, hull: [f64; 4], anchors: usize, segments: usize, content: crate::raster::ContentName }
+impl PartialEq for PathGeometry {
+    fn eq(&self, other: &Self) -> bool { self.subpaths == other.subpaths }
+}
 impl PathGeometry {
     pub fn new(subpaths: Vec<Subpath>) -> Result<Self, &'static str> {
         if subpaths.is_empty() { return Err("A path requires a subpath"); }
@@ -179,8 +182,9 @@ impl PathGeometry {
                 }
             }
         }
-        Ok(Self { subpaths: subpaths.into(), hull, anchors, segments })
+        Ok(Self { subpaths: subpaths.into(), hull, anchors, segments, content: crate::raster::ContentName::fresh() })
     }
+    pub fn content_version(&self) -> crate::raster::ContentVersion { self.content.into() }
     pub fn subpaths(&self) -> &[Subpath] { &self.subpaths }
     pub fn hull(&self) -> [f64; 4] { self.hull }
     pub fn anchor_count(&self) -> usize { self.anchors }
@@ -743,8 +747,11 @@ pub struct Position { pub chunk: u32, pub index: u32 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Slot { Image(super::Image), Resource(Arc<super::OpaqueResource>) }
 
-#[derive(Debug, Default)]
-struct Root { chunks: Box<[Resource<VectorChunk>]>, slots: Arc<[Slot]>, counter: u64, valid: OnceLock<Result<(), &'static str>> }
+#[derive(Debug)]
+struct Root { chunks: Box<[Resource<VectorChunk>]>, slots: Arc<[Slot]>, counter: u64, valid: OnceLock<Result<(), &'static str>>, content: crate::raster::ContentName }
+impl Default for Root {
+    fn default() -> Self { Self { chunks: Box::default(), slots: Arc::default(), counter: 0, valid: OnceLock::new(), content: crate::raster::ContentName::fresh() } }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct VectorObject { root: Arc<Root> }
@@ -760,10 +767,11 @@ impl PartialEq for VectorObject {
     }
 }
 impl VectorObject {
+    pub fn content_version(&self) -> crate::raster::ContentVersion { self.root.content.into() }
     pub fn from_chunks(chunks: Vec<Resource<VectorChunk>>) -> Self { Self::with_slots(chunks, Arc::default()) }
-    pub fn with_slots(chunks: Vec<Resource<VectorChunk>>, slots: Arc<[Slot]>) -> Self { Self { root: Arc::new(Root { chunks: chunks.into(), slots, counter: 0, valid: OnceLock::new() }) } }
-    fn rechunked(&self, chunks: Vec<Resource<VectorChunk>>) -> Self { Self { root: Arc::new(Root { chunks: chunks.into(), slots: self.root.slots.clone(), counter: self.next_item(), valid: OnceLock::new() }) } }
-    pub fn with_next_item(&self, next_item: u64) -> Self { Self { root: Arc::new(Root { chunks: self.root.chunks.clone(), slots: self.root.slots.clone(), counter: next_item, valid: OnceLock::new() }) } }
+    pub fn with_slots(chunks: Vec<Resource<VectorChunk>>, slots: Arc<[Slot]>) -> Self { Self { root: Arc::new(Root { chunks: chunks.into(), slots, counter: 0, valid: OnceLock::new(), content: crate::raster::ContentName::fresh() }) } }
+    fn rechunked(&self, chunks: Vec<Resource<VectorChunk>>) -> Self { Self { root: Arc::new(Root { chunks: chunks.into(), slots: self.root.slots.clone(), counter: self.next_item(), valid: OnceLock::new(), content: crate::raster::ContentName::fresh() }) } }
+    pub fn with_next_item(&self, next_item: u64) -> Self { Self { root: Arc::new(Root { chunks: self.root.chunks.clone(), slots: self.root.slots.clone(), counter: next_item, valid: OnceLock::new(), content: self.root.content }) } }
     pub fn next_item(&self) -> u64 { self.chunks().iter().map(|chunk| chunk.summary().next_item).fold(self.root.counter.max(1), u64::max) }
     pub fn slots(&self) -> &Arc<[Slot]> { &self.root.slots }
     pub fn shares_slots(&self, other: &Self) -> bool { self.slots().is_empty() || Arc::ptr_eq(self.slots(), other.slots()) }

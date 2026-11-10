@@ -75,7 +75,7 @@ fn encode_raster(raster:&RasterRevision, domain:[u32;2], mask:bool,color:Documen
     data.insert("domain".into(),v::encode_domain(domain)?); Ok(data)
 }
 fn decode_raster(data:&Map<String,Value>,domain:[u32;2],mask:bool,color:DocumentColor,mode:crate::color::LayerColorMode,reader:&mut ResourceReader<'_>)->DecodeResult<RasterRevision> {
-    let mut raster=RasterData {tiles:BTreeMap::new(),watercolor:data.get("material").map(material).transpose()?.flatten()};
+    let mut raster=RasterData {tiles:Default::default(),watercolor:data.get("material").map(material).transpose()?.flatten()};
     if let Some(tiles)=data.get("tiles") {
         let tiles=list(tiles)?;
         if tiles.len()>reader.limits.tiles {return Err(DecodeError::Unsupported("Too many raster tiles".into()));}

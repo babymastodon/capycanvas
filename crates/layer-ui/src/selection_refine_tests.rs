@@ -398,7 +398,7 @@ mod selection_refine_checks {
             assert_eq!(applied.shape, selection.shape);
             match (&applied.shape, &selection.shape) {
                 (SelectionShape::Pixels(a), SelectionShape::Pixels(b)) => assert!(Arc::ptr_eq(a, b), "coverage is shared"),
-                (SelectionShape::Contours(a), SelectionShape::Contours(b)) => assert!(Arc::ptr_eq(a, b)),
+                (SelectionShape::Contours(a), SelectionShape::Contours(b)) => assert!(a.same_owner(b)),
                 _ => unreachable!(),
             }
             s.frame(3, 3).unwrap();

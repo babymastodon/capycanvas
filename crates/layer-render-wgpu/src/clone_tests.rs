@@ -342,8 +342,9 @@ fn resident_code_cloner(depth: layer_core::color::SampleDepth) -> (
         grants
     };
     while r.source_tiles.borrow().gpu_bytes() > r.source_tiles.borrow().non_slot_bytes() {
-        let encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-        assert!(r.source_tiles.borrow_mut().trim_unused(&encoder) > 0, "completed fixture sources must remain evictable");
+        let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
+        r.source_tiles.borrow_mut().flush_retired(&mut encoder);
+        assert_eq!(r.source_tiles.borrow().allocated_slots(),0,"completed fixture sources must remain evictable");
         encoder.submit(&r.queue);
         crate::test_support::complete(r);
     }

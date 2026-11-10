@@ -31,6 +31,18 @@ struct Entry {
     root: bool,
     requested: bool,
     rank: usize,
+    wanted:PixelRect,
+}
+pub(crate) struct BuildBudget {root:usize,view:usize}
+impl BuildBudget {
+    pub(crate) fn new(steps:usize)->Self {
+        let root=crate::scene::scale::overview_share(steps as u64) as usize;
+        Self {root,view:steps-root}
+    }
+    fn take(&mut self,root:bool)->bool {
+        let remaining=if root {&mut self.root}else {&mut self.view};
+        if *remaining==0 {return false;}*remaining-=1;true
+    }
 }
 impl Entry {
     fn matches(&self, id: PortableId, source: &Arc<SourceImage>) -> bool { self.id == id && self.source.ptr_eq(&Arc::downgrade(source)) }
@@ -39,6 +51,9 @@ impl Entry {
             && self.image.texture.format() == target.request.format
     }
     fn ready(&self) -> bool { self.pending.is_empty() && self.valid.load(Ordering::Acquire) }
+    fn ready_for(&self,bounds:PixelRect)->bool {
+        self.valid.load(Ordering::Acquire) && !self.pending.iter().any(|coordinate|!crate::page_rect(*coordinate).intersect(bounds).is_empty())
+    }
     fn storage_bytes(&self) -> u64 { self.image.storage_bytes() }
     fn encoded(&self) -> bool {
         matches!(self.image.texture.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rg32Uint)
@@ -93,13 +108,9 @@ impl MovingImages {
             .map_or(wgpu::TextureFormat::Rgba32Float,|samples|samples.format())
     }
     pub(crate) fn format(scene: layer_core::SceneView<'_>) -> wgpu::TextureFormat {
-        let full=scene.composition().color.depth.is_float() || scene.order().iter().any(|&owner| {
-            scene.effect(owner).is_some()
-                || scene.object_layer(owner).is_some_and(|object|object.image.interpretation.depth.is_float())
-                || scene.paint_source(owner).is_some_and(|paint|paint.base.as_ref().is_some_and(|base|base.image.interpretation.depth.is_float()))
-        });
-        if full {wgpu::TextureFormat::Rgba32Float} else {wgpu::TextureFormat::Rgba16Float}
+        crate::display_precision::DisplayPrecision::for_scene(scene).format()
     }
+
     pub(crate) fn demand(requests: &[MovingRequest], viewport: [u32;2]) -> Result<u64,GpuRasterError> {
         if requests.iter().all(|request|request.nearest && request.bounds.is_empty()) { return Ok(0); }
         let pixels=viewport.map(u64::from).into_iter().fold(1u64,u64::saturating_mul);
@@ -187,6 +198,14 @@ impl MovingImages {
     }
     pub(crate) fn plan(&mut self,r:&WgpuRasterizer,requests:&[MovingRequest],budget:u64,encoder:&mut crate::submission::CommandEncoder)->Result<MipPlan,GpuRasterError> {
         self.retired.retain(|retired|!retired.complete.load(Ordering::Acquire));
+        for entry in &mut self.entries {
+            if !entry.root && let Some(request)=requests.iter().find(|request|entry.matches(request.id,&request.source)) && entry.wanted!=request.bounds {
+                entry.wanted=request.bounds;
+                let centre=[request.bounds.min_x()+request.bounds.width()/2,request.bounds.min_y()+request.bounds.height()/2];
+                entry.pending.make_contiguous().sort_by_key(|coordinate|coordinate.into_iter().zip(centre)
+                    .map(|(value,centre)|i64::from(value*PAGE_SIZE+PAGE_SIZE/2).abs_diff(i64::from(centre)).pow(2)).sum::<u64>());
+            }
+        }
         self.allocation_waiting=false;
         let changed=self.context.replace(r.device.working_space())!=Some(r.device.working_space());
         let root_budget=budget.saturating_sub(working_bytes());
@@ -288,8 +307,9 @@ impl MovingImages {
                 image.view=image.texture.create_view(&wgpu::TextureViewDescriptor {format:Some(wgpu::TextureFormat::Rgba8UnormSrgb),usage:Some(wgpu::TextureUsages::TEXTURE_BINDING),..Default::default()});
             }
             let mut pending:Vec<_>=crate::page_coordinates(target.plan.bounds).collect();
-            let centre=[target.plan.bounds.min_x()+target.plan.bounds.width()/2,target.plan.bounds.min_y()+target.plan.bounds.height()/2];
-            if target.plan.bounds!=PixelRect::full(target.plan.extent) {
+            let wanted=target.request.bounds.intersect(target.plan.bounds);
+            let centre=[wanted.min_x()+wanted.width()/2,wanted.min_y()+wanted.height()/2];
+            if target.root || target.plan.bounds!=PixelRect::full(target.plan.extent) {
                 pending.sort_by_key(|coordinate|coordinate.into_iter().zip(centre).map(|(value,centre)|i64::from(value*PAGE_SIZE+PAGE_SIZE/2).abs_diff(i64::from(centre)).pow(2)).sum::<u64>());
             }
             let valid=Arc::new(AtomicBool::new(true));
@@ -315,7 +335,7 @@ impl MovingImages {
             }
             let source=Arc::downgrade(&target.request.source);
             if pending.is_empty() && !copied.iter().any(|(id,known)|*id==target.request.id && known.ptr_eq(&source)) {copied.push((target.request.id,source.clone()));}
-            replacements.push(Entry {id:target.request.id,source,image,pending:pending.into(),valid,root:target.root,requested:true,rank:target.request.rank});
+            replacements.push(Entry {id:target.request.id,source,image,pending:pending.into(),valid,root:target.root,requested:true,rank:target.request.rank,wanted:target.request.bounds});
         }
         let entries=std::mem::take(&mut self.entries);
         for entry in entries {
@@ -331,8 +351,9 @@ impl MovingImages {
     }
     pub(crate) fn lookup(&self,id:PortableId,source:&Arc<SourceImage>,requested:u32,bounds:PixelRect,format:wgpu::TextureFormat,context:RgbSpace)->Option<MovingSource> {
         if self.context!=Some(context) {return None;}
-        let candidates=||self.entries.iter().rev().filter(|entry|entry.matches(id,source) && entry.ready()
+        let candidates=||self.entries.iter().rev().filter(|entry|entry.matches(id,source)
             && entry.image.texture.format()==format
+            && entry.ready_for(bounds.expand(1<<entry.image.plan.level,source.extent))
             && bounds.expand(1<<entry.image.plan.level,source.extent).intersect(entry.image.plan.bounds)==bounds.expand(1<<entry.image.plan.level,source.extent));
         let entry=candidates().filter(|entry|entry.image.plan.level<=requested && entry.image.plan.level+1>=requested)
             .max_by_key(|entry|entry.image.plan.level)
@@ -345,23 +366,47 @@ impl MovingImages {
         let extent=std::array::from_fn(|axis|entry.image.plan.size[axis].min(source.extent[axis].saturating_sub(origin[axis]).div_ceil(scale)));
         Some(MovingSource {view,level:entry.image.plan.level,extent,origin,samples})
     }
-    pub(crate) fn next_build(&mut self)->Option<(PortableId,Arc<SourceImage>,[u32;2])> {
+    fn order(&self)->impl Iterator<Item=&Entry> {
+        let mut entries=self.entries.iter().filter(|entry|entry.valid.load(Ordering::Acquire) && !entry.pending.is_empty() && entry.source.strong_count()!=0).collect::<Vec<_>>();
+        entries.sort_by_key(|entry|(!entry.root,std::cmp::Reverse(entry.rank)));
+        entries.into_iter()
+    }
+    fn give_unused(&self,budget:&mut BuildBudget) {
+        let mut root=false;let mut view=false;
+        for entry in self.order() {if entry.root {root=true;}else {view=true;}}
+        if !root {budget.view+=budget.root;budget.root=0;}
+        if !view {budget.root+=budget.view;budget.view=0;}
+    }
+    pub(crate) fn next_build(&mut self,budget:&mut BuildBudget,ready:impl Fn(PortableId,&Arc<SourceImage>,[u32;2],Option<wgpu::TextureFormat>)->bool)->Option<(PortableId,Arc<SourceImage>,[u32;2])> {
         for entry in &mut self.entries {
             if !entry.valid.load(Ordering::Acquire) {
                 entry.pending=crate::page_coordinates(entry.image.plan.bounds).collect();entry.valid=Arc::new(AtomicBool::new(true));
             }
         }
-        let entry=self.entries.iter().filter(|entry|!entry.pending.is_empty())
-            .min_by_key(|entry|(entry.root,std::cmp::Reverse(entry.rank)))?;
-        Some((entry.id,entry.source.upgrade()?,*entry.pending.front()?))
+        self.give_unused(budget);
+        self.order().find_map(|entry| {
+            let source=entry.source.upgrade()?;let coordinate=*entry.pending.front()?;
+            if ready(entry.id,&source,coordinate,entry.encoded().then(||entry.image.texture.format())) && budget.take(entry.root) {
+                Some((entry.id,source,coordinate))
+            } else {None}
+        })
+    }
+    pub(crate) fn accept_build(&self,budget:&mut BuildBudget,id:PortableId,source:&Arc<SourceImage>,coordinate:[u32;2])->bool {
+        self.give_unused(budget);
+        self.order().any(|entry|entry.matches(id,source) && entry.pending.front()==Some(&coordinate) && budget.take(entry.root))
     }
     pub(crate) fn upcoming(&self,count:usize)->Vec<(PortableId,Arc<SourceImage>,[u32;2])> {
-        let mut entries:Vec<_>=self.entries.iter().filter(|entry|entry.valid.load(Ordering::Acquire)).collect();
-        entries.sort_by_key(|entry|(entry.root,std::cmp::Reverse(entry.rank)));
-        entries.into_iter().flat_map(|entry| {
-            let source=entry.source.upgrade();
-            entry.pending.iter().filter_map(move|&coordinate|Some((entry.id,source.clone()?,coordinate)))
-        }).take(count).collect()
+        let mut budget=BuildBudget::new(count);self.give_unused(&mut budget);
+        let mut upcoming=Vec::new();
+        for entry in self.order() {
+            let Some(source)=entry.source.upgrade() else {continue;};
+            let available=if entry.root {budget.root}else {budget.view};
+            for &coordinate in entry.pending.iter().take(available) {
+                budget.take(entry.root);upcoming.push((entry.id,source.clone(),coordinate));
+            }
+            if upcoming.len()==count {break;}
+        }
+        upcoming
     }
     pub(crate) fn accepts_tile(&self,id:PortableId,source:&Arc<SourceImage>,coordinate:[u32;2])->bool {
         self.entries.iter().any(|entry|entry.matches(id,source) && entry.valid.load(Ordering::Acquire) && entry.pending.front()==Some(&coordinate))
@@ -383,7 +428,7 @@ impl MovingImages {
             if entry.image.texture.format()==texture.format() {
                 encoder.copy_texture_to_texture(texture.as_image_copy(),wgpu::TexelCopyTextureInfo {origin:wgpu::Origin3d {x:destination[0],y:destination[1],z:0},..entry.image.texture.as_image_copy()},extent);
             } else {
-                let Some(crate::scene::sources::PreparedSourcePixels::NativeSamples(bytes))=pixels else {return Err(GpuRasterError::DeferredObjectWork);};
+                let Some(crate::scene::sources::PreparedSourcePixels::NativeSamples(bytes))=pixels else {return Err(GpuRasterError::NotReady);};
                 let row=PAGE_SIZE*entry.image.texture.format().block_copy_size(None).unwrap();
                 if bytes.len()!=row as usize*PAGE_SIZE as usize {return Err(GpuRasterError::InvalidImage);}
                 r.uploads.write_texture_region(encoder,&entry.image.texture,destination,extent,row,|mapped|mapped.copy_from_slice(bytes))?;
@@ -547,6 +592,13 @@ impl DecodeKey {
         }
     }
 }
+struct Outstanding {
+    key:Option<DecodeKey>,region:PixelRect,
+    #[cfg(not(target_arch="wasm32"))]
+    input:Arc<DecodeInput>,
+}
+#[cfg(not(target_arch="wasm32"))]
+struct DecodeInput {samples:Option<Arc<Vec<u8>>>,read:Result<Option<layer_core::tile_io::ReadWait>,String>}
 pub(crate) struct MipDecodeQueue {
     #[cfg(not(target_arch="wasm32"))]
     pool:Arc<DecodePool>,
@@ -561,17 +613,18 @@ pub(crate) struct MipDecodeQueue {
     #[cfg(target_arch="wasm32")]
     completed:Option<PreparedImageWork>,
     ready:Arc<std::sync::atomic::AtomicUsize>,
-    outstanding:Vec<Option<DecodeKey>>,
+    outstanding:Vec<Outstanding>,
     capacity:usize,
+    priority:Option<(layer_render::ViewState,PixelRect)>,
 }
 #[cfg(not(target_arch="wasm32"))]
 struct DecodeContext {
     cache:Arc<layer_core::raster::DecodedTileCache>,destination:RgbSpace,
     send:std::sync::mpsc::SyncSender<PreparedImageWork>,ready:Arc<std::sync::atomic::AtomicUsize>,
-    wake: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
+    wake: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 #[cfg(not(target_arch="wasm32"))]
-struct DecodeJob {request:MipDecodeRequest,context:Weak<DecodeContext>}
+struct DecodeJob {request:MipDecodeRequest,context:Weak<DecodeContext>,input:Weak<DecodeInput>}
 #[cfg(not(target_arch="wasm32"))]
 struct DecodePool {requests:std::sync::mpsc::SyncSender<DecodeJob>,capacity:usize,epoch:Arc<std::sync::atomic::AtomicU64>}
 #[cfg(not(target_arch="wasm32"))]
@@ -581,10 +634,13 @@ impl DecodeJob {
     fn run(self,decoders:&mut Decoders) {
         let Some(context)=self.context.upgrade() else {return;};
         let (cache,destination)=(context.cache.clone(),context.destination);drop(context);
-        let result=prepare_request(self.request,destination,&cache,decoders);
+        let Some(input)=self.input.upgrade() else {return;};
+        let bytes=input.read.as_ref().map_err(Clone::clone).and_then(|read|read.as_ref().map(|read|read.read_on_worker()).transpose());
+        let result=prepare_request(self.request,destination,&cache,decoders,input.samples.clone(),bytes);
         if let Some(context)=self.context.upgrade() && context.send.send(result).is_ok() {
             context.ready.fetch_add(1,Ordering::AcqRel);
-            if let Some(wake)=context.wake.get() {wake();}
+            let wake=context.wake.lock().unwrap().clone();
+            if let Some(wake)=wake {wake();}
         }
     }
 }
@@ -619,14 +675,18 @@ fn contained<T,E:From<String>>(work:impl FnOnce()->Result<T,E>)->Result<T,E> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|payload| Err(crate::panic_message(&*payload).into()))
 }
 #[cfg(not(target_arch="wasm32"))]
-fn prepare_request(request:MipDecodeRequest,destination:RgbSpace,cache:&layer_core::raster::DecodedTileCache,decoders:&mut Decoders)->PreparedImageWork {
+fn prepare_request(request:MipDecodeRequest,destination:RgbSpace,cache:&layer_core::raster::DecodedTileCache,decoders:&mut Decoders,samples:Option<Arc<Vec<u8>>>,input:Result<Option<layer_core::package::ByteRange>,String>)->PreparedImageWork {
+    let decode=|blob:&Arc<layer_core::raster::TileBlob>| {
+        if let Some(samples)=&samples {return Ok(samples.clone());}
+        match input.as_ref().map_err(Clone::clone)? {Some(bytes)=>cache.decode_bytes_on_worker(blob,bytes),None=>cache.decode_on_worker(blob)}
+    };
     match request {
         MipDecodeRequest::Paper {blob,coordinate}=> {
-            let pixels=contained(||cache.decode_on_worker(&blob));
+            let pixels=contained(||decode(&blob));
             PreparedImageWork::Paper {blob,coordinate,pixels}
         },
         MipDecodeRequest::Raster(request) => {
-            let pixels=contained(||prepare_raster_tile(&request.blob,request.space,cache));
+            let pixels=contained(||prepare_raster_tile_with(&request.blob,request.space,||decode(&request.blob)));
             PreparedImageWork::Raster(PreparedRasterTile {blob:request.blob,space:request.space,destination:request.destination,scalar:request.scalar,pixels})
         },
         MipDecodeRequest::Coordinates(request) => {
@@ -637,7 +697,7 @@ fn prepare_request(request:MipDecodeRequest,destination:RgbSpace,cache:&layer_co
         MipDecodeRequest::Image(request) => {
             let pixels=contained(|| {
                 if matches!(request.source.interpretation.profile,layer_core::color::ColorProfile::Builtin(_)) {
-                    return prepare_image_tile(&request.source,request.coordinate,destination,cache,None);
+                    return prepare_image_tile_with(&request.source,request.coordinate,destination,None,decode);
                 }
                 let weak=Arc::downgrade(&request.source);
                 let index=if let Some(index)=decoders.iter().position(|(source,space,_)|source.ptr_eq(&weak) && *space==destination) {index} else {
@@ -646,7 +706,7 @@ fn prepare_request(request:MipDecodeRequest,destination:RgbSpace,cache:&layer_co
                     decoders.push_back((weak,destination,decoder));decoders.len()-1
                 };
                 let decoder=decoders.remove(index).unwrap();
-                let decoded=prepare_image_tile(&request.source,request.coordinate,destination,cache,Some(&decoder.2));
+                let decoded=prepare_image_tile_with(&request.source,request.coordinate,destination,Some(&decoder.2),decode);
                 decoders.push_back(decoder);
                 decoded
             });
@@ -655,12 +715,34 @@ fn prepare_request(request:MipDecodeRequest,destination:RgbSpace,cache:&layer_co
     }
 }
 impl MipDecodeQueue {
+    pub(crate) fn prioritize(&mut self,view:layer_render::ViewState,region:PixelRect) {
+        #[cfg(not(target_arch="wasm32"))]
+        if self.priority.is_none_or(|(previous,_)|previous!=view) {
+            for request in &self.outstanding {
+                if !request.region.is_empty() && let Ok(Some(read))=&request.input.read {read.prioritize(Self::distance(view,request.region));}
+            }
+        }
+        self.priority=Some((view,region));
+    }
+    fn distance(view:layer_render::ViewState,region:PixelRect)->u64 {
+        let [a,b,c,d,tx,ty]=view.document_to_surface.map(f64::from);
+        let x=f64::from(region.min_x()+region.max_x())*0.5;let y=f64::from(region.min_y()+region.max_y())*0.5;
+        let dx=a*x+c*y+tx-f64::from(view.width_px)*0.5;let dy=b*x+d*y+ty-f64::from(view.height_px)*0.5;
+        (dx*dx+dy*dy).min(u64::MAX as f64) as u64
+    }
+    #[cfg(test)]
+    pub(crate) fn requested_image_tiles(&self)->Vec<(usize,[u32;2])> {
+        let mut tiles:Vec<_>=self.outstanding.iter().filter_map(|request|request.key.as_ref()).filter_map(|key|match key {
+            DecodeKey::Image(source,coordinate)=>Some((source.as_ptr() as usize,*coordinate)),_=>None,
+        }).collect();
+        tiles.sort();tiles
+    }
     pub(crate) fn accepts_held(&self,held:usize,receipt:bool)->bool {self.outstanding.len().saturating_add(held)<self.capacity+usize::from(receipt)}
     pub(crate) fn new(device:&PipelineDevice)->Result<Self,GpuRasterError> {
         #[cfg(not(target_arch="wasm32"))]
         {Self::native(device.source_samples.clone(),device.working_space())}
         #[cfg(target_arch="wasm32")]
-        {let _=device;Ok(Self {external:None,completed:None,ready:Default::default(),outstanding:Vec::new(),capacity:1})}
+        {let _=device;Ok(Self {external:None,completed:None,ready:Default::default(),outstanding:Vec::new(),capacity:1,priority:None})}
     }
     #[cfg(not(target_arch="wasm32"))]
     fn native(cache:Arc<layer_core::raster::DecodedTileCache>,destination:RgbSpace)->Result<Self,GpuRasterError> {
@@ -669,10 +751,10 @@ impl MipDecodeQueue {
         let ready=Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (send,results)=std::sync::mpsc::sync_channel(capacity);
         let context=Arc::new(DecodeContext {cache,destination,send,ready:ready.clone(),wake:Default::default()});
-        Ok(Self {pool,context,waiting:None,results,ready,outstanding:Vec::new(),capacity})
+        Ok(Self {pool,context,waiting:None,results,ready,outstanding:Vec::new(),capacity,priority:None})
     }
     #[cfg(not(target_arch="wasm32"))]
-    pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {let _=self.context.wake.set(wake);}
+    pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {*self.context.wake.lock().unwrap()=Some(wake);}
     #[cfg(test)]
     pub(crate) fn request(&mut self,id:PortableId,source:Arc<SourceImage>,coordinate:[u32;2])->bool {
         self.request_for(id,source,coordinate,crate::scene::sources::SourceUse::Display)
@@ -693,17 +775,30 @@ impl MipDecodeQueue {
         self.enqueue(MipDecodeRequest::Coordinates(CoordinateRequest {inverse,size,first,count,destination}),None)
     }
     fn enqueue(&mut self,request:MipDecodeRequest,key:Option<DecodeKey>)->bool {
-        if key.as_ref().is_some_and(|key|self.outstanding.iter().flatten().any(|stored|stored.matches(key))) {return true;}
+        if let Some(stored)=key.as_ref().and_then(|key|self.outstanding.iter_mut().find(|stored|stored.key.as_ref().is_some_and(|stored|stored.matches(key)))) {
+            if let Some((view,region))=self.priority && (stored.region.is_empty() || Self::distance(view,region)<Self::distance(view,stored.region)) {
+                stored.region=region;
+                #[cfg(not(target_arch="wasm32"))]
+                if let Ok(Some(read))=&stored.input.read {read.prioritize(Self::distance(view,region));}
+            }
+            return true;
+        }
         if self.outstanding.len()>=self.capacity {return false;}
         #[cfg(not(target_arch="wasm32"))]
         {
+            let blob=match &request {MipDecodeRequest::Image(request)=>request.source.tiles.get(&request.coordinate),MipDecodeRequest::Raster(request)=>Some(&request.blob),MipDecodeRequest::Paper {blob,..}=>Some(blob),MipDecodeRequest::Coordinates(_)=>None};
+            let samples=blob.map(|blob|self.context.cache.cached(blob)).transpose().map(Option::flatten);
+            let read=samples.as_ref().map_err(Clone::clone).and_then(|samples|if samples.is_some() {Ok(None)}else{blob.map(|blob|blob.read_interest()).transpose().map(Option::flatten)});
+            let input=Arc::new(DecodeInput {samples:samples.ok().flatten(),read});
+            if let Some((view,region))=self.priority && let Ok(Some(read))=&input.read {read.prioritize(Self::distance(view,region));}
             let epoch=self.pool.epoch.load(Ordering::Acquire);
-            if self.pool.requests.try_send(DecodeJob {request,context:Arc::downgrade(&self.context)}).is_err() {self.waiting=Some(epoch);return false;}
-            self.waiting=None;
+            if self.pool.requests.try_send(DecodeJob {request,context:Arc::downgrade(&self.context),input:Arc::downgrade(&input)}).is_err() {self.waiting=Some(epoch);return false;}
+            if let Ok(Some(read))=&input.read {read.start();}
+            self.waiting=None;self.outstanding.push(Outstanding {key,region:self.priority.map_or(PixelRect::EMPTY,|(_,region)|region),input});
         }
         #[cfg(target_arch="wasm32")]
-        {self.external=Some(request);}
-        self.outstanding.push(key);true
+        {self.external=Some(request);self.outstanding.push(Outstanding {key,region:self.priority.map_or(PixelRect::EMPTY,|(_,region)|region)});}
+        true
     }
     pub(crate) fn poll(&mut self)->Option<PreparedImageWork> {
         if !self.ready() {return None;}
@@ -718,7 +813,7 @@ impl MipDecodeQueue {
             PreparedImageWork::Paper {blob,coordinate,..}=>Some(DecodeKey::Paper(Arc::downgrade(blob),*coordinate)),
             PreparedImageWork::Coordinates {..}=>None,
         };
-        let index=self.outstanding.iter().position(|stored|match (stored,&key) {
+        let index=self.outstanding.iter().position(|stored|match (&stored.key,&key) {
             (Some(stored),Some(key))=>stored.matches(key),
             (None,None)=>true,
             _=>false,
@@ -740,7 +835,7 @@ impl MipDecodeQueue {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::test_support::{page_texture,upload_page};
     #[cfg(not(target_arch="wasm32"))]
@@ -748,7 +843,33 @@ mod tests {
         ready:Arc<std::sync::atomic::AtomicUsize>,outstanding:Vec<Option<DecodeKey>>,capacity:usize)->MipDecodeQueue {
         let (send,_)=std::sync::mpsc::sync_channel(capacity);
         let context=Arc::new(DecodeContext {cache:Arc::new(layer_core::raster::DecodedTileCache::new(0)),destination:RgbSpace::Srgb,send,ready:ready.clone(),wake:Default::default()});
-        MipDecodeQueue {pool:Arc::new(DecodePool {requests,capacity,epoch:Default::default()}),context,waiting:None,results,ready,outstanding,capacity}
+        MipDecodeQueue {pool:Arc::new(DecodePool {requests,capacity,epoch:Default::default()}),context,waiting:None,results,ready,outstanding:outstanding.into_iter().map(|key|Outstanding {key,region:PixelRect::EMPTY,input:Arc::new(DecodeInput {samples:None,read:Ok(None)})}).collect(),capacity,priority:None}
+    }
+    #[cfg(not(target_arch="wasm32"))]
+    #[test]
+    fn accepted_decode_jobs_fill_the_read_window_before_a_decode_worker_runs() {
+        let source=layer_core::color::source::rgba8_source([8*PAGE_SIZE,PAGE_SIZE],|x,y|[x as u8,y as u8,73,255]);
+        let store=crate::test_support::GatedStore::new(&layer_core::raster_storage::RetainedTiles::from_sources([source.as_ref()]),false);
+        let (requests,_receive)=std::sync::mpsc::sync_channel(8);let (_send,results)=std::sync::mpsc::sync_channel(8);
+        let mut queue=queued(requests,results,Default::default(),Vec::new(),8);
+        for x in 0..8 {assert!(queue.request(PortableId::random(),source.clone(),[x,0]));}
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(10);
+        while store.gate.reads.load(Ordering::Acquire)<8 && std::time::Instant::now()<deadline {std::thread::yield_now();}
+        assert_eq!(store.gate.reads.load(Ordering::Acquire),8,"queued accepted jobs must initiate reads without occupying decode workers");
+        assert_eq!(queue.ready.load(Ordering::Acquire),0);
+    }
+    #[cfg(not(target_arch="wasm32"))]
+    #[test]
+    fn resident_samples_do_not_reread_the_compressed_store() {
+        let source=layer_core::color::source::rgba8_source([PAGE_SIZE;2],|_,_|[29,71,83,255]);
+        let (requests,receive)=std::sync::mpsc::sync_channel(1);let (_send,results)=std::sync::mpsc::sync_channel(1);
+        let mut queue=queued(requests,results,Default::default(),Vec::new(),1);
+        queue.context.cache.set_limit((PAGE_SIZE*PAGE_SIZE*4) as usize);
+        let samples=queue.context.cache.decode_on_worker(&source.tiles[&[0,0]]).unwrap();
+        let store=crate::test_support::GatedStore::new(&layer_core::raster_storage::RetainedTiles::from_sources([source.as_ref()]),false);
+        assert!(queue.request(PortableId::random(),source,[0,0]));let job=receive.try_recv().unwrap();
+        let input=job.input.upgrade().unwrap();assert!(input.read.as_ref().unwrap().is_none());assert!(Arc::ptr_eq(input.samples.as_ref().unwrap(),&samples));
+        assert_eq!(store.gate.reads.load(Ordering::Acquire),0);
     }
     #[cfg(not(target_arch="wasm32"))]
     #[test]
@@ -815,7 +936,8 @@ mod tests {
         let callback_owner=Arc::new(());let callback_lifetime=Arc::downgrade(&callback_owner);
         queue.set_wake(Arc::new(move|| {let _=&callback_owner;notified.fetch_add(1,Ordering::Relaxed);}));
         let target=Arc::new(Mutex::new(None));let ready=queue.ready.clone();
-        let job=DecodeJob {context:Arc::downgrade(&queue.context),request:MipDecodeRequest::Coordinates(CoordinateRequest {
+        let input=Arc::new(DecodeInput {samples:None,read:Ok(None)});
+        let job=DecodeJob {context:Arc::downgrade(&queue.context),input:Arc::downgrade(&input),request:MipDecodeRequest::Coordinates(CoordinateRequest {
             inverse:[1.,0.,0.,1.,0.,0.],size:[256;2],first:0,count:1,destination:Arc::downgrade(&target)})};
         drop(queue);assert!(callback_lifetime.upgrade().is_none());
         job.run(&mut Decoders::new());

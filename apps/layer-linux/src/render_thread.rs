@@ -160,8 +160,6 @@ struct ChromeRequests {
     first: Option<(u64, ChromePresentation)>,
     latest: Option<(u64, ChromePresentation)>,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FrameReadiness { Waiting, Dependencies, Ready }
 enum PreparationCommand<T> { Command(T), Ready, Wait, Closed }
 fn preparation_command<T>(receiver: &mpsc::Receiver<T>, ready: bool) -> PreparationCommand<T> {
     match receiver.try_recv() {
@@ -177,9 +175,6 @@ impl PreparationSignal {
         if !self.queued.swap(true,Ordering::AcqRel)
             && self.commands.send(Command::PreparationReady).is_err() {self.queued.store(false,Ordering::Release);}
     }
-}
-impl FrameReadiness {
-    fn ready(self) -> bool { self == Self::Ready }
 }
 fn admit_frame<T, E>(frame: Option<T>, pending: &mut VecDeque<T>, mut draw: impl FnMut(&mut T) -> Result<bool, E>) -> Result<usize, E> {
     let mut admitted = 0;
@@ -2431,14 +2426,6 @@ impl Worker {
         self.pending_present = self.last_view.is_some();
         Ok(())
     }
-    fn frame_readiness(&mut self, frame: &Frame, canvas_ready: bool, brush_ready: bool) -> FrameReadiness {
-        if self.initial_completion.is_some() || !canvas_ready
-            || !self.renderer.can_submit() || !frame.dabs.is_empty() && !brush_ready {
-            FrameReadiness::Waiting
-        } else if !self.dependencies_ready(frame) {
-            FrameReadiness::Dependencies
-        } else { FrameReadiness::Ready }
-    }
     fn draw_ready_frame(
         &mut self,
         frame: &mut Frame,
@@ -2446,14 +2433,13 @@ impl Worker {
         report: &FrameReport,
         #[cfg(test)] timing: &mut crate::timing::Timing,
     ) -> Result<bool, String> {
-        let readiness = self.frame_readiness(frame, startup.canvas_ready, startup.brush_ready);
-        if !readiness.ready() {
-            if readiness == FrameReadiness::Dependencies { self.report_frame(report); }
+        if self.initial_completion.is_some() || !startup.canvas_ready
+            || !self.renderer.can_submit() || !frame.dabs.is_empty() && !startup.brush_ready {
             return Ok(false);
         }
         #[cfg(test)]
         timing.begin(frame.queued_ns);
-        self.draw(frame, #[cfg(test)] timing)?;
+        if !self.draw(frame, #[cfg(test)] timing)? { self.report_frame(report); return Ok(false); }
         self.report_frame(report);
         Ok(true)
     }
@@ -2518,10 +2504,6 @@ impl Worker {
         self.presenter.set_cursor(self.renderer.device(), &self.cursor, self.cursor_scale);
         Ok(())
     }
-    fn dependencies_ready(&mut self,frame:&Frame)->bool {
-        self.renderer.set_fill_preview(frame.fill_preview.clone());
-        self.renderer.raster_dependencies_ready(frame.packet(),frame.transform_preview.as_ref())
-    }
     fn apply_overlays(&mut self, state: &Arc<Overlays>, #[cfg(test)] timing: &mut crate::timing::Timing) -> Result<(), String> {
         if self.overlays.as_ref().is_some_and(|current| Arc::ptr_eq(current, state)) { return Ok(()); }
         self.renderer.set_selection_overlay(state.selection_overlay);
@@ -2540,7 +2522,7 @@ impl Worker {
         &mut self,
         frame: &mut Frame,
         #[cfg(test)] timing: &mut crate::timing::Timing,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         if let Some(failure) = self.watch.failure() {
             return Err(failure);
         }
@@ -2565,16 +2547,20 @@ impl Worker {
         if frame.scene.view().targets().any(|t| frame.scene.view().raster(t).is_some_and(|r| r.try_data().is_none())) {
             timing.raster_commit();
         }
+        self.renderer.set_fill_preview(frame.fill_preview.clone());
         self.renderer.set_transform_preview(frame.transform_preview.as_ref()).map_err(error)?;
         self.renderer.set_fill_reveal(frame.fill_reveal);
-        self.renderer.submit(frame.packet()).map_err(error)?;
+        match self.renderer.submit_when_ready(frame.packet(), frame.transform_preview.as_ref()) {
+            std::task::Poll::Pending => return Ok(false),
+            std::task::Poll::Ready(result) => result.map_err(error)?,
+        }
         self.last_owner = Some(frame.scene.view().owner());
         if self.renderer.has_pending_submission() { frame.pending_rasters.clear(); }
         #[cfg(test)]
         timing.photo_frame(frame.scene.view());
         #[cfg(test)]
         timing.mark(0);
-        if !frame.present {return Ok(());}
+        if !frame.present {return Ok(true);}
         self.pending_present = presentation_needed(self.last_view, self.chrome.changed() || self.geometry_changed,
             |view| self.presenter.needs_present(&self.renderer, view, self.surround));
         let target = if self.pending_present {
@@ -2595,7 +2581,7 @@ impl Worker {
             )?;
         }
         self.child.observe_draw_work(draw_start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
-        Ok(())
+        Ok(true)
     }
     fn configure_surface(&mut self) {
         self.surface.configure(self.renderer.device(), &self.config);

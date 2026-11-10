@@ -37,14 +37,14 @@ impl ChangedCells {
         for layer in &r.paint_layers {
             for page in &layer.pages {
                 if retired.contains(&(layer.id,page.coordinate)) {
-                    page.primary.material_output.clear();
-                    if let Some(secondary)=&page.secondary {secondary.material_output.clear();}
+                    page.primary.clear_bindings();
+                    if let Some(secondary)=&page.secondary {secondary.clear_bindings();}
                 }
             }
         }
         if !retired.is_empty() {for page in &r.preview_pages {
-            page.primary.material_output.clear();
-            if let Some(secondary)=&page.secondary {secondary.material_output.clear();}
+            page.primary.clear_bindings();
+            if let Some(secondary)=&page.secondary {secondary.clear_bindings();}
         }}
         self.retired.extend(self.pages.extract_if(..,|key,_|retired.contains(key)).map(|(_,buffer)|buffer));
     }
@@ -85,10 +85,16 @@ impl ChangedCells {
                     .map(move |p|(id,p.coordinate)))).collect();
         let bytes=16+u64::from((PAGE_SIZE/side).pow(2))*4;
         let required=self.disabled.size()+wanted.len() as u64*bytes;
-        if required>LIMIT || required>cache.auxiliary_budget(r,packet) {
+        let available=r.memory.limit(layer_core::MemoryOwnerKind::Scene,false)
+            .saturating_sub(cache.storage_bytes()+r.scene.as_ref().map_or(0,|scene|scene.working_bytes()));
+        if required>LIMIT || required>available {
             self.retire(r,&BTreeSet::new(),self.side);return;
         }
         self.retire(r,&wanted,side);
+        let missing=wanted.iter().filter(|key|!self.pages.contains_key(key)).count() as u64*bytes;
+        let composition=[r.composition_storage_bytes()+self.storage_bytes(),cache.presentation_bytes()+self.storage_bytes()];
+        r.memory.sync_report(layer_core::MemoryOwnerKind::Scene,r.display_memory_report(r.scene.as_deref(),composition));
+        let Some(reservation)=r.memory.display_owner().admit_working(layer_core::MemoryGrant {ram_bytes:0,gpu_bytes:missing}) else {return;};
         self.admission=Some(admission);
         self.side=side;
         for key in wanted {
@@ -100,6 +106,8 @@ impl ChangedCells {
             });
             encoder.clear_buffer(buffer,16,None);
         }
+        let composition=[r.composition_storage_bytes()+self.storage_bytes(),cache.presentation_bytes()+self.storage_bytes()];
+        r.memory.commit_reservation(layer_core::MemoryOwnerKind::Scene,reservation,r.display_memory_report(r.scene.as_deref(),composition)).expect("changed-cell reservation belongs to the display owner");
         for batch in packet.dab_batches {
             if batch.kind!=DabBatchKind::Preview && (!r.in_place_dry_material(batch) || revisits_stroke(&batch.style)) {
                 self.force_source(batch.target);
@@ -113,25 +121,25 @@ impl ChangedCells {
         for page in &r.preview_pages {
             let warm=old.id==new.id && old.level==new.level && old.contribution && new.contribution
                 && old.contains(page.coordinate) && new.contains(page.coordinate) && !page.active_secondary
-                && old.id.is_some_and(|id|page.primary.preview.get()==Some((id,page.coordinate)))
-                && page.primary.texture.width()==PAGE_SIZE>>new.level && page.primary.texture.height()==PAGE_SIZE>>new.level
-                && page.primary.texture.format()==r.device.working_format() && (1<<new.level)<=self.side
+                && old.id.is_some_and(|id|page.primary.preview()==Some((id,page.coordinate)))
+                && page.primary.size().width==PAGE_SIZE>>new.level && page.primary.size().height==PAGE_SIZE>>new.level
+                && page.primary.format()==r.device.working_format() && (1<<new.level)<=self.side
                 && r.pipelines.dry_material.in_place();
-            if !warm {page.primary.preview.set(None);}
-            if let Some(secondary)=&page.secondary {secondary.preview.set(None);}
+            if !warm {page.primary.set_preview(None);}
+            if let Some(secondary)=&page.secondary {secondary.set_preview(None);}
         }
         for state in [&old,&new] {
             let Some(id)=state.id else {continue;};
             for coordinate in page_coordinates(state.damage).filter(|c|state.contains(*c)) {
-                if !r.preview_pages.iter().any(|p|p.coordinate==coordinate && p.primary.preview.get()==Some((id,coordinate))) {
+                if !r.preview_pages.iter().any(|p|p.coordinate==coordinate && p.primary.preview()==Some((id,coordinate))) {
                     self.forced.insert((id,coordinate));
                 }
             }
         }
     }
-    pub fn preview_reusable(&self,r:&WgpuRasterizer,id:SourceTarget,coordinate:[u32;2],surface:&PageSurface)->bool {
-        surface.preview.get()==Some((id,coordinate)) && surface.texture.format()==r.device.working_format()
-            && surface.texture.width()==PAGE_SIZE>>r.preview_level && surface.texture.height()==PAGE_SIZE>>r.preview_level
+    pub fn preview_reusable(&self,r:&WgpuRasterizer,id:SourceTarget,coordinate:[u32;2],surface:&resident::Resident<PageSurface>)->bool {
+        surface.preview()==Some((id,coordinate)) && surface.format()==r.device.working_format()
+            && surface.size().width==PAGE_SIZE>>r.preview_level && surface.size().height==PAGE_SIZE>>r.preview_level
             && (1<<r.preview_level)<=self.side && self.reusable(id,coordinate).is_some()
     }
 }

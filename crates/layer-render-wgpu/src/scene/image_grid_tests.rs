@@ -49,7 +49,7 @@ fn cold_correction_gather_finishes_resident_pages_and_requests_the_next() {
         attempts += 1;
         match result {
             Ok(()) => break,
-            Err(GpuRasterError::DeferredObjectWork) => {}
+            Err(GpuRasterError::NotReady) => {}
             Err(error) => panic!("{error}"),
         }
         assert!(2 * attempts < pages, "a gather attempt must finish every page whose decode arrived and request more than one page");
@@ -94,7 +94,7 @@ fn correction_progress(change: CorrectionChange) {
         r.drain_image_decodes(&mut encoder).unwrap();
         let frame = layer_render::FramePacket { blend_space: layer_core::BlendSpace::Linear, ..crate::test_support::packet(doc.scene(), EXTENT) };
         let result = scene.prepare_region(&mut r, frame, (full, window), full, false, &mut encoder);
-        assert!(result.is_ok() || matches!(result, Err(GpuRasterError::DeferredObjectWork)), "{result:?}");
+        assert!(result.is_ok() || matches!(result, Err(GpuRasterError::NotReady)), "{result:?}");
         let remaining = scene.images.stages.iter().find(|stage| stage.id == effect)
             .and_then(|stage| stage.input_gather.as_ref()).map(|gather| gather.pages.len());
         r.uploads.finish(&encoder);
@@ -150,7 +150,7 @@ fn correction_progress(change: CorrectionChange) {
         r.drain_image_decodes(&mut encoder).unwrap();
         let frame = layer_render::FramePacket { blend_space: layer_core::BlendSpace::Linear, ..crate::test_support::packet(doc.scene(), EXTENT) };
         let result = scene.prepare_region(&mut r, frame, (full, window), full, false, &mut encoder);
-        assert!(result.is_ok() || matches!(result, Err(GpuRasterError::DeferredObjectWork)), "{result:?}");
+        assert!(result.is_ok() || matches!(result, Err(GpuRasterError::NotReady)), "{result:?}");
         if let Some(gather) = scene.images.stages.iter().find(|stage| stage.id == effect).and_then(|stage| stage.input_gather.as_ref()) {
             assert_eq!(gather.revision, doc.revision);
             assert!(gather.pages.len() <= remaining, "a committed input prefix was restarted: {} > {remaining}", gather.pages.len());

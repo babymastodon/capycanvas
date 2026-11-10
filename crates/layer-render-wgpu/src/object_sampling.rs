@@ -399,7 +399,7 @@ impl ObjectSampler {
         Ok(())
     }
     pub(crate) fn encode_step(&self,device:&PipelineDevice,encoder:&mut crate::submission::CommandEncoder,uploads:&mut crate::Uploads,acc:&ObjectAccumulator,phase:&SamplingPhase<'_>,step:u64)->Result<Option<u64>,GpuRasterError> {
-        if acc.nearest && !acc.nearest_coordinates_ready() {return Err(GpuRasterError::DeferredObjectWork);}
+        if acc.nearest && !acc.nearest_coordinates_ready() {return Err(GpuRasterError::NotReady);}
         let (source,origin,extent,kind,pipeline)=match phase {
             SamplingPhase::Denominator {extent}=>(&acc.empty,[0;2],*extent,0,&self.denominator),
             SamplingPhase::Contribute {source,origin,extent}=>(*source,*origin,*extent,1,&self.contribute),

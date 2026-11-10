@@ -18,8 +18,8 @@ fn stored_source_smudge_stroke_promotes_neighbors_once_for_the_slot_lifetime() {
             sources.admit_limits(overhead, upload, grants.2);
             grants
         };
-        let encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-        r.source_tiles.borrow_mut().trim_unused(&encoder);
+        let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
+        r.source_tiles.borrow_mut().flush_retired(&mut encoder);
         encoder.submit(&r.queue);
         crate::test_support::complete(&r);
         r.source_tiles.borrow_mut().admit_limits(decoded_grant, upload_grant, mip_grant);
@@ -82,6 +82,8 @@ fn stored_source_smudge_stroke_promotes_neighbors_once_for_the_slot_lifetime() {
         let layer = r.paint_layers.iter().find(|layer| layer.id == target).unwrap();
         assert!(layer.pages.iter().all(|page| page.coordinate[1] == 0 && page.coordinate[0] <= 2));
         let painted = layer.pages.iter().find(|page| page.coordinate == [1, 0]).unwrap();
-        assert!(crate::test_support::float_pixels(&r, &painted.active().texture).iter().any(|pixel| pixel[3] > 0.));
+        let expected=r.current_raster_version(target,layer_core::raster::RasterPlane::Color,painted.coordinate).unwrap();
+        let read=r.read_layer_color(target,painted.coordinate,&expected,None).unwrap();
+        assert!(crate::test_support::float_pixels(&r, &read.value().texture).iter().any(|pixel| pixel[3] > 0.));
     }
 }

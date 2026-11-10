@@ -312,7 +312,7 @@ fn bakes_freeze_mask_versions_and_keep_live_mask_pages_unchanged() {
     }
     frame(&mut r, document.scene(), &[], &[], &[(mask_target, live)]);
     let live_source = document.artwork.coverage.get(mask).unwrap().clone();
-    let live_pixels = page_bytes(&r, &r.layer_masks.pages[&(mask_target, [0; 2])].texture);
+    let live_pixels = crate::test_support::mask_page_bytes(&r,mask_target,[0;2]);
     document.artwork.occurrences.get_mut(owner).unwrap().visible = false;
     let mut outputs = Vec::new();
     let mut batches = Vec::new();
@@ -350,6 +350,6 @@ fn bakes_freeze_mask_versions_and_keep_live_mask_pages_unchanged() {
         assert_eq!(at(&pixels, [400, 60])[3], [0, 255][index], "bake {index} has a distinct captured context");
     }
     assert_eq!(document.artwork.coverage.get(mask).unwrap(), &live_source);
-    assert_eq!(page_bytes(&r, &r.layer_masks.pages[&(mask_target, [0; 2])].texture), live_pixels);
+    assert_eq!(crate::test_support::mask_page_bytes(&r,mask_target,[0;2]), live_pixels);
     assert!(r.layer_masks.snapshots.is_empty(), "completed bakes release their private mask pages");
 }

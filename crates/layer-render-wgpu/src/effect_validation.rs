@@ -64,10 +64,7 @@ impl WgpuRasterizer {
                 error: None,
             }));
             for program in programs {
-                let gpu = effects::Context {
-                    device: self.device.for_compilation(),
-                    queue: self.queue.clone(),
-                };
+                let gpu = effects::Context { device: self.device.for_compilation() };
                 let state = state.clone();
                 let work = move || {
                     let candidate = state.lock().unwrap().effects.take().unwrap();

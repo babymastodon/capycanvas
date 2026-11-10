@@ -288,7 +288,7 @@ fn discontinuous_n65_vertices_require_native_graph_evaluation() {
                 frame.view.document_to_surface=[scale,0.,0.,scale,-610.*scale,-270.*scale];
                 publish(&mut window,frame);publish(&mut exact,frame);
                 let cache=window.scale_display.as_ref().unwrap();assert_eq!(cache.plan.level,level);assert!(cache.evaluation==Evaluation::Display);
-                let error=quality(&display_pixels(&window),&crate::test_support::float_pixels(&exact,document_texture(&exact)),cache.plan);
+                let error=quality(&display_pixels(&window),&crate::test_support::float_pixels(&exact,document_texture(&exact)),cache.plan, cache.texture().format());
                 assert!(error.iter().all(|v|v.is_finite()));for i in 0..3{worst[i]=worst[i].max(error[i]);}
                 println!("Color Lookup adjacent N65 {working:?} hdr={hdr} level={level} error={error:?}");
                 assert_eq!(window.readback_srgb_rgba8().unwrap(),exact.readback_srgb_rgba8().unwrap());
@@ -298,7 +298,7 @@ fn discontinuous_n65_vertices_require_native_graph_evaluation() {
             frame.view.document_to_surface=[scale,0.,0.,scale,-610.*scale,-270.*scale];
             publish(&mut window,frame);publish(&mut exact,frame);
             let cache=window.scale_display.as_ref().unwrap();assert!(cache.evaluation==Evaluation::Native);
-            let error=quality(&display_pixels(&window),&crate::test_support::float_pixels(&exact,document_texture(&exact)),cache.plan);
+            let error=quality(&display_pixels(&window),&crate::test_support::float_pixels(&exact,document_texture(&exact)),cache.plan, cache.texture().format());
             assert!(error[2]<2e-5,"Native LUT preserves exact reduced artwork: {working:?} hdr={hdr} {error:?}");
         }
     }
@@ -361,7 +361,7 @@ fn resident_lookup_tiles_batch_with_immutable_auxiliary_and_bounded_sources() {
     let original=layer_core::color::source::rgba8_source(extent,|x,y|{let c=codes(y/256*8+x/256);[c[0] as u8,c[1] as u8,c[2] as u8,255]});
     let mut document=empty_document(extent,color);let target=insert_effect(&mut document,lookup(resource.clone(),0,100.));insert_source(&mut document,"Distinct cold lookup tiles",original);
     let mut r=WgpuRasterizer::new_native_headless(color).unwrap();r.native_edit.as_mut().unwrap().display_complete_bytes=u64::MAX;
-    drop(r.device.effect_resources.lock().unwrap().get(&r.device,&r.queue,None).unwrap());
+    drop(r.device.effect_resources.lock().unwrap().get(&r.device,None).unwrap());
     let baseline=residency(&r);assert_eq!(baseline,(0,16));
     let mut source_bytes=None;
     for (state,intensity) in [35.,70.,100.].into_iter().enumerate() {
@@ -375,7 +375,7 @@ fn resident_lookup_tiles_batch_with_immutable_auxiliary_and_bounded_sources() {
             std::array::from_fn::<_,4,_>(|i|if i==3{1.}else{(f64::from(input[i])+coverage*(adjusted[i]-f64::from(input[i]))) as f32})
         }).collect::<Vec<_>>();
         let independent=(0..extent[0]*extent[1]).map(|i|expected[((i/extent[0])/256*8+(i%extent[0])/256) as usize]).collect::<Vec<_>>();
-        let error=quality(&display_pixels(&r),&independent,cache.plan);assert!(error[2]<2e-5,"batched LUT independent odd-edge/mask/clip pixels {error:?}");
+        let error=quality(&display_pixels(&r),&independent,cache.plan, cache.texture().format());assert!(error[2]<2e-5,"batched LUT independent odd-edge/mask/clip pixels {error:?}");
         println!("Resident LUT state={state} pages=32 effect_passes={passes} error={error:?}");
         let bytes=r.source_tiles.borrow().gpu_bytes();if let Some(expected)=source_bytes{assert_eq!(bytes,expected);}else{source_bytes=Some(bytes);}
         assert_eq!(residency(&r),(1,(96+resource.bytes() as u64).next_multiple_of(16)+baseline.1));
@@ -389,8 +389,8 @@ fn shared_samples_with_different_domains_have_distinct_gpu_headers() {
     assert_eq!(first.digest(),second.digest());
     let renderer=WgpuRasterizer::new_native_headless(Default::default()).unwrap();
     let mut cache=renderer.device.effect_resources.lock().unwrap();
-    let a=cache.get(&renderer.device,&renderer.queue,Some(&first)).unwrap();
-    let b=cache.get(&renderer.device,&renderer.queue,Some(&second)).unwrap();
+    let a=cache.get(&renderer.device,Some(&first)).unwrap();
+    let b=cache.get(&renderer.device,Some(&second)).unwrap();
     assert!(!Arc::ptr_eq(&a,&b));
-    assert!(Arc::ptr_eq(&a,&cache.get(&renderer.device,&renderer.queue,Some(&first)).unwrap()));
+    assert!(Arc::ptr_eq(&a,&cache.get(&renderer.device,Some(&first)).unwrap()));
 }

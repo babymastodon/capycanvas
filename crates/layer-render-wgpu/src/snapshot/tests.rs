@@ -194,7 +194,7 @@ fn layered_painting(extent: [u32; 2], layers: u32, mixed: bool) -> Document {
         if kind == 2 {
             tiles.extend(page_coordinates(PixelRect::full(extent)).map(|c| (TileKey {plane:RasterPlane::WatercolorWetness,coordinate:c}, scalar(if (c[0] + c[1] + layer).is_multiple_of(3) { 2 } else { 177 }))));
         }
-        document.artwork.paint.get_mut(paint).unwrap().raster = RasterRevision::backed(RasterData {tiles,watercolor});
+        document.artwork.paint.get_mut(paint).unwrap().raster = RasterRevision::backed(RasterData {tiles:tiles.into(),watercolor});
         if kind == 1 {
             let coverage = document.artwork.coverage.next_handle();
             let mut mask = layer_core::CoverageSnapshot::reveal_all(coverage, extent, if layer % 8 == 1 { [0, 0] } else { [13, -7] });

@@ -654,16 +654,31 @@ fn watercolor_microbatches_never_lower_the_wetness_of_their_update() {
             send(&[], &[], true);
             send(&[ink], std::slice::from_ref(&base), false);
             let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-            for page in &r.paint_layers[0].watercolor_wetness_pages { r.encode_clear_value(&mut encoder, &page.active().view, "prior wetness", 0.5); }
+            let coordinates: Vec<_> = r.paint_layers[0].watercolor_wetness_pages.iter().map(|page| page.coordinate).collect();
+            for coordinate in coordinates {
+                let intent = r.raster_intent(target(&layer), layer_core::raster::RasterPlane::WatercolorWetness, coordinate).unwrap();
+                let receipt = encoder.submission();
+                let (view, output) = {
+                    let page = r.paint_layers[0].watercolor_wetness_pages.iter_mut().find(|page| page.coordinate == coordinate).unwrap();
+                    let write = page.write(page.active_secondary, &intent, &receipt).unwrap();
+                    (write.value().view.clone(), write.encoded(layer_core::raster::ContentName::fresh()))
+                };
+                r.encode_clear_value(&mut encoder, &view, "prior wetness", 0.5);
+                r.record_raster_write(target(&layer), output.publish(&encoder.submission())).unwrap();
+            }
             encoder.submit(&r.queue);
             let update: Vec<_> = dabs.iter().enumerate().take(microbatches).map(|(i, dab)| DabBatch {
                 stroke_id: StrokeId(2), stroke_start: i == 0, stroke_end: false, first_dab: i as u32, damage: dab.bounds(),
                 style: DabStyle { alpha_locked, ..style.clone() }, ..base.clone()
             }).collect();
             crate::test_support::submit_ready(&mut r, FramePacket { dabs: &dabs, dab_batches: &update, ..packet(layer.scene(), [512; 2]) }).unwrap();
+            let versions = r.raster_versions(layer.scene(), target(&layer)).unwrap();
             let mut pages: Vec<_> = r.paint_layers[0].watercolor_wetness_pages.iter().map(|page| (page.coordinate, page.active())).collect();
             pages.sort_by_key(|(coordinate, _)| [coordinate[1], coordinate[0]]);
-            let bytes: Vec<_> = pages.iter().flat_map(|(_, page)| crate::layer_tests::page_bytes(&r, &page.texture)).collect();
+            let bytes: Vec<_> = pages.iter().flat_map(|(coordinate, page)| {
+                let read = page.read(versions.tile(layer_core::raster::RasterPlane::WatercolorWetness, *coordinate), None).unwrap();
+                crate::layer_tests::page_bytes(&r, &read.value().texture)
+            }).collect();
             bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect::<Vec<_>>()
         }).collect::<Vec<_>>();
         assert_ne!(wetness[dabs.len()], wetness[0], "alpha_locked={alpha_locked}: the update deposits water");

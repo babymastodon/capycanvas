@@ -336,7 +336,7 @@ fn retained_navigator_invalidates_a_legally_replaced_source_image() {
     let replacement=paint_mut(&mut overview_source(RgbSpace::Srgb,[5000,60000,12000,65535])).base.clone();
     overview_base(&mut layer,replacement);
     overview_frame(&mut r,&mut layer,1.);
-    assert!(!r.navigator_pending());
+    assert!(!r.navigator.pending());
     let navigator_revision=r.navigator.revision;
     crate::test_support::submit_settled(&mut r,FramePacket {time_seconds:1.1,composite_all:false,..packet(layer.scene(),[256;2])});
     assert_eq!(r.navigator.revision,navigator_revision,"settled Navigator must not redraw on idle frames");

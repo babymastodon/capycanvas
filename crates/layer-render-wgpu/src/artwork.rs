@@ -28,14 +28,6 @@ impl Drop for PendingFrame {
     }
 }
 impl Frame {
-    pub fn paint_sources_changed(&self,scene:SceneView<'_>)->bool {
-        let previous=self.scene.view();
-        scene.targets().any(|target|match (scene.paint_base(target),previous.paint_base(target)) {
-            (Some(a),Some(b))=>a.offset!=b.offset || a.policy!=b.policy || !Arc::ptr_eq(a.image.storage(),b.image.storage()),
-            (None,None)=>false,
-            _=>true,
-        })
-    }
     /// Selection overlays, navigation and layer labels do not alter raw artwork.
     /// Source identity and raster publication catch edits without scanning pixels.
     pub fn same_evaluation(&self, packet: FramePacket<'_>) -> bool {
@@ -66,33 +58,27 @@ impl Frame {
         })
     }
 
-    pub fn same_preview(&self, packet: FramePacket<'_>) -> bool {
-        if self.previews.is_empty()
-            || self.previews.len() != packet.dab_batches.len()
-            || self.view != packet.view
-            || self.scope != packet.scene.scope().cloned().unwrap_or_default()
-        {
-            return false;
-        }
-        self.previews
+    pub fn same_preview_inputs(&self, packet: FramePacket<'_>) -> bool {
+        let batches=packet.dab_batches.iter().filter(|batch|batch.kind==DabBatchKind::Preview);
+        self.previews.len()==batches.clone().count()
+            && self.previews
             .iter()
-            .zip(packet.dab_batches)
-            .all(|(old, batch)| {
-                let normalized = DabBatch {
-                    first_dab: old.first_dab,
-                    ..batch.clone()
-                };
-                *old == normalized
-                    && batch.kind == DabBatchKind::Preview
-                    && dry_material::dry_flow(&batch.style)
-                    && pointwise(&batch.style)
-                    && packet
-                        .dabs
-                        .get(batch.first_dab as usize..(batch.first_dab + batch.dab_count) as usize)
-                        == self
-                            .preview_dabs
-                            .get(old.first_dab as usize..(old.first_dab + old.dab_count) as usize)
+            .zip(batches)
+            .all(|(old,batch)| {
+                *old==DabBatch {first_dab:old.first_dab,..batch.clone()}
+                    && packet.dabs.get(batch.first_dab as usize..(batch.first_dab+batch.dab_count) as usize)
+                        == self.preview_dabs.get(old.first_dab as usize..(old.first_dab+old.dab_count) as usize)
             })
+    }
+
+    pub fn same_preview(&self, packet: FramePacket<'_>) -> bool {
+        !self.previews.is_empty()
+            && self.previews.len() == packet.dab_batches.len()
+            && self.view == packet.view
+            && self.scope == packet.scene.scope().cloned().unwrap_or_default()
+            && self.same_preview_inputs(packet)
+            && packet.dab_batches.iter().all(|batch|
+                dry_material::dry_flow(&batch.style) && pointwise(&batch.style))
             && self.same_evaluation(packet)
             && self
                 .scene
@@ -303,14 +289,15 @@ impl WgpuRasterizer {
             let dabs = &packet.dabs[batch.first_dab as usize..(batch.first_dab + batch.dab_count) as usize];
             brush_tiles::plan(batch, dabs, self.target_extent(batch.target))
         }).collect::<Vec<_>>();
+        if !self.prepare_raster_outputs(packet,&tiles) {return Err(GpuRasterError::NotReady);}
+        if let Some(error)=self.take_restore_failure() {return Err(error);}
+        self.prepare_preview_outputs(0)?;
         self.preview_level = 0;
         self.preview_contribution = false;
         self.preview_requires_base = true;
-        self.preview_pages.clear();
-        self.ensure_preview_pages(self.preview_damage, self.preview_contact_tiles.clone().as_ref());
         self.prepare_uploads(packet, &mut tiles, encoder)?;
         for (index, batch) in packet.dab_batches.iter().enumerate() {
-            self.encode_brush_batch(encoder, index, batch, BrushEncodingContext {
+            self.encode_brush_batch(encoder, index, batch, BrushEncodingContext {source:packet.scene,
                 batches: packet.dab_batches, dabs: packet.dabs, tiles: &tiles[index],
                     target_extent: self.target_extent(batch.target),
                 target: BrushEncodingTarget::Preview { from_persistent: true },
