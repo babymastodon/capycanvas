@@ -178,6 +178,71 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(values, [50])
         self.assertEqual(unmatched, 0)
 
+    def test_calibration_holds_actual_early_warmup_pose_without_a_new_present(self):
+        meta = {'workload': 'resize-programmatic', 'calibration_start_qpc': 200, 'calibration_end_qpc': 1000, 'calibration_expected_value': 100}
+        frames = [{'qpc': 150, 'last_present_qpc': 149, 'width': 98, 'ui_marker': 1, 'pen_samples': 0}]
+        inputs = [{'qpc': 100, 'qpc_after': 101, 'warmup': True, 'resting_calibration': False, 'kind': 'resize', 'expected_value': 100}]
+        result = report.calibrate_probe(meta, frames, 'width', inputs)
+        self.assertEqual((result['status'], result['offset_px'], result['spread_px'], result['samples']), ('passed', -2, 0, 1))
+        self.assertEqual(result['held_observation'], {'basis': 'latest_complete_desktop_frame_before_calibration', 'acquired_qpc': 150, 'last_present_qpc': 149, 'resting_input_qpc': 100, 'resting_input_accepted_qpc': 101, 'probe_value': 98, 'offset_px': -2})
+        self.assertEqual(len(frames), 1)
+        frames.append({'qpc': 170, 'last_present_qpc': 0, 'cursor_only': True, 'width': 999})
+        self.assertEqual(report.calibrate_probe(meta, frames, 'width', inputs)['offset_px'], -2)
+
+    def test_calibration_never_searches_behind_the_latest_invalid_desktop_probe(self):
+        meta = {'workload': 'resize-programmatic', 'calibration_start_qpc': 200, 'calibration_end_qpc': 1000, 'calibration_expected_value': 100}
+        inputs = [{'qpc': 100, 'warmup': True, 'kind': 'resize', 'expected_value': 100}]
+        older = {'qpc': 140, 'last_present_qpc': 139, 'width': 98, 'ui_marker': 1, 'pen_samples': 0}
+        for invalid in ({'width': None}, {'ui_marker': None}, {'pen_samples': None}):
+            with self.subTest(invalid=invalid):
+                latest = dict(older, qpc=150, last_present_qpc=149, **invalid)
+                result = report.calibrate_probe(meta, [older, latest], 'width', inputs)
+                self.assertEqual(result['status'], 'failed')
+                self.assertIsNone(result['held_observation'])
+
+    def test_calibration_hold_requires_causal_accepted_resting_input(self):
+        meta = {'workload': 'resize-programmatic', 'calibration_start_qpc': 200, 'calibration_end_qpc': 1000, 'calibration_expected_value': 100}
+        frame = {'qpc': 150, 'last_present_qpc': 149, 'width': 98, 'ui_marker': 1, 'pen_samples': 0}
+        resting = {'qpc': 100, 'qpc_after': 101, 'warmup': True, 'kind': 'resize', 'expected_value': 100}
+        for inputs in ([], [dict(resting, warmup=False)], [dict(resting, kind='pen')], [dict(resting, expected_value=None)], [dict(resting, qpc=160, qpc_after=161)], [dict(resting, qpc_after=151)], [resting, dict(resting, qpc=180, expected_value=101)]):
+            with self.subTest(inputs=inputs):
+                result = report.calibrate_probe(meta, [frame], 'width', inputs)
+                self.assertEqual(result['status'], 'failed')
+                self.assertIsNone(result['held_observation'])
+        result = report.calibrate_probe(meta, [dict(frame, last_present_qpc=99)], 'width', [resting])
+        self.assertEqual(result['status'], 'failed')
+        self.assertIsNone(result['held_observation'])
+
+    def test_calibration_hold_never_waives_actual_resting_spread_failure(self):
+        meta = {'workload': 'resize-programmatic', 'calibration_start_qpc': 200, 'calibration_end_qpc': 1000, 'calibration_expected_value': 100}
+        frames = [{'qpc': 150, 'last_present_qpc': 149, 'width': 98, 'ui_marker': 1, 'pen_samples': 0}, {'qpc': 250, 'last_present_qpc': 249, 'width': 98}, {'qpc': 260, 'last_present_qpc': 259, 'width': 101}]
+        inputs = [{'qpc': 100, 'warmup': True, 'kind': 'resize', 'expected_value': 100}]
+        result = report.calibrate_probe(meta, frames, 'width', inputs)
+        self.assertEqual((result['status'], result['spread_px'], result['samples']), ('failed', 3, 2))
+        self.assertIn('spread exceeds 1 px', result['error'])
+
+    def test_new_desktop_frames_keep_original_calibration_samples_even_when_probe_is_null(self):
+        meta = {'workload': 'resize-programmatic', 'calibration_start_qpc': 200, 'calibration_end_qpc': 1000, 'calibration_expected_value': 100}
+        held = {'qpc': 150, 'last_present_qpc': 149, 'width': 50, 'ui_marker': 1, 'pen_samples': 0}
+        inputs = [{'qpc': 100, 'warmup': True, 'kind': 'resize', 'expected_value': 100}]
+        frames = [held, {'qpc': 250, 'last_present_qpc': 249, 'width': 98}, {'qpc': 260, 'last_present_qpc': 259, 'width': 99}]
+        original = report.calibrate_probe(meta, frames, 'width')
+        result = report.calibrate_probe(meta, frames, 'width', inputs)
+        self.assertEqual(result, original)
+        self.assertEqual((result['offset_px'], result['spread_px'], result['samples']), (-1.5, 1, 2))
+        self.assertIsNone(result['held_observation'])
+        result = report.calibrate_probe(meta, [held, {'qpc': 250, 'last_present_qpc': 249, 'width': None}], 'width', inputs)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIsNone(result['held_observation'])
+
+    def test_existing_pointer_only_probe_observations_do_not_gain_a_held_sample(self):
+        meta = {'workload': 'resize-programmatic', 'calibration_start_qpc': 200, 'calibration_end_qpc': 1000, 'calibration_expected_value': 100}
+        frames = [{'qpc': 150, 'last_present_qpc': 149, 'width': 98, 'ui_marker': 1, 'pen_samples': 0}, {'qpc': 250, 'last_present_qpc': 0, 'cursor_only': True, 'width': 98}]
+        inputs = [{'qpc': 100, 'warmup': True, 'kind': 'resize', 'expected_value': 100}]
+        result = report.calibrate_probe(meta, frames, 'width', inputs)
+        self.assertEqual((result['offset_px'], result['spread_px'], result['samples']), (-2, 0, 1))
+        self.assertIsNone(result['held_observation'])
+
     def test_probe_calibration_accepts_one_pixel_jitter_but_fails_above_it(self):
         meta = {"workload": "resize-native", "calibration_start_qpc": 100, "calibration_end_qpc": 500, "calibration_expected_value": 1600}
         frames = [{"qpc": tick, "width": value} for tick, value in ((150, 1598), (200, 1598.5), (250, 1599))]

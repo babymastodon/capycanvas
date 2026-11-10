@@ -301,6 +301,10 @@ impl Geometry {
             properties,
         }
     }
+    pub fn width_probe(self) -> Rect {
+        let pixel = 1.0 / self.scale;
+        Rect::new(self.width - 4.0 * pixel, 0.0, 2.0 * pixel, metric("title_height"))
+    }
     pub fn physical(self, r: Rect) -> Rect {
         Rect::new(
             r.x * self.scale,

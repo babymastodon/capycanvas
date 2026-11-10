@@ -996,7 +996,7 @@ impl Ui {
         }
         let px = 1.0 / g.scale;
         p.push(probe(
-            Rect::new(g.width - 2.0 * px, 0.0, 2.0 * px, metric("title_height")),
+            g.width_probe(),
             [0, 0, 255],
         ));
         p.push(probe(

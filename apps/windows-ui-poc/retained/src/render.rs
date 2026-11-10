@@ -1502,6 +1502,29 @@ mod tests {
             .collect()
     }
     #[test]
+    fn title_width_probe_stays_two_physical_pixels_when_the_native_border_covers_the_client_edge() {
+        let (device,queue)=gpu();
+        for (width,scale) in [(2000,1.25),(2400,1.5),(2100,1.5)] {
+            let geometry=Geometry::new(width,1500,scale,0.6);
+            let paint=Paint::new(&device,&queue,scale).unwrap();
+            let rect=Rect::new(0.0,0.0,geometry.width,metric("title_height"));
+            let height=(rect.h*scale).round() as u32;
+            let cached=Cached{layer:Layer{id:LayerId::Title,rect,clip:rect,origin:[0.0;2],display:Arc::new(vec![Prim::Probe{rect:geometry.width_probe(),color:[0.0,0.0,1.0,1.0]}])},texture:texture(&device,"title cache",layer_extent(width as f32),layer_extent(height as f32),wgpu::TextureFormat::Rgba8Unorm)};
+            let output=texture(&device,"title client",width,height,wgpu::TextureFormat::Rgba8Unorm);
+            let view=output.create_view(&Default::default());
+            let frame=Frame{size:[width as f32,height as f32,0.0,0.0],origin:[0.0,0.0,width as f32,height as f32],clip:[0.0,0.0,width as f32,height as f32],mask:[0.0,0.0,width as f32,height as f32]};
+            let mut encoder=device.create_command_encoder(&Default::default());
+            paint.record(&device,&mut encoder,&cached,geometry);clear(&mut encoder,&view);
+            paint.compose(&device,&mut encoder,SurfacePaint{view:&view,frame},&cached,Placement{rect,scale,opacity:1.0},None);
+            let mut border=Instance::new(Rect::new(width as f32-2.0,0.0,2.0,height as f32));border.color=[58.0/255.0,58.0/255.0,58.0/255.0,1.0];
+            paint.draw(&device,&mut encoder,SurfacePaint{view:&view,frame},&[border],&paint.white.create_view(&Default::default()),0);
+            let bytes=pixels(&paint,&device,&queue,encoder,&output);
+            let y=(20.0*scale).round() as usize;
+            let blue:Vec<_>=(0..width as usize).filter(|x|bytes[(y*width as usize+x)*4..(y*width as usize+x)*4+4]==[0,0,255,255]).collect();
+            assert_eq!(blue,[(width-4) as usize,(width-3) as usize]);
+        }
+    }
+    #[test]
     fn five_pipelines_preserve_live_glass_sparse_thumbnail_ids_and_exact_outset_probe() {
         let (device, queue) = gpu();
         let paint = Paint::new(&device, &queue, 1.5).unwrap();

@@ -79,15 +79,25 @@ def changes(frames, field, start, end):
     return changed
 
 
-def calibrate_probe(meta, frames, field):
+def calibrate_probe(meta, frames, field, all_inputs=None):
     if base_workload(meta["workload"]) not in CALIBRATED_WORKLOADS or meta.get("no_capture"):
         return {"status": "not-applicable", "offset_px": None, "spread_px": None, "samples": 0}
     start, end, expected = (meta.get(key) for key in ("calibration_start_qpc", "calibration_end_qpc", "calibration_expected_value"))
     offsets = [frame[field] - expected for frame in frames if start is not None and end is not None and expected is not None and start <= frame["qpc"] < end and frame.get(field) is not None]
+    held = None
+    if not offsets and start is not None and end is not None and start < end and expected is not None and not any(start <= frame["qpc"] < end and frame.get("last_present_qpc", 0) > 0 and not frame.get("cursor_only", False) for frame in frames):
+        resting = [sample for sample in all_inputs or () if sample.get("warmup") is True and sample.get("kind") in ("mouse-move", "resize") and sample.get("expected_value") is not None and sample["qpc"] < end]
+        latest = max((frame for frame in frames if frame["qpc"] < start and frame.get("last_present_qpc", 0) > 0 and not frame.get("cursor_only", False)), key=lambda frame: frame["qpc"], default=None)
+        if resting and all(sample["expected_value"] == expected for sample in resting) and latest is not None:
+            first = min(resting, key=lambda sample: sample["qpc"])
+            accepted = first.get("qpc_after", first["qpc"])
+            if latest["qpc"] > accepted and frame_time(latest) > accepted and latest.get(field) is not None and latest.get("ui_marker") is not None and latest.get("pen_samples") is not None:
+                offsets.append(latest[field] - expected)
+                held = {"basis": "latest_complete_desktop_frame_before_calibration", "acquired_qpc": latest["qpc"], "last_present_qpc": frame_time(latest), "resting_input_qpc": first["qpc"], "resting_input_accepted_qpc": accepted, "probe_value": latest[field], "offset_px": latest[field] - expected}
     spread = max(offsets) - min(offsets) if offsets else None
     offset = quantiles(offsets)["p50"]
     error = "No resting probe observations before the first measured move" if not offsets else "Resting probe offset spread exceeds 1 px" if spread > 1 else None
-    return {"status": "failed" if error else "passed", "offset_px": offset, "spread_px": spread, "samples": len(offsets), "start_qpc": start, "end_qpc": end, "expected_value": expected, "error": error}
+    return {"status": "failed" if error else "passed", "offset_px": offset, "spread_px": spread, "samples": len(offsets), "start_qpc": start, "end_qpc": end, "expected_value": expected, "held_observation": held, "error": error}
 
 
 def capture_adequacy(meta, frames, capture):
@@ -350,7 +360,7 @@ def analyse_contact(directory):
     capture = read_json(directory / "capture.json", {})
     workload = base_workload(meta["workload"])
     field = PROBES.get(workload)
-    calibration = calibrate_probe(meta, acquired_frames, field)
+    calibration = calibrate_probe(meta, acquired_frames, field, all_inputs)
     quality = capture_adequacy(meta, acquired_frames, capture)
     injection = input_quality(meta, read_json(directory / "injection.json"))
     observer_threads = observer_cpu(read_jsonl(directory / "observer-cpu.jsonl"))
@@ -638,10 +648,12 @@ def render(rows, contacts=(), abba=(), overhead=()):
             lines.append(f"| {row['arm']} | {row['workload']} | {thread} | {number(values['cpu_ms'])} | {number(values['wall_ms'])} | {number(values['one_core_percent'])} | {', '.join(values['priorities'])} | {values['contacts_reported']} / {values['final_contacts']} |")
     calibrated = [contact for contact in contacts if contact["probe_calibration"]["status"] != "not-applicable"]
     if calibrated:
-        lines.extend(["", "| Arm | Workload | Contact | Calibration | Offset px | Spread px | Rest samples |", "| --- | --- | ---: | --- | ---: | ---: | ---: |"])
+        lines.extend(["", "| Arm | Workload | Contact | Calibration | Offset px | Spread px | Rest samples | Held acquire / present QPC |", "| --- | --- | ---: | --- | ---: | ---: | ---: | --- |"])
         for contact in calibrated:
             calibration = contact["probe_calibration"]
-            lines.append(f"| {contact['arm']} | {contact['workload']} | {contact['contact']} | {calibration['status']} | {number(calibration['offset_px'])} | {number(calibration['spread_px'])} | {calibration['samples']} |")
+            held = calibration.get("held_observation")
+            held_basis = f"{held['acquired_qpc']} / {held['last_present_qpc']} (held actual frame)" if held else "in-window observations only"
+            lines.append(f"| {contact['arm']} | {contact['workload']} | {contact['contact']} | {calibration['status']} | {number(calibration['offset_px'])} | {number(calibration['spread_px'])} | {calibration['samples']} | {held_basis} |")
     if abba:
         lines.extend(["", "| Profile | Workload | ABBA valid | Comparison eligible | Arm | Early Hz | Late Hz | Relative change |", "| --- | --- | --- | --- | --- | ---: | ---: | ---: |"])
         for check in abba:
