@@ -73,7 +73,7 @@ Assert ([PocFunctionalNative]::BoundsVisible([double[]]@(100,100,304,44),[double
 Assert (![PocFunctionalNative]::BoundsVisible([double[]]@(100,100,0,44),[double[]]@(100,100,304,440),$false) -and ![PocFunctionalNative]::BoundsVisible([double[]]@([double]::NaN,100,40,44),[double[]]@(100,100,304,440),$false)) 'Empty or nonfinite UIA bounds passed visibility checks'
 $tokens=$null;$parseErrors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'check-functional.ps1'),[ref]$tokens,[ref]$parseErrors)
 if($parseErrors.Count){throw ($parseErrors|Out-String)}
-foreach($name in @('Json-Lines','Text-LayoutEvidence')){$definition=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true);Invoke-Expression $definition.Extent.Text}
+foreach($name in @('Json-Lines','Text-LayoutEvidence','Read-ImeValue')){$definition=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true);Invoke-Expression $definition.Extent.Text}
 $testSpec=[pscustomobject]@{labels=@(0..6|ForEach-Object {"label$_"});paragraph='wrapped paragraph'}
 $trace=@($testSpec.labels|ForEach-Object {[pscustomobject]@{kind='text_layout';text=$_;wrap=$false;missing_glyphs=0;line_breaks=@($_.Length)}})
 $trace+=@([pscustomobject]@{kind='text_layout';text=$testSpec.paragraph;wrap=$true;missing_glyphs=0;line_breaks=@(8,17)})
@@ -90,4 +90,17 @@ $unicodePath=Join-Path $Out 'utf8-no-bom-text-layout.jsonl';[IO.File]::WriteAllT
 $decoded=@(Json-Lines $unicodePath);$evidence=Text-LayoutEvidence $decoded $unicodeSpec
 $unicodeBytes=[IO.File]::ReadAllBytes($unicodePath)
 Assert ($unicodeBytes[0] -eq 0x7b -and @($unicodeBytes|Where-Object {$_ -ge 128}).Count -gt 0 -and $decoded.Count -eq 8 -and $decoded[0].text -ceq $unicodeSpec.labels[0] -and $evidence.status -eq 'observed' -and $evidence.missing_text_records.Count -eq 0 -and $evidence.paragraph[0].text -ceq $unicodeSpec.paragraph) 'UTF-8 JSONL without a BOM lost literal multilingual labels or Thai paragraph matches'
-@{passed=23;scope='PNG, UIA geometry and retained trace evidence; no screen capture or input'}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $Out 'pixel-tests.json') -Encoding UTF8
+Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+$uiaPath=Join-Path $PSScriptRoot '../../layer-windows/scripts/CapyUia.ps1';$uiaAst=[Management.Automation.Language.Parser]::ParseFile($uiaPath,[ref]$tokens,[ref]$parseErrors)
+if($parseErrors.Count){throw ($parseErrors|Out-String)}
+foreach($name in @('Wait-Scale','Wait-Until')){$definition=$uiaAst.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true);Invoke-Expression $definition.Extent.Text}
+$gates=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Read-ImeValue'},$true))
+if($gates.Count -ne 3){throw 'Expected the actual preedit, candidate and committed IME gates'}
+$values=@((-join [char[]]@(0x306b,0x307b,0x3093,0x3054)),(-join [char[]]@(0x65e5,0x672c,0x8a9e)),(-join [char[]]@(0x65e5,0x672c,0x8a9e)))
+$script:CapyEach=$null;$review=$null
+for($gate=0;$gate -lt 3;$gate++){
+    $provider=@{reads=0;text=$values[$gate]};$accept=$gates[$gate].CommandElements[2].ScriptBlock.GetScriptBlock();$message=$gates[$gate].CommandElements[3].Value
+    $value=Read-ImeValue {$provider.reads++;if($provider.reads -gt 1){throw 'Provider was queried after its accepted IME value'};$provider.text} $accept $message
+    Assert ($value -ceq $provider.text -and $provider.reads -eq 1) "IME gate $gate queried the provider again instead of retaining the exact accepted value"
+}
+@{passed=26;scope='PNG, UIA geometry, retained trace and IME accepted-value evidence; no screen capture or input'}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $Out 'pixel-tests.json') -Encoding UTF8

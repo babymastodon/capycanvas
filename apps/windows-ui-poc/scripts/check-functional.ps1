@@ -174,6 +174,11 @@ function Observed([string]$Workload,[int]$Rows=1000){
     $destination=Join-Path $armOut ("observe-$Workload-$Rows");$arguments=@('run','--arm',$which,'--exe',$executable,'--workload',$Workload,'--contacts','1','--seconds','6','--warmup','1','--profile','normal','--out',$destination,'--','--rows',$Rows,'--canvas-load','light','--thumbnails',$(if($Workload -in 'scroll-wheel','scroll-touch'){'on'}else{'off'}))
     $process=Start-Process -FilePath $observer -ArgumentList (@($arguments|ForEach-Object {'"'+[string]$_+'"'}) -join ' ') -PassThru -RedirectStandardOutput (Join-Path $armOut ("$Workload-$Rows-observer.log")) -RedirectStandardError (Join-Path $armOut ("$Workload-$Rows-observer-error.log"));$null=$process.Handle;Wait-Observer $process (Join-Path $armOut ("$Workload-$Rows-timeout.json"));Assert ($process.ExitCode -eq 0) "Functional observer $Workload/$Rows exited $($process.ExitCode)";$contact=Join-Path $destination 'contact-000';Assert (Contact-Completed $contact) 'Functional contact lacks successful graceful completion evidence';@($contact)
 }
+function Read-ImeValue([scriptblock]$ReadValue,[scriptblock]$Accept,[string]$Message){
+    $accepted=@{text=$null}
+    Wait-Until {$text=& $ReadValue;if(!(& $Accept $text)){return $false};$accepted.text=$text;$true} $Message 15
+    $accepted.text
+}
 function Caret-Rectangle($Entry){
     $pattern=$null
     $caretType='System.Windows.Automation.TextPattern2' -as [type]
@@ -302,15 +307,13 @@ foreach($which in $arms){
             try{
                 [PocFunctionalNative]::ImeOpen($window,[uint32]$review.Id,$true);Chord ([uint16[]]@(17)) 20;Chord ([uint16[]]@(17)) 65
                 foreach($character in 'NIHONGO'.ToCharArray()){Key ([uint16]$character)}
-                Wait-Until {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value -ceq 'にほんご'} 'Japanese IME did not produce genuine にほんご preedit' 15
-                $evidence.preedit=(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value;$caret=Caret-Rectangle $entry;$field=Bounds-Array $entry;$clientOrigin=Client-Origin;$client=[PocFunctionalNative+Rect]::new();[PocFunctionalNative]::GetClientRect($window,[ref]$client)|Out-Null
+                $evidence.preedit=Read-ImeValue {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value} {param($text)$text -ceq 'にほんご'} 'Japanese IME did not produce genuine にほんご preedit'
+                $caret=Caret-Rectangle $entry;$field=Bounds-Array $entry;$clientOrigin=Client-Origin;$client=[PocFunctionalNative+Rect]::new();[PocFunctionalNative]::GetClientRect($window,[ref]$client)|Out-Null
                 $before=Snapshot 'F4-before-space' -Screen;$evidence.before=$before.path;$evidence.before_capture_qpc=$before.metadata.qpc;$evidence.before_present_qpc=$before.metadata.last_present_qpc;$evidence.client_origin=@($clientOrigin.X,$clientOrigin.Y);$evidence.field_screen_rect=$field
                 $clock=[Diagnostics.Stopwatch]::StartNew();$evidence.before_space_qpc=[Diagnostics.Stopwatch]::GetTimestamp();Key 32;$captured=[Collections.Generic.List[object]]::new();$number=0
                 while($clock.ElapsedMilliseconds -le 500){$number++;$candidate=Snapshot ("F4-after-space-$number") -Screen;$captureMs=1000.0*($candidate.metadata.last_present_qpc-$evidence.before_space_qpc)/[Diagnostics.Stopwatch]::Frequency;if($candidate.metadata.last_present_qpc -gt 0 -and $captureMs -ge 0 -and $captureMs -le 500){$captured.Add(@{shot=$candidate;capture_ms=$captureMs;acquisition_ms=(1000.0*($candidate.metadata.qpc-$evidence.before_space_qpc)/[Diagnostics.Stopwatch]::Frequency)})}}
-                Wait-Until {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value -match '[\u3400-\u9fff]'} 'Japanese IME did not expose a converted kanji candidate' 15
-                $evidence.candidate_text=(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value;Key 13
-                Wait-Until {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value.Contains('日本語')} 'Committed IME text does not contain 日本語' 15
-                $evidence.committed=(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value
+                $evidence.candidate_text=Read-ImeValue {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value} {param($text)$text -match '[\u3400-\u9fff]'} 'Japanese IME did not expose a converted kanji candidate';Key 13
+                $evidence.committed=Read-ImeValue {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value} {param($text)$text.Contains('日本語')} 'Committed IME text does not contain 日本語'
                 if(!$captured.Count){Unverified 'No Desktop Duplication candidate frame was captured within 500 ms after Space' $evidence}
                 $evidence.frames=@();$marker=$spec.marker;$ui=@(($marker.ui_origin[0]-1),($marker.ui_origin[1]-1),($marker.width+2),($marker.cell+2));$canvas=@(($marker.canvas_origin_x-1),($client.Height-$marker.canvas_bottom-1),($marker.width+2),($marker.cell+2))
                 foreach($frame in $captured){
