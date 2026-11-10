@@ -104,6 +104,32 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(pooled["ink_latency_ms"]["p99"], 100)
         self.assertEqual(pooled["contacts"], 2)
 
+    def test_pooled_refresh_fraction_weights_each_contacts_duration_and_is_order_invariant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            row = self.contact(Path(temporary))
+        row.update(valid=True, validation_errors=[])
+        early = dict(row, motion_duration_s=1, motion_changes=30, refresh_hz=60)
+        late = dict(row, motion_duration_s=3, motion_changes=180, refresh_hz=120)
+        idle = dict(row, motion_duration_s=0, motion_changes=0, refresh_hz=96.500878)
+        for contacts in ([early, late, idle], [idle, late, early], [late, early, idle]):
+            pooled = report.aggregate(contacts)[0]
+            self.assertEqual(pooled['motion_rate_hz'], 52.5)
+            self.assertEqual(pooled['fraction_refresh'], .5)
+        idle['refresh_hz'] = None
+        self.assertEqual(report.aggregate([idle, early, late])[0]['fraction_refresh'], .5)
+
+    def test_pooled_refresh_fraction_is_null_if_a_motion_contact_has_no_valid_refresh(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            row = self.contact(Path(temporary))
+        row.update(valid=True, validation_errors=[], motion_duration_s=1, motion_changes=60, refresh_hz=120)
+        for refresh in (None, 0, -1, float('nan'), float('inf')):
+            with self.subTest(refresh=refresh):
+                unknown = dict(row, motion_duration_s=3, motion_changes=180, refresh_hz=refresh)
+                pooled = report.aggregate([row, unknown])[0]
+                self.assertEqual(pooled['motion_rate_hz'], 60)
+                self.assertIsNone(pooled['fraction_refresh'])
+                self.assertEqual(pooled['valid_contacts'], 2)
+
     def test_missing_presentmon_does_not_claim_zero_idle_presents(self):
         with tempfile.TemporaryDirectory() as temporary:
             row = self.contact(Path(temporary), workload="startup", motion_start_qpc=None, motion_end_qpc=None, idle_start_qpc=5000, idle_end_qpc=15000, presentmon_unavailable_reason="single-present baseline")
@@ -924,6 +950,35 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(row['valid'], row['validation_errors'])
         self.assertIsNone(row['idle_presents'])
         self.assertIsNone(row['present_modes'])
+
+    def test_no_capture_contacts_keep_process_and_presentmon_data_but_not_pixel_rates(self):
+        for runtime in (False, True):
+            with self.subTest(runtime=runtime), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                if runtime:
+                    self.runtime_benchmark_contact(directory, workload='divider')
+                else:
+                    self.valid_benchmark_contact(directory, workload='divider')
+                path = directory / 'meta.json'
+                meta = json.loads(path.read_text()); meta.update(no_capture=True, canvas_swapchain='0x123'); path.write_text(json.dumps(meta))
+                row = report.analyse_contact(directory)
+                self.assertTrue(row['valid'], row['validation_errors'])
+                for key in ('motion_rate_hz', 'fraction_refresh', 'all_ui_changes_hz', 'canvas_change_hz', 'ui_cpu_ms_per_change'):
+                    self.assertIsNone(row[key], key)
+                self.assertEqual(row['motion_duration_s'], .75)
+                self.assertEqual(row['process_cpu_percent'], 10)
+                self.assertEqual(row['runtime_present_rows'], 1)
+                self.assertEqual(row['presentmon_swapchains']['0x123']['runtime_intervals_ms']['p50'], 16)
+                self.assertEqual(row['canvas_presentmon_display_hz'], None if runtime else 62.5)
+                pooled = report.aggregate([row])[0]
+                self.assertIsNone(pooled['motion_rate_hz'])
+                self.assertIsNone(pooled['fraction_refresh'])
+                for key in ('all_ui_changes_hz', 'canvas_change_hz', 'ui_cpu_ms_per_change'):
+                    self.assertIsNone(pooled[key]['p50'], key)
+                self.assertEqual(pooled['motion_changes'], row['motion_changes'])
+                self.assertEqual(pooled['motion_duration_s'], row['motion_duration_s'])
+                self.assertEqual(pooled['process_cpu_percent']['p50'], 10)
+                self.assertEqual(pooled['canvas_presentmon_display_hz']['p50'], None if runtime else 62.5)
 
     def test_invalid_jsonl_is_an_error(self):
         with tempfile.TemporaryDirectory() as temporary:
