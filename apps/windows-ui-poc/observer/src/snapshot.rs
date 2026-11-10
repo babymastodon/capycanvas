@@ -97,10 +97,20 @@ pub fn run()->crate::run::Result<()> {
         (roi,POINT{x:client_origin.x.checked_add(roi.x).ok_or("snapshot x overflow")?,y:client_origin.y.checked_add(roi.y).ok_or("snapshot y overflow")?})
     };
     let region=crate::capture::Region::new(&desktop._device,roi.width,roi.height)?;
-    let mut info=DXGI_OUTDUPL_FRAME_INFO::default();let mut resource=None;
-    unsafe{desktop.dup.AcquireNextFrame(5000,&mut info,&mut resource)?;}
-    let frame=Frame{dup:&desktop.dup,released:false};let at=qpc();
-    let source:ID3D11Texture2D=resource.ok_or("snapshot frame has no desktop resource")?.cast()?;
+    let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+    let (info,source,frame,at)=loop {
+        if std::time::Instant::now()>=deadline{return Err("snapshot deadline elapsed without a desktop image update".into());}
+        let mut info=DXGI_OUTDUPL_FRAME_INFO::default();let mut resource=None;
+        match unsafe{desktop.dup.AcquireNextFrame(100,&mut info,&mut resource)} {
+            Err(error) if error.code()==DXGI_ERROR_WAIT_TIMEOUT=>continue,
+            Err(error)=>return Err(error.into()),
+            Ok(())=>{},
+        }
+        let frame=Frame{dup:&desktop.dup,released:false};
+        if info.LastPresentTime==0 {frame.release()?;continue;}
+        let source:ID3D11Texture2D=resource.ok_or("snapshot frame has no desktop resource")?.cast()?;
+        break (info,source,frame,qpc());
+    };
     if !region.copy(&desktop.context,&source,origin.x-display.left,origin.y-display.top,[(display.right-display.left) as u32,(display.bottom-display.top) as u32]){return Err("snapshot rectangle lies outside the captured primary output".into());}
     let pixels=region.map(&desktop.context)?;frame.release()?;
     let bgra=bgra(&pixels.rgba);

@@ -100,7 +100,7 @@ pub fn run(path:&std::path::Path,hwnd:Arc<AtomicUsize>,stop:Arc<AtomicBool>,read
             let ui_valid=ui_marker.copy(&desktop.context,&source,x+3,y+43,extent);
             let pen_valid=pen_marker.copy(&desktop.context,&source,x+3,y+h as i32-13,extent);
             let magenta_valid=magenta.copy(&desktop.context,&source,x+(col+colw/6.0).round() as i32,y,extent);
-            let cyan_valid=cyan.copy(&desktop.context,&source,x+(col+colw*0.5).round() as i32,y,extent);
+            let cyan_valid=cyan.copy(&desktop.context,&source,x+(col+colw).round() as i32+poc_common::GLASS_GUTTER_PX as i32,y,extent);
             let orange_valid=orange.copy(&desktop.context,&source,x+(col+colw*5.0/6.0).round() as i32,y,extent);
             let drawer_valid=horizontal.copy(&desktop.context,&source,x,y+(300.0*scale).round() as i32,extent);
             let width_valid=widthline.copy(&desktop.context,&source,x,y+(20.0*scale).round() as i32,extent);
@@ -119,7 +119,7 @@ pub fn run(path:&std::path::Path,hwnd:Arc<AtomicUsize>,stop:Arc<AtomicBool>,read
             let ui=read(&ui_marker,ui_valid)?.and_then(|p|p.marker().ok());
             let pen=read(&pen_marker,pen_valid)?.and_then(|p|p.marker().ok());
             if ui.is_some(){stats.valid_ui_markers+=1;}else{stats.marker_errors+=1;}
-            if let Some(pen)=pen {stats.valid_canvas_markers+=1;stats.max_pen_samples=stats.max_pen_samples.max(pen);pen_seen.fetch_max(pen,Ordering::Release);}else{stats.marker_errors+=1;}
+            if let Some(pen)=pen {stats.valid_canvas_markers+=1;stats.max_pen_samples=stats.max_pen_samples.max(pen);if info.LastPresentTime>0 {pen_seen.fetch_max(pen,Ordering::Release);}}else{stats.marker_errors+=1;}
             let divider=read(magenta,magenta_valid)?.and_then(|p|p.color_run([255,0,255],true)).map(|run|run.end);
             let glass=read(cyan,cyan_valid)?.and_then(|p|p.color_run([0,255,255],true)).map(|run|run.start);
             let fill=read(orange,orange_valid)?.and_then(|p|p.color_run([255,128,0],true)).map(|run|run.end);

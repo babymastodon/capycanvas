@@ -1,15 +1,6 @@
 use poc_common::PenSample;
-use windows::{core::Interface,Win32::{Foundation::{HANDLE, WAIT_OBJECT_0}, System::Threading::WaitForSingleObject}};
+use crate::FrameSlot;
 
-#[derive(Default)]
-struct FrameSlot {reserved:bool,chain:usize}
-impl FrameSlot {
-    fn acquire(&mut self,chain:usize,wait:impl FnOnce()->Result<(),String>)->Result<(),String>{
-        if self.chain!=chain{self.chain=chain;self.reserved=false;}
-        if !self.reserved {wait()?;self.reserved=true;}Ok(())
-    }
-    fn release(&mut self){self.reserved=false;}
-}
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -29,7 +20,6 @@ pub struct Gpu {
     dab_pipeline: wgpu::RenderPipeline,
     upload: wgpu::util::StagingBelt,
     pub timestamps: Option<crate::cache::GpuTimestamps>,
-    pub in_flight: Option<wgpu::SubmissionIndex>,
 }
 
 pub fn qpc() -> i64 {
@@ -147,7 +137,7 @@ impl Gpu {
         queue.submit([encoder.finish()]);
         let upload = wgpu::util::StagingBelt::new(device.clone(), 1 << 20);
         let timestamps = crate::cache::GpuTimestamps::new(&device);
-        Ok(Self { device, queue, surface, config, info, scale, frame_slot:FrameSlot::default(),document, viewport, viewport_view, params, dabs, document_group, viewport_group, viewport_pipeline, dab_pipeline, upload, timestamps, in_flight: None })
+        Ok(Self { device, queue, surface, config, info, scale, frame_slot:FrameSlot::default(),document, viewport, viewport_view, params, dabs, document_group, viewport_group, viewport_pipeline, dab_pipeline, upload, timestamps })
     }
     pub fn resize(&mut self, width: u32, height: u32, scale: f32) {
         self.config.width = width.max(1); self.config.height = height.max(1); self.scale = scale;
@@ -163,13 +153,10 @@ impl Gpu {
         unsafe{chain.SetSourceSize(self.config.width,self.config.height).and_then(|()|chain.SetMatrixTransform(&transform))}.map_err(|error|error.to_string())
     }
     pub fn wait(&mut self) -> Result<(), String> {
-        if let Some(submission) = self.in_flight.take() {
-            self.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(10)) }).map_err(|e| e.to_string())?;
-        }
-        let (chain,handle) = unsafe { self.surface.as_hal::<wgpu::hal::api::Dx12>() }.and_then(|surface|surface.swap_chain().map(|chain|(chain.as_raw() as usize,unsafe{surface.waitable_handle()}))).ok_or("canvas swap chain is not configured")?;
-        self.frame_slot.acquire(chain,||{if let Some(handle)=handle && unsafe{WaitForSingleObject(HANDLE(handle.0),10000)}!=WAIT_OBJECT_0{return Err("canvas latency wait failed".into());}Ok(())})
+        self.device.poll(wgpu::PollType::Poll).map_err(|e| e.to_string())?;
+        self.frame_slot.wait(&self.surface)
     }
-    pub fn present(&mut self,target:wgpu::SurfaceTexture){self.queue.present(target);self.frame_slot.release();}
+    pub fn present(&mut self,target:wgpu::SurfaceTexture){self.frame_slot.present(&self.queue,target);}
     pub fn encode(&mut self, samples: &[PenSample], pen_count: u32, frame: u32) -> Result<(wgpu::SurfaceTexture, wgpu::CommandEncoder), String> {
         self.wait()?;
         let floats = [self.config.width as f32, self.config.height as f32];
@@ -239,13 +226,7 @@ mod tests {
         assert_eq!(&pixels[..4], &[0, 0, 0, 255]);
     }
 }
-    #[test]
-    fn noop_batches_and_resize_of_the_same_chain_keep_the_acquired_slot_until_present() {
-        let mut slot=FrameSlot::default();let waits=std::cell::Cell::new(0);
-        let wait=||{waits.set(waits.get()+1);Ok(())};
-        slot.acquire(1,wait).unwrap();
-        for _ in 0..4 {slot.acquire(1,wait).unwrap();}
-        assert_eq!(waits.get(),1);
-        slot.release();slot.acquire(1,wait).unwrap();assert_eq!(waits.get(),2);
-        slot.acquire(2,wait).unwrap();assert_eq!(waits.get(),3);
-    }
+
+#[cfg(test)]
+#[path = "gpu_wait_tests.rs"]
+mod wait_tests;

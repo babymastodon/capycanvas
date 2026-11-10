@@ -1,5 +1,5 @@
 use crate::gpu::{Gpu, frequency, qpc};
-use crate::cache::{Cache,GlassPaint,ThumbnailReadback};
+use crate::cache::{Cache,GlassPaint,SharedCache,ThumbnailReadback};
 use poc_common::glass_motion::{GlassAnimation,GlassMotion,valid_rect};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use poc_common::{AppOptions, GlassRect, Load, PenSample};
@@ -7,19 +7,20 @@ use serde_json::{Value, json};
 use std::{ffi::{CStr, c_char, c_void}, fs::File, io::{BufWriter, Write}, path::PathBuf, sync::{Arc, OnceLock, Mutex, atomic::{AtomicBool,AtomicU8,Ordering}}, thread::JoinHandle, time::{Duration, Instant}};
 use windows::{core::Interface, Win32::{Foundation::FILETIME, Graphics::DirectComposition::*, System::{Com::{CoInitializeEx, COINIT_MULTITHREADED}, Threading::{GetCurrentThread, GetThreadTimes}}}};
 
-pub struct SharedGpu { pub device: wgpu::Device, pub queue: wgpu::Queue }
+pub struct SharedGpu { pub instance:wgpu::Instance, pub device: wgpu::Device, pub queue: wgpu::Queue, pub cache:SharedCache }
 type ThumbnailSlot=Arc<Mutex<Option<ThumbnailReadback>>>;
 type ReadyFunction=extern "C" fn(*mut c_void,bool);
 #[derive(Clone)]
 struct ReadyNotify {callback:ReadyFunction,context:usize,completed:Arc<AtomicBool>}
 impl ReadyNotify {fn notify(&self,ready:bool){if !self.completed.swap(true,Ordering::AcqRel){(self.callback)(self.context as *mut c_void,ready);}}}
-struct WorkerChannels { rx:Receiver<Command>, shared:Arc<OnceLock<SharedGpu>>, thumbnails:ThumbnailSlot, trace_path:Arc<Mutex<PathBuf>>, status:Arc<AtomicU8>, ready:Option<ReadyNotify>,presented:Option<ReadyNotify> }
+struct WorkerChannels { updates:Sender<()>, rx:Receiver<Command>, shared:Arc<OnceLock<SharedGpu>>, thumbnails:ThumbnailSlot, trace_path:Arc<Mutex<PathBuf>>, status:Arc<AtomicU8>, ready:Option<ReadyNotify>,presented:Option<ReadyNotify> }
 enum Target { Visual(usize), Panel(usize) }
 enum Command {
     Pen(Vec<PenSample>, i64), Resize(u32,u32,f32), Load(Load), Glass(Vec<GlassRect>),AnimateGlass(GlassAnimation),Rows(Vec<u32>), Motion(bool), Thumbnails(bool), Trace(String), PanelReady, Shutdown,
 }
 pub struct Canvas {
     tx: Sender<Command>,
+    updates: Receiver<()>,
     worker: Option<JoinHandle<Result<(), String>>>,
     shared: Arc<OnceLock<SharedGpu>>,
     thumbnails: ThumbnailSlot,
@@ -29,21 +30,30 @@ pub struct Canvas {
 impl Canvas {
     fn start(target: Target, width: u32, height: u32, scale: f32, options: AppOptions,ready:Option<ReadyNotify>,presented:Option<ReadyNotify>) -> Self {
         let (tx, rx) = bounded(65536);
+        let (updates_tx, updates) = bounded(1);
         let thumbnails=Arc::new(Mutex::new(None));let worker_thumbnails=thumbnails.clone();
         let trace_path=Arc::new(Mutex::new(options.trace.clone()));let worker_trace=trace_path.clone();
         let status=Arc::new(AtomicU8::new(0));let worker_status=status.clone();
         let shared = Arc::new(OnceLock::new()); let worker_shared = shared.clone();
         let worker = std::thread::Builder::new().name("poc-canvas".into()).spawn(move || {
-            let result = run(target, width, height, scale, options, WorkerChannels {rx, shared:worker_shared, thumbnails:worker_thumbnails,trace_path:worker_trace,status:worker_status.clone(),ready:ready.clone(),presented:presented.clone()});
+            let result = run(target, width, height, scale, options, WorkerChannels {updates:updates_tx.clone(),rx, shared:worker_shared, thumbnails:worker_thumbnails,trace_path:worker_trace,status:worker_status.clone(),ready:ready.clone(),presented:presented.clone()});
             worker_status.store(if result.is_ok(){2}else{3},Ordering::Release);
+            let _ = updates_tx.try_send(());
             if let Some(ready)=ready {ready.notify(false);}
             if let Some(presented)=presented {presented.notify(false);}
             result
         }).expect("canvas thread");
-        Self { tx, worker: Some(worker), shared, thumbnails,trace_path,status }
+        Self { tx, updates, worker: Some(worker), shared, thumbnails,trace_path,status }
     }
     pub fn new_for_visual(visual: IDCompositionVisual, width: u32, height: u32, scale: f32, options: AppOptions) -> Self { Self::start(Target::Visual(visual.into_raw() as usize),width,height,scale,options,None,None) }
+    pub fn cache_updates(&self) -> Receiver<()> { self.updates.clone() }
     pub fn device(&self) -> Option<&SharedGpu> { self.shared.get() }
+    pub fn is_finished(&self)->bool {self.status.load(Ordering::Acquire)>=2}
+    pub fn set_thumbnail_rows(&self,rows:&[u32])->Result<(),String> {
+        if rows.len()>crate::cache::THUMBNAIL_CAPACITY as usize || rows.iter().any(|row|*row>65_535) {return Err("invalid thumbnail rows".into());}
+        self.send(Command::Rows(rows.to_vec()))
+    }
+    pub fn set_thumbnails(&self,on:bool)->Result<(),String> {self.send(Command::Thumbnails(on))}
     fn send(&self, command: Command) -> Result<(), String> { self.tx.try_send(command).map_err(|e| format!("canvas command queue: {e}")) }
     pub fn pen(&self, samples: &[PenSample], receipt_qpc: i64) -> Result<(), String> { self.send(Command::Pen(samples.to_vec(), receipt_qpc)) }
     pub fn resize(&self, width:u32,height:u32,scale:f32) -> Result<(),String> { self.send(Command::Resize(width,height,scale)) }
@@ -93,7 +103,7 @@ fn record_gpu_timings(gpu:&mut Gpu,records:&mut Vec<Value>)->Result<(),String> {
 }
 fn render(target: Target,dimensions:[u32;2],scale:f32,options:&AppOptions,channels:WorkerChannels,records:&mut Vec<Value>) -> Result<(),String> {
     let [width,height]=dimensions;
-    let WorkerChannels {rx,shared,thumbnails:thumbnail_slot,status,ready,mut presented,..}=channels;
+    let WorkerChannels {updates,rx,shared,thumbnails:thumbnail_slot,status,ready,mut presented,..}=channels;
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok().map_err(|e| e.to_string())?; }
     let instance = Gpu::instance();
     let _panel_handle;
@@ -109,10 +119,12 @@ fn render(target: Target,dimensions:[u32;2],scale:f32,options:&AppOptions,channe
             unsafe { instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::SurfaceHandle(handle as *mut c_void)) }.map_err(|e| e.to_string())?
         },
     };
-    let mut gpu = Gpu::new(instance,surface,width,height,scale)?;
+    let mut gpu = Gpu::new(instance.clone(),surface,width,height,scale)?;
     if panel {gpu.set_panel_transform()?;}
-    let _ = shared.set(SharedGpu { device:gpu.device.clone(),queue:gpu.queue.clone() });
+    let shared_cache=SharedCache::with_updates(updates.clone());
+    let _ = shared.set(SharedGpu { instance,device:gpu.device.clone(),queue:gpu.queue.clone(),cache:shared_cache.clone() });
     status.store(1,Ordering::Release);
+    let _ = updates.try_send(());
     if let Some(ready)=ready {ready.notify(true);}
     let swapchain = unsafe { gpu.surface.as_hal::<wgpu::hal::api::Dx12>() }.and_then(|s|s.swap_chain()).map(|s|format!("0x{:x}",s.as_raw() as usize));
     records.push(json!({"swapchain":swapchain,"kind":"adapter","qpc":qpc(),"name":gpu.info.name,"device_type":format!("{:?}",gpu.info.device_type),"warp":gpu.info.device_type==wgpu::DeviceType::Cpu,"present_mode":format!("{:?}",gpu.config.present_mode),"maximum_frame_latency":1,"gpu_timestamps_supported":gpu.timestamps.is_some()}));
@@ -189,8 +201,9 @@ fn render(target: Target,dimensions:[u32;2],scale:f32,options:&AppOptions,channe
             let ticked=thumbnail_dirty || thumbnails && !rows.is_empty() && thumbnail_at.elapsed()>=thumbnail_period;
             if ticked {
                 let mut encoder=gpu.device.create_command_encoder(&Default::default());
-                cache.tick_thumbnails(&gpu.device,&gpu.queue,&mut encoder,&rows,start.elapsed().as_secs_f32(),thumbnails);
-                gpu.queue.submit([encoder.finish()]);thumbnail_at=Instant::now();thumbnail_dirty=false;
+                if panel {cache.tick_thumbnails(&gpu.device,&gpu.queue,&mut encoder,&rows,start.elapsed().as_secs_f32(),thumbnails);}
+                else {cache.encode_thumbnails(&gpu.device,&gpu.queue,&mut encoder,&rows,if thumbnails {start.elapsed().as_secs_f32()}else{0.0});}
+                gpu.queue.submit([encoder.finish()]);shared_cache.publish(&cache)?;thumbnail_at=Instant::now();thumbnail_dirty=false;
             }
             if cache.has_pending_readback() && (ticked || thumbnail_poll_at.elapsed()>=thumbnail_period) {
                 if let Some(readback)=cache.poll_readback(&gpu.device,&gpu.queue)? {publish_thumbnail(&thumbnail_slot,readback)?;}
@@ -203,22 +216,24 @@ fn render(target: Target,dimensions:[u32;2],scale:f32,options:&AppOptions,channe
         let viewport_view=gpu.viewport_view.clone();
         if cache.generation.load(std::sync::atomic::Ordering::Acquire)==0 {
             let generation=cache.encode_blur(&gpu.device,&gpu.queue,&mut encoder,&viewport_view);
-            gpu.queue.submit([encoder.finish()]);cache.publish_blur(generation);
+            gpu.queue.submit([encoder.finish()]);cache.publish_blur(generation);shared_cache.publish(&cache)?;
             encoder=gpu.device.create_command_encoder(&Default::default());
         }
         encoder.copy_texture_to_texture(gpu.viewport.as_image_copy(),target.texture.as_image_copy(),gpu.viewport.size());
         cache.encode_glass(&gpu.device,&gpu.queue,&mut encoder,&target.texture.create_view(&Default::default()),glass.rects(),GlassPaint {scale:gpu.scale,opacity:glass.opacity()});
         if let Some(timestamps)=&mut gpu.timestamps && !timestamps.resolve(&mut encoder,frame as u64,frame_start as u64) {records.push(json!({"kind":"gpu_timestamp_missing","frame":frame}));}
         if load == Load::Slow { std::thread::sleep(Duration::from_millis(30)); }
-        let submit_qpc = qpc(); let submission = gpu.queue.submit_for_present([encoder.finish()]);
-        let present_qpc = qpc(); gpu.present(target); gpu.in_flight=Some(submission);
+        let submit_qpc = qpc(); gpu.queue.submit_for_present([encoder.finish()]);
+        let present_qpc = qpc(); gpu.present(target);
         let mut blur_encoder=gpu.device.create_command_encoder(&Default::default());
         let ticked=thumbnail_dirty || thumbnails && !rows.is_empty() && thumbnail_at.elapsed()>=thumbnail_period;
         if ticked {
-            cache.tick_thumbnails(&gpu.device,&gpu.queue,&mut blur_encoder,&rows,seconds,thumbnails);thumbnail_at=Instant::now();thumbnail_dirty=false;
+            if panel {cache.tick_thumbnails(&gpu.device,&gpu.queue,&mut blur_encoder,&rows,seconds,thumbnails);}
+            else {cache.encode_thumbnails(&gpu.device,&gpu.queue,&mut blur_encoder,&rows,if thumbnails {seconds}else{0.0});}
+            thumbnail_at=Instant::now();thumbnail_dirty=false;
         }
         let generation=cache.encode_blur(&gpu.device,&gpu.queue,&mut blur_encoder,&viewport_view);
-        gpu.in_flight=Some(gpu.queue.submit([blur_encoder.finish()]));cache.publish_blur(generation);
+        gpu.queue.submit([blur_encoder.finish()]);cache.publish_blur(generation);shared_cache.publish(&cache)?;
         if let Some(presented)=presented.take(){gpu.wait()?;presented.notify(true);}
         record_gpu_timings(&mut gpu,records)?;
         if cache.has_pending_readback() && (ticked || thumbnail_poll_at.elapsed()>=thumbnail_period) {
@@ -265,9 +280,8 @@ unsafe extern "C" fn poc_canvas_set_glass(canvas:*mut Canvas,rects:*const GlassR
 #[unsafe(no_mangle)]
 unsafe extern "C" fn poc_canvas_set_thumbnail_rows(canvas:*mut Canvas,row_ids:*const u32,count:u32)->bool {
     if count>crate::cache::THUMBNAIL_CAPACITY || row_ids.is_null() && count!=0 {return false;}
-    let rows=if count==0 {Vec::new()}else{unsafe{std::slice::from_raw_parts(row_ids,count as usize)}.to_vec()};
-    if rows.iter().any(|row|*row>65_535) {return false;}
-    unsafe{canvas.as_ref()}.is_some_and(|canvas|canvas.send(Command::Rows(rows)).is_ok())
+    let rows=if count==0 {&[]}else{unsafe{std::slice::from_raw_parts(row_ids,count as usize)}};
+    unsafe{canvas.as_ref()}.is_some_and(|canvas|canvas.set_thumbnail_rows(rows).is_ok())
 }
 #[unsafe(no_mangle)]
 unsafe extern "C" fn poc_canvas_set_load(canvas:*mut Canvas,slow:bool)->bool { unsafe{canvas.as_ref()}.is_some_and(|c|c.send(Command::Load(if slow{Load::Slow}else{Load::Light})).is_ok()) }
@@ -300,7 +314,7 @@ unsafe extern "C" fn poc_spec_label(index:u32,out:*mut c_char,capacity:usize)->u
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn poc_canvas_set_thumbnails(canvas:*mut Canvas,on:bool)->bool { unsafe{canvas.as_ref()}.is_some_and(|c|c.send(Command::Thumbnails(on)).is_ok()) }
+unsafe extern "C" fn poc_canvas_set_thumbnails(canvas:*mut Canvas,on:bool)->bool { unsafe{canvas.as_ref()}.is_some_and(|c|c.set_thumbnails(on).is_ok()) }
 #[unsafe(no_mangle)]
 unsafe extern "C" fn poc_canvas_shutdown(canvas:*mut Canvas)->bool { unsafe{canvas.as_ref()}.is_some_and(|c|c.shutdown().is_ok()) }
 #[unsafe(no_mangle)]
@@ -345,7 +359,7 @@ mod tests {
     #[test]
     fn finish_disconnects_a_full_command_queue_before_joining() {
         let (tx,rx)=bounded(1);tx.send(Command::Rows(vec![70])).unwrap();
-        let mut canvas=Canvas {tx,worker:None,shared:Arc::new(OnceLock::new()),thumbnails:Arc::new(Mutex::new(None)),trace_path:Arc::new(Mutex::new(PathBuf::new())),status:Arc::new(AtomicU8::new(0))};
+        let mut canvas=Canvas {tx,updates:bounded(1).1,worker:None,shared:Arc::new(OnceLock::new()),thumbnails:Arc::new(Mutex::new(None)),trace_path:Arc::new(Mutex::new(PathBuf::new())),status:Arc::new(AtomicU8::new(0))};
         assert!(canvas.shutdown().is_err());
         canvas.worker=Some(std::thread::spawn(move|| {
             if !matches!(rx.recv(),Ok(Command::Rows(rows)) if rows==[70]) {return Err("accepted row command was lost".into());}

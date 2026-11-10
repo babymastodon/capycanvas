@@ -49,6 +49,23 @@ class ReportTests(unittest.TestCase):
         (directory / "inputs.jsonl").write_text('\n'.join(json.dumps(row) for row in [{"qpc": 1100, "kind": "pen", "index": 0}, {"qpc": 1200, "kind": "pen", "index": 1}, {"qpc": 1400, "kind": "pen", "index": 2}]))
         return report.analyse_contact(directory)
 
+    def test_all_ui_counters_are_per_arm_diagnostics_without_changing_motion_metrics(self):
+        for workload in ('paint-still', 'slowcanvas-divider', 'slowcanvas-drawer', 'scroll-wheel', 'scroll-touch', 'stall-scroll'):
+            for arm in ('retained', 'winui'):
+                with self.subTest(workload=workload, arm=arm), tempfile.TemporaryDirectory() as temporary:
+                    row = self.contact(Path(temporary), arm=arm, workload=workload)
+                    pooled = report.aggregate([dict(row, valid=True, validation_errors=[])])[0]
+                    for measured in (row, pooled):
+                        self.assertEqual(measured['ui_change_measurement']['scope'], 'per_arm_only')
+                        self.assertFalse(measured['ui_change_measurement']['cross_arm_comparable'])
+                    self.assertIn('presented UI frame' if arm == 'retained' else 'native handlers', row['ui_change_measurement']['basis'])
+                    self.assertEqual(pooled['motion_changes'], row['motion_changes'])
+                    self.assertEqual(pooled['motion_rate_hz'], row['motion_rate_hz'])
+                    rendered = report.render([pooled])
+                    self.assertIn('All UI Hz (per arm only)', rendered)
+                    self.assertIn('Marker basis; cross-arm noncomparable', rendered)
+                    self.assertIn('Live-glass UI presents in paint-still are expected', rendered)
+
     def test_display_mode_preserves_monitor_resolution_instead_of_client_size(self):
         mode = {"width": 2560, "height": 1600, "scale": 1.5, "refresh_hz": 150, "desktop_rect": [0, 0, 2560, 1600], "device": "DISPLAY1"}
         for no_capture in (False, True):
@@ -290,6 +307,73 @@ class ReportTests(unittest.TestCase):
             self.assertIsNone(row['black_interior_frames'])
             self.assertIsNone(row['drift_max_px'])
 
+    def test_legacy_winui_647_glass_edge_is_unverified_without_invalidating_contact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.contact(directory, arm='winui', workload='paint-still')
+            frames = report.read_jsonl(directory / 'frames.jsonl')
+            frames.append({'qpc': 1500, 'last_present_qpc': 1500, 'ui_marker': 1, 'pen_samples': 2, 'divider_y': 300, 'glass_y': 647, 'fill_y': 300, 'black_samples': 0})
+            (directory / 'frames.jsonl').write_text('\n'.join(json.dumps(frame) for frame in frames))
+            legacy = report.analyse_contact(directory)
+            meta = report.read_json(directory / 'meta.json')
+            meta['probe_geometry'] = {'glass': 'right-gutter', 'gutter_px': 2}
+            (directory / 'meta.json').write_text(json.dumps(meta))
+            current = report.analyse_contact(directory)
+            self.assertEqual(legacy['validation_errors'], current['validation_errors'])
+            self.assertEqual(legacy['ink_latency_ms'], current['ink_latency_ms'])
+            self.assertIsNone(legacy['drift_max_px'])
+            self.assertIsNone(legacy['drift_over_1_share'])
+            self.assertEqual(legacy['drift_probe_quality']['status'], 'unverified')
+            self.assertEqual(legacy['drift_probe_quality']['observed_frames'], 0)
+            self.assertEqual(current['drift_max_px'], 347)
+            self.assertEqual(report.read_jsonl(directory / 'frames.jsonl')[-1]['glass_y'], 647)
+
+    def test_gutter_probe_missing_frames_are_partial_not_zero_drift(self):
+        meta = {'arm': 'winui', 'probe_geometry': {'glass': 'right-gutter', 'gutter_px': 2}}
+        frames = [{'divider_y': 300, 'glass_y': 302, 'fill_y': 300}, {'divider_y': 300, 'glass_y': None, 'fill_y': 300}, {'divider_y': None, 'glass_y': 300, 'fill_y': 300}]
+        values, quality = report.probe_drift(meta, frames)
+        self.assertEqual(values, [2])
+        self.assertEqual(quality['status'], 'partial')
+        self.assertEqual((quality['observed_frames'], quality['unobserved_frames'], quality['over_1_frames']), (1, 2, 1))
+        self.assertEqual(report.probe_drift(meta, frames[1:])[1]['status'], 'unobserved')
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            row = self.contact(directory, **meta)
+        row.update(valid=True, validation_errors=[], drift_probe_quality=quality, drift_max_px=2, drift_over_1_share=1)
+        pooled = report.aggregate([row])[0]
+        self.assertEqual(pooled['drift_probe_quality']['status'], 'partial')
+        self.assertEqual(pooled['drift_probe_quality']['over_1_share'], 1)
+        self.assertEqual(pooled['drift_probe_quality']['unobserved_frames'], 2)
+        self.assertIn('| partial | 1 / 2 | 2.00 | 1.00 |', report.render([pooled]))
+
+    def test_markdown_exposes_measured_distributions_resources_and_idle_metrics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            row = self.contact(Path(temporary))
+        row.update(valid=True, validation_errors=[], ui_cpu_ms_per_change=7.25, startup_ui_ms=12, startup_canvas_ms=18, private_mib=42.5, idle_presents=3, idle_cpu_percent=.25, present_modes=['Hardware: Independent Flip'])
+        row['_samples'].update(ui_change_intervals_ms=[10, 20, 30], present_display_intervals_ms=[15, 25], ui_latency_ms=[1, 5, 9], ink_latency_ms=[2, 6, 10])
+        pooled = report.aggregate([row])[0]
+        markdown = report.render([pooled])
+        self.assertIn('| All UI changes (per arm only) | 20.00 | 29.00 | 29.80 | 30.00 |', markdown)
+        self.assertIn('| Present display | 20.00 | 24.50 | 24.90 | 25.00 |', markdown)
+        self.assertIn('| UI response | 5.00 | 8.60 | 8.92 |', markdown)
+        self.assertIn('| Ink display | 6.00 | 9.60 | 9.92 |', markdown)
+        self.assertIn('| 10.00 | guest capacity | 7.25 | 42.50 |', markdown)
+        self.assertIn('| 12.00 / 18.00 | 3.00 | 0.25 | Hardware: Independent Flip |', markdown)
+        self.assertIn('Black-interior frames', markdown)
+        self.assertIn('(unknown; input-unmeasured)', markdown)
+
+    def test_ui_intervals_are_derived_from_ui_marker_changes_separately(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.contact(directory)
+            frames = report.read_jsonl(directory / 'frames.jsonl')
+            frames.extend({'qpc': tick+10, 'last_present_qpc': tick, 'ui_frame': state} for tick, state in ((1300, 2), (1500, 3), (1750, 4)))
+            (directory / 'frames.jsonl').write_text('\n'.join(json.dumps(frame) for frame in frames))
+            row = report.analyse_contact(directory)
+        self.assertEqual(row['_samples']['ui_change_intervals_ms'], [200, 250])
+        self.assertEqual(row['ui_change_intervals_ms']['p50'], 225)
+        self.assertEqual(row['_samples']['motion_intervals_ms'], [])
+
     def test_count_only_delivery_evidence_never_enables_receipt_matching(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -465,6 +549,36 @@ class ReportTests(unittest.TestCase):
         pair = [dict(pooled, no_capture=False, canvas_presentmon_display_hz={'p50': 60}), dict(pooled, no_capture=True, canvas_presentmon_display_hz={'p50': 100})]
         self.assertFalse(report.overhead_checks(pair)[0]['comparison_eligible'])
         self.assertIsNone(report.overhead_checks(pair)[0]['overhead_fraction'])
+
+    def test_cli_combines_explicit_vm_profile_roots_and_deduplicates_contacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = []
+            identities = [('capycanvas6-poc-gpu', 'normal'), ('capycanvas6-poc-gpu', 'lowcpu'), ('capycanvas6-poc-warp', 'normal')]
+            for index, (vm, profile) in enumerate(identities):
+                source = root / str(index)
+                directory = source / 'contact-000'
+                directory.mkdir(parents=True)
+                self.valid_benchmark_contact(directory)
+                for filename in ('meta.json', 'run.json'):
+                    path = directory / filename
+                    data = json.loads(path.read_text())
+                    data.update(vm=vm, profile=profile)
+                    path.write_text(json.dumps(data))
+                run = json.loads((directory / 'run.json').read_text())
+                (directory / 'done.json').write_text(json.dumps({'ok': True, 'runs': [run]}))
+                sources.append(source)
+            arguments = [*sources, sources[0], sources[1] / 'contact-000']
+            output = root / 'reports'
+            result = subprocess.run([sys.executable, str(Path(report.__file__).resolve()), *map(str, arguments), '--out', str(output)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            saved = json.loads((output / 'results.json').read_text())
+            self.assertEqual(len(saved['contacts']), 3)
+            self.assertEqual({(row['vm'], row['profile']) for row in saved['pooled']}, set(identities))
+            gpu = (output / 'results-capycanvas6-poc-gpu.md').read_text()
+            self.assertIn('| normal |', gpu)
+            self.assertIn('| lowcpu |', gpu)
+            self.assertTrue((output / 'results-capycanvas6-poc-warp.md').is_file())
 
     def test_failed_batch_reports_diagnostics_but_exits_nonzero(self):
         with tempfile.TemporaryDirectory() as temporary:

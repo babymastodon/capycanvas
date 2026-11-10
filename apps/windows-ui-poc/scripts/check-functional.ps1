@@ -33,7 +33,7 @@ function Save-Results{
 }
 function Unverified([string]$Reason,$Details=$null){$exception=[InvalidOperationException]::new($Reason);$exception.Data['unverified']=$true;$exception.Data['details']=$Details;throw $exception}
 function Assert([bool]$Condition,[string]$Message){if(!$Condition){throw $Message}}
-function Json-Lines([string]$Path){if(!(Test-Path -LiteralPath $Path)){return @()};@(Get-Content -LiteralPath $Path|Where-Object {$_}|ForEach-Object {$_|ConvertFrom-Json})}
+function Json-Lines([string]$Path){if(!(Test-Path -LiteralPath $Path)){return @()};@(Get-Content -LiteralPath $Path -Encoding UTF8|Where-Object {$_}|ForEach-Object {$_|ConvertFrom-Json})}
 function Owned{
     Assert ($review -and !$review.HasExited) 'The recorded application process is not running'
     [PocFunctionalNative]::Own($window,[uint32]$review.Id)
@@ -46,6 +46,7 @@ function Foreground{
 }
 function Client-Origin{$point=[PocFunctionalNative+Point]::new();Assert ([PocFunctionalNative]::ClientToScreen($window,[ref]$point)) 'Client origin unavailable';$point}
 function Bounds-Array($Element){$b=$Element.Current.BoundingRectangle;@($b.X,$b.Y,$b.Width,$b.Height)}
+function Within-Viewport($Element,$Viewport,[switch]$Fully){[PocFunctionalNative]::BoundsVisible([double[]](Bounds-Array $Element),[double[]](Bounds-Array $Viewport),[bool]$Fully)}
 function Pattern($Element,$Type){$value=$null;if(!$Element.TryGetCurrentPattern($Type::Pattern,[ref]$value)){throw "Missing UIA pattern $($Type.Name) on $($Element.Current.AutomationId)"};$value}
 function Focus($Element){Foreground;$Element.SetFocus();Wait-Until {$Element.Current.HasKeyboardFocus} 'The owned control did not receive keyboard focus'}
 function Key([uint16]$Code){Foreground;[CapyRowPointer]::Key([uint32]$review.Id,$Code)}
@@ -63,7 +64,17 @@ function Row([uint32]$Index){
     Assert ($null -ne $item) "Missing virtual row $id in layers-list"
     Assert ($item.Current.ProcessId -eq $review.Id) 'Virtual row belongs to another process'
     $scroll=Pattern $item ([System.Windows.Automation.ScrollItemPattern]);$scroll.ScrollIntoView()
-    Wait-Until {!$item.Current.IsOffscreen -and !$item.Current.BoundingRectangle.IsEmpty} "$id did not scroll into view"
+    Wait-Until {Within-Viewport $item $list -Fully} "$id bounds did not enter the layers-list viewport"
+    $item
+}
+function Virtual-Row([uint32]$Index,$Steps){
+    $list=Control 'layers-list';$id=[PocFunctionalNative]::RowId($dll,$Index)
+    $Steps.Add(@{step='ItemContainerPattern';status='attempt'});$container=Pattern $list ([System.Windows.Automation.ItemContainerPattern]);$Steps[-1].status='pass'
+    $Steps.Add(@{step='FindItemByProperty';property='AutomationId';value=$id;status='attempt'});$item=$container.FindItemByProperty($null,[System.Windows.Automation.AutomationElement]::AutomationIdProperty,$id);Assert ($null -ne $item) "ItemContainerPattern.FindItemByProperty returned no item for $id";$Steps[-1].status='pass'
+    $Steps.Add(@{step='VirtualizedItemPattern';status='attempt'});$virtual=Pattern $item ([System.Windows.Automation.VirtualizedItemPattern]);$Steps[-1].status='pass'
+    $Steps.Add(@{step='Realize';status='attempt'});$virtual.Realize();$Steps[-1].status='pass'
+    Assert ($item.Current.ProcessId -eq $review.Id) 'Realized row belongs to another process'
+    $Steps.Add(@{step='ScrollItemPattern.ScrollIntoView';status='attempt'});$scroll=Pattern $item ([System.Windows.Automation.ScrollItemPattern]);$scroll.ScrollIntoView();Wait-Until {Within-Viewport $item $list -Fully} "$id bounds did not enter the layers-list viewport";$Steps[-1].status='pass'
     $item
 }
 function Wait-Observer([Diagnostics.Process]$Process,[string]$Evidence){
@@ -151,8 +162,9 @@ function Benchmark-Completed([string]$Directory,$Meta){
     $false
 }
 function Matching-Binary($Meta){
-    $hash=@($Meta.binary_hashes|Where-Object {$_.path -ieq [IO.Path]::GetFileName($executable)})
-    $hash.Count -eq 1 -and $hash[0].sha256 -ieq (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
+    $files=@($executable,$observer);if($which -eq 'winui'){$files+=$dll}
+    foreach($file in $files){$hash=@($Meta.binary_hashes|Where-Object {$_.path -ieq [IO.Path]::GetFileName($file)});if($hash.Count -ne 1 -or $hash[0].sha256 -ine (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash){return $false}}
+    $true
 }
 function Observed([string]$Workload,[int]$Rows=1000){
     if($BenchmarkResults -and (Test-Path -LiteralPath $BenchmarkResults -PathType Container)){
@@ -164,7 +176,8 @@ function Observed([string]$Workload,[int]$Rows=1000){
 }
 function Caret-Rectangle($Entry){
     $pattern=$null
-    try{if($Entry.TryGetCurrentPattern([System.Windows.Automation.TextPattern2]::Pattern,[ref]$pattern)){$active=$false;$range=$pattern.GetCaretRange([ref]$active);$rects=$range.GetBoundingRectangles();if($rects.Length -ge 4 -and $rects[3] -gt 0){return @{rect=@($rects[0],$rects[1],[Math]::Max(1,$rects[2]),$rects[3]);line_height=$rects[3];source='UIA TextPattern2'}}}}catch [System.NotSupportedException]{}
+    $caretType='System.Windows.Automation.TextPattern2' -as [type]
+    if($caretType){try{if($Entry.TryGetCurrentPattern($caretType::Pattern,[ref]$pattern)){$active=$false;$range=$pattern.GetCaretRange([ref]$active);$rects=$range.GetBoundingRectangles();if($rects.Length -ge 4 -and $rects[3] -gt 0){return @{rect=@($rects[0],$rects[1],[Math]::Max(1,$rects[2]),$rects[3]);line_height=$rects[3];source='UIA TextPattern2'}}}}catch [System.NotSupportedException]{}}
     $native=[PocFunctionalNative]::Caret($window,[uint32]$review.Id);if($native -and $native[3] -gt 0){return @{rect=$native;line_height=$native[3];source='GetGUIThreadInfo'}}
 
     $null
@@ -192,6 +205,26 @@ function Resolve-DeferredCaret{
     }
     Save-Results
 }
+function Text-LayoutEvidence($Trace,$Spec){
+    $labels=@();$matched=@();$absent=@()
+    foreach($label in $Spec.labels){$records=@($Trace|Where-Object {$_.kind -eq 'text_layout' -and $_.text -ceq $label -and $_.wrap -eq $false});$labels+=@(@{text=$label;records=$records});$matched+=$records;if(!$records.Count){$absent+=@($label)}}
+    $paragraph=@($Trace|Where-Object {$_.kind -eq 'text_layout' -and $_.text -ceq $Spec.paragraph -and $_.wrap -eq $true});$matched+=$paragraph;if(!$paragraph.Count){$absent+=@($Spec.paragraph)}
+    $incomplete=@($matched|Where-Object {$null -eq $_.missing_glyphs -or $null -eq $_.line_breaks});$missing=0
+    foreach($record in $matched){if($null -ne $record.missing_glyphs){$missing+=[int64]$record.missing_glyphs}}
+    $status=if($missing -gt 0){'fail'}elseif($absent.Count -or $incomplete.Count){'unverified'}else{'observed'}
+    @{status=$status;glyph_status=$(if($missing -gt 0){'fail'}elseif($status -eq 'observed'){'pass'}else{'unverified'});missing_glyphs=$missing;missing_text_records=$absent;incomplete_records=$incomplete;labels=$labels;paragraph=$paragraph;line_break_offset_basis='Native shaping trace UTF-8 byte offsets';thai_word_boundaries='unverified; review the actual offsets and crops';visual_review='required'}
+}
+function Resolve-DeferredText{
+    if($which -ne 'retained' -or !$uiClosedGracefully){return}
+    $evidence=Text-LayoutEvidence (Json-Lines $uiTrace) $spec;$path=Join-Path $armOut 'F3-text-layout.json';$evidence|ConvertTo-Json -Depth 18|Set-Content -LiteralPath $path -Encoding UTF8
+    foreach($item in @($results|Where-Object {$_.arm -eq $which -and $_.id -eq 'F3'})){
+        if(!$item.details){$item.details=@{}}
+        $item.details.text_layout=$evidence;$item.details.text_layout_path=$path
+        if($evidence.status -eq 'fail'){$item.status='fail';$item|Add-Member -NotePropertyName error -NotePropertyValue ("Retained text trace records "+$evidence.missing_glyphs+' missing glyphs; see '+$path) -Force}
+        elseif($item.status -ne 'fail'){$item.status='unverified';$item|Add-Member -NotePropertyName error -NotePropertyValue $(if($evidence.status -eq 'unverified'){'Retained text trace is incomplete; glyph counts and Thai break offsets remain unverified'}else{'Retained trace has zero missing glyphs for all seven labels and wrapped paragraph; Thai word boundaries and glyph forms require visual review'}) -Force}
+    }
+    Save-Results
+}
 function Maximize-Bounds{
     foreach($name in @('Maximize','MaximizeButton','Restore','RestoreButton')){$item=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,$name));if($item -and !$item.Current.IsOffscreen){return Bounds-Array $item}}
     [PocFunctionalNative]::MaximizeButton($window,[uint32]$review.Id)
@@ -201,6 +234,29 @@ function Popup-Items{
     $found=[Collections.Generic.List[object]]::new()
     foreach($id in $spec.menu_ids){$item=$null;foreach($handle in [PocFunctionalNative]::Windows([uint32]$review.Id)){$surface=[System.Windows.Automation.AutomationElement]::FromHandle($handle);$item=Find $id -Within $surface;if($item){break}};Assert ($null -ne $item) "Missing owned popup item $id";$found.Add($item)}
     @($found)
+}
+function Menu-Control{
+    Props-Scroll 0;$menu=Control 'menu-button';$viewport=Control 'properties'
+    if(!(Within-Viewport $menu $viewport)){(Pattern $menu ([System.Windows.Automation.ScrollItemPattern])).ScrollIntoView()}
+    Wait-Until {Within-Viewport $menu $viewport} 'Menu bounds did not enter the properties viewport after ScrollItem'
+    Control 'menu-button' -Arranged
+}
+function Popup-Container($Items){
+    $walker=[System.Windows.Automation.TreeWalker]::ControlViewWalker;$rootIdentity=$root.GetRuntimeId() -join ','
+    for($candidate=$walker.GetParent($Items[0]);$candidate;$candidate=$walker.GetParent($candidate)){
+        if($candidate.Current.ProcessId -ne $review.Id -or ($candidate.GetRuntimeId() -join ',') -eq $rootIdentity){break}
+        $kind=$candidate.Current.ControlType
+        if($kind -ne [System.Windows.Automation.ControlType]::Menu -and ($kind -ne [System.Windows.Automation.ControlType]::Window -or [IntPtr]$candidate.Current.NativeWindowHandle -eq $window)){continue}
+        $identity=$candidate.GetRuntimeId() -join ',';$common=$true
+        foreach($item in $Items){$inside=$false;for($ancestor=$walker.GetParent($item);$ancestor;$ancestor=$walker.GetParent($ancestor)){if(($ancestor.GetRuntimeId() -join ',') -eq $identity){$inside=$true;break};if($ancestor.Current.ProcessId -ne $review.Id){break}};if(!$inside){$common=$false;break}}
+        if(!$common){continue}
+        $bounds=$candidate.Current.BoundingRectangle
+        if($bounds.IsEmpty -or $bounds.Width -le 0 -or $bounds.Height -le 0){continue}
+        return @{bounds=(Bounds-Array $candidate);source='owned common UIA popup container';control_type=$kind.ProgrammaticName;automation_id=$candidate.Current.AutomationId;class_name=$candidate.Current.ClassName;native_window_handle=$candidate.Current.NativeWindowHandle}
+    }
+    $native=@([PocFunctionalNative]::Windows([uint32]$review.Id)|Where-Object {$_ -ne $window -and [PocFunctionalNative]::ClassName($_,[uint32]$review.Id) -ceq 'CapyCanvasPocRetainedPopup'})
+    if($native.Count -eq 1){$handle=$native[0];[PocFunctionalNative]::Own($handle,[uint32]$review.Id);$bounds=[PocFunctionalNative+Rect]::new();Assert ([PocFunctionalNative]::GetWindowRect($handle,[ref]$bounds)) 'Owned retained popup rectangle unavailable';if($bounds.Width -gt 0 -and $bounds.Height -gt 0){return @{bounds=@($bounds.Left,$bounds.Top,$bounds.Width,$bounds.Height);source='owned native popup HWND';class_name='CapyCanvasPocRetainedPopup';native_window_handle=$handle.ToInt64()}}}
+    $null
 }
 function Shared-PatternCheck([string]$Name,[scriptblock]$Action,$Rows){try{$value=&$Action;$Rows.Add(@{pattern=$Name;status='pass';value=$value})}catch{$Rows.Add(@{pattern=$Name;status='fail';error=$_.Exception.Message})}}
 $arms=@(if($Arm -eq 'both'){'retained','winui'}else{$Arm})
@@ -260,9 +316,9 @@ foreach($which in $arms){
                 foreach($character in 'NIHONGO'.ToCharArray()){Key ([uint16]$character)}
                 Wait-Until {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value -ceq 'にほんご'} 'Japanese IME did not produce genuine にほんご preedit' 15
                 $evidence.preedit=(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value;$caret=Caret-Rectangle $entry;$field=Bounds-Array $entry;$clientOrigin=Client-Origin;$client=[PocFunctionalNative+Rect]::new();[PocFunctionalNative]::GetClientRect($window,[ref]$client)|Out-Null
-                $before=Snapshot 'F4-before-space' -Screen;$evidence.before=$before.path;$evidence.before_capture_qpc=$before.metadata.qpc;$evidence.client_origin=@($clientOrigin.X,$clientOrigin.Y);$evidence.field_screen_rect=$field
+                $before=Snapshot 'F4-before-space' -Screen;$evidence.before=$before.path;$evidence.before_capture_qpc=$before.metadata.qpc;$evidence.before_present_qpc=$before.metadata.last_present_qpc;$evidence.client_origin=@($clientOrigin.X,$clientOrigin.Y);$evidence.field_screen_rect=$field
                 $clock=[Diagnostics.Stopwatch]::StartNew();$evidence.before_space_qpc=[Diagnostics.Stopwatch]::GetTimestamp();Key 32;$captured=[Collections.Generic.List[object]]::new();$number=0
-                while($clock.ElapsedMilliseconds -le 500){$number++;$candidate=Snapshot ("F4-after-space-$number") -Screen;$captureMs=1000.0*($candidate.metadata.qpc-$evidence.before_space_qpc)/[Diagnostics.Stopwatch]::Frequency;if($captureMs -ge 0 -and $captureMs -le 500){$captured.Add(@{shot=$candidate;capture_ms=$captureMs})}}
+                while($clock.ElapsedMilliseconds -le 500){$number++;$candidate=Snapshot ("F4-after-space-$number") -Screen;$captureMs=1000.0*($candidate.metadata.last_present_qpc-$evidence.before_space_qpc)/[Diagnostics.Stopwatch]::Frequency;if($candidate.metadata.last_present_qpc -gt 0 -and $captureMs -ge 0 -and $captureMs -le 500){$captured.Add(@{shot=$candidate;capture_ms=$captureMs;acquisition_ms=(1000.0*($candidate.metadata.qpc-$evidence.before_space_qpc)/[Diagnostics.Stopwatch]::Frequency)})}}
                 Wait-Until {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value -match '[\u3400-\u9fff]'} 'Japanese IME did not expose a converted kanji candidate' 15
                 $evidence.candidate_text=(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value;Key 13
                 Wait-Until {(Pattern $entry ([System.Windows.Automation.ValuePattern])).Current.Value.Contains('日本語')} 'Committed IME text does not contain 日本語' 15
@@ -272,7 +328,7 @@ foreach($which in $arms){
                 foreach($frame in $captured){
                     $after=$frame.shot;$origin=@($after.metadata.origin);$fieldLeft=[Math]::Floor($field[0]-$origin[0]);$fieldTop=[Math]::Floor($field[1]-$origin[1]);$fieldWidth=[Math]::Ceiling($field[0]+$field[2]-$origin[0])-$fieldLeft;$fieldHeight=[Math]::Ceiling($field[1]+$field[3]-$origin[1])-$fieldTop;$masks=[int[]]@($fieldLeft,$fieldTop,$fieldWidth,$fieldHeight,($clientOrigin.X+$ui[0]-$origin[0]),($clientOrigin.Y+$ui[1]-$origin[1]),$ui[2],$ui[3],($clientOrigin.X+$canvas[0]-$origin[0]),($clientOrigin.Y+$canvas[1]-$origin[1]),$canvas[2],$canvas[3])
                     $regions=@([PocFunctionalPixels]::Regions($before.path,$after.path,$masks));$raw=[PocFunctionalPixels]::Difference($before.path,$after.path,0,0,0,0);$rawImage=$after.path.Replace('.png','-raw-diff.png');[PocFunctionalPixels]::DifferenceImage($before.path,$after.path,$rawImage)
-                    $evidence.frames+=@(@{after=$after.path;capture_ms=$frame.capture_ms;qpc=$after.metadata.qpc;raw_diff=$raw;raw_diff_image=$rawImage;masks=$masks;regions=$regions;capture_origin=$origin})
+                    $evidence.frames+=@(@{after=$after.path;capture_ms=$frame.capture_ms;acquisition_ms=$frame.acquisition_ms;qpc=$after.metadata.qpc;last_present_qpc=$after.metadata.last_present_qpc;raw_diff=$raw;raw_diff_image=$rawImage;masks=$masks;regions=$regions;capture_origin=$origin})
                 }
                 $latest=$evidence.frames[-1];$evidence.after=$latest.after;$evidence.capture_origin=$latest.capture_origin;$evidence.regions=$latest.regions;$evidence.region_analysis=@();$evidence.deferred_caret=($null -eq $caret)
                 if(!$caret){Unverified 'IME text gates passed; candidate selection awaits the actual caret in the gracefully flushed trace' $evidence}
@@ -287,8 +343,9 @@ foreach($which in $arms){
             Shared-PatternCheck 'slider-size RangeValue 42' {$slider=Control 'slider-size';$value=Pattern $slider ([System.Windows.Automation.RangeValuePattern]);$value.SetValue(42);Wait-Until {[Math]::Abs($value.Current.Value-42) -lt .01} 'Slider did not acknowledge RangeValue42';$value.Current.Value} $patterns
             Shared-PatternCheck 'text-field Value abc' {Set-Filter 'abc';(Pattern (Control 'text-field') ([System.Windows.Automation.ValuePattern])).Current.Value} $patterns
             Set-Filter ''
-            Shared-PatternCheck 'layer-row-00500 ScrollItem' {$row=Row 500;@{id=$row.Current.AutomationId;bounds=(Bounds-Array $row)}} $patterns
-            Shared-PatternCheck 'menu-button Invoke' {Props-Scroll 0;(Pattern (Control 'menu-button') ([System.Windows.Automation.InvokePattern])).Invoke();$true} $patterns
+            $virtualSteps=[Collections.Generic.List[object]]::new()
+            try{$row=if($which -eq 'winui'){Virtual-Row 500 $virtualSteps}else{Row 500};$patterns.Add(@{pattern='layer-row-00500 ScrollItem';status='pass';steps=@($virtualSteps);value=@{id=$row.Current.AutomationId;bounds=(Bounds-Array $row)}})}catch{if($virtualSteps.Count){$virtualSteps[-1].status='fail';$virtualSteps[-1].error=$_.Exception.Message};$patterns.Add(@{pattern='layer-row-00500 ScrollItem';status='fail';steps=@($virtualSteps);error=$_.Exception.Message})}
+            Shared-PatternCheck 'menu-button Invoke' {(Pattern (Menu-Control) ([System.Windows.Automation.InvokePattern])).Invoke();$true} $patterns
             foreach($id in $spec.menu_ids){Shared-PatternCheck ("menu:$id") {$item=@(Popup-Items|Where-Object {$_.Current.AutomationId -eq $id})[0];Assert ($null -ne $item) "Missing menu ID $id";$invoke=Pattern $item ([System.Windows.Automation.InvokePattern]);@{id=$item.Current.AutomationId;invoke_available=($null -ne $invoke)}} $patterns}
             Key 27;$failed=@($patterns|Where-Object status -eq 'fail')
             @{status=$(if($failed.Count){'fail'}else{'pass'});patterns=@($patterns)}
@@ -299,7 +356,7 @@ foreach($which in $arms){
             Assert ([PocFunctionalPixels]::Marker($shot.path,4,44)) 'UI marker is not framed physical4x4 cells'
             Assert ([PocFunctionalPixels]::Marker($shot.path,4,$client.Height-12)) 'Canvas marker is not framed physical4x4 cells'
             $groupWidth=($spec.metrics.column_left-$spec.metrics.column_right)*$scale;$left=$client.Width-$spec.metrics.column_left*$scale;$measurements=@{}
-            foreach($entry in @(@('divider',(1/6.0),2),@('glass',.5,2),@('fill',(5/6.0),1))){$color=$spec.probes.($entry[0]);$runs=[PocFunctionalPixels]::ColorRuns($shot.path,[int]($left+$entry[1]*$groupWidth),$color[0],$color[1],$color[2]);Assert ($runs.Length -gt 0) "No exact $($entry[0]) probe pixels found";for($i=1;$i -lt $runs.Length;$i+=2){Assert ($runs[$i] -eq $entry[2]) "$($entry[0]) probe is $($runs[$i]) physical px instead of $($entry[2])"};$measurements[$entry[0]]=$runs}
+            foreach($entry in @(@('divider',(1/6.0),2),@('glass',.5,2),@('fill',(5/6.0),1))){$color=$spec.probes.($entry[0]);$probeX=if($entry[0] -eq 'glass'){[int]($left+$groupWidth+$spec.probe_metrics.glass_gutter_x)}else{[int]($left+$entry[1]*$groupWidth)};$runs=[PocFunctionalPixels]::ColorRuns($shot.path,$probeX,$color[0],$color[1],$color[2]);Assert ($runs.Length -gt 0) "No exact $($entry[0]) probe pixels found";for($i=1;$i -lt $runs.Length;$i+=2){Assert ($runs[$i] -eq $entry[2]) "$($entry[0]) probe is $($runs[$i]) physical px instead of $($entry[2])"};$measurements[$entry[0]]=$runs}
             $title=(Control 'title-bar').Current.BoundingRectangle;$row=(Row 0).Current.BoundingRectangle;Assert ([Math]::Abs($title.Height-$spec.metrics.title_height*$scale) -le 1) 'Title bar does not use the effective scale';Assert ([Math]::Abs($row.Height-$spec.metrics.row_height*$scale) -le 1) 'List row does not use the effective scale'
             Unverified 'Pixel dimensions pass; text raster quality requires review of the actual crop. Mixed-DPI moves require a second monitor' @{scale=$scale;marker_cells_physical_px=4;probes=$measurements;title_height=$title.Height;row_height=$row.Height;crop=$shot.path;geometry='pass';text_raster_review='unverified';mixed_dpi='unverified'}
         }
@@ -307,11 +364,10 @@ foreach($which in $arms){
             Foreground;$caption=Control 'title-bar';$bounds=Maximize-Bounds;if(!$bounds){Unverified 'UIA and WM_GETTITLEBARINFOEX exposed no actual maximize-button bounds'}
             $x=[int]($bounds[0]+$bounds[2]/2);$y=[int]($bounds[1]+$bounds[3]/2);$hit=[PocFunctionalNative]::HitTest($window,[uint32]$review.Id,$x,$y);Assert ($hit -eq 9) "Maximize button WM_NCHITTEST returned $hit instead of HTMAXBUTTON9"
             Tap $bounds;Wait-Until {[PocFunctionalNative]::Maximized($window,[uint32]$review.Id)} 'Click maximize did not maximize';$restore=Maximize-Bounds;Assert ($null -ne $restore) 'Restore button bounds unavailable';Tap $restore;Wait-Until {![PocFunctionalNative]::Maximized($window,[uint32]$review.Id)} 'Caption restore did not restore'
-            Chord ([uint16[]]@(91)) 38;Wait-Until {[PocFunctionalNative]::Maximized($window,[uint32]$review.Id)} 'Win+Up did not maximize';Chord ([uint16[]]@(91)) 40;Wait-Until {![PocFunctionalNative]::Maximized($window,[uint32]$review.Id)} 'Win+Down did not restore'
             $before=[PocFunctionalNative+Rect]::new();[PocFunctionalNative]::GetWindowRect($window,[ref]$before)|Out-Null;$bar=$caption.Current.BoundingRectangle;$drag=$null
             for($n=2;$n -lt 14;$n++){$px=[int]($bar.Left+$bar.Width*$n/16);$py=[int]($bar.Top+$bar.Height/2);if([PocFunctionalNative]::HitTest($window,[uint32]$review.Id,$px,$py) -eq 2){$drag=@($px,$py);break}}
             Assert ($null -ne $drag) 'No actual HTCAPTION point exists in empty title-bar space';[CapyRowPointer]::Down('mouse',$drag[0],$drag[1]);try{[CapyRowPointer]::Move($drag[0]+80,$drag[1]+40)}finally{[CapyRowPointer]::Up()};$after=[PocFunctionalNative+Rect]::new();Wait-Until {[PocFunctionalNative]::GetWindowRect($window,[ref]$after)|Out-Null;$after.Left -ne $before.Left -or $after.Top -ne $before.Top} 'Caption drag did not move the window'
-            @{status='pass';maximize_bounds=$bounds;hit_test=$hit;caption_before=$before;caption_after=$after}
+            @{status='unverified';native_maximize_restore='pass';caption_drag='pass';maximize_bounds=$bounds;hit_test=$hit;caption_before=$before;caption_after=$after;win_up_down=@{status='unverified';reason='User accepted private-desktop session limit after the WinUI Win+Up failure';applies_to='both arms'}}
         }
         Check 'F9' 'Private clipboard text round trip' {
             Props-Scroll 60;$entry=Control 'text-field';$expected='Capy clipboard 日本語';(Pattern $entry ([System.Windows.Automation.ValuePattern])).SetValue($expected);Focus $entry;Chord ([uint16[]]@(17)) 65;Chord ([uint16[]]@(17)) 67
@@ -320,19 +376,22 @@ foreach($which in $arms){
             @{status='pass';text=$expected;clipboard_format='CF_UNICODETEXT'}
         }
         Check 'F10' 'Popup extends outside the window while on screen' {
-            Foreground;$geometry=Place-Ui 800 600 80 80;$geometry|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $armOut 'F10-placement.json') -Encoding UTF8;Props-Scroll 0;(Pattern (Control 'menu-button') ([System.Windows.Automation.InvokePattern])).Invoke();$items=@(Popup-Items)
-            $left=($items|ForEach-Object {$_.Current.BoundingRectangle.Left}|Measure-Object -Minimum).Minimum;$top=($items|ForEach-Object {$_.Current.BoundingRectangle.Top}|Measure-Object -Minimum).Minimum;$right=($items|ForEach-Object {$_.Current.BoundingRectangle.Right}|Measure-Object -Maximum).Maximum;$bottom=($items|ForEach-Object {$_.Current.BoundingRectangle.Bottom}|Measure-Object -Maximum).Maximum
+            Foreground;$geometry=Place-Ui 800 600 80 80;$geometry|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $armOut 'F10-placement.json') -Encoding UTF8;(Pattern (Menu-Control) ([System.Windows.Automation.InvokePattern])).Invoke();$items=@(Popup-Items)
             $outer=[PocFunctionalNative+Rect]::new();[PocFunctionalNative]::GetWindowRect($window,[ref]$outer)|Out-Null;$shot=Snapshot 'F10-popup-screen' -Screen;$origin=@($shot.metadata.origin);$screenRight=$origin[0]+$shot.metadata.width;$screenBottom=$origin[1]+$shot.metadata.height
-            foreach($item in $items){Assert (!$item.Current.IsOffscreen) 'A popup item is off screen';Assert ($item.Current.Name) 'A popup item has no rendered label'}
+            foreach($item in $items){Assert (!$item.Current.IsOffscreen) 'A popup item is off screen';Assert (![string]::IsNullOrEmpty($item.Current.Name)) 'A popup item has no rendered label'}
+            $container=Popup-Container $items
+            if(!$container){Key 27;Unverified 'No owned UIA popup container or unique native retained popup HWND exposes the actual popup rectangle; item bounds do not include its padding' @{window=$outer;screen_capture=$shot.path;item_bounds=@($items|ForEach-Object {@{id=$_.Current.AutomationId;bounds=(Bounds-Array $_)}})}}
+            $bounds=$container.bounds;$left=$bounds[0];$top=$bounds[1];$right=$left+$bounds[2];$bottom=$top+$bounds[3]
             Assert ($left -lt $outer.Left -or $top -lt $outer.Top -or $right -gt $outer.Right -or $bottom -gt $outer.Bottom) 'The actual MenuFlyout stayed entirely inside the main window'
             Assert ($left -ge $origin[0] -and $top -ge $origin[1] -and $right -le $screenRight -and $bottom -le $screenBottom) 'The actual popup extends off screen'
             $crop=Join-Path $armOut 'F10-popup.png';[PocFunctionalPixels]::Crop($shot.path,$crop,[int]($left-$origin[0]),[int]($top-$origin[1]),[int]($right-$left),[int]($bottom-$top));Assert ([PocFunctionalPixels]::Colors($crop) -ge 3) 'Popup crop has no visible item content';Key 27
-            @{status='pass';popup=@($left,$top,($right-$left),($bottom-$top));window=$outer;crop=$crop;items=@($items|ForEach-Object {$_.Current.AutomationId})}
+            @{status='pass';popup=@($left,$top,($right-$left),($bottom-$top));container=$container;window=$outer;crop=$crop;items=@($items|ForEach-Object {$_.Current.AutomationId})}
         }
     }catch{
         $harnessErrors.Add(@{arm=$which;stage='UI application';error=$_.Exception.Message;repro=$repro})
         foreach($id in @('F3','F4','F5','F6','F7','F9','F10')){if(!@($results|Where-Object {$_.arm -eq $which -and $_.id -eq $id}).Count){Check $id 'UI application prerequisite' {Unverified 'The owned UI application could not be prepared; see harness_errors'}}}
     }finally{try{Close-Ui}catch{Save-Results}}
+    try{Resolve-DeferredText}catch{$harnessErrors.Add(@{arm=$which;stage='deferred text evidence';error=$_.Exception.Message;repro=$repro});Save-Results}
     try{Resolve-DeferredCaret}catch{$harnessErrors.Add(@{arm=$which;stage='deferred caret evidence';error=$_.Exception.Message;repro=$repro});Save-Results}
     Check 'F8' 'Touch inertia' {
         $contacts=@(Observed 'scroll-touch');$durations=[Collections.Generic.List[object]]::new()

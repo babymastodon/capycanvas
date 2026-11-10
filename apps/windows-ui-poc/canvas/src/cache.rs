@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}, mpsc::{self, Receiver, TryRecvError}};
+use std::sync::{Arc, RwLock, atomic::{AtomicU64, Ordering}, mpsc::{self, Receiver, TryRecvError}};
 use wgpu::util::DeviceExt;
 
 pub use poc_common::THUMBNAIL_CAPACITY;
@@ -12,6 +12,44 @@ pub struct ThumbnailReadback {
 }
 
 pub struct GlassPaint { pub scale:f32, pub opacity:f32 }
+
+#[derive(Clone)]
+pub struct CacheSnapshot {
+    pub blur_views: [wgpu::TextureView; 2],
+    pub generation: Arc<AtomicU64>,
+    pub thumbnail_view: wgpu::TextureView,
+    pub thumbnail_rows: Arc<[u32]>,
+    pub dimensions: [u32; 2],
+}
+impl CacheSnapshot {
+    pub fn blur_view(&self) -> Option<&wgpu::TextureView> {
+        let generation=self.generation.load(Ordering::Acquire);
+        (generation!=0).then(||&self.blur_views[(generation&1) as usize])
+    }
+}
+
+#[derive(Clone,Default)]
+pub struct SharedCache {
+    published: Arc<RwLock<Option<Arc<CacheSnapshot>>>>,
+    updates: Option<crossbeam_channel::Sender<()>>,
+}
+impl SharedCache {
+    pub(crate) fn with_updates(updates: crossbeam_channel::Sender<()>) -> Self { Self { updates: Some(updates), ..Default::default() } }
+    pub fn snapshot(&self) -> Option<Arc<CacheSnapshot>> {self.published.try_read().ok()?.clone()}
+    pub(crate) fn publish(&self,cache:&Cache) -> Result<(),String> {
+        {
+            let mut published=self.published.write().map_err(|_|"shared cache poisoned")?;
+            if !published.as_ref().is_some_and(|snapshot|Arc::ptr_eq(&snapshot.generation,&cache.generation) && snapshot.thumbnail_view==cache.thumbnail_view && snapshot.thumbnail_rows.as_ref()==cache.thumbnail_rows()) {
+                *published=Some(Arc::new(CacheSnapshot {
+                    blur_views:cache.blur_views.clone(),generation:cache.generation.clone(),thumbnail_view:cache.thumbnail_view.clone(),
+                    thumbnail_rows:Arc::from(cache.thumbnail_rows()),dimensions:cache.dimensions,
+                }));
+            }
+        }
+        if let Some(updates) = &self.updates { let _ = updates.try_send(()); }
+        Ok(())
+    }
+}
 
 enum MapState {
     Idle,
@@ -132,7 +170,7 @@ impl Cache {
             label: Some("canvas glass cache"), layout: &glass_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&blur_views[index]) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }, wgpu::BindGroupEntry { binding: 2, resource: glass_uniform.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: glass_rects.as_entire_binding() }],
         }));
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("canvas glass"), source: wgpu::ShaderSource::Wgsl(GLASS_SHADER.into()) });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("canvas glass"), source: wgpu::ShaderSource::Wgsl(GLASS_SHADER.replace("GLASS_GUTTER_PX",&format!("{:.1}",poc_common::GLASS_GUTTER_PX)).into()) });
         let glass = pipeline(device, &shader, "vertex", "fragment", &[&glass_layout],Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING));
         Self {
             blur_views, generation: Arc::new(AtomicU64::new(0)), thumbnail_view, dimensions: [width, height], scratch, blur_layout, blur_uniforms, blur_groups,
@@ -167,9 +205,13 @@ impl Cache {
         if self.static_copy_pending && self.request_readback(device,encoder) {self.static_copy_pending=false;}
     }
     pub fn has_pending_readback(&self)->bool {self.static_copy_pending || self.readbacks.iter().any(|slot|!slot.idle())}
-    pub fn encode_thumbnails(&mut self, _device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, row_ids:&[u32], seconds: f32) {
+    pub fn encode_thumbnails(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, row_ids:&[u32], seconds: f32) {
         assert!(row_ids.len()<=THUMBNAIL_CAPACITY as usize && row_ids.iter().all(|row|*row<=65_535));
         if row_ids.is_empty() {self.thumbnail_rows.clear();return;}
+        if row_ids!=self.thumbnail_rows {
+            self.thumbnail_texture=texture(device,"visible row thumbnails",[THUMBNAIL_SIZE,THUMBNAIL_SIZE*THUMBNAIL_CAPACITY]);
+            self.thumbnail_view=self.thumbnail_texture.create_view(&Default::default());
+        }
         queue.write_buffer(&self.thumbnail_uniform,0,&words(&[row_ids.len() as u32,seconds.to_bits(),0,0]));
         queue.write_buffer(&self.thumbnail_ids,0,&words(row_ids));
         let mut pass = render_pass(encoder, &self.thumbnail_view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
@@ -315,12 +357,12 @@ struct Vertex { @builtin(position) position: vec4<f32>, @location(0) local: vec2
 @vertex fn vertex(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> Vertex {
     var corners = array<vec2<f32>,6>(vec2(0.0,0.0),vec2(1.0,0.0),vec2(0.0,1.0),vec2(0.0,1.0),vec2(1.0,0.0),vec2(1.0,1.0));
     let rect = rects[instance] * params.scale;
-    let local = corners[index] * (rect.zw + vec2(0.0,2.0));
+    let local = corners[index] * (rect.zw + vec2(GLASS_GUTTER_PX+2.0,2.0));
     return Vertex(vec4((rect.xy + local) / params.size * vec2(2.0,-2.0) + vec2(-1.0,1.0),0.0,1.0),local,rect.zw);
 }
 @fragment fn fragment(v: Vertex) -> @location(0) vec4<f32> {
     if v.local.y >= v.size.y {
-        if v.local.y < v.size.y+2.0 && v.local.x >= v.size.x/3.0 && v.local.x < 2.0*v.size.x/3.0 {return vec4(0.0,params.opacity,params.opacity,params.opacity);}
+        if v.local.y < v.size.y+2.0 && v.local.x >= v.size.x+GLASS_GUTTER_PX && v.local.x < v.size.x+GLASS_GUTTER_PX+2.0 {return vec4(0.0,params.opacity,params.opacity,params.opacity);}
         discard;
     }
     let radius = min(12.0 * params.scale, min(v.size.x,v.size.y)*0.5);
@@ -446,8 +488,49 @@ mod tests {
             assert_eq!(pixel(60,30)[3],255);
             assert_eq!(pixel(10,30),&[0,0,0,255]);assert_eq!(pixel(42,62),&[0,0,0,255]);
             for channel in 0..3 {assert!((pixel(42,57)[channel] as i16-intensity as i16).abs()<=1);}
-            let cyan_rows:Vec<_>=(0..128).filter(|y|{let rgba=pixel(42,*y);rgba[0]==0 && rgba[3]==255 && (rgba[1] as i16-intensity as i16).abs()<=1 && (rgba[2] as i16-intensity as i16).abs()<=1}).collect();assert_eq!(cyan_rows,[60,61]);
+            let cyan_rows:Vec<_>=(0..128).filter(|y|{let rgba=pixel(74,*y);rgba[0]==0 && rgba[3]==255 && (rgba[1] as i16-intensity as i16).abs()<=1 && (rgba[2] as i16-intensity as i16).abs()<=1}).collect();assert_eq!(cyan_rows,[60,61]);assert_eq!(pixel(42,60),&[0,0,0,255]);
         }
+    }
+    #[test]
+    fn shared_snapshots_retain_matching_thumbnail_pixels_and_blur_across_row_changes_and_resize() {
+        let instance=headless_instance();
+        let adapter=pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device,queue)=pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let (updates,notifications)=crossbeam_channel::bounded(1);let shared=SharedCache::with_updates(updates);assert!(shared.snapshot().is_none());
+        let mut cache=Cache::new(&device,64,64);shared.publish(&cache).unwrap();assert!(shared.snapshot().unwrap().blur_view().is_none());
+        let viewport=texture(&device,"snapshot blur source",[64,64]).create_view(&Default::default());
+        let mut encoder=device.create_command_encoder(&Default::default());
+        drop(render_pass(&mut encoder,&viewport,wgpu::LoadOp::Clear(wgpu::Color::RED)));
+        let generation=cache.encode_blur(&device,&queue,&mut encoder,&viewport);
+        cache.encode_thumbnails(&device,&queue,&mut encoder,&[0,70,140],0.0);
+        queue.submit([encoder.finish()]);cache.publish_blur(generation);shared.publish(&cache).unwrap();
+        let old=shared.snapshot().unwrap();assert_eq!(old.generation.load(Ordering::Acquire),1);assert_eq!(old.blur_view(),Some(&old.blur_views[1]));
+        let mut encoder=device.create_command_encoder(&Default::default());
+        cache.encode_thumbnails(&device,&queue,&mut encoder,&[0,70,140],1.0);queue.submit([encoder.finish()]);shared.publish(&cache).unwrap();
+        assert_eq!(notifications.try_iter().count(),1);
+        assert!(Arc::ptr_eq(&old,&shared.snapshot().unwrap()));
+        let mut select=crossbeam_channel::Select::new();let notification=select.recv(&notifications);assert!(select.try_ready().is_err());
+        shared.publish(&cache).unwrap();shared.publish(&cache).unwrap();
+        assert_eq!(select.try_ready().unwrap(),notification);assert_eq!(notifications.try_iter().count(),1);
+        let mut encoder=device.create_command_encoder(&Default::default());
+        cache.encode_thumbnails(&device,&queue,&mut encoder,&[70,140,210],0.0);queue.submit([encoder.finish()]);shared.publish(&cache).unwrap();
+        let shifted=shared.snapshot().unwrap();assert_ne!(old.thumbnail_view,shifted.thumbnail_view);
+        assert_eq!(&*old.thumbnail_rows,&[0,70,140]);assert_eq!(&*shifted.thumbnail_rows,&[70,140,210]);
+        cache=Cache::new(&device,128,96);shared.publish(&cache).unwrap();drop(cache);
+        assert_eq!(shared.snapshot().unwrap().dimensions,[128,96]);assert_eq!(old.dimensions,[64,64]);
+        assert!(shared.snapshot().unwrap().blur_view().is_none());assert!(old.blur_view().is_some());
+        let guard=shared.published.write().unwrap();assert!(shared.snapshot().is_none());drop(guard);assert!(shared.snapshot().is_some());
+        let readback=device.create_buffer(&wgpu::BufferDescriptor {label:None,size:768,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        let mut encoder=device.create_command_encoder(&Default::default());
+        for (index,view) in [&old.thumbnail_view,&shifted.thumbnail_view,old.blur_view().unwrap()].into_iter().enumerate() {
+            encoder.copy_texture_to_buffer(view.texture().as_image_copy(),wgpu::TexelCopyBufferInfo {buffer:&readback,layout:wgpu::TexelCopyBufferLayout {offset:index as u64*256,bytes_per_row:Some(256),rows_per_image:Some(1)}},wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1});
+        }
+        queue.submit([encoder.finish()]);let (tx,rx)=std::sync::mpsc::channel();readback.slice(..).map_async(wgpu::MapMode::Read,move |result|{let _=tx.send(result);});device.poll(wgpu::PollType::wait_indefinitely()).unwrap();rx.recv().unwrap().unwrap();
+        let bytes=readback.slice(..).get_mapped_range().unwrap();
+        for (index,phase) in [0.1,70.0/97.0].into_iter().enumerate() {
+            let expected=((0.5f32/32.0+phase).fract()*255.0).round();assert!((bytes[index*256] as f32-expected).abs()<=1.0);assert_eq!(bytes[index*256+3],255);
+        }
+        assert_eq!(&bytes[512..516],&[255,0,0,255]);
     }
     #[test]
     fn thumbnail_unpack_preserves_row_order_and_discards_only_padding() {

@@ -1,0 +1,26 @@
+[package]
+name = "poc-retained"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+poc-common.workspace = true
+poc-canvas.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+arc-swap = "1"
+accesskit = "0.25"
+parley = { version = "0.12", features = ["complex-scripts"] }
+fontique = "0.12"
+etagere = "0.3"
+resvg = { version = "0.47", default-features = false }
+bytemuck = { version = "1", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+accesskit_windows = "0.35"
+windows-core = "0.62.2"
+windows = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graphics_DirectWrite", "Win32_UI_Input_Ime", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_UI_Accessibility"] }

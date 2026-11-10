@@ -1,5 +1,5 @@
 [workspace]
-members = ["common", "canvas", "observer"]
+members = ["common", "canvas", "observer", "retained"]
 resolver = "3"
 
 [workspace.package]
