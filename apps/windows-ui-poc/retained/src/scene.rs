@@ -77,6 +77,25 @@ pub enum Target {
     MenuItem(u32),
     Visible(u32),
 }
+#[derive(Default)]
+pub struct CaptionPress {
+    button: Option<Target>,
+}
+impl CaptionPress {
+    pub fn press(&mut self, button: Option<Target>) -> bool {
+        self.button = button;
+        self.is_pressed()
+    }
+    pub fn is_pressed(&self) -> bool {
+        self.button.is_some()
+    }
+    pub fn release(&mut self, button: Option<Target>) -> Option<Target> {
+        self.button.take().filter(|pressed| Some(*pressed) == button)
+    }
+    pub fn cancel(&mut self) {
+        self.button = None;
+    }
+}
 pub struct Motion {
     pub scroll: AtomicU32,
     pub drawer: AtomicU32,
@@ -837,3 +856,33 @@ if let Some(high)=previous{if (0xdc00..=0xdfff).contains(&unit){return [char::fr
 
 pub fn popup_item_hit(y_physical:f32,scale:f32)->Option<u32>{if !y_physical.is_finite()||!scale.is_finite()||scale<=0.0{return None;}let top=metric("divider")*0.5;let height=metric("header_height");let count=spec()["menu_items"].as_array().unwrap().len()as u32;let local=y_physical/scale-top;if local<0.0||local>=height*count as f32{return None;}Some((local/height).floor()as u32)}
 #[cfg(test)]mod popup_tests{use super::*;#[test]fn popup_hits_use_padded_native_rows_at_both_required_scales(){for scale in [1.25,1.5]{assert_eq!(popup_item_hit(3.0*scale,scale),None);assert_eq!(popup_item_hit(4.0*scale,scale),Some(0));assert_eq!(popup_item_hit(39.9*scale,scale),Some(0));assert_eq!(popup_item_hit(40.0*scale,scale),Some(1));assert_eq!(popup_item_hit(291.9*scale,scale),Some(7));assert_eq!(popup_item_hit(292.0*scale,scale),None);assert_eq!(popup_item_hit(296.0*scale,scale),None);}}}
+
+#[cfg(test)]
+mod caption_tests {
+    use super::*;
+    #[test]
+    fn caption_release_requires_the_same_button_and_consumes_the_press() {
+        let mut press = CaptionPress::default();
+        for button in [Target::Minimize, Target::Maximize, Target::Close] {
+            assert!(press.press(Some(button)));
+            assert_eq!(press.release(Some(button)), Some(button));
+            assert_eq!(press.release(Some(button)), None);
+        }
+        press.press(Some(Target::Maximize));
+        assert_eq!(press.release(Some(Target::Close)), None);
+        assert!(!press.is_pressed());
+        press.press(Some(Target::Close));
+        assert_eq!(press.release(None), None);
+        assert!(!press.is_pressed());
+    }
+    #[test]
+    fn cancellation_or_another_nonclient_press_cannot_activate_a_stale_button() {
+        let mut press = CaptionPress::default();
+        press.press(Some(Target::Close));
+        press.cancel();
+        assert_eq!(press.release(Some(Target::Close)), None);
+        press.press(Some(Target::Maximize));
+        assert!(!press.press(None));
+        assert_eq!(press.release(Some(Target::Maximize)), None);
+    }
+}

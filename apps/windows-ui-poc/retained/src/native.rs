@@ -109,6 +109,7 @@ struct WindowState {
     scale: f32,
     last_cpu: Instant,
     characters:Utf16Input,
+    caption: CaptionPress,
     closing: bool,
 }
 const COPY_TEXT: u32 = WM_APP + 41;
@@ -249,6 +250,14 @@ fn update_ime(hwnd: HWND, hits: &HitMap) {
             },
         );
         let _ = ImmReleaseContext(hwnd, context);
+    }
+}
+fn caption_button(hit: usize) -> Option<Target> {
+    match hit as u32 {
+        HTMINBUTTON => Some(Target::Minimize),
+        HTMAXBUTTON => Some(Target::Maximize),
+        HTCLOSE => Some(Target::Close),
+        _ => None,
     }
 }
 fn pointer_phase(message: u32) -> u8 {
@@ -513,9 +522,43 @@ unsafe extern "system" fn window_proc(
                 return response.into();
             }
         }
-        WM_NCLBUTTONDOWN|WM_NCPOINTERDOWN=>{if state.hits.load().popup.load(std::sync::atomic::Ordering::Acquire){let _=state.ui.try_send(UiEvent::ClosePopup);}},
-        WM_ACTIVATE if wparam.0&0xffff==WA_INACTIVE as usize=>{if state.hits.load().popup.load(std::sync::atomic::Ordering::Acquire){let _=state.ui.try_send(UiEvent::ClosePopup);}},
+        WM_NCLBUTTONDOWN | WM_NCPOINTERDOWN => {
+            if state.hits.load().popup.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = state.ui.try_send(UiEvent::ClosePopup);
+            }
+            if message == WM_NCLBUTTONDOWN && state.caption.press(caption_button(wparam.0)) {
+                return LRESULT(0);
+            }
+        }
+        WM_NCLBUTTONUP => {
+            let button = caption_button(wparam.0);
+            let handled = state.caption.is_pressed() || button.is_some();
+            if let Some(button) = state.caption.release(button) {
+                unsafe {
+                    match button {
+                        Target::Minimize => { let _ = ShowWindow(hwnd, SW_MINIMIZE); }
+                        Target::Maximize => {
+                            let command = if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
+                            let _ = ShowWindow(hwnd, command);
+                        }
+                        Target::Close => { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            if handled {
+                return LRESULT(0);
+            }
+        }
+        WM_CANCELMODE | WM_CAPTURECHANGED => state.caption.cancel(),
+        WM_ACTIVATE if wparam.0 & 0xffff == WA_INACTIVE as usize => {
+            state.caption.cancel();
+            if state.hits.load().popup.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = state.ui.try_send(UiEvent::ClosePopup);
+            }
+        }
         WM_SETFOCUS | WM_KILLFOCUS => {
+            if message == WM_KILLFOCUS { state.caption.cancel(); }
             if message==WM_KILLFOCUS&&state.hits.load().popup.load(std::sync::atomic::Ordering::Acquire){let _=state.ui.try_send(UiEvent::ClosePopup);}
             let queued = state
                 .adapter
@@ -2351,6 +2394,7 @@ pub fn run() -> Result<(), String> {
         scale: unsafe { GetDpiForWindow(hwnd) } as f32 / 96.0,
         last_cpu: Instant::now(),
         characters:Utf16Input::default(),
+        caption: CaptionPress::default(),
         closing: false,
     });
     unsafe {
