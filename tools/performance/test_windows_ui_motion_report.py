@@ -10,6 +10,22 @@ spec.loader.exec_module(report)
 
 
 class ReportTests(unittest.TestCase):
+    def test_process_cpu_per_displayed_change_pools_work_instead_of_inputs(self):
+        def contact(cpu,changes,inputs):
+            return {'input_count':inputs,'cpu':{'active_ui_ms':1,'process_ms':cpu,
+                    'active_process_ms':cpu-1,'private_bytes':1},
+                    'probes':{'content':{'changes':changes,'motion_seconds':1,
+                    'samples':{key:[] for key in ('interval_ms','interior_interval_ms','response_ms','completion_ms')}}}}
+        control=report.pooled([contact(12,1,10),contact(18,2,10)],'content')
+        candidate=report.pooled([contact(20,3,10),contact(20,3,10)],'content')
+        self.assertGreater(candidate['process_ms_per_input'],control['process_ms_per_input'])
+        self.assertLess(candidate['process_ms_per_change'],control['process_ms_per_change'])
+        self.assertEqual(control['process_ms_per_change'],10)
+        self.assertEqual(control['active_process_ms_per_change'],28/3)
+        empty=report.pooled([contact(1,0,1)],'content')
+        self.assertIsNone(empty['process_ms_per_change'])
+        self.assertIsNone(empty['active_process_ms_per_change'])
+
     def test_motion_cadence_separates_turn_dwell_and_preserves_mid_run_stalls(self):
         inputs=[{'qpc':0,'expected_value':0,'segment':0},
                 {'qpc':130,'expected_value':100,'segment':0},

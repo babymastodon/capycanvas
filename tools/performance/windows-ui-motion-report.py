@@ -342,6 +342,8 @@ def pooled(contacts, probe):
     active_cpu = sum(c["cpu"]["active_ui_ms"] for c in contacts)
     metrics = {"changes_per_s":changes_count/duration if duration else None,
                "ui_ms_per_change":active_cpu/changes_count if changes_count else None,
+               "process_ms_per_change":sum(c["cpu"]["process_ms"] for c in contacts)/changes_count if changes_count else None,
+               "active_process_ms_per_change":sum(c["cpu"]["active_process_ms"] for c in contacts)/changes_count if changes_count else None,
                "ui_ms_per_input":active_cpu/sum(c["input_count"] for c in contacts),
                "process_ms_per_input":sum(c["cpu"]["process_ms"] for c in contacts)/sum(c["input_count"] for c in contacts),
                "active_process_ms_per_input":sum(c["cpu"]["active_process_ms"] for c in contacts)/sum(c["input_count"] for c in contacts),
