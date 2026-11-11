@@ -25,9 +25,11 @@ impl PreviewPaints {
     pub(crate) fn start(widget: &gtk::Widget, texture: impl Fn() -> Option<gdk::Texture> + 'static) -> Self {
         let observed = widget.clone();
         Self::start_from_node(widget, move || {
-            let image = gtk::WidgetPaintable::new(Some(&observed)).current_image();
             let snapshot = gtk::Snapshot::new();
-            image.snapshot(&snapshot, observed.width() as f64, observed.height() as f64);
+            let parent = observed.parent()?;
+            let origin = observed.compute_point(&parent, &gtk::graphene::Point::zero())?;
+            snapshot.translate(&gtk::graphene::Point::new(-origin.x(), -origin.y()));
+            parent.snapshot_child(&observed, &snapshot);
             snapshot.to_node()
         }, texture)
     }
