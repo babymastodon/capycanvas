@@ -442,7 +442,9 @@ struct View:std::enable_shared_from_this<View>{
     }
     void updateReadout(J const& view){
         bool focused=readout.FocusState()==FocusState::Keyboard;
-        auto next=view.Stringify()+layout.Stringify()+to_hstring(layoutScale)+data->theme()+(focused?L"/focus":L"");
+        auto shown=O({{L"label",S(str(view,L"readout_label"))},{L"gamut",B(flag(view,L"out_of_gamut"))},{L"text",array(view,L"readout_layout_text")},
+            {L"mode",S(str(view,L"readout"))},{L"description",S(str(view,L"readout_description"))},{L"outer",N(num(object(view,L"geometry"),L"outer"))}});
+        auto next=shown.Stringify()+layout.Stringify()+to_hstring(layoutScale)+data->theme()+(focused?L"/focus":L"");
         if(next==readoutKey)return;readoutKey=next;
         static thread_local GlyphRasterizer rasterizer;
         double half=array(layout,L"readout").GetNumberAt(2),radius=num(layout,L"readout_radius");
@@ -520,17 +522,17 @@ struct View:std::enable_shared_from_this<View>{
         intensityArc->present(view,panelSize,hdr,!transparentSlot());
         if(!hdr)return;
         double stops=num(view,L"intensity");
-        auto ramps=array(view,L"intensity_ramp");auto markerColor=array(view,L"marker_color");
-        auto next=to_hstring(stops)+ramps.Stringify()+markerColor.Stringify()+to_hstring(panelSize)+data->theme();
-        if(next==arcKey)return;arcKey=next;
         wchar_t text[32];swprintf(text,32,L"%s%.2f EV",stops>=0?L"+":L"",stops);
         double font=num(object(layout,L"intensity_caption"),L"font_size");
+        auto ink=data->brush(L"text").as<SolidColorBrush>().Color();
+        auto next=hstring(text)+L"/"+to_hstring(font)+L"/"+to_hstring(panelSize)+L"/"+to_hstring(layoutScale)+L"/"+to_hstring(uint32_t(ink.R*65536+ink.G*256+ink.B));
+        if(next==arcKey)return;arcKey=next;
         if(measuredFont!=font){advances.clear();measuredFont=font;metrics.FontSize(GlyphRasterizer::fontSize(font));}
         double digit=0;for(wchar_t c=L'0';c<=L'9';c++)digit=std::max(digit,advance(c));
         A cells;for(auto c:std::wstring_view(text))cells.Append(N((c==L' '||(c>=L'0'&&c<=L'9'))?digit:advance(c)));
         auto placements=colorUi(data->localization.get(),O({{L"type",S(L"intensity_caption")},{L"size",N(panelSize)},{L"advances",cells}})).GetArray();
         static thread_local GlyphRasterizer rasterizer;
-        auto ink=data->brush(L"text").as<SolidColorBrush>().Color();size_t index=0;
+        size_t index=0;
         for(auto c:std::wstring_view(text)){
             if(index==captionGlyphs.size()){
                 Glyph glyph;glyph.image.IsHitTestVisible(false);glyph.image.Stretch(Stretch::Fill);
@@ -541,7 +543,10 @@ struct View:std::enable_shared_from_this<View>{
             double angle=glyphPoint.GetNumberAt(2)*3.141592653589793/180,cs=std::cos(angle),sn=std::sin(angle),glyphX=-advance(c)*.5;
             Matrix position{cs,sn,-sn,cs,glyphPoint.GetNumberAt(0)+cs*glyphX,glyphPoint.GetNumberAt(1)+sn*glyphX};
             glyph.image.Visibility(c==L' '?Visibility::Collapsed:Visibility::Visible);
-            if(c!=L' ')rasterizer.draw(glyph.image,std::wstring_view(&c,1),font,false,position,layoutScale,ink,.8f);
+            std::array<double,9> stamp{font,position.M11,position.M12,position.M21,position.M22,position.OffsetX,position.OffsetY,layoutScale,double(ink.R*65536+ink.G*256+ink.B)};
+            if(c!=L' '&&(glyph.scalar!=c||glyph.key!=stamp)){
+                rasterizer.draw(glyph.image,std::wstring_view(&c,1),font,false,position,layoutScale,ink,.8f);glyph.scalar=c;glyph.key=stamp;
+            }
         }
         for(;index<captionGlyphs.size();index++)captionGlyphs[index].image.Visibility(Visibility::Collapsed);
     }
@@ -626,5 +631,5 @@ double ColorPanelNaturalHeight(std::shared_ptr<WorkspaceData> const& data,double
     return num(View::geometry(data,size,flag(object(data->model,L"color_panel"),L"hdr")),L"height",size);
 }
 FrameworkElement ColorPanel(std::shared_ptr<WorkspaceData> const& data,Bindings& bindings,bool fitHeight){
-    auto view=std::make_shared<View>(data,fitHeight);view->init();bindings.emplace_back([view]{view->refresh();});return view->root;
+    auto view=std::make_shared<View>(data,fitHeight);view->init();bindings.emplace_back([view]{view->data->queueColors();});return view->root;
 }
