@@ -16,7 +16,7 @@ using RegisteredWindows=std::vector<std::pair<uint64_t,HWND>>;
 inline void UpdateWindowRegistry(RegisteredWindows const* windows,HWND hwnd=nullptr,uint64_t id=0,bool applied=false,bool loaded=false){
     struct Entry {uint64_t id;bool applied=false,loaded=false;};
     struct State {
-        std::mutex mutex;std::filesystem::path path;std::string pending;bool writing=false;
+        std::mutex mutex;std::shared_ptr<OrderedTraceFile> file=std::make_shared<OrderedTraceFile>();
         std::map<HWND,Entry> windows;RegisteredWindows order;
     };
     static auto state=std::make_shared<State>();
@@ -47,17 +47,8 @@ inline void UpdateWindowRegistry(RegisteredWindows const* windows,HWND hwnd=null
         }else{state->windows.erase(hwnd);std::erase_if(state->order,[hwnd](auto const& entry){return entry.second==hwnd;});}
         std::ostringstream stream;stream<<"{\"process_id\":"<<GetCurrentProcessId()<<",\"windows\":[";
         bool comma=false;for(auto const& [identity,handle]:state->order){auto const& entry=state->windows.at(handle);if(comma)stream<<",";comma=true;stream<<"{\"id\":"<<identity<<",\"hwnd\":"<<uintptr_t(handle)<<",\"ready\":"<<(entry.applied&&entry.loaded?"true":"false")<<"}";}stream<<"]}";
-        state->path=std::move(path);state->pending=stream.str();
-        if(state->writing)return;state->writing=true;
+        PublishTraceFile(state->file,std::move(path),stream.str());
     }
-    [](std::shared_ptr<State> state)->winrt::fire_and_forget{
-        co_await winrt::resume_background();
-        for(;;){
-            std::filesystem::path path;std::string payload;
-            {std::lock_guard lock(state->mutex);if(state->pending.empty()){state->writing=false;co_return;}path=state->path;payload=std::move(state->pending);state->pending.clear();}
-            try{WriteTraceFile(path,payload);}catch(...){OutputDebugStringW(L"Window registry publication failed\n");}
-        }
-    }(state);
 }
 inline void PublishWindowRegistry(RegisteredWindows const& windows){UpdateWindowRegistry(&windows);}
 inline void ReadyRegisteredWindow(HWND hwnd,bool loaded=false){

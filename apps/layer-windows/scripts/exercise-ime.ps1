@@ -109,9 +109,12 @@ try{
  if($after.state.layer_tools.editing_layer.opacity -ne $value -or $after.state.document_file.revision -ne $before.state.document_file.revision -or $after.windows_gpu_generation -ne $gpu){throw 'Refused IME numeric input changed the document or GPU owner'}
  Key 27;Wait-Until {!$opacity.Current.HelpText} 'Cancel did not clear the numeric refusal'
  $entry=Begin-Rename;Compose $entry 'kanji' 'かんじ';$text=Value $entry
- $bounds=$entry.Current.BoundingRectangle;[CapyRowPointer]::Initialize([uint32]$review.Id)
+ $bounds=$entry.Current.BoundingRectangle;[CapyRowPointer]::Initialize([uint32]$review.Id);$presses=[long](Text-Input).pointer_presses
  [CapyRowPointer]::Down('mouse',[int]($bounds.X+$bounds.Width/2),[int]($bounds.Y+$bounds.Height/2));[CapyRowPointer]::Up()
+ Wait-Until {$textInput=Text-Input;[long]$textInput.pointer_presses -gt $presses -and $textInput.composing -eq $true} 'The pointer confirmation did not reopen the Japanese composition'
  Key 13
+ Wait-Until {(Text-Input).composing -eq $false} 'The IME Enter did not finish the reopened composition'
+ Assert-Renaming $candidate;Key 13
  Wait-Until {$view=Model;$null -eq $view.state.layer_tools.rename_layer -and $view.state.layer_tools.editing_layer.label -eq $text} 'Pointer confirmation consumed the next ordinary Enter'
  $entry=Begin-Rename;Compose $entry 'nihonn' 'にほん';$text=Value $entry
  Focus (Control 'layer-opacity')

@@ -39,6 +39,7 @@
 void CapyLifecycle(char const* event);
 
 namespace CapyUi {struct WorkspaceData;}
+struct OrderedTraceFile;
 
 class CanvasWindow : public std::enable_shared_from_this<CanvasWindow> {
 public:
@@ -58,6 +59,8 @@ private:
     PresentationTrace presentationTrace{GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0)!=0};
     bool brushReady=false;
     void TracePresentation(bool frame,bool dirty,bool repeat=false);
+    std::shared_ptr<OrderedTraceFile> textInputTrace;uint64_t textInputPresses=0;
+    void TraceTextInput(bool pressed);
     std::vector<std::wstring> launchFiles;
     void SendLaunchFiles(winrt::Windows::Data::Json::JsonObject const& model);
     struct Size { uint32_t width=1, height=1; float scale=1; };

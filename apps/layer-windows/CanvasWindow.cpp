@@ -116,7 +116,10 @@ CanvasWindow::CanvasWindow(std::function<void()> create,std::function<void(uint6
      createWindow(std::move(create)),testDeviceLoss(std::move(deviceLoss)),onClosed(std::move(close)),workspacePreferencesChanged(std::move(preferencesChanged)),screenData(std::make_shared<CapyUi::WorkspaceData>()) {
     // HWND/WindowId can be reused after an earlier window closes. Invalidate
     // its old diagnostic model before publishing the new live-window manifest.
-    if(GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0))for(auto kind:{"ui-state","camera-state","presentation-state"})TraceState(kind,"{}");
+    if(GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0)){
+        for(auto kind:{"ui-state","camera-state","presentation-state"})TraceState(kind,"{}");
+        textInputTrace=std::make_shared<OrderedTraceFile>();TraceTextInput(false);
+    }
 }
 LRESULT CALLBACK CanvasWindow::WindowMessage(HWND window,UINT message,WPARAM wparam,LPARAM lparam,UINT_PTR id,DWORD_PTR data){
     if(message==WM_SYSCOMMAND&&(wparam&0xFFF0)==SC_KEYMENU&&lparam==0)return 0;
@@ -148,6 +151,13 @@ static winrt::fire_and_forget PublishPanelMetrics(std::filesystem::path name,std
 }
 void CanvasWindow::TraceState(char const* kind,std::string const& value)const {
     WriteTraceFile(std::string(kind)+"-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(windowId)+".json",value);
+}
+void CanvasWindow::TraceTextInput(bool pressed) {
+    if(!textInputTrace)return;
+    if(pressed)++textInputPresses;
+    auto process=std::to_string(GetCurrentProcessId()),window=std::to_string(windowId);
+    PublishTraceFile(textInputTrace,"text-input-"+process+"-"+window+".json","{\"process_id\":"+process+",\"window_id\":"+window+
+        ",\"composing\":"+(CapyUi::focusedTextComposing(root.XamlRoot())?"true":"false")+",\"pointer_presses\":"+std::to_string(textInputPresses)+"}");
 }
 void CanvasWindow::TracePresentation(bool frame,bool dirty,bool repeat) {
     auto& trace=presentationTrace;
@@ -350,7 +360,7 @@ void CanvasWindow::Open() {
         }
         if(auto self=weak.lock();self&&!self->closed)if(auto entry=e.NewFocusedElement().try_as<TextBox>();entry&&entry.XamlRoot()==self->root.XamlRoot()){
             entry.Language(self->root.Language());CapyUi::captureTextComposition(entry,[weak](bool busy){
-                if(auto self=weak.lock();self&&!self->closing)self->Send(busy?"true":"false",CanvasCommandKind::LocalizationInput);
+                if(auto self=weak.lock();self&&!self->closing){self->Send(busy?"true":"false",CanvasCommandKind::LocalizationInput);self->TraceTextInput(false);}
             });
         }
     });
@@ -362,8 +372,9 @@ void CanvasWindow::Open() {
     root.PreviewKeyUp([weak=weak_from_this()](auto&&,KeyRoutedEventArgs const& e){
         if(auto self=weak.lock())if(!self->dialogOpen.load()&&(CapyUi::flag(CapyUi::object(self->lastModel,L"launch"),L"visible",true)||!self->header||!self->header->Key(e,false)))self->Key(e,false);
     });
-    PointerEventHandler contact([](winrt::Windows::Foundation::IInspectable const&,PointerRoutedEventArgs const& e){
+    PointerEventHandler contact([weak=weak_from_this()](winrt::Windows::Foundation::IInspectable const&,PointerRoutedEventArgs const& e){
         CapyUi::setTouchContact(e.Pointer().PointerDeviceType()==Microsoft::UI::Input::PointerDeviceType::Touch);
+        if(auto self=weak.lock())self->TraceTextInput(true);
     });
     root.AddHandler(UIElement::PointerPressedEvent(),box_value(contact),true);
     root.AddHandler(UIElement::PointerMovedEvent(),box_value(PointerEventHandler([weak=weak_from_this()](auto&&,PointerRoutedEventArgs const& e){

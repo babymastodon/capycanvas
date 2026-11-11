@@ -622,6 +622,15 @@ function Search-State{
  if($base.process_id -ne $review.Id -or $search.process_id -ne $review.Id -or $search.window_id -ne $base.window_id -or 'search' -notin $search.PSObject.Properties.Name){throw 'The search acknowledgement is not from the owned drawing'}
  $search.search
 }
+function Text-Input{
+    $path=State-File
+    if(!$path){return}
+    $inputPath=Join-Path (Split-Path -Parent $path) ((Split-Path -Leaf $path) -replace '^ui-state-','text-input-')
+    if(![IO.File]::Exists($inputPath)){return}
+    $base=Read-Snapshot $path;$textInput=Read-Snapshot $inputPath
+    if($base.process_id -ne $review.Id -or $textInput.process_id -ne $review.Id -or $textInput.window_id -ne $base.window_id){throw 'The text input trace is not from the owned drawing'}
+    $textInput
+}
 function Camera-Receipt{
     $path=State-File
     if(!$path){return}
