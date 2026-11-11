@@ -331,7 +331,7 @@ struct PalettesView:std::enable_shared_from_this<PalettesView>{
     }
     void start(){
         auto& d=*drag;d.started=true;auto& source=tiles.at(d.id);dismissMenu();
-        animate=winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+        animate=SystemUiSettings().AnimationsEnabled();
         Border ghost;ghost.Width(source.node.ActualWidth());ghost.Height(source.node.ActualHeight());ghost.Padding({3,3,3,3});ghost.CornerRadius(data->controlCorner());
         ghost.Background(data->brush(L"panel"));if(selected==d.id){ghost.BorderBrush(accent(data));ghost.BorderThickness({2,2,2,2});}
         auto patch=paint();fillPatch(patch,array(source.swatch,L"rgba"));ghost.Child(patch);ghost.IsHitTestVisible(false);

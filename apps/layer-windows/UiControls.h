@@ -432,7 +432,7 @@ struct WorkspaceData : CanvasModelSource,std::enable_shared_from_this<WorkspaceD
     }
     double textSize()const{return num(catalog,L"text_size_pt",11)*96./72.;}
     double panelMetric(wchar_t const* name)const{return num(object(catalog,L"panel_metrics"),name);}
-    double controlHeight()const{return std::max(panelMetric(L"control_height"),std::ceil(textSize()*Windows::UI::ViewManagement::UISettings().TextScaleFactor()*1.3));}
+    double controlHeight()const{return std::max(panelMetric(L"control_height"),std::ceil(textSize()*SystemUiSettings().TextScaleFactor()*1.3));}
     CornerRadius controlCorner()const{auto r=panelMetric(L"control_radius")*CornerFit;return {r,r,r,r};}
 };
 inline std::shared_ptr<ControlCapture> captureControl(std::shared_ptr<WorkspaceData> const& data,FrameworkElement const& surface,

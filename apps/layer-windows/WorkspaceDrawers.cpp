@@ -160,7 +160,7 @@ struct Drawer:std::enable_shared_from_this<Drawer>{
             auto layer=bodies.at(L"layers").view->layers;
             if(layer&&layer->restoreAnchor(inspector->anchor))inspector->anchor=J{};else dirty=true;
         }
-        bool motion=Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+        bool motion=SystemUiSettings().AnimationsEnabled();
         double progress=animating&&motion?std::clamp(std::chrono::duration<double>(Clock::now()-started).count()/(std::max(1.,num(data->catalog,L"panel_expansion_ms",200))/1000.),0.,1.):1.;
         if(inspector&&inspector->animating&&!closing){
             progress=motion?std::clamp(std::chrono::duration<double>(Clock::now()-inspector->started).count()/(std::max(1.,num(data->catalog,L"panel_expansion_ms",200))/1000.),0.,1.):1.;

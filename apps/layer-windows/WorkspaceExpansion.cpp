@@ -53,7 +53,7 @@ struct WorkspaceExpansion::Impl:std::enable_shared_from_this<Impl>{
         if(busy||!root.IsLoaded()||root.ActualWidth()<=0||root.ActualHeight()<=0)return;
         auto duration=std::max(1.,num(data->catalog,L"panel_expansion_ms",200))/1000.;
         bool measuring=measurePending;
-        double progress=!measuring&&animating&&Windows::UI::ViewManagement::UISettings().AnimationsEnabled()?std::clamp(std::chrono::duration<double>(Clock::now()-started).count()/duration,0.,1.):1.;
+        double progress=!measuring&&animating&&SystemUiSettings().AnimationsEnabled()?std::clamp(std::chrono::duration<double>(Clock::now()-started).count()/duration,0.,1.):1.;
         A heights;heights.Append(N(0));heights.Append(N(measuring?0:height));
         auto request=O({{L"type",S(L"expansion")},{L"panel",S(panel)},{L"heights",heights},{L"progress",N(progress)},
             {L"from",!measuring&&from.Size()?V(from):JsonValue::CreateNullValue()},{L"closing",B(!measuring&&closing)}});

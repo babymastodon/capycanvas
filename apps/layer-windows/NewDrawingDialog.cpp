@@ -793,7 +793,7 @@ Grid searchField;search.Padding({34,0,10,0});entryBaseline(search);searchField.C
         auto height=root.ActualHeight();
         if(target.motion){target.motion.Stop();target.motion=nullptr;}
         if(visible){target.root.Visibility(Visibility::Visible);if(height>0)target.shift.Y(height);}
-        if(!winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()||height<=0){settle(target);return;}
+        if(!SystemUiSettings().AnimationsEnabled()||height<=0){settle(target);return;}
         Animation::DoubleAnimation motion;motion.From(target.shift.Y());motion.To(visible?0:height);motion.Duration(DurationHelper::FromTimeSpan(std::chrono::milliseconds(250)));
         Animation::CubicEase ease;ease.EasingMode(Animation::EasingMode::EaseOut);motion.EasingFunction(ease);
         target.motion=Animation::Storyboard();Animation::Storyboard::SetTarget(motion,target.shift);Animation::Storyboard::SetTargetProperty(motion,L"Y");target.motion.Children().Append(motion);

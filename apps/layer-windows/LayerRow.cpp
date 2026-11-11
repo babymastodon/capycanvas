@@ -65,7 +65,7 @@ void ThumbnailEdge::stop(){if(animation){animation.Stop();animation=nullptr;}}
 void ThumbnailEdge::update(std::shared_ptr<WorkspaceData> const& data,bool editing){
     base.Fill(editing?accent(data):data->brush(L"text"));base.Opacity(editing?1:.1);outline.Fill(accent(data));
     if(selected==editing)return;
-    bool animate=selected.has_value()&&outline.IsLoaded()&&Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+    bool animate=selected.has_value()&&outline.IsLoaded()&&SystemUiSettings().AnimationsEnabled();
     double fromScale=scale.ScaleX(),fromOpacity=outline.Opacity();
     stop();selected=editing;
     double toScale=editing?1:38./32,toOpacity=editing?1:0;
@@ -253,7 +253,7 @@ bool LayerRow::canSwipe()const{for(auto value:array(model(),L"swipe_actions"))if
 void LayerRow::swipe(double offset,bool animate){
     swipeFrames.revoke();
     auto target=std::clamp(offset,object(model(),L"right_swipe").Size()?-data->panelMetric(L"layer_swipe_action_width"):0.,revealWidth());
-    if(!animate||!root.IsLoaded()||!Windows::UI::ViewManagement::UISettings().AnimationsEnabled()||target==swipeOffset){positionSwipe(target);return;}
+    if(!animate||!root.IsLoaded()||!SystemUiSettings().AnimationsEnabled()||target==swipeOffset){positionSwipe(target);return;}
     auto from=swipeOffset;auto start=std::chrono::steady_clock::now();
     swipeFrames=CompositionTarget::Rendering(auto_revoke,[weak=weak_from_this(),from,target,start](auto&&,auto&&){if(auto self=weak.lock()){
         auto t=std::clamp(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/150.,0.,1.);

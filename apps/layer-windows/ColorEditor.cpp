@@ -488,7 +488,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
     void animateSheet(bool open){
         if(slide)slide.Stop();
         double height=page.ActualHeight(),target=open?0:height;
-        if(!winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()||height<=0){
+        if(!SystemUiSettings().AnimationsEnabled()||height<=0){
             sheetShift.Y(target);if(!open)sheet.Visibility(Visibility::Collapsed);return;
         }
         Animation::DoubleAnimation motion;motion.From(sheetShift.Y());motion.To(target);motion.Duration(DurationHelper::FromTimeSpan(std::chrono::milliseconds(250)));

@@ -26,7 +26,7 @@ void ElementFactory::RecycleElement(ElementFactoryRecycleArgs const& args){
 LayersView::~LayersView(){ForgetLayerThumbnails(data->thumbnails,this);if(outsideSurface)outsideSurface.RemoveHandler(UIElement::PointerPressedEvent(),box_value(outsidePress));if(pickup)pickup->Cancel();if(timer)timer.Stop();if(menu)menu.Hide();}
 double LayersView::intrinsicUnitHeight(){
     auto scale=root.XamlRoot()?root.XamlRoot().RasterizationScale():1.;
-    auto key=data->theme()+L":"+data->language()+L":"+to_hstring(data->textSize())+L":"+to_hstring(Windows::UI::ViewManagement::UISettings().TextScaleFactor())
+    auto key=data->theme()+L":"+data->language()+L":"+to_hstring(data->textSize())+L":"+to_hstring(SystemUiSettings().TextScaleFactor())
         +L":"+to_hstring(scale)+L":"+to_hstring(data->panelMetric(L"control_height"))+L":"+to_hstring(data->panelMetric(L"compound_spacing"))+L":"+to_hstring(data->panelMetric(L"layer_edge_inset"));
     if(key!=unitStyle){
         Border frame;Grid body;layerRowFrame(data,frame,body);frame.Child(body);

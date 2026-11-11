@@ -28,7 +28,7 @@ struct WorkflowPages : std::enable_shared_from_this<WorkflowPages> {
             self->root.ClearValue(FrameworkElement::HeightProperty());self->root.Clip(nullptr);self->motion=nullptr;
             if(settled)settled();
         };
-        if(previous<0||!winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()){settle();return;}
+        if(previous<0||!SystemUiSettings().AnimationsEnabled()){settle();return;}
         auto outgoing=pages[previous],incoming=pages[index];
         incoming.Visibility(Visibility::Visible);incoming.Measure({float(std::max(1.,root.ActualWidth())),INFINITY});
         auto to=incoming.DesiredSize().Height;

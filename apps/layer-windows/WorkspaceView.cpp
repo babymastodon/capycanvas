@@ -436,7 +436,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
     }
     J metricContext(){
         auto scale=root.XamlRoot()?root.XamlRoot().RasterizationScale():1.;
-        auto textScale=Windows::UI::ViewManagement::UISettings().TextScaleFactor();
+        auto textScale=SystemUiSettings().TextScaleFactor();
         auto style=L"winui:"+data->language()+L":"+to_hstring(data->textSize());
         auto metrics=O({{L"scale",N(scale)},{L"text_scale",N(textScale)},{L"style",S(style)}});auto key=metrics.Stringify();
         if(key!=panelMetricKey){

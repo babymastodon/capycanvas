@@ -89,7 +89,7 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
         auto bounds=strip.TransformToVisual(root).TransformBounds({0,0,float(strip.ActualWidth()),float(strip.ActualHeight())});
         slideClip=rectangle(bounds);slide=J{};copies.clear();overlay.Children().Clear();
         if(slideHits.Size()!=slideOrder.Size()||bounds.Width<=0){slideHits=A{};return;}
-        animateSlide=Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+        animateSlide=SystemUiSettings().AnimationsEnabled();
         overlay.Width(bounds.Width);overlay.Height(bounds.Height);overlay.Margin({bounds.X,bounds.Y,0,0});
         RectangleGeometry mask;mask.Rect({0,0,bounds.Width,bounds.Height});overlay.Clip(mask);
         auto selectedId=uint64_t(num(model(),L"selected"));

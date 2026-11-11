@@ -90,7 +90,7 @@ struct WorkspaceTabDrag::Impl {
         if(entries.empty())return {};
         place(overlay,clip);overlay.Background(CapyUi::clear());
         RectangleGeometry mask;mask.Rect({0,0,float(num(clip,L"width")),float(num(clip,L"height"))});overlay.Clip(mask);
-        animate=Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+        animate=SystemUiSettings().AnimationsEnabled();
         visible=true;A hits;Bindings paintIcons;
         for(uint32_t i=0;i<entries.size();++i){
             auto& entry=entries[i];hits.Append(entry.hit);
