@@ -3,6 +3,7 @@
 #include "../TextCompositionKeys.h"
 #include "../NativeKeyRepeats.h"
 #include "../CanvasPointerSample.h"
+#include "../ChildOrder.h"
 #include "../PenSourceCache.h"
 #include "../CanvasContactGate.h"
 #include "../PointerCompletion.h"
@@ -515,6 +516,26 @@ int main() {
         }
     }
     std::cout<<"Test replays stay inside the drawing under off-centre, rotated and flipped cameras\n";
+    {
+        struct Items{
+            std::vector<int> values,removed;
+            uint32_t Size()const{return uint32_t(values.size());}
+            int GetAt(uint32_t index)const{return values[index];}
+            bool IndexOf(int value,uint32_t& at)const{auto found=std::find(values.begin(),values.end(),value);at=uint32_t(found-values.begin());return found!=values.end();}
+            void RemoveAt(uint32_t index){removed.push_back(values[index]);values.erase(values.begin()+index);}
+            void InsertAt(uint32_t index,int value){values.insert(values.begin()+index,value);}
+        };
+        std::vector<int> start{1,2,3,4};
+        for(auto target:std::vector<std::vector<int>>{{1,2,3,4},{1,2,3,4,5},{1,2,4}})do{
+            for(int focused:start){
+                Items items{start,{}};
+                for(uint32_t index=0;index<target.size();++index)PlaceChild(items,index,target[index],[&](int value){return value==focused;});
+                assert(std::equal(target.begin(),target.end(),items.values.begin())&&items.Size()==std::max(target.size(),start.size()));
+                assert(std::find(items.removed.begin(),items.removed.end(),focused)==items.removed.end());
+            }
+        }while(std::next_permutation(target.begin(),target.end()));
+    }
+    std::cout<<"Reordering native children never removes the focused child\n";
     WorkspacePublication publication;
     assert(!publication.Accept(false,10,4,40));
     assert(!publication.Accept(false,10,4,40,true));

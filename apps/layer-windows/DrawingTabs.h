@@ -5,6 +5,7 @@
 #include "WorkspaceGeometry.h"
 #include "ExternalImages.h"
 #include "NativePresentation.h"
+#include "ChildOrder.h"
 #include <winrt/Microsoft.UI.Input.h>
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Windows.UI.ViewManagement.h>
@@ -186,6 +187,8 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
         if((pointer||finishing)&&(!available()||!findId(array(model(),L"tabs"),double(source)).Size()||epoch!=to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")))))cancel();
         if(pointer&&slideHits.Size()){A current;for(auto v:array(model(),L"tabs"))current.Append(N(num(v.GetObject(),L"id")));if(current.Stringify()!=slideOrder.Stringify())cancel();}
         updating=true;auto weak=weak_from_this();auto m=model();auto selectedId=uint64_t(num(m,L"selected"));bool selectionChanged=selectedId!=selectedModel;selectedModel=selectedId;std::vector<hstring> order;uint32_t index=0;std::set<uint64_t> live;
+        auto focused=root.XamlRoot()?Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<DependencyObject>():nullptr;
+        auto holdsFocus=[&](DependencyObject const& item){return focused&&descendantOf(focused,item);};
         for(auto v:array(m,L"tabs")){auto spec=v.GetObject();auto id=uint64_t(num(spec,L"id"));live.insert(id);auto label=marked(spec);auto key=to_hstring(id);order.push_back(key);
             if(!tabs.contains(id)){
                 Tab t;t.shade.IsHitTestVisible(false);t.shade.CornerRadius({corner(),corner(),corner(),corner()});t.box.Children().Append(t.shade);t.separator.Width(1);t.separator.HorizontalAlignment(HorizontalAlignment::Left);t.separator.IsHitTestVisible(false);t.separator.Background(data->line(L"border"));t.box.Children().Append(t.separator);
@@ -212,8 +215,8 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
             auto& t=tabs.at(id);t.text.Text(label);t.text.Foreground(data->brush(L"text"));paintTab(t,id==uint64_t(num(m,L"selected")));t.select.IsEnabled(available());t.close.IsEnabled(available());tooltip(t.select,str(spec,L"location",label));AutomationProperties::SetName(t.select,label);
             auto& r=rows.at(id);r.text.Text(label);auto location=str(spec,L"location");if(r.locationSource!=location){r.locationSource=location;r.location.Text(data->caption(O({{L"type",S(L"drawing_location")},{L"location",S(location)}})));AutomationProperties::SetHelpText(r.location,location);}r.item.IsEnabled(available());r.remove.IsEnabled(available());
             auto title=str(spec,L"title");if(r.title!=title){r.title=title;auto close=data->caption(O({{L"type",S(L"close_drawing")},{L"title",S(title)}}));AutomationProperties::SetName(r.remove,close);tooltip(r.remove,close);AutomationProperties::SetName(t.close,close);tooltip(t.close,close);}
-            auto children=strip.Children();uint32_t at;if(index>=children.Size()||children.GetAt(index)!=t.box){if(children.IndexOf(t.box,at))children.RemoveAt(at);children.InsertAt(index,t.box);}
-            auto items=list.Items();if(index>=items.Size()||items.GetAt(index)!=r.item){if(items.IndexOf(r.item,at))items.RemoveAt(at);items.InsertAt(index,r.item);}++index;
+            auto children=strip.Children();PlaceChild(children,index,t.box,holdsFocus);
+            auto items=list.Items();PlaceChild(items,index,r.item,holdsFocus);++index;
             if(id==uint64_t(num(m,L"selected"))){selectorText.Text(label);if(!showing||selectionChanged)list.SelectedItem(r.item);}
         }
         while(strip.Children().Size()>index)strip.Children().RemoveAtEnd();while(list.Items().Size()>index)list.Items().RemoveAtEnd();
