@@ -62,7 +62,7 @@ struct HeaderView::Impl:std::enable_shared_from_this<Impl>{
     Border document;
     std::shared_ptr<DrawingTabs> drawings;
     std::vector<std::pair<Primitives::ToggleButton,hstring>> workspaces;
-    hstring switchActive,theme,bankKey,geometryKey,lastMeasurement,traceKey;
+    hstring switchActive,theme,bankKey,geometryKey,lastMeasurement,traceKey,placementKey;
     J geometry,view,configuration,recoveryBounds;
     std::array<J,3> overflowBounds;
     std::vector<Button> overflow;
@@ -214,7 +214,7 @@ struct HeaderView::Impl:std::enable_shared_from_this<Impl>{
         input->Source(capy,O({{L"kind",S(L"capy")}}),L"");AutomationProperties::SetAutomationId(capy,L"zen-capy");
         root.SizeChanged([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->schedule();});
         root.LayoutUpdated([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock()){
-            self->evidence();if(self->changed)self->changed();
+            self->evidence();if(self->changed&&self->placementChanged())self->changed();
         }});
         requestTimer=root.DispatcherQueue().CreateTimer();requestTimer.Interval(std::chrono::milliseconds(200));
         requestTimer.Tick([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->requests();});
@@ -766,6 +766,15 @@ struct HeaderView::Impl:std::enable_shared_from_this<Impl>{
             focusedItem=input->Selected();if(auto it=items.find(focusedItem);it!=items.end()&&it->second.frame.Visibility()==Visibility::Visible)it->second.editor.Focus(FocusState::Programmatic);
         }
         evidence();if(changed)changed();
+    }
+    bool placementChanged(){
+        if(!built||!root.XamlRoot())return false;
+        A regions;glass(regions,editing?capySurface.as<DependencyObject>():root.as<DependencyObject>(),root);
+        float scale=float(root.XamlRoot().RasterizationScale());std::wstring key=regions.Stringify().c_str();
+        for(auto r:drag(scale,uint32_t(std::lround(root.ActualWidth()*scale))))
+            key+=L";"+std::to_wstring(r.X)+L","+std::to_wstring(r.Y)+L","+std::to_wstring(r.Width)+L","+std::to_wstring(r.Height);
+        if(key==placementKey.c_str())return false;
+        placementKey=key;return true;
     }
     void evidence(){
         if(!trace||!built||!canvas.IsLoaded())return;A actual;
