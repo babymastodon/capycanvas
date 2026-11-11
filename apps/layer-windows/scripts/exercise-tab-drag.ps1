@@ -827,8 +827,9 @@ try{
  Wait-Until {@((Model).layout.groups|Where-Object {$_.active -eq 'navigator' -and $_.floating}).Count -eq 1} 'Navigator did not tear off'
  $navigator=(Model).layout.groups|Where-Object {$_.active -eq 'navigator' -and $_.floating}
  Wait-Until {@((Presentation).groups|Where-Object id -eq $navigator.id).Count -eq 1} 'Native Navigator did not tear off'
- Wait-OverviewProjection
  $before=Presentation
+ $overviewBefore=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle
+ $overviewId=(Control 'navigator-overview').GetRuntimeId() -join ':'
  $retained=(Control 'navigator-zoom_in').GetRuntimeId() -join ':'
  Capture 'navigator-first' -Composed
  $firstPixel=Check-OverviewOverlap 'navigator-before' 'navigator-first'
@@ -847,17 +848,17 @@ try{
   $old=$before.groups|Where-Object id -eq $navigator.id
   $g.bounds.x -gt $old.bounds.x+30
  } 'Native Navigator stopped moving'
- Wait-OverviewProjection
  $after=Presentation
  $afterModel=Model|Select-Object shaders_ready,canvas_ready,brush_ready,windows_gpu_generation,windows_surface_ready,windows_display,windows_workspace,windows_recovery
- [IO.File]::WriteAllText((Join-Path $run 'navigator-motion.json'),(@{before=$before;camera_applied=$cameraApplied;after=$after;camera_model=$cameraModel;after_model=$afterModel}|ConvertTo-Json -Depth 60))
+ $overviewAfter=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle
+ [IO.File]::WriteAllText((Join-Path $run 'navigator-motion.json'),(@{before=$before;camera_applied=$cameraApplied;after=$after;camera_model=$cameraModel;after_model=$afterModel;overview_before=$overviewBefore;overview_after=$overviewAfter;overview_runtime_id=$overviewId}|ConvertTo-Json -Depth 60))
  Check-Motion $cameraApplied $after $navigator.id
  if(((Control 'navigator-zoom_in').GetRuntimeId() -join ':') -ne $retained){throw 'Navigator motion replaced native controls'}
- if($before.overviews.Count -ne 1 -or $after.overviews.Count -ne 1){throw 'Navigator fixture did not retain exactly one GPU overview'}
+ if(@(Overview-Bounds).Count -ne 1 -or ((Control 'navigator-overview').GetRuntimeId() -join ':') -ne $overviewId){throw 'Navigator motion replaced the retained overview'}
  $old=$before.groups|Where-Object id -eq $navigator.id;$moved=$after.groups|Where-Object id -eq $navigator.id
- if([Math]::Abs(($after.overviews[0].bounds[0]-$before.overviews[0].bounds[0])-($moved.bounds.x-$old.bounds.x)) -gt 1 -or
-    [Math]::Abs(($after.overviews[0].bounds[1]-$before.overviews[0].bounds[1])-($moved.bounds.y-$old.bounds.y)) -gt 1){
-  throw 'GPU overview allocation did not follow native Navigator placement'
+ if([Math]::Abs(($overviewAfter.Left-$overviewBefore.Left)/$scale-($moved.bounds.x-$old.bounds.x)) -gt 1 -or
+    [Math]::Abs(($overviewAfter.Top-$overviewBefore.Top)/$scale-($moved.bounds.y-$old.bounds.y)) -gt 1){
+  throw 'Retained overview did not follow native Navigator placement'
  }
  Capture 'navigator-moved' -Composed
  $secondPixel=Check-OverviewOverlap 'navigator-before' 'navigator-moved'

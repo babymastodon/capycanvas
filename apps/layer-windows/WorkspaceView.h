@@ -29,12 +29,14 @@ public:
     void SetWindowId(uint64_t id);
     void SetFillFeedback(std::function<void(Json const&)> feedback);
     void SetGlassChanged(std::function<void()> changed);
+    void SetNavigatorSurfaces(std::function<void(uint64_t,CapyNavigatorViewport const*,std::function<void(NativeSurfaceAttachment)>)>);
+    void ResetNavigatorSurfaces();
     void SetCommit(std::function<void(std::string,bool,std::function<void()>)> commit);
     void CanvasContact(bool active);
     void AttachOverlays(winrt::Microsoft::UI::Xaml::UIElement const&,std::function<void()>);
     winrt::Windows::Data::Json::JsonArray DrawerSources() const;
     winrt::Windows::Data::Json::JsonArray OverlayInputRegions(winrt::Microsoft::UI::Xaml::UIElement const&)const;
-    winrt::Windows::Data::Json::JsonArray Glass(winrt::Microsoft::UI::Xaml::UIElement const& reference,winrt::Windows::Data::Json::JsonArray& connections,winrt::Windows::Data::Json::JsonArray& arcs,winrt::Windows::Data::Json::JsonArray& colors,winrt::Windows::Data::Json::JsonArray& panels,winrt::Windows::Data::Json::JsonArray& overviews) const;
+    winrt::Windows::Data::Json::JsonArray Glass(winrt::Microsoft::UI::Xaml::UIElement const& reference,winrt::Windows::Data::Json::JsonArray& connections,winrt::Windows::Data::Json::JsonArray& arcs,winrt::Windows::Data::Json::JsonArray& colors,winrt::Windows::Data::Json::JsonArray& panels) const;
     void ChromeSent(uint64_t revision);
     void MeasureChrome();
 private:

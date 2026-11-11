@@ -18,10 +18,6 @@ using Clock=std::chrono::steady_clock;
 void remove(Canvas const& root,UIElement const& element){
     uint32_t index;if(root.Children().IndexOf(element,index))root.Children().RemoveAt(index);
 }
-Rect coordinates(A const& value){
-    if(value.Size()!=4)return {};
-    return {float(value.GetNumberAt(0)),float(value.GetNumberAt(1)),float(value.GetNumberAt(2)),float(value.GetNumberAt(3))};
-}
 struct Drawer:std::enable_shared_from_this<Drawer>{
     std::shared_ptr<WorkspaceData> data;
     Canvas workspace{nullptr},content;
@@ -30,7 +26,7 @@ struct Drawer:std::enable_shared_from_this<Drawer>{
     hstring shadowKey;
     Shapes::Path background,bridge;
     std::shared_ptr<WorkspaceGestures> gestures;
-    std::function<void()> changed,closed;
+    std::function<void()> changed,closed,navigatorChanged;
     std::wstring id;
     J model,geometry,endpoint,from,presentedSource;
     NativeLayoutInput layoutInput;
@@ -267,13 +263,14 @@ struct Drawer:std::enable_shared_from_this<Drawer>{
                     auto placement=O({{L"bounds",O({{L"width",N(width)}})}});
                     placement.Insert(L"split_filters",B(splitFilters));
                     if(toolbar!=toolbarLayouts.end())placement.Insert(L"tiles",toolbar->second);
-                    body.view=std::make_unique<PanelBody>(data,panel,placement,[weak]{if(auto self=weak.lock())self->measured();},gestures,false,[weak]{if(auto self=weak.lock();self&&self->id==L"tool")return object(self->model,L"tool_set");return J{};});
+                    body.view=std::make_unique<PanelBody>(data,panel,placement,panelId==L"navigator"?navigatorChanged:std::function<void()>([weak]{if(auto self=weak.lock())self->measured();}),gestures,false,[weak]{if(auto self=weak.lock();self&&self->id==L"tool")return object(self->model,L"tool_set");return J{};});
                     body.key=bodyKey;body.splitFilters=splitFilters;
                     if(toolbar!=toolbarLayouts.end())body.view->Root().Height(toolbarHeight(toolbar->second));
                 }
                 AutomationProperties::SetAutomationId(body.view->Root(),L"drawer-panel-"+hstring(panelId));
                 if(AutomationProperties::GetName(body.view->Root()).empty())
                     AutomationProperties::SetName(body.view->Root(),str(panel,L"title"));
+                if(body.view->navigator)body.view->navigator->MaximumWidth(std::max(0.,bodyWidth-2*data->panelMetric(L"inset")));
                 body.view->Root().Width(bodyWidth);body.view->Apply(true);column.stack.Children().Append(body.view->Root());
             }
             AutomationProperties::SetAutomationId(column.scroll,hstring(L"drawer-slot-"+id+L"-"+std::to_wstring(i)));
@@ -420,18 +417,9 @@ struct Drawer:std::enable_shared_from_this<Drawer>{
     void paintBackground(){
         auto bounds=object(object(geometry,L"placement"),L"bounds");float width=float(num(bounds,L"width")),height=float(num(bounds,L"height"));
         if(width<=0||height<=0)return;
-        A holes;auto document=data->chromeFrames->presented.document;
-        for(auto const& column:columns)for(auto const& panel:column.panels){
-            auto const& body=bodies.at(panel).view;if(!body||!body->navigator)continue;
-            auto slot=body->navigator->PresentedPlacement(content);if(!slot.Size())continue;
-            auto nav=coordinates(array(slot,L"bounds"));float image[4]{};
-            if(!capy_navigator_image(nav.Width,nav.Height,uint32_t(num(document,L"width")),uint32_t(num(document,L"height")),image))continue;
-            auto hole=intersect(intersect({nav.X+image[0],nav.Y+image[1],image[2],image[3]},coordinates(array(slot,L"clip"))),{0,0,width,height});
-            if(hole.Width>0&&hole.Height>0)holes.Append(rectangle(hole));
-        }
         auto corners=array(object(geometry,L"connection"),L"square_corners");
 
-        auto key=O({{L"width",N(width)},{L"height",N(height)},{L"corners",corners},{L"holes",holes}}).Stringify();
+        auto key=O({{L"width",N(width)},{L"height",N(height)},{L"corners",corners}}).Stringify();
         if(key==backgroundKey)return;backgroundKey=key;
         std::array<float,4> radii{SurfaceRadius,SurfaceRadius,SurfaceRadius,SurfaceRadius};
         for(uint32_t i=0;i<std::min(4u,corners.Size());++i)if(corners.GetBooleanAt(i))radii[i]=0;
@@ -447,7 +435,6 @@ struct Drawer:std::enable_shared_from_this<Drawer>{
             shadow.Cut(radii,std::move(bridgeArea));
         }
         GeometryGroup shape;shape.FillRule(FillRule::EvenOdd);shape.Children().Append(outline);
-        for(auto hole:holes){RectangleGeometry region;auto box=rectangle(hole.GetObject());box.Y-=top;region.Rect(box);shape.Children().Append(region);}
         background.Data(shape);
     }
     void collectGlass(A& regions,A& links,UIElement const& reference)const{
@@ -455,15 +442,6 @@ struct Drawer:std::enable_shared_from_this<Drawer>{
         if(disposed||!appendGlass(regions,frame,reference,design,true))return;
         data->chromeFrames->Track(frame);data->chromeFrames->Track(bridge);data->chromeFrames->Track(shadow.Root());
         appendConnection(links,object(geometry,L"connection"),workspace,reference);
-    }
-    void appendOverviews(A& slots,bool capture=true)const{
-        if(disposed||!frame.IsLoaded())return;
-        for(auto const& column:columns)for(auto const& panel:column.panels){
-            auto const& body=bodies.at(panel).view;
-            if(!body||!body->navigator)continue;
-            auto slot=body->navigator->Placement(workspace,visibleBounds(column.scroll,workspace),visualOrder(workspace,frame),capture);
-            if(slot.Size()){slot.Insert(L"opacity",N(frame.Opacity()));slots.Append(slot);}
-        }
     }
     void appendBounds(A& measurements)const{
         if(id==L"tool"||disposed||closing)return;
@@ -491,6 +469,16 @@ struct WorkspaceDrawers::Impl:std::enable_shared_from_this<Impl>{
     std::function<void()> changed;
     std::map<std::wstring,std::shared_ptr<Drawer>> drawers;
     hstring lastTiles=L"[]",lastBounds=L"[]",lastFacts,lastChrome;
+    std::map<std::wstring,Drawer::Body> cachedNavigators;
+    std::set<std::wstring> navigatorColumns;
+    void cacheNavigator(std::wstring const& id,Drawer& drawer){
+        if(!navigatorColumns.contains(id))return;
+        if(auto cached=drawer.bodies.extract(L"navigator");!cached.empty()){
+            auto root=cached.mapped().view->Root();
+            if(auto parent=root.Parent().try_as<Panel>()){uint32_t index;if(parent.Children().IndexOf(root,index))parent.Children().RemoveAt(index);}
+            cached.mapped().view->Apply(false);cachedNavigators.insert_or_assign(id,std::move(cached.mapped()));
+        }
+    }
     bool publishing=false,resetting=false;
     uint64_t contextGeneration=0;
     void publish(){
@@ -515,8 +503,7 @@ struct WorkspaceDrawers::Impl:std::enable_shared_from_this<Impl>{
             updated=true;lastFacts=facts.Stringify();for(auto const& fact:facts)data->chrome.Insert(fact.Key(),fact.Value());
             gestures->ChromeChanged();
         }
-        A chrome;for(auto const& [id,drawer]:drawers){A overviews;drawer->appendOverviews(overviews,false);
-            chrome.Append(O({{L"geometry",drawer->geometry},{L"overviews",overviews},{L"source",drawer->presentedSource}}));}
+        A chrome;for(auto const& [id,drawer]:drawers)chrome.Append(O({{L"geometry",drawer->geometry},{L"source",drawer->presentedSource}}));
         auto key=chrome.Stringify();if(key!=lastChrome){lastChrome=key;updated=true;}
         if(updated)changed();publishing=false;
     }
@@ -526,20 +513,32 @@ struct WorkspaceDrawers::Impl:std::enable_shared_from_this<Impl>{
             auto model=value.GetObject();models[std::to_wstring(uint32_t(num(object(model,L"anchor"),L"column")))]=model;
         }
         auto tool=object(customization,L"drawer");if(tool.Size())models[L"tool"]=tool;
+        navigatorColumns.clear();
+        for(auto value:array(object(data->model,L"layout"),L"collapsed")){
+            auto column=value.GetObject();
+            for(auto group:array(column,L"groups"))for(auto icon:array(group.GetObject(),L"icons"))
+                if(str(icon.GetObject(),L"panel")==L"navigator")navigatorColumns.insert(std::to_wstring(uint32_t(num(column,L"id"))));
+        }
+        std::erase_if(cachedNavigators,[&](auto const& entry){return !navigatorColumns.contains(entry.first);});
         auto generation=uint64_t(num(data->state,L"toolbar_context_generation"));bool retired=false;
         if(std::exchange(contextGeneration,generation)!=generation){
-            for(auto it=drawers.begin();it!=drawers.end();)if(!models.contains(it->first)){it->second->dispose();it=drawers.erase(it);retired=true;}else ++it;
+            for(auto it=drawers.begin();it!=drawers.end();)if(!models.contains(it->first)){cacheNavigator(it->first,*it->second);it->second->dispose();it=drawers.erase(it);retired=true;}else ++it;
         }
         if(models.empty()&&drawers.empty()&&!lastFacts.empty()){if(retired)publish();return;}
         for(auto const& [id,model]:models)if(!drawers.contains(id)){
             auto drawer=std::make_shared<Drawer>();drawer->data=data;drawer->workspace=root;drawer->gestures=gestures;drawer->id=id;
             auto weak=weak_from_this();auto weakDrawer=std::weak_ptr<Drawer>(drawer);
+            if(auto cached=cachedNavigators.extract(id);!cached.empty())drawer->bodies.emplace(L"navigator",std::move(cached.mapped()));
+            drawer->navigatorChanged=[weak,id]{if(auto self=weak.lock()){auto found=self->drawers.find(id);if(found!=self->drawers.end())found->second->measured();}};
             drawer->tileMeasurements=[weak]{A result;if(auto self=weak.lock())for(auto const& [id,drawer]:self->drawers)drawer->appendTiles(result);return result;};
             drawer->changed=[weak]{if(auto self=weak.lock())self->publish();};
             drawer->closed=[weak,weakDrawer,id]{
                 if(auto self=weak.lock()){
                     auto found=self->drawers.find(id);
-                    if(found!=self->drawers.end()&&found->second==weakDrawer.lock()){found->second->dispose();self->drawers.erase(found);self->publish();}
+                    if(found!=self->drawers.end()&&found->second==weakDrawer.lock()){
+                        self->cacheNavigator(id,*found->second);
+                        found->second->dispose();self->drawers.erase(found);self->publish();
+                    }
                 }
             };
             drawers[id]=drawer;drawer->init();
@@ -549,19 +548,19 @@ struct WorkspaceDrawers::Impl:std::enable_shared_from_this<Impl>{
         publish();
     }
     void reset(){
-        resetting=true;for(auto const& [id,drawer]:drawers)drawer->dispose();drawers.clear();resetting=false;publish();
+        resetting=true;for(auto const& [id,drawer]:drawers)drawer->dispose();drawers.clear();cachedNavigators.clear();resetting=false;publish();
     }
 };
 WorkspaceDrawers::WorkspaceDrawers(std::shared_ptr<WorkspaceData> data,Canvas root,std::shared_ptr<WorkspaceGestures> gestures,std::function<void()> changed):
     impl(std::make_shared<Impl>()){impl->data=std::move(data);impl->root=root;impl->gestures=std::move(gestures);impl->changed=std::move(changed);}
 WorkspaceDrawers::~WorkspaceDrawers(){impl->reset();}
+bool WorkspaceDrawers::Moving()const{for(auto const& [id,drawer]:impl->drawers)if(drawer->animating||(drawer->inspector&&drawer->inspector->animating))return true;return false;}
 void WorkspaceDrawers::Apply(NativeLayoutInput input,float width,float height){impl->apply(std::move(input),width,height);}
 void WorkspaceDrawers::PresentChrome(){for(auto const& [id,drawer]:impl->drawers)drawer->paintBackground();}
 void WorkspaceDrawers::HoverTabs(UIElement const& hovered){
     for(auto const& [id,drawer]:impl->drawers)for(auto const& column:drawer->columns)for(auto const& [panel,shell]:column.tabs)
         hoverPanelTabShell(shell,shell.Children().GetAt(1)==hovered);
 }
-void WorkspaceDrawers::AppendOverviews(A& slots)const{for(auto const& [id,drawer]:impl->drawers)drawer->appendOverviews(slots);}
 A WorkspaceDrawers::Sources()const{
     A result;
     for(auto const& [id,drawer]:impl->drawers){

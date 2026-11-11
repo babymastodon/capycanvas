@@ -56,7 +56,7 @@ function Image-Rect {
     $document=(Model).state.tabs[0]
     $fit=[Math]::Min(($overview.Width-8*$scale)/$document.width,($overview.Height-8*$scale)/$document.height)
     $width=$document.width*$fit;$height=$document.height*$fit
-    # Stay inside the transparent cutout, away from antialiased boundary pixels.
+    # Stay inside the image rect, away from antialiased boundary pixels.
     [Drawing.Rectangle]::FromLTRB(
         [int][Math]::Ceiling($overview.Left-$window.left+($overview.Width-$width)/2+2),
         [int][Math]::Ceiling($overview.Top-$window.top+($overview.Height-$height)/2+2),
@@ -242,6 +242,8 @@ try {
         Wait-Until {!(Model).state.document_file.modified} 'Undo did not restore the checkpoint'
         Wait-Until {$undo=Capture 'undo';try {(Different $blank $undo $area) -eq 0}finally{$undo.Dispose()}} 'Undo did not restore the GPU overview pixels'
     }finally{$blank.Dispose()}
+    . (Join-Path $PSScriptRoot 'NavigatorFrames.ps1')
+    Navigator-Collapse
     Wait-Until {((Model).state.commands|Where-Object id -eq 'new_document').enabled} 'New drawing stayed unavailable'
     & (Join-Path $PSScriptRoot 'open-application-menu.ps1') -Root $root -Name 'File'
     Wait-Until {$item=Find 'new_document';$item -and $item.Current.IsEnabled} 'New drawing menu item stayed disabled'
@@ -250,6 +252,7 @@ try {
     Invoke 'Create' -Name
     Wait-Until {(Model).state.tabs[0].width -eq 128 -and (Model).state.tabs[0].height -eq 64 -and !(Model).state.document_file.busy} 'Different-aspect document was not adopted' 45
     Wait-Until {(Control 'drawing-canvas').Current.IsEnabled} 'Document dialog input gate did not clear'
+    Navigator-Expand
     if(((Control 'navigator-overview').GetRuntimeId() -join ':') -ne $identity){throw 'Document replacement rebuilt the Navigator'}
     $paper=@((Model).state.layers|Where-Object {$_.paper -and $_.fill_color.opaque})
     if($paper.Count -ne 1 -or $paper[0].fill_color.color.space -ne 'Srgb'){throw 'New document paper does not expose one opaque sRGB fill'}
@@ -266,6 +269,7 @@ try {
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -StateDirectory $run -Action Resize -Width 1550 -Height 1040
     Wait-Until {(Model).state.camera.viewport[0] -gt 1450} 'Native resize did not reach the renderer'
     if(((Control 'navigator-overview').GetRuntimeId() -join ':') -ne $identity){throw 'Resize replaced the native Navigator'}
+    Navigator-RetainedFrames
     Navigator
     Wait-Until {!(Find 'navigator-overview')} 'Hiding Navigator left its native controls loaded'
     Navigator
@@ -286,7 +290,7 @@ try {
         $alternate=Capture 'alternate-theme'
         try{Surround-Matches $alternate}finally{$alternate.Dispose()}
     } 'Navigator surround did not present the alternate theme after Preferences closed'
-    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -StateDirectory $run -Action Close
+    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -StateDirectory $run -Action Close -DiscardUnsaved
     if((Get-Item -LiteralPath $stderr).Length){throw 'Native runtime stderr requires inspection'}
     [PSCustomObject]@{
         theme=$Theme;native_overview_contacts=$navigatorChecks.Count;secondary_mouse_admission=$(if($PixelsOnly){'not-run'}else{'passed'})

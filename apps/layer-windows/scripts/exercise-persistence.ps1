@@ -2,6 +2,7 @@ param([Parameter(Mandatory)][string]$Executable)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'CapyUia.ps1')
 . (Join-Path $PSScriptRoot 'LocalizationProfiles.ps1')
+. (Join-Path $PSScriptRoot 'ObjectFixture.ps1')
 $CapyCacheModel=$true
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 $Executable=(Resolve-Path -LiteralPath $Executable).Path
@@ -25,7 +26,7 @@ function Close([string]$ExpectedDiagnostic='') {
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Close
     if(![string]::Equals(([Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($stderr))).Replace("`r`n","`n"),$ExpectedDiagnostic,[StringComparison]::Ordinal)){throw 'Native stderr requires inspection'}
 }
-function Layout { (Model).state.workspace | ConvertTo-Json -Depth 80 -Compress }
+function Layout { Json ((Model).state.workspace) }
 try {
     Enter-CapyEnvironment
     $env:CAPY_TRACE_UI='1';$env:CAPY_SMOKE_TEST='1';$env:CAPY_TEST_DISPLAY='1';$env:CAPY_TEST_PRIMARY='1'

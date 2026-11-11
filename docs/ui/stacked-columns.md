@@ -65,14 +65,15 @@ an unconnected native tab bar only clips its content and adds no corner filler.
 
 Windows measures its retained native groups, strip viewport and tiles in logical
 points and resolves them through the same shared bridge projection. The existing
-chrome transport carries receiver IDs, overview slots, document dimensions, glass regions
+chrome transport carries receiver IDs, document dimensions, glass regions
 and native tab bounds to the render worker. It applies the surface offset and display
 scale once, prepares the existing GPU chrome pipelines, and acknowledges the revision
 when the submission that drew it completes.
 Collapsed columns keep GPU tint with or without bridges. New receiver controls remain
-hidden until their GPU surface is acknowledged; overview holes use acknowledged slots
-and the completed drawing's dimensions, and retiring elements wait for an acknowledged
-exclusion. Controls, focus, scrolling and input targets remain native. During native window sizing,
+hidden until their GPU surface is acknowledged, and retiring elements wait for an acknowledged
+exclusion. Navigator images retain their own composition surfaces with their native panel bodies;
+XAML clips and scales them in the panel's layout pass, and rendering refines their resolution at rest.
+Controls, focus, scrolling and input targets remain native. During native window sizing,
 native contours draw the translucent tint while GPU surfaces retain blur and
 shadows. GPU tint remains until XAML has rendered the native tint;
 `WM_EXITSIZEMOVE` returns tint ownership through the matching presented-revision

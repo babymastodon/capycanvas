@@ -662,10 +662,9 @@ try{
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Resize -Width 1500 -Height 1000
     $configuration=Configure 'navigator'
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Resize -Width 1800 -Height 1100
-    Wait-OverviewProjection
+    $null=Control 'navigator-overview' -Within $configuration -Arranged
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Resize -Width 1100 -Height 1000
-    Wait-OverviewProjection
-    $null=Control 'navigator-overview' -Within $configuration
+    $null=Control 'navigator-overview' -Within $configuration -Arranged
     Invoke 'Test stroke' -Name
     Wait-Until {(Model).state.document_file.modified} 'Controlled stroke did not dirty the review'
     $zoom=(Control 'canvas-camera').Current.Name

@@ -1,0 +1,402 @@
+diff --git a/wgpu-core/src/device/resource.rs b/wgpu-core/src/device/resource.rs
+index 499521e58..6098667a2 100644
+--- a/wgpu-core/src/device/resource.rs
++++ b/wgpu-core/src/device/resource.rs
+@@ -5352,6 +5352,7 @@ impl Device {
+                         device: Arc::clone(self),
+                         config: config.clone(),
+                         acquired_texture: None,
++                        prepared: false,
+                     });
+                     Ok(true)
+                 })();
+diff --git a/wgpu-core/src/device/surface_tests.rs b/wgpu-core/src/device/surface_tests.rs
+index 1985af307..8a8676278 100644
+--- a/wgpu-core/src/device/surface_tests.rs
++++ b/wgpu-core/src/device/surface_tests.rs
+@@ -154,7 +154,7 @@ fn rejected_live_output_and_invalid_configuration_preserve_presentation_and_call
+         view_formats: vec![],
+     });
+     *surface.presentation.lock() = Some(crate::present::Presentation {
+-        device: device.clone(), config: configuration(), acquired_texture: Some(texture.clone()),
++        device: device.clone(), config: configuration(), acquired_texture: Some(texture.clone()), prepared: false,
+     });
+     for invalid_size in [false, true] {
+         let called = Arc::new(AtomicBool::new(false));
+@@ -305,6 +305,8 @@ fn presentation_retains_live_output_through_preparation_and_serializes_hal_hando
+ 
+ #[derive(Default)]
+ struct PresentationProbe {
++    nonblocking: AtomicBool,
++    backpressured: AtomicBool,
+     hold_submissions: AtomicBool,
+     fail_submission: AtomicBool,
+     fail_present: AtomicBool,
+@@ -432,6 +434,18 @@ impl hal::DynQueue for PresentationQueue {
+         if self.probe.hold_submissions.load(Ordering::Acquire) { return Ok(()); }
+         unsafe { self.inner.submit(commands, textures, fence) }
+     }
++    fn supports_nonblocking_present(&self, _: &dyn hal::DynSurface) -> bool {
++        self.probe.nonblocking.load(Ordering::Acquire)
++    }
++    unsafe fn try_present(&self, surface: &dyn hal::DynSurface, _: &dyn hal::DynSurfaceTexture) -> Result<hal::PresentAttempt, hal::SurfaceError> {
++        let device = self.probe.device.lock().unwrap().as_ref().unwrap().upgrade().unwrap();
++        assert!(!std::thread::spawn(move || device.command_indices.try_write().is_some()).join().unwrap());
++        if self.probe.backpressured.load(Ordering::Acquire) { return Ok(hal::PresentAttempt::Pending); }
++        if self.probe.fail_present.swap(false, Ordering::AcqRel) { return Err(hal::SurfaceError::Device(hal::DeviceError::Lost)); }
++        let _ = surface;
++        self.probe.presents.fetch_add(1, Ordering::AcqRel);
++        Ok(hal::PresentAttempt::Presented)
++    }
+     unsafe fn present(&self, _: &dyn hal::DynSurface, _: Box<dyn hal::DynSurfaceTexture>) -> Result<(), hal::SurfaceError> {
+         let device = self.probe.device.lock().unwrap().as_ref().unwrap().upgrade().unwrap();
+         let admitted = std::thread::spawn(move || device.command_indices.try_write().is_some()).join().unwrap();
+@@ -781,3 +795,50 @@ fn concurrent_waits_sample_completion_with_the_lifetime_tracker() {
+     }
+     assert!(failures.is_empty(), "{}", failures.join("; "));
+ }
++
++#[test]
++fn nonblocking_present_backpressure_retains_one_image_and_submission() {
++    let f = PresentationFixture::new();
++    f.probe.nonblocking.store(true, Ordering::Release);
++    f.probe.backpressured.store(true, Ordering::Release);
++    assert!(f.queue.try_present(&f.surface).unwrap().is_none());
++    let submission = f.device.last_successful_submission_index.load(Ordering::Acquire);
++    for _ in 0..3 {
++        assert!(f.queue.try_present(&f.surface).unwrap().is_none());
++        f.assert_retained();
++        assert_eq!(f.probe.presents.load(Ordering::Acquire), 0);
++        assert_eq!(f.probe.discards.load(Ordering::Acquire), 0);
++        assert_eq!(f.device.last_successful_submission_index.load(Ordering::Acquire), submission);
++    }
++    f.probe.backpressured.store(false, Ordering::Release);
++    assert!(matches!(f.queue.try_present(&f.surface), Ok(Some(wgt::SurfaceStatus::Good))));
++    assert_eq!(f.probe.presents.load(Ordering::Acquire), 1);
++    assert_eq!(f.probe.discards.load(Ordering::Acquire), 0);
++    assert!(f.surface.presentation.lock().as_ref().unwrap().acquired_texture.is_none());
++}
++
++#[test]
++fn nonblocking_present_failure_discards_exactly_once() {
++    let f = PresentationFixture::new();
++    f.probe.nonblocking.store(true, Ordering::Release);
++    f.probe.fail_present.store(true, Ordering::Release);
++    assert!(f.queue.try_present(&f.surface).is_err());
++    assert_eq!(f.probe.presents.load(Ordering::Acquire), 0);
++    assert_eq!(f.probe.discards.load(Ordering::Acquire), 1);
++    assert!(f.surface.presentation.lock().as_ref().unwrap().acquired_texture.is_none());
++}
++
++#[test]
++fn nonblocking_backpressured_image_can_be_discarded_and_reacquired() {
++    let f = PresentationFixture::new();
++    f.probe.nonblocking.store(true, Ordering::Release);
++    f.probe.backpressured.store(true, Ordering::Release);
++    assert!(f.queue.try_present(&f.surface).unwrap().is_none());
++    f.surface.discard().unwrap();
++    assert_eq!(f.probe.discards.load(Ordering::Acquire), 1);
++    let reacquired = f.surface.get_current_texture().unwrap().texture.unwrap();
++    assert!(f.queue.try_present(&f.surface).unwrap().is_none());
++    assert_eq!(f.probe.presents.load(Ordering::Acquire), 0);
++    f.surface.discard().unwrap();
++    drop(reacquired);
++}
+diff --git a/wgpu-core/src/present.rs b/wgpu-core/src/present.rs
+index 5e0ccd23d..c651b1292 100644
+--- a/wgpu-core/src/present.rs
++++ b/wgpu-core/src/present.rs
+@@ -36,6 +36,7 @@ pub(crate) struct Presentation {
+     pub(crate) device: Arc<Device>,
+     pub(crate) config: wgt::SurfaceConfiguration<Vec<wgt::TextureFormat>>,
+     pub(crate) acquired_texture: Option<Arc<resource::Texture>>,
++    pub(crate) prepared: bool,
+ }
+ 
+ #[derive(Clone, Debug, Error)]
+@@ -256,6 +257,7 @@ impl Surface {
+                     .insert_single(&texture, wgt::TextureUses::UNINITIALIZED);
+ 
+                 present.acquired_texture = Some(texture.clone());
++                present.prepared = false;
+ 
+                 let status = if ast.suboptimal {
+                     Status::Suboptimal
+@@ -347,10 +349,23 @@ impl Queue {
+             })?;
+             if !ready { return Ok(None); }
+         }
+-        self.prepare_surface_texture_for_present(&texture).map_err(|error| {
+-            surface.release_current(&texture);
+-            error
+-        })?;
++        let nonblocking = defer && self.raw().supports_nonblocking_present(surface.raw(device.backend()).unwrap());
++        let prepared = nonblocking && surface.presentation.lock().as_ref().is_some_and(|present|
++            present.prepared && present.acquired_texture.as_ref().is_some_and(|current| Arc::ptr_eq(current, &texture)));
++        if !prepared {
++            self.prepare_surface_texture_for_present(&texture).map_err(|error| {
++                surface.release_current(&texture);
++                error
++            })?;
++            if nonblocking {
++                let mut presentation = surface.presentation.lock();
++                let present = presentation.as_mut().ok_or(SurfaceError::NotConfigured)?;
++                if present.acquired_texture.as_ref().is_none_or(|current| !Arc::ptr_eq(current, &texture)) {
++                    return Err(SurfaceError::NothingToPresent);
++                }
++                present.prepared = true;
++            }
++        }
+         let result = {
+             let mut presentation = surface.presentation.lock();
+             let present = presentation.as_mut().ok_or(SurfaceError::NotConfigured)?;
+@@ -358,6 +373,36 @@ impl Queue {
+                 || present.acquired_texture.as_ref().is_none_or(|current| !Arc::ptr_eq(current, &texture)) {
+                 return Err(SurfaceError::NothingToPresent);
+             }
++            let attempt = if nonblocking {
++                let snatch = device.snatchable_lock.read();
++                let indices = device.command_indices.write();
++                match self.presentation_ready(&indices) {
++                    Ok(false) => return Ok(None),
++                    Err(error) => Err(hal::SurfaceError::Device(error)),
++                    Ok(true) => match texture.inner.get(&snatch).maybe_valid() {
++                        Some(resource::TextureInner::Surface { raw }) => unsafe {
++                            self.raw().try_present(surface.raw(device.backend()).unwrap(), raw.as_ref())
++                        },
++                        _ => return Err(SurfaceError::TextureDestroyed),
++                    },
++                }
++            } else { Ok(hal::PresentAttempt::Unsupported) };
++            if matches!(attempt, Ok(hal::PresentAttempt::Pending)) { return Ok(None); }
++            if !matches!(attempt, Ok(hal::PresentAttempt::Unsupported)) {
++                let mut snatch = device.snatchable_lock.write();
++                present.acquired_texture.take();
++                let raw = texture.inner.snatch(&mut snatch).maybe_valid();
++                match attempt {
++                    Ok(hal::PresentAttempt::Presented) => Ok(()),
++                    Err(error) => {
++                        if let Some(resource::TextureInner::Surface { raw }) = raw {
++                            unsafe { surface.raw(device.backend()).unwrap().discard_texture(raw); }
++                        }
++                        Err(error)
++                    },
++                    _ => unreachable!(),
++                }
++            } else {
+             let mut snatch = device.snatchable_lock.write();
+             let indices = device.command_indices.write();
+             let ready = if defer {
+@@ -382,6 +427,7 @@ impl Queue {
+                     }
+                 }
+             }
++            }
+         };
+         match result {
+             Ok(()) => Ok(Some(Status::Good)),
+diff --git a/wgpu-hal/src/dx12/mod.rs b/wgpu-hal/src/dx12/mod.rs
+index c91c4d92c..41f84441a 100644
+--- a/wgpu-hal/src/dx12/mod.rs
++++ b/wgpu-hal/src/dx12/mod.rs
+@@ -612,6 +612,8 @@ struct SwapChain {
+     /// Handle is freed in [`Self::release_resources()`]
+     waitable: Option<Foundation::HANDLE>,
+     acquired_count: usize,
++    nonblocking: bool,
++    acquisition_ready: bool,
+     present_mode: wgt::PresentMode,
+     format: wgt::TextureFormat,
+     size: wgt::Extent3d,
+@@ -647,6 +649,15 @@ unsafe impl Send for Surface {}
+ unsafe impl Sync for Surface {}
+ 
+ impl Surface {
++    /// Enable nonblocking acquisition and deferred presentation on a configured surface.
++    pub fn set_nonblocking(&self) -> Result<(), crate::SurfaceError> {
++        let mut swapchain = self.swap_chain.write();
++        let sc = swapchain.as_mut().ok_or(crate::SurfaceError::Outdated)?;
++        if sc.waitable.is_none() { return Err(crate::SurfaceError::Other("Nonblocking surfaces require a latency waitable handle".into())); }
++        sc.nonblocking = true;
++        Ok(())
++    }
++
+     pub fn swap_chain(&self) -> Option<Dxgi::IDXGISwapChain3> {
+         Some(self.swap_chain.read().as_ref()?.raw.clone())
+     }
+@@ -1408,6 +1419,39 @@ pub struct AccelerationStructure {
+ 
+ impl crate::DynAccelerationStructure for AccelerationStructure {}
+ 
++fn acquire_nonblocking(waitable: Option<Foundation::HANDLE>, ready: &mut bool) -> Result<(), crate::SurfaceError> {
++    if *ready { return Ok(()); }
++    let waitable = waitable.ok_or(crate::SurfaceError::Lost)?;
++    match unsafe { Threading::WaitForSingleObject(waitable, 0) } {
++        Foundation::WAIT_OBJECT_0 => { *ready = true; Ok(()) },
++        Foundation::WAIT_TIMEOUT => Err(crate::SurfaceError::Timeout),
++        _ => Err(crate::SurfaceError::Lost),
++    }
++}
++
++#[cfg(test)]
++mod nonblocking_tests {
++    use super::*;
++    #[test]
++    fn acquisition_polls_without_consuming_an_unavailable_buffer() {
++        let event = unsafe { Threading::CreateEventW(None, false, false, None) }.unwrap();
++        let mut ready = false;
++        assert_eq!(acquire_nonblocking(Some(event), &mut ready), Err(crate::SurfaceError::Timeout));
++        assert!(!ready);
++        unsafe { Threading::SetEvent(event) }.unwrap();
++        assert!(acquire_nonblocking(Some(event), &mut ready).is_ok());
++        assert!(ready);
++        assert!(acquire_nonblocking(Some(event), &mut ready).is_ok());
++        ready = false;
++        assert_eq!(acquire_nonblocking(Some(event), &mut ready), Err(crate::SurfaceError::Timeout));
++        unsafe { Foundation::CloseHandle(event) }.unwrap();
++    }
++    #[test]
++    fn missing_nonblocking_handle_does_not_fall_back_to_a_wait() {
++        assert_eq!(acquire_nonblocking(None, &mut false), Err(crate::SurfaceError::Lost));
++    }
++}
++
+ impl SwapChain {
+     unsafe fn release_resources(mut self) -> Dxgi::IDXGISwapChain3 {
+         if let Some(mut waitable) = self.waitable.take() {
+@@ -1695,6 +1739,8 @@ impl crate::Surface for Surface {
+             resources,
+             waitable,
+             acquired_count: 0,
++            nonblocking: false,
++            acquisition_ready: false,
+             present_mode: config.present_mode,
+             format: config.format,
+             size: config.extent,
+@@ -1727,7 +1773,9 @@ impl crate::Surface for Surface {
+         let mut swapchain = self.swap_chain.write();
+         let sc = swapchain.as_mut().unwrap();
+ 
+-        match self.options.latency_waitable_object {
++        if sc.nonblocking {
++            acquire_nonblocking(sc.waitable, &mut sc.acquisition_ready)?;
++        } else { match self.options.latency_waitable_object {
+             wgt::Dx12UseFrameLatencyWaitableObject::None
+             | wgt::Dx12UseFrameLatencyWaitableObject::DontWait => {}
+             wgt::Dx12UseFrameLatencyWaitableObject::Wait => {
+@@ -1735,6 +1783,7 @@ impl crate::Surface for Surface {
+             }
+         }
+ 
++        }
+         let base_index = unsafe { sc.raw.GetCurrentBackBufferIndex() } as usize;
+         let index = (base_index + sc.acquired_count) % sc.resources.len();
+         sc.acquired_count += 1;
+@@ -1816,6 +1865,34 @@ impl crate::Queue for Queue {
+ 
+         Ok(())
+     }
++    fn supports_nonblocking_present(&self, surface: &Surface) -> bool {
++        surface.swap_chain.read().as_ref().is_some_and(|sc| sc.nonblocking)
++    }
++
++    unsafe fn try_present(
++        &self,
++        surface: &Surface,
++        _texture: &Texture,
++    ) -> Result<crate::PresentAttempt, crate::SurfaceError> {
++        let mut swapchain = surface.swap_chain.write();
++        let sc = swapchain.as_mut().ok_or(crate::SurfaceError::Outdated)?;
++        if !sc.nonblocking { return Ok(crate::PresentAttempt::Unsupported); }
++        let (interval, flags) = match sc.present_mode {
++            wgt::PresentMode::Immediate => (0, Dxgi::DXGI_PRESENT_ALLOW_TEARING),
++            wgt::PresentMode::Mailbox => (0, Dxgi::DXGI_PRESENT::default()),
++            wgt::PresentMode::Fifo => (1, Dxgi::DXGI_PRESENT::default()),
++            mode => unreachable!("Cannot make surface with present mode {mode:?}"),
++        };
++        let result = unsafe { sc.raw.Present(interval, flags | Dxgi::DXGI_PRESENT_DO_NOT_WAIT) };
++        if result == Dxgi::DXGI_ERROR_WAS_STILL_DRAWING {
++            return Ok(crate::PresentAttempt::Pending);
++        }
++        result.ok().into_device_result("Nonblocking Present")?;
++        sc.acquired_count -= 1;
++        sc.acquisition_ready = false;
++        Ok(crate::PresentAttempt::Presented)
++    }
++
+     unsafe fn present(
+         &self,
+         surface: &Surface,
+diff --git a/wgpu-hal/src/dynamic/queue.rs b/wgpu-hal/src/dynamic/queue.rs
+index 5425b2d12..d7b06bb62 100644
+--- a/wgpu-hal/src/dynamic/queue.rs
++++ b/wgpu-hal/src/dynamic/queue.rs
+@@ -14,6 +14,13 @@ pub trait DynQueue: DynResource {
+         surface_textures: &[&dyn DynSurfaceTexture],
+         signal_fence: (&dyn DynFence, FenceValue),
+     ) -> Result<(), DeviceError>;
++    fn supports_nonblocking_present(&self, _surface: &dyn DynSurface) -> bool { false }
++
++    unsafe fn try_present(
++        &self,
++        _surface: &dyn DynSurface,
++        _texture: &dyn DynSurfaceTexture,
++    ) -> Result<crate::PresentAttempt, SurfaceError> { Ok(crate::PresentAttempt::Unsupported) }
+     unsafe fn present(
+         &self,
+         surface: &dyn DynSurface,
+@@ -42,6 +49,18 @@ impl<Q: Queue + DynResource> DynQueue for Q {
+         unsafe { Q::submit(self, &command_buffers, &surface_textures, signal_fence) }
+     }
+ 
++    fn supports_nonblocking_present(&self, surface: &dyn DynSurface) -> bool {
++        Q::supports_nonblocking_present(self, surface.expect_downcast_ref())
++    }
++
++    unsafe fn try_present(
++        &self,
++        surface: &dyn DynSurface,
++        texture: &dyn DynSurfaceTexture,
++    ) -> Result<crate::PresentAttempt, SurfaceError> {
++        unsafe { Q::try_present(self, surface.expect_downcast_ref(), texture.expect_downcast_ref()) }
++    }
++
+     unsafe fn present(
+         &self,
+         surface: &dyn DynSurface,
+diff --git a/wgpu-hal/src/lib.rs b/wgpu-hal/src/lib.rs
+index ca626f275..85e1ec864 100644
+--- a/wgpu-hal/src/lib.rs
++++ b/wgpu-hal/src/lib.rs
+@@ -526,6 +526,9 @@ pub enum PipelineCacheError {
+     Device(#[from] DeviceError),
+ }
+ 
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum PresentAttempt { Unsupported, Pending, Presented }
++
+ #[derive(Clone, Debug, Eq, PartialEq, Error)]
+ pub enum SurfaceError {
+     #[error("Surface is lost")]
+@@ -1291,6 +1294,21 @@ pub trait Queue: WasmNotSendSync {
+         surface_textures: &[&<Self::A as Api>::SurfaceTexture],
+         signal_fence: (&<Self::A as Api>::Fence, FenceValue),
+     ) -> Result<(), DeviceError>;
++    fn supports_nonblocking_present(&self, _surface: &<Self::A as Api>::Surface) -> bool { false }
++
++    /// Attempt presentation without consuming the texture on backpressure.
++    ///
++    /// # Safety
++    /// The texture must be acquired, unpresented and undiscarded on this surface,
++    /// in PRESENT state with every writer submitted on this queue's device.
++    /// The caller must exclude concurrent queue operations and keep both alive.
++    /// Presented consumes the HAL acquisition; Pending and errors do not.
++    unsafe fn try_present(
++        &self,
++        _surface: &<Self::A as Api>::Surface,
++        _texture: &<Self::A as Api>::SurfaceTexture,
++    ) -> Result<PresentAttempt, SurfaceError> { Ok(PresentAttempt::Unsupported) }
++
+     /// Present a surface texture to the screen.
+     ///
+     /// This consumes the surface texture, returning it to the swapchain.

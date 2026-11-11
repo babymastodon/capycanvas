@@ -109,6 +109,7 @@ pub const PANEL_MIN_WIDTH: f32 = 6.0 * TILE_SIZE + 5.0 * TILE_GAP + 2.0 * PANEL_
 /// A single icon/name row; labels may ellipsize at the minimum width.
 pub const BRUSH_SETS_MIN_WIDTH: f32 = 104.0;
 pub const TAB_BAR_HEIGHT: f32 = TILE_SIZE;
+pub const COLUMN_MAX_WIDTH: f32 = 800.;
 const PANEL_GRIP_HEIGHT: f32 = 20.0;
 const TOOLBAR_GRIP_SIZE: f32 = 20.0;
 /// The slot a divider takes along a strip of tiles.
@@ -3485,7 +3486,7 @@ impl DockLayout {
             let delta = coordinate - center;
             let width = open.bounds.width + if open.direction == Edge::Right { delta } else { -delta };
             let minimum = self.open_column_minimum(column);
-            self.collapsed.iter_mut().find(|c| c.root == column).unwrap().expanded_width = width.clamp(minimum, 800.);
+            self.collapsed.iter_mut().find(|c| c.root == column).unwrap().expanded_width = width.clamp(minimum, COLUMN_MAX_WIDTH);
             return Ok(());
         }
         if self.fixed_stack_divider(d) {

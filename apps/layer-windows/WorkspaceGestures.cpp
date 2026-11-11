@@ -175,6 +175,7 @@ struct WorkspaceGestures::Impl:std::enable_shared_from_this<Impl>{
         facts.Insert(L"held",B(held));facts.Insert(L"dragging",B(dragging&&str(action,L"type")==L"tile_drag"));
         facts.Insert(L"popup_open",B(data->externalPopup||data->popupCount>0));
         data->chrome=facts;
+        for(auto const& [id,view]:*data->navigatorViews)view.first();
         // Initial projection precedes native layout. Keep facts locally until
         // there is a valid viewport; zero extents must never reach the host.
         if(!root.IsLoaded()||root.ActualWidth()<=0||root.ActualHeight()<=0)return;
@@ -817,6 +818,7 @@ void WorkspaceGestures::Present(J const& drag){impl->present(drag);}
 void WorkspaceGestures::ChromeChanged(){impl->chrome(O({{L"kind",S(L"refresh")}}));}
 bool WorkspaceGestures::Cancel(){return impl->cancelAll();}
 bool WorkspaceGestures::SuppressClick()const{return impl->ignoreClick;}
+bool WorkspaceGestures::Moving()const{return impl->dragging||impl->finishing||(impl->edge&&impl->edge->claimed);}
 bool WorkspaceGestures::DeferRemoval(UIElement const& element,std::shared_ptr<void> owner){return impl->deferRemoval(element,std::move(owner));}
 bool WorkspaceGestures::Retains(UIElement const& element)const{
     if(!impl->data->chromeFrames->retiring.empty())for(auto node=element.as<DependencyObject>();node&&node!=impl->root;node=VisualTreeHelper::GetParent(node))

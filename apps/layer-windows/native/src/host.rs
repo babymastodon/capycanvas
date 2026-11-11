@@ -153,6 +153,7 @@ pub struct CapyHost {
     live_contacts: std::collections::BTreeMap<u64, CapyPointer>,
     edge_touches: std::collections::BTreeMap<u64, bool>,
     scopes: crate::scopes::Scopes,
+    navigators: crate::navigator_surface::NavigatorSurfaces,
 }
 fn touch_policy(scale: f32) -> layer_ui::TouchPolicy {
     use windows::Win32::UI::{HiDpi::GetSystemMetricsForDpi, WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG}};
@@ -296,6 +297,7 @@ impl CapyHost {
         // GPU allocation and shader work happen after ownership moves to the
         // render worker. No swap chain is attached during CPU/UI initialization.
         Ok(Self {
+            navigators: Default::default(),
             gpu: Default::default(),
             gpu_generation: 0,
             gpu_luid: None,
@@ -576,7 +578,7 @@ impl CapyHost {
         let composition = self.native.compose_scene(
             presenter,
             &mut self.cursor,
-            &self.chrome.navigators,
+            &Default::default(),
             self.chrome.glass.regions(self.scale),
             tone,
             display,
@@ -1582,6 +1584,35 @@ pub unsafe extern "C" fn capy_device_lost(host: u64) -> bool {
 }
 
 /// # Safety
+/// Exclusive render-owner access. A non-null viewport must be readable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_navigator_surface_update(host: u64, id: u64, viewport: *const crate::navigator_surface::CapyNavigatorViewport) -> i32 {
+    guard(host, |host| {
+        let viewport = if viewport.is_null() { None } else { Some(unsafe { *viewport }) };
+        host.navigators.update(id, viewport)?;
+        Ok(0)
+    })
+}
+/// # Safety
+/// Exclusive render-owner access. Output must point to writable storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_navigator_surface_info(host: u64, id: u64, output: *mut crate::navigator_surface::CapyNavigatorSurfaceInfo) -> bool {
+    if output.is_null() { return false; }
+    let Ok(host) = borrow::<CapyHost>(host) else { return false; };
+    unsafe { *output = host.navigators.info(id); }
+    true
+}
+/// # Safety
+/// Exclusive render-owner access after ordinary canvas preparation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_present_navigators(host: u64) -> i32 {
+    guard(host, |host| {
+        let (Some(presenter), Some(config)) = (host.presenter.as_ref(), host.config.as_ref()) else { return Ok(0); };
+        host.navigators.present(&host.native, &host.instance, presenter, config, &host.display).map(i32::from)
+    })
+}
+
+/// # Safety
 /// Exclusive render-owner access, with no acquired image.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn capy_reset_surface(host: u64) -> i32 {
@@ -1590,6 +1621,7 @@ pub unsafe extern "C" fn capy_reset_surface(host: u64) -> i32 {
             return Err("Surface replacement requires no acquired image".into());
         }
         let (surface, handle) = CapyHost::composition_surface(&host.instance)?;
+        host.navigators.reset()?;
         host.surface = surface;
         host.surface_handle = handle;
         host.surface_ready=Default::default();
@@ -2490,7 +2522,7 @@ mod chrome_completion_tests {
     fn completed_chrome_preserves_retained_ui_models() {
         let mut native=NativeHost::new(layer_ui::Platform::Windows).unwrap();
         let mut chrome=crate::chrome::Chrome::default();
-        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[192,192],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap();
+        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[192,192],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap();
         let mut readiness=SurfaceReadiness::default();readiness.ready.store(true,std::sync::atomic::Ordering::Release);
         if readiness.changed(&mut chrome){native.invalidate_snapshot();}
         assert!(native.take_layout_update_bytes().unwrap().is_some());
@@ -2549,7 +2581,7 @@ mod chrome_completion_tests {
         readiness.retire_chrome();
         ready.store(true,std::sync::atomic::Ordering::Release);completed.fetch_max(7,std::sync::atomic::Ordering::Release);
         let mut chrome=crate::chrome::Chrome::default();
-        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[128,64],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap();
+        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[128,64],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap();
         assert!(readiness.changed(&mut chrome));assert!(readiness.ready());assert_eq!(chrome.presented_revision,None);
         readiness.documents.push_back((7,[128,64]));
         readiness.completed_chrome.fetch_max(7,std::sync::atomic::Ordering::Release);
@@ -2576,11 +2608,11 @@ mod chrome_completion_tests {
             view:&view,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color::WHITE),store:wgpu::StoreOp::Store},
         })],..Default::default()});}
         let mut chrome=crate::chrome::Chrome::default();
-        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[192,192],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap();
+        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[192,192],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap();
         let mut readiness=SurfaceReadiness::default();
         let submitted=gpu.queue().submit([encoder.finish()]);readiness.submitted(gpu.queue(),&chrome,Some([192;2]),Some(11));
         let launch_completed=readiness.launch.as_ref().unwrap().1.clone();
-        chrome.set(serde_json::from_value(serde_json::json!({"revision":8,"document":[128,64],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap();
+        chrome.set(serde_json::from_value(serde_json::json!({"revision":8,"document":[128,64],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap();
         readiness.submitted(gpu.queue(),&chrome,Some([192;2]),None);assert_eq!(readiness.queued_chrome,7);
         gpu.device().poll(wgpu::PollType::Poll).unwrap();readiness.changed(&mut chrome);
         assert_eq!(chrome.presented_revision,None,"queued chrome must remain covered until its submission completes");

@@ -33,3 +33,8 @@ pub unsafe extern "C" fn capy_navigator_image(
 pub extern "C" fn capy_navigator_aspect(document_width: u32, document_height: u32) -> f32 {
     layer_ui::NavigatorGeometry::overview_aspect([document_width, document_height])
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn capy_navigator_maximum_width() -> f32 {
+    layer_ui::COLUMN_MAX_WIDTH - 2. * layer_ui::PANEL_CONTENT_INSET
+}

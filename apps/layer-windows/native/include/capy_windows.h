@@ -84,10 +84,21 @@ __declspec(dllimport) int32_t capy_workspace_action(CapyHost, const char* json);
    programs). Directory omitted reloads installed/overridden resources.
    1=busy/rejected, -1=fatal; progress/error is in windows_filter_load snapshots. */
 __declspec(dllimport) int32_t capy_load_filter_directory(CapyHost, const char* json);
-/* Logical native overview slots; call only on the canvas owner. */
 __declspec(dllimport) int32_t capy_glass(CapyHost, const char* json);
-/* Pure shared image bounds for the native cutout; output has four floats. */
+typedef struct CapyNavigatorViewport {
+    float image[2],maximum[2],nominal[2],scale;
+    uint32_t moving;
+} CapyNavigatorViewport;
+typedef struct CapyNavigatorSurfaceInfo {
+    uintptr_t handle;
+    uint64_t generation;
+    uint32_t ready;
+} CapyNavigatorSurfaceInfo;
+__declspec(dllimport) int32_t capy_navigator_surface_update(CapyHost,uint64_t,CapyNavigatorViewport const*);
+__declspec(dllimport) bool capy_navigator_surface_info(CapyHost,uint64_t,CapyNavigatorSurfaceInfo*);
+__declspec(dllimport) int32_t capy_present_navigators(CapyHost);
 __declspec(dllimport) bool capy_navigator_image(float width, float height, uint32_t document_width, uint32_t document_height, float* output);
+__declspec(dllimport) float capy_navigator_maximum_width(void);
 __declspec(dllimport) float capy_navigator_aspect(uint32_t document_width, uint32_t document_height);
 /* Stateless shared color presentation: projection 0 square, 1 triangle, 2 circle.
    Hit result: 0 none, 1 hue, 2 field. Free returned strings with capy_string_free.

@@ -560,10 +560,10 @@ void CanvasWindow::CollectGlass(){
             auto source=Microsoft::UI::Input::InputNonClientPointerSource::GetForWindowId(self->window.AppWindow().Id());source.SetRegionRects(Microsoft::UI::Input::NonClientRegionKind::Passthrough,input);
         }
     }
-    Windows::Data::Json::JsonArray connections,arcs,colors,panels,overviews;auto regions=self->workspace->Glass(self->panel,connections,arcs,colors,panels,overviews);
+    Windows::Data::Json::JsonArray connections,arcs,colors,panels;auto regions=self->workspace->Glass(self->panel,connections,arcs,colors,panels);
     if(self->header)self->header->AppendGlass(regions,self->panel);
     Windows::Data::Json::JsonObject request;request.Insert(L"regions",regions);request.Insert(L"connections",connections);request.Insert(L"arcs",arcs);request.Insert(L"color_bubbles",colors);
-    request.Insert(L"panels",panels);Windows::Data::Json::JsonObject packet;packet.Insert(L"glass",request);packet.Insert(L"overviews",overviews);
+    request.Insert(L"panels",panels);Windows::Data::Json::JsonObject packet;packet.Insert(L"glass",request);
     auto source=self->workspace->ChromeDocument();Windows::Data::Json::JsonArray document;
     for(auto field:{L"width",L"height"})document.Append(CapyUi::N(CapyUi::num(source,field)));
     packet.Insert(L"document",document);
@@ -665,6 +665,12 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
             dispatcher.TryEnqueue([reply,bits]{reply(bits);});
         });});
     workspace->SetWindowId(windowId);
+    workspace->SetNavigatorSurfaces([weak=weak_from_this()](uint64_t id,CapyNavigatorViewport const* viewport,std::function<void(NativeSurfaceAttachment)> reply){
+        if(auto self=weak.lock()){
+            {std::lock_guard lock(self->mutex);if(self->closing)return;auto& work=self->navigatorWork[id];work.remove=!viewport;if(viewport)work.viewport=*viewport;work.reply=std::move(reply);}
+            self->wake.notify_one();
+        }
+    });
     workspace->SetFillFeedback([weak=weak_from_this()](WorkspaceView::Json const& view){
         if(auto self=weak.lock();self&&self->inputDispatcher){
             auto resize=CapyUi::flag(view,L"resize_cursor");auto transaction=uint64_t(CapyUi::num(view,L"transaction")),tick=uint64_t(CapyUi::num(view,L"tick"));
@@ -1319,6 +1325,7 @@ void CanvasWindow::Run() {
         bool repeat=false;
         std::optional<std::chrono::steady_clock::time_point> lastFrame;
         auto nextServices=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
+        auto navigatorWake=std::chrono::steady_clock::now();
         for(;prepared;) {
             if(capy_device_lost(host)){
                 try {
@@ -1332,7 +1339,7 @@ void CanvasWindow::Run() {
             bool pollServices=false,resized=false;
             {
                 std::unique_lock lock(mutex);
-                wake.wait_until(lock,nextServices,[&]{return closing||resize||dirty||servicesReady||transportFailed||!work.Empty()||pendingHover.has_value()||!previewWork.Empty();});
+                wake.wait_until(lock,navigatorDirty?std::min(nextServices,navigatorWake):nextServices,[&]{return closing||resize||dirty||!navigatorWork.empty()||servicesReady||transportFailed||!work.Empty()||pendingHover.has_value()||!previewWork.Empty();});
                 if(closing) break;
                 if(resize) {
                     auto next=desired;resize=false;probeReady=false;
@@ -1358,6 +1365,7 @@ void CanvasWindow::Run() {
                     Publish(std::move(owned.bytes),routing);
                 }
             }
+            PresentNavigators();navigatorWake=std::chrono::steady_clock::now()+RefreshPeriod(nativeWindow);
             std::optional<CanvasQuery> idleQuery;std::deque<CanvasWork> commands;
             {std::lock_guard lock(mutex);
                 auto step=NextCanvasRenderStep(dirty||transportFailed||pendingHover.has_value()||recoveryAttempts,work,previewWork);
@@ -1417,6 +1425,7 @@ void CanvasWindow::Run() {
             }
             if(result<0){if(capy_device_lost(host))continue;Fail(NativeString(capy_error()).get());break;}
             dirty=result!=0;
+            PresentNavigators();navigatorWake=std::chrono::steady_clock::now()+RefreshPeriod(nativeWindow);
             TracePresentation(true,dirty,std::exchange(repeat,false)&&pending.empty()&&!hover);
             if(!inputStarted){
                 inputStarted=true;inputDispatcher.TryEnqueue([weak=weak_from_this(),zoomIn,zoomOut]{
@@ -1551,9 +1560,35 @@ void CanvasWindow::SaveAfterGpuFailure(std::string const& reason) {
         }
     }
 }
+void CanvasWindow::PresentNavigators(){
+    std::map<uint64_t,NavigatorWork> requests;
+    {std::lock_guard lock(mutex);requests.swap(navigatorWork);}
+    for(auto& [id,request]:requests){
+        auto result=capy_navigator_surface_update(host,id,request.remove?nullptr:&request.viewport);
+        if(result<0){if(capy_device_lost(host))return;throw std::runtime_error(NativeString(capy_error()).get());}
+        if(request.remove)navigatorWatches.erase(id);
+        else navigatorWatches[id].reply=std::move(request.reply);
+    }
+    auto result=capy_present_navigators(host);
+    if(result<0){if(capy_device_lost(host))return;throw std::runtime_error(NativeString(capy_error()).get());}
+    navigatorDirty=result!=0;
+    for(auto& [id,watch]:navigatorWatches){
+        CapyNavigatorSurfaceInfo next{};if(!capy_navigator_surface_info(host,id,&next))continue;
+        if(next.handle==watch.published.handle&&next.generation==watch.published.generation&&next.ready==watch.published.ready)continue;
+        NativeSurfaceAttachment attachment{next,{}};
+        if(next.ready&&next.handle){
+            HANDLE owned=nullptr;check_bool(DuplicateHandle(GetCurrentProcess(),reinterpret_cast<HANDLE>(next.handle),GetCurrentProcess(),&owned,0,false,DUPLICATE_SAME_ACCESS));
+            attachment.handle=std::shared_ptr<void>(owned,[](void* handle){CloseHandle(handle);});
+        }
+        watch.published=next;
+        dispatcher.TryEnqueue([weak=weak_from_this(),reply=watch.reply,attachment=std::move(attachment)]{if(auto self=weak.lock();self&&!self->closing&&reply)reply(attachment);});
+    }
+}
+
 void CanvasWindow::ResetSurface() {
     CancelLaunchReveal();
     {std::lock_guard lock(mutex);if(closing)return;}
+    if(workspace)workspace->ResetNavigatorSurfaces();
     auto native=panel.as<ISwapChainPanelNative>();
     root.Background(SolidColorBrush(CapyUi::color(CapyUi::str(CapyUi::object(CapyUi::branch(lastModel,L"state"),L"palette"),L"bg",L"#323232"))));
     auto detached=native->SetSwapChain(nullptr);
@@ -1630,6 +1665,7 @@ void CanvasWindow::Finish() {
     if(renderer.joinable()) renderer.join();
     CapyLifecycle("detach_surface");
     panel.as<ISwapChainPanelNative>()->SetSwapChain(nullptr);
+    if(workspace)workspace->ResetNavigatorSurfaces();
     auto retired=host;host=0;
     renderer=std::jthread([lifetime,retired]{
         init_apartment(apartment_type::multi_threaded);

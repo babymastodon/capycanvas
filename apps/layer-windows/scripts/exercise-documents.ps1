@@ -811,14 +811,93 @@ function Test-GpuRecovery {
         foreach($field in @('revision','export_uri')){$state.document_file.PSObject.Properties.Remove($field)}
         @($state.document_file,$state.camera,$state.workspace,$state.brush)|ConvertTo-Json -Depth 80 -Compress
     }
+    function Recovery-NavigatorFrame([string]$Name){
+        $context=[CapyDocumentControls]::SetThreadDpiAwarenessContext([IntPtr](-4))
+        try{
+            $bounds=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle
+            $area=[Drawing.Rectangle]::FromLTRB([int][Math]::Ceiling($bounds.Left),[int][Math]::Ceiling($bounds.Top),[int][Math]::Floor($bounds.Right),[int][Math]::Floor($bounds.Bottom))
+            if($area.Width -lt 8 -or $area.Height -lt 8){throw 'GPU recovery Navigator has no usable image bounds'}
+            $null=[TabFrames]::DwmFlush();$frame=[TabFrames]::Grab($area.Left,$area.Top,$area.Width,$area.Height)
+            try{$first=Join-Path $run ("gpu-navigator-$Name-first.png");if(!(Test-Path $first)){$frame.Save($first)}}catch{$frame.Dispose();throw}
+            $frame
+        }finally{[CapyDocumentControls]::SetThreadDpiAwarenessContext($context)|Out-Null}
+    }
+    function Recovery-NavigatorImage($Frame,[double]$Dpi,[double]$Aspect){
+        $width=[Math]::Min($Frame.Width-8*$Dpi,$Aspect*($Frame.Height-8*$Dpi));$height=$width/$Aspect
+        @((($Frame.Width-$width)/2),(($Frame.Height-$height)/2),$width,$height)
+    }
+    function Recovery-NavigatorWitnesses($Reference,$Image,$Camera,$Document,[double]$Dpi,[Drawing.Color]$Paper){
+        if($Camera.rotation -ne 0 -or $Camera.flipped[0] -or $Camera.flipped[1]){throw 'Recovery outline witnesses require the fitted unrotated camera'}
+        $sx=$Image[2]/$Document[0]/$Camera.zoom;$sy=$Image[3]/$Document[1]/$Camera.zoom;$work=$Camera.work_area;$move=$Camera.translation
+        $left=$Image[0]+($work[0]-$move[0])*$sx;$top=$Image[1]+($work[1]-$move[1])*$sy;$right=$left+$work[2]*$sx;$bottom=$top+$work[3]*$sy
+        $padding=[int][Math]::Ceiling(1.5*$Dpi+.5)
+        $artwork=[Drawing.Rectangle]::FromLTRB([int][Math]::Ceiling($Image[0]+$Image[2]*.25),[int][Math]::Ceiling($Image[1]+$Image[3]*.25),[int][Math]::Floor($Image[0]+$Image[2]*.75),[int][Math]::Floor($Image[1]+$Image[3]*.75))
+        $bands=@([Drawing.Rectangle]::FromLTRB([int][Math]::Floor($left-$padding),[int][Math]::Floor($top-$padding),[int][Math]::Ceiling($right+$padding),[int][Math]::Ceiling($top+$padding)),[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($left-$padding),[int][Math]::Floor($bottom-$padding),[int][Math]::Ceiling($right+$padding),[int][Math]::Ceiling($bottom+$padding)),[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($left-$padding),[int][Math]::Floor($top-$padding),[int][Math]::Ceiling($left+$padding),[int][Math]::Ceiling($bottom+$padding)),[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($right-$padding),[int][Math]::Floor($top-$padding),[int][Math]::Ceiling($right+$padding),[int][Math]::Ceiling($bottom+$padding)))
+        if(@($bands|Where-Object {$artwork.IntersectsWith($_)}).Count){throw 'Recovery artwork witness intersects the expected work-area outline'}
+        $x0=[Math]::Max($Image[0]+$padding,$left+$padding);$x1=[Math]::Min($Image[0]+$Image[2]-$padding,$right-$padding)
+        $y0=[Math]::Max($Image[1]+$padding,$top+$padding);$y1=[Math]::Min($Image[1]+$Image[3]*.5-$padding,$bottom-$padding)
+        $candidates=@([Drawing.Rectangle]::FromLTRB([int][Math]::Ceiling($x0+($x1-$x0)*.25),[int][Math]::Floor($top-$padding),[int][Math]::Floor($x0+($x1-$x0)*.75),[int][Math]::Ceiling($top+$padding+1)),[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($left-$padding),[int][Math]::Ceiling($y0),[int][Math]::Ceiling($left+$padding+1),[int][Math]::Floor($y1)))
+        $edge=@($candidates|Where-Object {$_.Width -gt 0 -and $_.Height -gt 0 -and $_.Width*$_.Height -ge 20 -and $_.Left -ge $Image[0] -and $_.Top -ge $Image[1] -and $_.Right -le ($Image[0]+$Image[2]) -and $_.Bottom -le ($Image[1]+$Image[3]*.5) -and !$artwork.IntersectsWith($_)})[0]
+        if(!$edge){throw 'Recovery has no visible work-area edge witness inside the upper image'}
+        $a=$Reference.Clone($artwork,$Reference.PixelFormat);$e=$Reference.Clone($edge,$Reference.PixelFormat)
+        $blank=[Drawing.Bitmap]::new($a.Width,$a.Height);$graphics=[Drawing.Graphics]::FromImage($blank)
+        try{
+            $graphics.Clear($Paper)
+            if(([TabFrames+Envelope]::new($blank,$blank)).Difference($a) -lt 20){throw 'Recovery central witness contains no authored pixels'}
+            @{artwork=$artwork;edge=$edge;artworkEnvelope=[TabFrames+Envelope]::new($a,$a);edgeEnvelope=[TabFrames+Envelope]::new($e,$e);outline=@($left,$top,$right,$bottom)}
+        }finally{$graphics.Dispose();$blank.Dispose();$a.Dispose();$e.Dispose()}
+    }
+    function Recovery-NavigatorZoomMatches($Frame,$Witnesses){
+        $a=$Frame.Clone($Witnesses.artwork,$Frame.PixelFormat);$e=$Frame.Clone($Witnesses.edge,$Frame.PixelFormat)
+        try{$Witnesses.artworkEnvelope.Difference($a) -eq 0 -and $Witnesses.edgeEnvelope.Difference($e) -ge 20}finally{$a.Dispose();$e.Dispose()}
+    }
+    function Recovery-NavigatorPaper($Frame){
+        $image=Recovery-NavigatorImage $Frame ([CapyRowPointer]::GetDpiForWindow($drawing.Handle)/96.) $aspect;$left=$image[0];$top=$image[1];$width=$image[2];$height=$image[3]
+        foreach($point in @(@(.1,.1),@(.9,.1),@(.1,.9),@(.9,.9))){
+            $pixel=$Frame.GetPixel([int]($left+$width*$point[0]),[int]($top+$height*$point[1]))
+            if([Math]::Max([Math]::Abs($pixel.R-$corner.R),[Math]::Max([Math]::Abs($pixel.G-$corner.G),[Math]::Abs($pixel.B-$corner.B))) -gt 6){return $false}
+        }
+        $true
+    }
+    function Recovery-NavigatorPixels([string]$Name,$Envelope,[bool]$Changed,$Witnesses=$null){
+        $accepted=@{frame=$null}
+        Wait-Until {
+            $frame=Recovery-NavigatorFrame $Name
+            try{
+                $difference=$Envelope.Difference($frame)
+                $filled=if($Changed){
+                    if(!$Witnesses){throw 'Zoom requires registered artwork and work-area edge witnesses'}
+                    $box=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle;$blocked=$false
+                    foreach($tooltip in Capy-Tooltips $review.Id){$b=$tooltip.Current.BoundingRectangle;$rect=[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($b.Left-$box.Left),[int][Math]::Floor($b.Top-$box.Top),[int][Math]::Ceiling($b.Right-$box.Left),[int][Math]::Ceiling($b.Bottom-$box.Top));if($Witnesses.artwork.IntersectsWith($rect) -or $Witnesses.edge.IntersectsWith($rect)){$blocked=$true}}
+                    !$blocked -and (Recovery-NavigatorZoomMatches $frame $Witnesses)
+                }else{Recovery-NavigatorPaper $frame}
+                if((($Changed -and $difference -ge 20) -or (!$Changed -and $difference -eq 0)) -and $filled){
+                    $frame.Save((Join-Path $run ("gpu-navigator-$Name.png")));$accepted.frame=$frame;$frame=$null;return $true
+                }
+                $false
+            }finally{if($frame){$frame.Dispose()}}
+        } "Navigator pixels did not reach $Name after GPU recovery"
+        $accepted.frame
+    }
+    $navigatorIdentity=(Control 'navigator-overview' -Arranged).GetRuntimeId() -join ':'
     $png={
-        Combo-Select (Find-Id 'export-format') {$_.Current.Name -like 'PNG*'}
+        Combo-Select (Control 'export-format' -Arranged) {$_.Current.Name -like 'PNG*'}
         Wait-Until {$format=Find-Id 'export-format';$format -and (Combo-Value $format) -like 'PNG*'} 'Export did not choose PNG'
     }
     $reference=Join-Path $run 'Recovered-0.png'
     $script:scope=$root;File-Command 'export_document' $png;Picker 'Save As';Choose-Path $reference;Idle
     Wait-Until {Test-Path -LiteralPath $reference} 'The drawing did not export before GPU recovery'
     $exportHash=(Get-FileHash -LiteralPath $reference -Algorithm SHA256).Hash
+    $source=[Drawing.Bitmap]::new($reference)
+    try{
+        $corner=$source.GetPixel(0,0);$aspect=[double]$source.Width/$source.Height;$navigatorDocument=@($source.Width,$source.Height)
+        Wait-Until {
+            $frame=Recovery-NavigatorFrame 'before-loss'
+            try{
+                if(Recovery-NavigatorPaper $frame){$frame.Save((Join-Path $run 'gpu-navigator-before-loss.png'));return $true};$false
+            }finally{$frame.Dispose()}
+        } 'Navigator did not display the exported paper before GPU loss'
+    }finally{$source.Dispose()}
     $beforeRecovery=Signature
     foreach($attempt in 1..2){
         $generation=(Model).windows_gpu_generation
@@ -838,6 +917,7 @@ function Test-GpuRecovery {
         }
         Wait-Until {(Model).windows_gpu_generation -eq $generation+1 -and (Model).brush_ready} 'GPU reconstruction did not finish' 60
         Wait-Until {(Model).state.document_file.revision -gt $undone} 'GPU recovery lost queued pen samples'
+        if(((Control 'navigator-overview' -Arranged).GetRuntimeId() -join ':') -ne $navigatorIdentity){throw 'GPU replacement rebuilt the live Navigator'}
         $documentRevision=(Model).state.document_file.revision
         Wait-Until {(Signature) -eq $beforeRecovery} 'GPU recovery changed document, history, camera, workspace or brush'
         $status=Find-Id 'canvas-status'
@@ -856,6 +936,19 @@ function Test-GpuRecovery {
         Wait-Until {(Model).state.document_file.revision -ne $undoRevision -and (Signature) -eq $beforeRecovery} 'Redo after reconstruction did not restore the drawing'
         Wait-Until {$thumbnail=Find-Id "layer-$imported-thumbnail";$thumbnail -and $thumbnail.Current.ItemStatus -eq 'Ready'} 'Imported image thumbnail did not recover' 15
     }
+    $navigatorReference=[Drawing.Bitmap]::new((Join-Path $run 'gpu-navigator-before-loss.png'));$navigatorBefore=$null;$navigatorZoomed=$null
+    try{
+        $envelope=[TabFrames+Envelope]::new($navigatorReference,$navigatorReference)
+        $navigatorBefore=Recovery-NavigatorPixels 'recovered' $envelope $false
+        $pose=(Control 'canvas-camera').Current.Name
+        Invoke 'navigator-zoom_in'
+        Wait-Until {(Control 'canvas-camera').Current.Name -ne $pose} 'Recovered Navigator Zoom In did not change the camera'
+        $image=Recovery-NavigatorImage $navigatorBefore ([CapyRowPointer]::GetDpiForWindow($drawing.Handle)/96.) $aspect
+        $witnesses=Recovery-NavigatorWitnesses $navigatorBefore $image (Model).state.camera $navigatorDocument ([CapyRowPointer]::GetDpiForWindow($drawing.Handle)/96.) $corner
+        @{image=$image;camera=(Model).state.camera;artwork=$witnesses.artwork;edge=$witnesses.edge;outline=$witnesses.outline}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run 'gpu-navigator-witnesses.json')
+        $navigatorZoomed=Recovery-NavigatorPixels 'zoomed' $envelope $true $witnesses
+        if(((Control 'navigator-overview' -Arranged).GetRuntimeId() -join ':') -ne $navigatorIdentity){throw 'Recovered camera updates replaced the Navigator'}
+    }finally{foreach($frame in @($navigatorReference,$navigatorBefore,$navigatorZoomed)){if($frame){$frame.Dispose()}}}
     & (Join-Path $PSScriptRoot 'inspect-window.ps1') -TraceDirectory $CapyTraceDirectory -ProcessId $review.Id -Output (Join-Path $run 'gpu-recovered.png') -ClientOnly *> (Join-Path $run 'gpu-capture.json')
 }
 function Test-PaperColorReopen {
@@ -1426,6 +1519,7 @@ if($focusedGpu){
     Wait-Until {((Model).state.commands|Where-Object id -eq 'undo').enabled} 'Placement did not enter undo history'
     File-Command 'save_document';Picker 'Save As';Choose-Path $first;Idle
     Wait-Until {(Test-Path -LiteralPath $first) -and (Model).state.document_file.location.uri -eq $first -and !(Model).state.document_file.modified} 'GPU recovery seed did not save cleanly'
+    if($RecoverGpu){$drawingWindow=$drawing.Handle;Expand-PanelColumn 'navigator';Document-Panel 'navigator';Fit-Canvas}
     Draw
     if($gpuUnavailable){
         Test-GpuUnavailableSave -CurrentReview
@@ -1481,6 +1575,7 @@ Wait-Until {(Test-Path -LiteralPath $first) -and (Model).state.document_file.loc
 $hash=(Get-FileHash -LiteralPath $first).Hash
 # This generated source is no longer needed; later Open must use embedded pixels.
 Remove-Item -LiteralPath $imageSource
+if($RecoverGpu){$drawingWindow=$drawing.Handle;Expand-PanelColumn 'navigator';Document-Panel 'navigator';Fit-Canvas}
 Draw
 $exported=Join-Path $run 'Export 日本語.png'
 if(((Model).state.commands|Where-Object id -eq 'export_again').enabled){throw 'Export Again was available before the first export'}

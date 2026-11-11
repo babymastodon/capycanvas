@@ -9,9 +9,9 @@ public:
     ~WorkspaceDrawers();
     void Apply(NativeLayoutInput input,float width,float height);
     bool PresentTabs();
+    bool Moving()const;
     void PresentChrome();
     void HoverTabs(winrt::Microsoft::UI::Xaml::UIElement const& hovered);
-    void AppendOverviews(CapyUi::A& slots)const;
     CapyUi::A Sources()const;
     void AppendGlass(CapyUi::A& regions,CapyUi::A& connections,winrt::Microsoft::UI::Xaml::UIElement const& reference)const;
     winrt::Microsoft::UI::Xaml::FrameworkElement Anchor(std::wstring const& control)const;

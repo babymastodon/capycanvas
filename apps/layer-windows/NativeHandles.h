@@ -8,6 +8,11 @@
 #include <string>
 #include <vector>
 
+struct NativeSurfaceAttachment {
+    CapyNavigatorSurfaceInfo info{};
+    std::shared_ptr<void> handle;
+};
+
 template<auto Release> class NativeHandle {
     struct Owner {
         uint64_t value;

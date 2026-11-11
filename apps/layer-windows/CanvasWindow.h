@@ -197,6 +197,12 @@ private:
     };
     std::shared_ptr<SnapshotState> snapshots=std::make_shared<SnapshotState>();
     winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendered_revoker glassFrame;
+    struct NavigatorWork {CapyNavigatorViewport viewport{};bool remove=false;std::function<void(NativeSurfaceAttachment)> reply;};
+    struct NavigatorWatch {std::function<void(NativeSurfaceAttachment)> reply;CapyNavigatorSurfaceInfo published{};};
+    std::map<uint64_t,NavigatorWork> navigatorWork;
+    std::map<uint64_t,NavigatorWatch> navigatorWatches;
+    bool navigatorDirty=false;
+    void PresentNavigators();
     void UpdateNavigationCursor();
     void Publish(std::string snapshot, CapySnapshotInfo const& info);
     std::vector<std::pair<std::function<void(int32_t)>,int32_t>> completedCommands;

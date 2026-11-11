@@ -500,8 +500,8 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
             require(view->Apply(model,layout),L"Background fixture measured model was rejected");
             group=find(array(object(model,L"layout"),L"groups"),L"active",L"layers");
             auto frame=findElement(surface,groupId).as<Border>();
-            A connections,arcs,colors,panels,overviews;
-            view->Glass(surface,connections,arcs,colors,panels,overviews);auto document=view->ChromeDocument();
+            A connections,arcs,colors,panels;
+            view->Glass(surface,connections,arcs,colors,panels);auto document=view->ChromeDocument();
             auto revision=uint64_t(std::max(0.,num(object(model,L"windows_glass"),L"chrome_revision")))+1;
             auto ack=[&](uint64_t value){A extent;extent.Append(N(num(document,L"width")));extent.Append(N(num(document,L"height")));return O({{L"chrome_revision",N(double(value))},{L"document",extent}});};
             view->ChromeSent(revision);require(view->Apply(O({{L"windows_glass",ack(revision)}})),L"Initial background fixture ACK was rejected");
@@ -1226,24 +1226,12 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
             }
             {
                 Border element,extra;auto id=ChromeFrames::Id(element);ChromeFrames frames;
-                auto frame=[id]{
-                    ChromeFrames::Frame next;next.groups.insert(1);next.columns.insert(2);next.elements.insert(id);
-                    auto view=J::Parse(LR"({"bounds":[0,0,100,80],"clip":[0,0,100,80],"order":1})");
-                    next.views.emplace(id,view);next.overviews.Append(J::Parse(view.Stringify()));return next;
-                };
-                auto copy=[](ChromeFrames::Frame next){
-                    for(auto& [key,view]:next.views)view=J::Parse(view.Stringify());
-                    next.overviews=A::Parse(next.overviews.Stringify());return next;
-                };
-                auto document=O({{L"width",N(100)},{L"height",N(80)}});unsigned refreshes=0;bool retired=false;
-                frames.observers.emplace(id,[&]{++refreshes;});frames.current=frame();frames.Sent(1);
+                auto frame=[id]{ChromeFrames::Frame next;next.groups.insert(1);next.columns.insert(2);next.elements.insert(id);return next;};
+                auto document=O({{L"width",N(100)},{L"height",N(80)}});bool retired=false;
+                frames.current=frame();frames.Sent(1);
                 require(frames.Present(1,document),L"Initial chrome frame was unchanged");
                 frames.retiring.emplace(&retired,[&]{retired=true;});frames.current=frame();frames.Sent(2);
-                require(!frames.Present(2,document)&&frames.revision==2&&refreshes==2&&retired,L"Equal chrome did not acknowledge, retire and preserve presentation");
-                frames.current=copy(frames.current);frames.current.views.at(id).GetNamedArray(L"bounds").SetAt(0,N(1));frames.Sent(3);
-                require(frames.Present(3,document),L"Changed native overview view was ignored");
-                frames.current=copy(frames.current);frames.current.overviews.GetObjectAt(0).GetNamedArray(L"clip").SetAt(2,N(90));frames.Sent(4);
-                require(frames.Present(4,document),L"Changed chrome overview clip was ignored");
+                require(!frames.Present(2,document)&&frames.revision==2&&retired,L"Equal chrome did not acknowledge, retire and preserve presentation");
                 frames.Sent(5);document=O({{L"width",N(120)},{L"height",N(80)}});
                 require(frames.Present(5,document),L"Changed chrome document was ignored");
                 frames.current.groups.insert(3);frames.Sent(6);require(frames.Present(6,document),L"Changed chrome group was ignored");

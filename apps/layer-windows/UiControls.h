@@ -281,6 +281,11 @@ struct WorkspaceData : CanvasModelSource,std::enable_shared_from_this<WorkspaceD
     std::shared_ptr<FilterPreviewCache> previews;
     std::shared_ptr<LayerThumbnailCache> thumbnails;
     std::shared_ptr<PaperPreviewCache> papers;
+    using NavigatorTransport=std::function<void(uint64_t,CapyNavigatorViewport const*,std::function<void(NativeSurfaceAttachment)>)>;
+    NavigatorTransport navigatorSurface;
+    using NavigatorViews=std::map<uint64_t,std::pair<std::function<void()>,std::function<void()>>>;
+    std::shared_ptr<NavigatorViews> navigatorViews=std::make_shared<NavigatorViews>();
+    std::function<bool()> navigatorMoving;
     PreviewTransport query;
     std::function<void(J,Windows::Foundation::Point,std::function<bool()>,std::function<void()>)> takeBubble;
     uint64_t windowId=0;bool glassSurfaces=false;A drawerSources;

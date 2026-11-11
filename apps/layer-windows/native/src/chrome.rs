@@ -1,4 +1,4 @@
-use layer_host::scene::{Glass, GlassLayout, NavigatorSlot, Navigators};
+use layer_host::scene::{Glass, GlassLayout};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -7,13 +7,11 @@ pub struct ChromePacket {
     revision: u64,
     document: [u32;2],
     glass: GlassLayout,
-    overviews: Vec<NavigatorSlot>,
 }
 
 #[derive(Default)]
 pub struct Chrome {
     pub glass: Glass,
-    pub navigators: Navigators,
     pub presented_revision: Option<u64>,
     pub presented_document: Option<[u32;2]>,
     pub document: [u32;2],
@@ -22,10 +20,7 @@ pub struct Chrome {
 impl Chrome {
     pub fn set(&mut self, packet: ChromePacket) -> Result<bool, String> {
         if packet.revision <= self.revision { return Ok(false); }
-        let mut navigators = Navigators::default();
-        navigators.set(packet.overviews)?;
         self.glass.set(packet.glass)?;
-        self.navigators = navigators;
         self.document = packet.document;
         self.revision = packet.revision;
         Ok(true)
@@ -44,30 +39,24 @@ impl Chrome {
 mod tests {
     use super::*;
     fn packet(revision: u64) -> serde_json::Value {
-        serde_json::json!({"revision":revision,"document":[192,192],"glass":{"regions":[[1,2,30,40,3,3,3,3]],"connections":[]},
-            "overviews":[{"bounds":[1,2,30,40],"clip":[1,2,30,40],"order":1}]})
+        serde_json::json!({"revision":revision,"document":[192,192],"glass":{"regions":[[1,2,30,40,3,3,3,3]],"connections":[]}})
     }
     #[test]
     fn chrome_packet_rejects_partial_updates_and_old_revisions() {
         let mut chrome = Chrome::default();
         assert!(chrome.set(serde_json::from_value(packet(1)).unwrap()).unwrap());
-        for field in ["glass", "overviews"] {
-            let mut invalid = packet(2);
-            if field == "glass" { invalid[field]["regions"][0][2] = (-1).into(); }
-            else { invalid[field][0]["opacity"] = 2.into(); }
-            assert!(chrome.set(serde_json::from_value(invalid).unwrap()).is_err());
-            assert_eq!(chrome.revision(), 1);assert_eq!(chrome.document,[192;2]);
-            assert_eq!(chrome.glass.count(), 1);
-            assert_eq!(chrome.navigators.count(), 1);
-        }
+        let mut invalid = packet(2);
+        invalid["glass"]["regions"][0][2] = (-1).into();
+        assert!(chrome.set(serde_json::from_value(invalid).unwrap()).is_err());
+        assert_eq!(chrome.revision(), 1);assert_eq!(chrome.document,[192;2]);
+        assert_eq!(chrome.glass.count(), 1);
         assert!(!chrome.set(serde_json::from_value(packet(1)).unwrap()).unwrap());
         assert!(!chrome.set(serde_json::from_value(packet(0)).unwrap()).unwrap());
         chrome.completed(0,[192;2]);assert_eq!(chrome.presented_revision, None);
-        assert!(chrome.set(serde_json::from_value(serde_json::json!({"revision":2,"document":[192,192],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap());
+        assert!(chrome.set(serde_json::from_value(serde_json::json!({"revision":2,"document":[192,192],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap());
         chrome.completed(0,[192;2]);assert_eq!(chrome.presented_revision, None);
         chrome.completed(2,[192;2]);assert_eq!(chrome.presented_revision, Some(2));
         assert_eq!(chrome.glass.count(), 0);
-        assert_eq!(chrome.navigators.count(), 0);
     }
     #[test]
     fn unstaged_chrome_keeps_the_last_acknowledged_revision() {
