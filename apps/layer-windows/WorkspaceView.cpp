@@ -127,7 +127,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         std::array<float,4> corners{SurfaceRadius,SurfaceRadius,SurfaceRadius,SurfaceRadius};
         Border footer{nullptr};
         std::wstring key;
-        hstring tabKey,tabsPresentationKey;
+        hstring tabKey,tabsPresentationKey,presentedTabsKey;
         J geometry,presented;
         Windows::Foundation::Point offset{};
         TranslateTransform translation;
@@ -260,6 +260,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         if(!gestures->DeferRemoval(group.shadow.Root(),owner)&&root.Children().IndexOf(group.shadow.Root(),index))root.Children().RemoveAt(index);
     }
     void buildTabs(Group& group,J const& geometry){
+        group.presentedTabsKey=L"";
         auto groupItem=O({{L"kind",S(L"group")},{L"group",N(num(geometry,L"id"))}});
         float fit=groupRadius(geometry)*CornerFit;group.border.Background(clear());group.border.CornerRadius(CornerRadius{fit,fit,fit,fit});
         if(!group.layout){
@@ -611,9 +612,9 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         data->apply(noticeInputs,[&]{notice->Publish(data->state);});
         if(data->colorInputs.Changed(data->changes))data->queueColors();
     }
-    void applyOverlays(bool layoutChanged){
+    void applyOverlays(bool layoutChanged,bool full=false){
         data->apply(drawerInputs,[&]{drawers->Apply(layoutInput,viewportWidth,viewportHeight);},layoutChanged);
-        data->apply(bubbleInputs,[&]{bubbles->Apply();},layoutChanged);
+        if(!data->apply(bubbleInputs,[&]{bubbles->Apply();},full)&&layoutChanged)bubbles->Wake();
         data->apply(gestureInputs,[&]{gestures->Refresh();},layoutChanged);
         data->apply(cameraInputs,[&]{updateCamera(object(data->state,L"camera"));},layoutChanged);
         data->apply(popupInputs,[&]{updatePopup();},layoutChanged);
@@ -660,7 +661,9 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
             }else if(group.tabsPresentationKey!=tabsPresentationKey){buildTabs(group,geometry);rebuilt=true;group.tabsPresentationKey=tabsPresentationKey;}
             data->apply(group.iconInputs,[&]{for(auto const& update:group.paintIcons)update();},true);
             }
-            presentTabs(group,geometry);
+            auto presentedTabs=O({{L"visible",B(flag(geometry,L"tabs_visible"))},{L"active",S(str(geometry,L"active"))},
+                {L"panels",array(geometry,L"panels")},{L"presentations",array(geometry,L"tab_presentations")}}).Stringify();
+            if(full||group.presentedTabsKey!=presentedTabs){group.presentedTabsKey=presentedTabs;presentTabs(group,geometry);}
             bool hidden=flag(model,L"chrome_hidden")&&!flag(geometry,L"floating")&&!flag(geometry,L"zen_kept");
             group.hidden=hidden;
             int z=flag(geometry,L"floating")?100+2*order:0;++order;
@@ -694,7 +697,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         for(auto const& panel:previewPanels)panel->Place(layout);
         notice->Place(layout);
         collapsed->Apply();expansion->Apply(configurationHeight());present();
-        applyOverlays(true);
+        applyOverlays(true,full);
         auto status=object(layout,L"status");place(cameraSlot,status);
         cameraSlot.Visibility(num(status,L"height")>0?Visibility::Visible:Visibility::Collapsed);
         zoom->text.Foreground(data->brush(L"text"));
