@@ -173,6 +173,7 @@ internal class LaunchSplashWindow(private val activity: MainActivity) {
             }
         }
     }
+    @androidx.annotation.RequiresApi(31)
     private fun measureIcon(splash: SplashScreenView) {
         val icon = splash.iconView as? ImageView ?: return
         val drawable = icon.drawable ?: return
