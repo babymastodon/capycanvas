@@ -981,6 +981,11 @@ fn transparency_label(value: crate::Transparency, localizer: &Localizer) -> Stri
     let index = crate::Transparency::CHOICES.iter().position(|choice| choice.0 == value).unwrap();
     localizer.text([MessageId::SETTINGS_OFF, MessageId::SETTINGS_LOW, MessageId::SETTINGS_MEDIUM, MessageId::SETTINGS_HIGH][index]).to_string()
 }
+fn version_label(revision: &str, unoptimized: bool) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    if revision.is_empty() { return version.into(); }
+    format!("{version}\u{a0}· {revision}{}", if unoptimized { "\u{a0}dbg" } else { "" })
+}
 
 fn preference_choice_search(kind: &PreferenceKind) -> String {
     match kind {
@@ -1329,7 +1334,7 @@ impl Settings {
                         &localizer.text(MessageId::SETTINGS_VERSION),
                         "",
                         PreferenceKind::Info {
-                            value: env!("CARGO_PKG_VERSION").into(),
+                            value: version_label(env!("CAPY_BUILD_REVISION"), cfg!(debug_assertions)),
                         },
                     ),
                     row(
@@ -2297,6 +2302,17 @@ impl PreferencesState {
 #[cfg(test)]
 mod copy_tests {
     use super::*;
+
+    #[test]
+    fn about_version_names_the_source_revision_outside_public_releases() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(version_label("", true), version);
+        assert_eq!(version_label("12ae790db", false), format!("{version}\u{a0}· 12ae790db"));
+        assert_eq!(version_label("12ae790db*", true), format!("{version}\u{a0}· 12ae790db*\u{a0}dbg"));
+        let shown = Settings::default().pages(Platform::Gtk).into_iter().flat_map(|page| page.groups).flat_map(|group| group.rows)
+            .find_map(|row| match (row.id, row.kind) { (PreferenceId::Version, PreferenceKind::Info { value }) => Some(value), _ => None });
+        assert_eq!(shown.unwrap(), version_label(env!("CAPY_BUILD_REVISION"), cfg!(debug_assertions)));
+    }
 
     fn accent_row(settings: &Settings, system: Option<HexColor>) -> (Vec<Swatch>, u32, String) {
         let row = PreferencesState::default()

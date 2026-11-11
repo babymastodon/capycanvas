@@ -10,6 +10,8 @@ val capyRustProfile = providers.gradleProperty("capyRustProfile")
     .orElse(providers.environmentVariable("CAPY_RUST_PROFILE"))
 val capyApplicationId = providers.gradleProperty("capyApplicationId")
 val capyDevelopmentSuffix = ".dev".takeUnless { capyApplicationId.isPresent }
+val capySourceRevision = providers.exec { commandLine("sh", rootDir.resolve("../../tools/build/source-revision.sh").path) }
+    .standardOutput.asText.map(String::trim)
 val capyVersion = Regex("^version = \"(\\d+)\\.(\\d+)\\.(\\d+)\"$", RegexOption.MULTILINE)
     .find(providers.fileContents(rootProject.layout.projectDirectory.file("../../Cargo.toml")).asText.get())!!
     .groupValues.drop(1).map(String::toInt)
@@ -88,6 +90,7 @@ androidComponents.onVariants { variant ->
         jniDirectory.set(layout.buildDirectory.dir("rustJniLibs/${variant.name}"))
         workingDir = rootDir.resolve("../..")
         environment("ANDROID_NDK_HOME", "${System.getenv("ANDROID_HOME") ?: System.getProperty("user.home") + "/Android/Sdk"}/ndk/29.0.14206865")
+        environment("CAPY_SOURCE_REVISION", capySourceRevision.get())
         commandLine(listOf("cargo", "ndk") + capyAbis.flatMap { listOf("-t", it) } +
             listOf("--platform", "29", "-o", jniDirectory.get().asFile.absolutePath,
                 "build", "--locked", "--profile", profile, "-p", "layer-android-link"))
@@ -99,6 +102,8 @@ androidComponents.onVariants { variant ->
         inputs.files(rootDir.resolve("../../Cargo.lock"), rootDir.resolve("../../Cargo.toml"), rootDir.resolve("../../.cargo/config.toml"))
         inputs.property("abi", capyAbis)
         inputs.property("profile", profile)
+        inputs.property("sourceRevision", capySourceRevision)
+        inputs.property("publicRelease", providers.environmentVariable("CAPY_PUBLIC_RELEASE").orElse(""))
         inputs.property("rustVersion", providers.exec { commandLine("rustc", "--version") }.standardOutput.asText)
     }
     variant.sources.jniLibs?.addGeneratedSourceDirectory(rustBuild) { it.jniDirectory }

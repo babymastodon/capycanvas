@@ -22,6 +22,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_VERSION: "1.99.0"
   SIGNED: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+  CAPY_PUBLIC_RELEASE: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
 jobs:
   version:
     runs-on: ubuntu-24.04

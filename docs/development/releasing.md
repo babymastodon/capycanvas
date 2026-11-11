@@ -408,6 +408,12 @@ its own numbers from it at build time:
 - Versions are plain `MAJOR.MINOR.PATCH`, with a nonzero major part for the
   Microsoft Store and minor and patch parts below 1,000. Test status belongs to
   a distribution channel, never to the version.
+- About shows the plain version when `CAPY_PUBLIC_RELEASE=true`, which the
+  release workflow sets for tag pushes. Other builds add the commit, `*` when
+  tracked files differ from it and `dbg` when unoptimized:
+  `1.0.15 · 12ae790db* dbg`. A copy that is not its own Git checkout, such as
+  the Flatpak sandbox or the editor deploy's archive, shows the plain version
+  unless given `CAPY_SOURCE_REVISION` from `tools/build/source-revision.sh`.
 - Every build that leaves the project, including a store test upload, gets a new
   version. Stores reject a reused number, and a skipped number is harmless.
 - The AppStream release entry's `<description>` holds the release notes: a short

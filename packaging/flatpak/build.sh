@@ -24,6 +24,7 @@ flatpak build --share=network --filesystem="$state" \
     --env="CARGO_TARGET_DIR=$state/cargo-target" --env="CAPY_GTK_BUILD_DIR=$state/gtk-runtime" \
     --env="PATH=$state/cargo/bin:/usr/lib/sdk/node24/bin:/app/bin:/usr/bin" \
     --env="RUST_VERSION=$rust_version" --env="CAPY_BUILD_JOBS=${CAPY_BUILD_JOBS:-4}" \
+    --env="CAPY_PUBLIC_RELEASE=${CAPY_PUBLIC_RELEASE:-}" --env="CAPY_SOURCE_REVISION=$(sh tools/build/source-revision.sh)" \
     --env=CARGO_TERM_COLOR=never "$state/app" bash packaging/flatpak/compile.sh
 sed 's/^name=art.capycanvas.CapyCanvas$/name=art.capycanvas.CapyCanvas.Devel/' \
     "$state/app/metadata" > "$state/app/metadata-compose"
