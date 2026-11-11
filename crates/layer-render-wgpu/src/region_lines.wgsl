@@ -307,24 +307,26 @@ fn required_reach(squared:u32,allowance:u32)->u32 {
     let d=root(squared);let length=d+u32(d*d<squared);let gap=max(1u,length-min(length,allowance));
     return 16u*min(4u,(gap+15u)/16u);
 }
-fn nearby_own_stroke(start:vec2<i32>,hit:vec2<i32>,reach:u32)->bool {
-    var nodes:array<vec2<u32>,256>;nodes[0]=vec2(point(vec2<u32>(start)),0u);var head=0u;var tail=1u;
+const FRONTIER_NODES=256u;
+fn frontier(k:u32)->vec2<u32>{return vec2(second[2u*k],second[2u*k+1u]);}
+fn store_frontier(k:u32,node:vec2<u32>){second[2u*k]=node.x;second[2u*k+1u]=node.y;}
+fn nearby_own_stroke(slot:u32,start:vec2<i32>,hit:vec2<i32>,reach:u32)->bool {
+    let base=slot*FRONTIER_NODES;store_frontier(base,vec2(point(vec2<u32>(start)),0u));var head=base;var tail=base+1u;
     let limit=3u*reach;
     loop {
         if head==tail {break;}
         var best=head;var rank=0xffffffffu;
         for(var k=head;k<tail;k++){
-            let delta=abs(vec2<i32>(coord(nodes[k].x))-hit);let cost=nodes[k].y+u32(max(0,max(delta.x,delta.y)-2));
-            if cost<rank || (cost==rank && nodes[k].x<nodes[best].x) {best=k;rank=cost;}
+            let candidate=frontier(k);let delta=abs(vec2<i32>(coord(candidate.x))-hit);let cost=candidate.y+u32(max(0,max(delta.x,delta.y)-2));
+            if cost<rank || (cost==rank && candidate.x<frontier(best).x) {best=k;rank=cost;}
         }
-        let swap=nodes[head];nodes[head]=nodes[best];nodes[best]=swap;
-        let node=nodes[head];head++;let at=vec2<i32>(coord(node.x));
+        let node=frontier(best);store_frontier(best,frontier(head));store_frontier(head,node);head++;let at=vec2<i32>(coord(node.x));
         if square(vec2<u32>(at),vec2<u32>(hit))<=4u{return true;}if node.y>=limit{continue;}
         for(var n=0u;n<8u;n++){
             let q=at+AROUND[n];let left=i32(limit-node.y-1u);if !active_barrier(q) || max(abs(q.x-hit.x),abs(q.y-hit.y))>left+2 {continue;}let key=point(vec2<u32>(q));
-            var visited=INVALID;for(var k=0u;k<tail;k++){if key==nodes[k].x{visited=k;break;}}
-            if visited!=INVALID {if visited>=head{nodes[visited].y=min(nodes[visited].y,node.y+1u);}continue;}
-            if tail==256u{return false;}nodes[tail]=vec2(key,node.y+1u);tail++;
+            var visited=INVALID;for(var k=base;k<tail;k++){if key==second[2u*k]{visited=k;break;}}
+            if visited!=INVALID {if visited>=head{second[2u*visited+1u]=min(second[2u*visited+1u],node.y+1u);}continue;}
+            if tail==base+FRONTIER_NODES{return false;}store_frontier(tail,vec2(key,node.y+1u));tail++;
         }
     }
     return false;
@@ -399,7 +401,7 @@ fn seal_candidates(@builtin(global_invocation_id) id:vec3<u32>, @builtin(num_wor
     if line.job.y!=0u && atomicLoad(&cached[line.offsets.y+3u])==0u{return;}
     let index=id.x+id.y*groups.x*64u+line.job.x;
     let count=min(atomicLoad(&cached[line.offsets.y]),line.offsets.w);if index>=count{return;}
-    let base=line.offsets.z+index*END_WORDS;let start=vec2<i32>(coord(atomicLoad(&cached[base])));let dir=tangent(atomicLoad(&cached[base+7u]));
+    let slot=index-line.job.x;let base=line.offsets.z+index*END_WORDS;let start=vec2<i32>(coord(atomicLoad(&cached[base])));let dir=tangent(atomicLoad(&cached[base+7u]));
     if line.options.y==1u && atomicLoad(&cached[base+11u])==0u {return;}
     var best:array<u32,4>;var scores:array<u32,4>;var bends:array<u32,4>;
     for(var bucket=0u;bucket<4u;bucket++){best[bucket]=INVALID;scores[bucket]=0xffffffffu;bends[bucket]=INVALID;}
@@ -428,7 +430,7 @@ fn seal_candidates(@builtin(global_invocation_id) id:vec3<u32>, @builtin(num_wor
                 if !straight || !gap_on_segment(start,end){continue;}
                 length=root(square(vec2<u32>(start),vec2<u32>(end)));
             }
-            if nearby_own_stroke(start,end,required_reach(square(vec2<u32>(start),vec2<u32>(end)),(end_width(base)+end_width(other))/2u)){continue;}
+            if nearby_own_stroke(slot,start,end,required_reach(square(vec2<u32>(start),vec2<u32>(end)),(end_width(base)+end_width(other))/2u)){continue;}
             var alignment=0u;
             if bend==INVALID {alignment=u32(abs(determinant(dir,d))*1024/max(1,dot(dir,d))+abs(determinant(facing,-d))*1024/max(1,dot(facing,-d)));}
             let score=(length*length+alignment*4u)*2048u;
@@ -448,7 +450,7 @@ fn seal_candidates(@builtin(global_invocation_id) id:vec3<u32>, @builtin(num_wor
             if !free{continue;}
             if !in_cone(dir,d){break;}
             let hit=middle(q);if !supported_hit(hit){continue;}let key=point(vec2<u32>(hit));let score=0x80000000u+root(length*65536u)*(100u+3u*u32(abs(i32(ray)-20)));
-            if nearby_own_stroke(start,hit,required_reach(length,end_width(base))){break;}
+            if nearby_own_stroke(slot,start,hit,required_reach(length,end_width(base))){break;}
             for(var bucket=0u;bucket<4u;bucket++){
                 let reach=16u*(bucket+1u);
                 if length<=(reach+end_width(base))*(reach+end_width(base)) && (score<scores[bucket] || (score==scores[bucket] && key<best[bucket])){scores[bucket]=score;best[bucket]=key;bends[bucket]=INVALID;}
