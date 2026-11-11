@@ -613,7 +613,10 @@ When a GitHub Release is published, `.github/workflows/published.yml` runs
 `packaging/flatpak/cloudflare/`. Files over Cloudflare's 25 MiB static-asset
 limit go to `https://downloads.capycanvas.art/flatpak/<path>` in the R2 bucket
 `capycanvas-downloads`, and `_redirects` sends their repository paths there;
-Flatpak follows the redirect. Only the latest published release
+Flatpak follows the redirect. Downloads serve only files listed in the bucket's
+WAF allowlist, so the script runs `capycanvas-web`'s
+`site/scripts/allow-downloads.mjs` from the checkout in `CAPYCANVAS_WEB` before
+deploying. Only the latest published release
 that is neither a draft nor a prerelease can deploy, so an older release cannot
 replace the update source. Installations from 1.0.15 or earlier recorded
 `https://capyatelier.github.io/capycanvas/flatpak`; they update again after
@@ -624,7 +627,7 @@ replace the update source. Installations from 1.0.15 or earlier recorded
 The `release` environment holds the signing material; restrict it to `v*` tags
 and require a maintainer's approval. The `cloudflare` environment, restricted to
 `v*` tags and `main`, holds `CLOUDFLARE_API_TOKEN` (an account API token with
-Workers Scripts and Workers R2 Storage edit access), `CLOUDFLARE_ACCOUNT_ID` and
+Workers Scripts, Workers R2 Storage and Zone WAF edit access), `CLOUDFLARE_ACCOUNT_ID` and
 `DEPLOY_DISPATCH_TOKEN` (a fine-grained token with Actions write access to
 `capycanvas-web` and `capycanvas-release`) for `published.yml`.
 

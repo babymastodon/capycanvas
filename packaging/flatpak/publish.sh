@@ -7,6 +7,7 @@ url=https://flatpak.capycanvas.art
 large_files=capycanvas-downloads/flatpak
 large_files_url=https://downloads.capycanvas.art/flatpak
 config=packaging/flatpak/cloudflare/wrangler.jsonc
+allow_downloads=${CAPYCANVAS_WEB:?Set CAPYCANVAS_WEB to a capycanvas-web checkout}/site/scripts/allow-downloads.mjs
 wrangler=(npx --yes wrangler@4.160.0)
 latest=$(gh api "repos/$repository/releases/latest" --jq .tag_name)
 tag=${1:-$latest}
@@ -35,4 +36,5 @@ while IFS= read -r -d '' file; do
     printf '/%s %s/%s 302\n' "$path" "$large_files_url" "$path" >> "$work/assets/_redirects"
     rm "$file"
 done < <(find "$work/assets" -type f -size +25M -print0)
+node "$allow_downloads"
 "${wrangler[@]}" deploy --config "$config"
