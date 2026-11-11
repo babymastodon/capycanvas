@@ -379,8 +379,8 @@ struct PropertiesView : std::enable_shared_from_this<PropertiesView> {
             }
             arrange(items);
         }
-        for(auto const& update:headings)update();
-        for(auto const& [key,field]:fields)for(auto const& update:field.bindings)update();
+        for(auto const& update:headings)update.Apply();
+        for(auto const& [key,field]:fields)for(auto const& update:field.bindings)update.Apply();
         bodyGate.IsEnabled(flag(view,L"enabled"));body.Opacity(flag(view,L"enabled")?1.:.4);
     }
 };
