@@ -574,7 +574,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
             data->thumbnails=CreateLayerThumbnailCache(data->query);
             data->previews=CreateFilterPreviewCache(data->query);
         }
-        RefreshFilterPreviewContext(data->previews,object(data->state,L"document_file").GetNamedValue(L"epoch").Stringify());
+        RefreshFilterPreviewContext(data->previews,named(branch(data->state,L"document_file"),L"epoch").Stringify());
         data->apply(paletteInputs,[&]{data->refreshPalette();});presentFill();
         auto theme=data->theme(),palette=object(data->state,L"palette").Stringify();
         if(theme!=previousTheme||palette!=previousPalette){

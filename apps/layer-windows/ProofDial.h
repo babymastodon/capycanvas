@@ -26,7 +26,7 @@ struct ProofDial:std::enable_shared_from_this<ProofDial>{
         return reply?J::Parse(to_hstring(reply.get())):J{};
     }
     void send(J const& action,hstring const& at){data->dispatch(O({{L"windows_proof_action",action},{L"windows_epoch",S(at)}}));}
-    void control(uint8_t selected,J const& edit,hstring const& phase=L""){auto action=O({{L"type",S(L"control")},{L"part",N(selected)},{L"edit",edit}});if(!phase.empty())action.Insert(L"phase",S(phase));send(action,heldKey?epoch:to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch"))));}
+    void control(uint8_t selected,J const& edit,hstring const& phase=L""){auto action=O({{L"type",S(L"control")},{L"part",N(selected)},{L"edit",edit}});if(!phase.empty())action.Insert(L"phase",S(phase));send(action,heldKey?epoch:to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch"))));}
     void finishKey(bool cancel){if(!heldKey)return;control(part,O({{L"type",S(L"step")},{L"axis",N(0)},{L"steps",N(0)}}),cancel?L"cancel":L"up");heldKey.reset();}
     void contact(hstring const& phase){A start,point;start.Append(N(origin.X));start.Append(N(origin.Y));point.Append(N(last.X));point.Append(N(last.Y));
         send(O({{L"type",S(L"dial")},{L"phase",S(phase)},{L"size",N(side)},{L"origin",start},{L"point",point}}),epoch);
@@ -91,7 +91,7 @@ struct ProofDial:std::enable_shared_from_this<ProofDial>{
             self->pressedAt=repeated?0:p.Timestamp();self->pressedPoint=at;self->pressedPart=selected;
             if(repeated){self->part=selected;self->control(selected,O({{L"type",S(L"reset")}}));e.Handled(true);return;}
             if(!self->capture->Begin(e))return;
-            self->part=uint8_t(hit.GetNumber());self->origin=self->last=p.Position();self->epoch=to_hstring(uint64_t(num(object(self->data->state,L"document_file"),L"epoch")));
+            self->part=uint8_t(hit.GetNumber());self->origin=self->last=p.Position();self->epoch=to_hstring(uint64_t(num(branch(self->data->state,L"document_file"),L"epoch")));
             self->contact(L"down");AutomationProperties::SetItemStatus(self->root,self->data->caption(L"header",L"dragging"));e.Handled(true);
         }});
         root.PointerMoved([weak](auto&&,PointerRoutedEventArgs const& e){if(auto self=weak.lock();self&&self->capture->Owns(e.Pointer().PointerId())){self->last=e.GetCurrentPoint(self->canvas).Position();self->contact(L"move");e.Handled(true);}});
@@ -101,7 +101,7 @@ struct ProofDial:std::enable_shared_from_this<ProofDial>{
             if(self->capture->Active())return;
             if(key==VirtualKey::Home){self->finishKey(false);self->control(self->part,O({{L"type",S(L"reset")}}));e.Handled(true);}
             else if(key==VirtualKey::Left||key==VirtualKey::Right||key==VirtualKey::Up||key==VirtualKey::Down){if(self->heldKey&&*self->heldKey!=key)self->finishKey(false);
-                bool first=!self->heldKey;if(first){self->heldKey=key;self->epoch=to_hstring(uint64_t(num(object(self->data->state,L"document_file"),L"epoch")));}
+                bool first=!self->heldKey;if(first){self->heldKey=key;self->epoch=to_hstring(uint64_t(num(branch(self->data->state,L"document_file"),L"epoch")));}
                 int amount=(GetKeyState(VK_SHIFT)&0x8000)?10:1;
                 self->control(self->part,O({{L"type",S(L"step")},{L"axis",N(key==VirtualKey::Up||key==VirtualKey::Down?1:0)},{L"steps",N((key==VirtualKey::Right||key==VirtualKey::Up?1:-1)*amount)}}),first?L"down":L"move");e.Handled(true);}
         }});

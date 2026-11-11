@@ -202,7 +202,7 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
     void refresh(){
         if(!control().Size())return;
         auto destination=target();auto field=[&destination](wchar_t const* name){return destination.GetNamedValue(name,JsonValue::CreateNullValue());};
-        auto nextOwner=O({{L"document",object(data->state,L"document_file").GetNamedValue(L"epoch",JsonValue::CreateNullValue())},
+        auto nextOwner=O({{L"document",named(branch(data->state,L"document_file"),L"epoch")},
             {L"kind",field(L"kind")},{L"layer",field(L"layer")},{L"key",field(L"key")}}).Stringify();
         if(nextOwner!=owner){cancel();selected=0;owner=nextOwner;}
         auto all=stops();if(all.Size()<2)return;

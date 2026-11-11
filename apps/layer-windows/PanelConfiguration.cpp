@@ -11,7 +11,7 @@
 using namespace CapyUi;
 namespace {
 J editing(std::shared_ptr<WorkspaceData> const& data){return object(object(data->state,L"layer_tools"),L"editing_layer");}
-hstring epoch(std::shared_ptr<WorkspaceData> const& data){return to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")));}
+hstring epoch(std::shared_ptr<WorkspaceData> const& data){return to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch")));}
 A optionStructure(A const& sections){
     A result;
     for(auto section:sections){A items;for(auto value:section.GetArray()){

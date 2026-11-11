@@ -18,13 +18,13 @@ inline void panelScrolling(ScrollView const& scroll,UIElement const& content,std
         if(state->complete)cancel();
         if(auto content=surface.get())content.ManipulationMode(ManipulationModes::TranslateRailsY|ManipulationModes::TranslateInertia);
         state->pointer=point.PointerId();state->canceled=false;
-        if(auto data=context.lock()){state->epoch=uint64_t(num(object(data->state,L"document_file"),L"epoch"));data->pointerCancels.Observe(*state->pointer,state.get(),cancel);}
+        if(auto data=context.lock()){state->epoch=uint64_t(num(branch(data->state,L"document_file"),L"epoch"));data->pointerCancels.Observe(*state->pointer,state.get(),cancel);}
     })),true);
     content.ManipulationStarting([weak,state](auto&&,ManipulationStartingRoutedEventArgs const& e){if(auto scroll=weak.get())e.Container(scroll);if(state->canceled||!state->pointer)e.Mode(ManipulationModes::None);});
     content.ManipulationStarted([weak,state,cancel](auto&&,ManipulationStartedRoutedEventArgs const& e){state->complete=[e]{e.Complete();};if(auto scroll=weak.get();scroll&&!state->canceled){state->offset=scroll.VerticalOffset();state->running=true;}else cancel();});
     content.ManipulationDelta([weak,context,state,cancel](auto&&,ManipulationDeltaRoutedEventArgs const& e){
         state->complete=[e]{e.Complete();};auto data=context.lock();auto scroll=weak.get();
-        if(!scroll||!data||!state->running||state->canceled||scroll.VerticalScrollMode()==ScrollingScrollMode::Disabled||state->epoch!=uint64_t(num(object(data->state,L"document_file"),L"epoch"))){cancel();return;}
+        if(!scroll||!data||!state->running||state->canceled||scroll.VerticalScrollMode()==ScrollingScrollMode::Disabled||state->epoch!=uint64_t(num(branch(data->state,L"document_file"),L"epoch"))){cancel();return;}
         auto delta=e.Delta().Translation.Y;auto next=std::clamp(state->offset-delta,0.,scroll.ScrollableHeight());
         if(e.IsInertial()&&next==state->offset&&delta!=0){cancel();return;}
         if(next!=state->offset){state->offset=next;scrollVertical(scroll,next);}e.Handled(true);

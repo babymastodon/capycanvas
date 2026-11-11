@@ -128,7 +128,7 @@ void WorkspaceBubbles::Impl::init(){
 void WorkspaceBubbles::Impl::reattach(){for(auto const& [id,record]:records){uint32_t at;if(!layer.Children().IndexOf(record->root,at))layer.Children().Append(record->root);}}
 void WorkspaceBubbles::Impl::apply(){
     layer.Visibility(flag(data->state,L"workspace_ready")?Visibility::Visible:Visibility::Collapsed);
-    auto nextEpoch=uint64_t(num(object(data->state,L"document_file"),L"epoch"));auto packets=array(data->model,L"bubbles");std::set<uint32_t> alive;bool replaced=epoch!=nextEpoch;
+    auto nextEpoch=uint64_t(num(branch(data->state,L"document_file"),L"epoch"));auto packets=array(data->model,L"bubbles");std::set<uint32_t> alive;bool replaced=epoch!=nextEpoch;
     for(auto value:packets){auto packet=value.GetObject(),view=object(packet,L"view");auto id=uint32_t(num(view,L"id"));alive.insert(id);
         if(auto found=records.find(id);found!=records.end()&&found->second->source!=object(view,L"source").Stringify())replaced=true;}
     if(records.size()!=alive.size())replaced=true;

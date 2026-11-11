@@ -27,7 +27,7 @@ struct FiltersView : std::enable_shared_from_this<FiltersView> {
     struct PreviewRow {hstring id;Button button{nullptr};Image image{nullptr};TextBlock text{nullptr},heading{nullptr};bool bundled=false;};
     std::vector<PreviewRow> previews;
     ~FiltersView(){if(timer)timer.Stop();RemoveFilterPreviewView(data->previews,reinterpret_cast<uint64_t>(this));}
-    hstring previewContext()const{return object(data->state,L"document_file").GetNamedValue(L"epoch",JsonValue::CreateNullValue()).Stringify();}
+    hstring previewContext()const{return named(branch(data->state,L"document_file"),L"epoch").Stringify();}
     void bindPreview(Image const& image,hstring const& id,hstring const& context){
         bool current=false;auto source=FilterPreviewSource(data->previews,context,id,&current);
         if(image.Source()!=source)image.Source(source);

@@ -23,7 +23,7 @@ void layerRowThumbnail(ContentControl const&,ImageBrush const&,Grid const&);
 Button layerRowName(std::shared_ptr<WorkspaceData> const&,std::function<void()>,TextBlock&,StackPanel&);
 inline J layerAction(J const& operation){return O({{L"type",S(L"layer")},{L"action",operation}});}
 inline hstring epochOf(std::shared_ptr<WorkspaceData> const& data){
-    return to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")));
+    return to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch")));
 }
 inline J panelRow(J const& state,double id){return findId(array(state,L"layers"),id);}
 struct LayersView;

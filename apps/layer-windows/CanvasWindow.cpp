@@ -2016,7 +2016,7 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
     auto workspaceReady=flag(state,L"workspace_ready");
     auto storage=object(model,L"windows_workspace");
     auto preferencesClose=object(model,L"windows_settings_close");
-    if(flag(object(model,L"windows_tabs"),L"window_ready")&&flag(object(state,L"document_file"),L"close_ready")&&(!storage.Size()||flag(storage,L"closed"))
+    if(flag(object(model,L"windows_tabs"),L"window_ready")&&flag(branch(state,L"document_file"),L"close_ready")&&(!storage.Size()||flag(storage,L"closed"))
         &&(!preferencesClose.Size()||flag(preferencesClose,L"ready"))
         &&(!object(model,L"windows_recovery").Size()||flag(object(model,L"windows_recovery"),L"ready"))){Stop();return true;}
     if(!statusFailed){
@@ -2037,7 +2037,7 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
     CanvasModelInputs::Capture capture(windowInputs,{{model,{}},{state,{L"state"}}},&changes);
     windowInputs.Add({L"state",L"workspace_ready"});windowInputs.Add({L"windows_workspace"});
     workspace->Root().Visibility(workspaceReady||flag(object(model,L"launch"),L"visible")?Visibility::Visible:Visibility::Collapsed);
-    {std::lock_guard lock(mutex);penSources.Select(to_string(object(model,L"windows_tabs").GetNamedValue(L"selected",JsonValue::CreateNullValue()).Stringify()+L"/"+object(state,L"document_file").GetNamedValue(L"epoch",JsonValue::CreateNullValue()).Stringify()));}
+    {std::lock_guard lock(mutex);penSources.Select(to_string(object(model,L"windows_tabs").GetNamedValue(L"selected",JsonValue::CreateNullValue()).Stringify()+L"/"+named(branch(state,L"document_file"),L"epoch").Stringify()));}
     if(surfaceState.CanAttach(uint64_t(num(model,L"windows_gpu_generation")),flag(model,L"windows_surface_ready"))){
         check_hresult(panel.as<ISwapChainPanelNative2>()->SetSwapChainHandle(surfaceHandle));surfaceState.DidAttach();
     }
@@ -2078,7 +2078,7 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
     window.AppWindow().TitleBar().ButtonForegroundColor(foreground);
     foreground.A=128;window.AppWindow().TitleBar().ButtonInactiveForegroundColor(foreground);
     auto tabs=array(state,L"tabs");
-    if(tabs.Size())window.Title((flag(object(state,L"document_file"),L"modified")?hstring(L"• "):hstring())+str(tabs.GetObjectAt(0),L"title")+L" · "+str(bootstrap,L"app_name"));
+    if(tabs.Size())window.Title((flag(branch(state,L"document_file"),L"modified")?hstring(L"• "):hstring())+str(tabs.GetObjectAt(0),L"title")+L" · "+str(bootstrap,L"app_name"));
     });
     }
     if(sections&CanvasHeader)header->Apply(model,changes);

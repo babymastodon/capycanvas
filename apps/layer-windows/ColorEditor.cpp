@@ -753,7 +753,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
         resized.revoke();
         auto memoryNow=object(object(editor,L"picker"),L"editor");
         if(memoryNow.Stringify()!=memory)data->dispatch(O({{L"type",S(L"color")},{L"action",O({{L"op",S(L"editor_memory")},{L"memory",memoryNow}})}}));
-        if(accepting&&num(object(data->state,L"document_file"),L"epoch")==epoch&&accepted){
+        if(accepting&&num(branch(data->state,L"document_file"),L"epoch")==epoch&&accepted){
             auto stops=view.GetNamedValue(L"stops",JsonValue::CreateNullValue());
             accepted(object(view,L"value"),stops.ValueType()==JsonValueType::Number?std::optional<double>(stops.GetNumber()):std::nullopt);
         }
@@ -774,7 +774,7 @@ void CapyUi::EditColor(std::shared_ptr<WorkspaceData> const& data,UIElement cons
     auto editor=std::make_shared<Editor>();editor->data=data;editor->accepted=std::move(accepted);editor->rendition=rendition;
     editor->editor=object(opened,L"editor");editor->view=object(opened,L"view");
     editor->memory=object(object(editor->editor,L"picker"),L"editor").Stringify();
-    editor->epoch=num(object(data->state,L"document_file"),L"epoch");
+    editor->epoch=num(branch(data->state,L"document_file"),L"epoch");
     editor->init(xaml,data->colorStrip!=nullptr);
     openEditors().push_back(editor);
     editor->present();

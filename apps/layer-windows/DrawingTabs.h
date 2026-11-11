@@ -184,7 +184,7 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
         for(auto& [id,t]:tabs){t.select.Padding({inset+16,0,inset+16,0});t.separator.Margin({0,tile()*.1,0,tile()*.1});t.close.Margin({0,0,inset-12,0});}
         if(!compact){double width=std::max(0.,(root.ActualWidth()-gap()*(std::max(1u,count)-1))/std::max(1u,count));for(auto& [id,t]:tabs)t.box.Width(width);}}
     void refresh(){
-        if((pointer||finishing)&&(!available()||!findId(array(model(),L"tabs"),double(source)).Size()||epoch!=to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")))))cancel();
+        if((pointer||finishing)&&(!available()||!findId(array(model(),L"tabs"),double(source)).Size()||epoch!=to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch")))))cancel();
         if(pointer&&slideHits.Size()){A current;for(auto v:array(model(),L"tabs"))current.Append(N(num(v.GetObject(),L"id")));if(current.Stringify()!=slideOrder.Stringify())cancel();}
         updating=true;auto weak=weak_from_this();auto m=model();auto selectedId=uint64_t(num(m,L"selected"));bool selectionChanged=selectedId!=selectedModel;selectedModel=selectedId;std::vector<hstring> order;uint32_t index=0;std::set<uint64_t> live;
         auto focused=root.XamlRoot()?Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<DependencyObject>():nullptr;
@@ -199,7 +199,7 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
                     auto p=e.GetCurrentPoint(self->root);if(p.Properties().IsMiddleButtonPressed()){self->close(id);e.Handled(true);return;}
                     if(self->pointer){if(self->pointer!=p.PointerId())self->cancel();return;}
                     if(!self->available()||self->finishing||!PointerGesture::PrimaryContact(p))return;
-                    ++self->contactGeneration;AutomationProperties::SetItemStatus(self->root,self->data->caption(L"header",L"pressed"));self->source=id;self->pointer=p.PointerId();self->contact=e.Pointer();self->origin=self->position=p.Position();self->epoch=to_hstring(uint64_t(num(object(self->data->state,L"document_file"),L"epoch")));
+                    ++self->contactGeneration;AutomationProperties::SetItemStatus(self->root,self->data->caption(L"header",L"pressed"));self->source=id;self->pointer=p.PointerId();self->contact=e.Pointer();self->origin=self->position=p.Position();self->epoch=to_hstring(uint64_t(num(branch(self->data->state,L"document_file"),L"epoch")));
                     self->recognizing=true;self->hold.Begin(self->tabs.at(id).select,p,p.PointerDeviceType()==Microsoft::UI::Input::PointerDeviceType::Mouse?Microsoft::UI::Input::GestureSettings::None:Microsoft::UI::Input::GestureSettings::Hold);
                 }})),true);t.box.Children().Append(t.select);t.box.Children().Append(t.close);
                 t.box.PointerEntered([weak,id](auto&&,auto&&){if(auto self=weak.lock())self->hover(id,true);});t.box.PointerExited([weak,id](auto&&,auto&&){if(auto self=weak.lock())self->hover(id,false);});
