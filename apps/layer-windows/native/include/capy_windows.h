@@ -83,6 +83,9 @@ __declspec(dllimport) int32_t capy_start_services(CapyHost, void* context, void 
 /* Returns 1 when canvas work is pending; 0 permits an idle service-only tick. */
 __declspec(dllimport) int32_t capy_needs_frame(CapyHost);
 __declspec(dllimport) int32_t capy_poll_services(CapyHost);
+/* Chrome or surface readiness awaits GPU completion; a non-blocking poll publishes it. */
+__declspec(dllimport) int32_t capy_surface_pending(CapyHost);
+__declspec(dllimport) int32_t capy_poll_surface(CapyHost, bool* pending);
 __declspec(dllimport) int32_t capy_workspace_action(CapyHost, const char* json);
 /* Cold runtime package transport on the render owner. JSON: directory (optional),
    mode (add/replace/merge), library (default false; true preserves embedded project

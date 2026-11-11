@@ -1331,6 +1331,7 @@ void CanvasWindow::Run() {
         std::optional<std::chrono::steady_clock::time_point> lastFrame;
         auto nextServices=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
         auto navigatorWake=std::chrono::steady_clock::now();
+        CanvasSurfacePoll surfacePoll;
         for(;prepared;) {
             if(capy_device_lost(host)){
                 try {
@@ -1341,10 +1342,10 @@ void CanvasWindow::Run() {
                     SaveAfterGpuFailure(error.what());break;
                 }
             }
-            bool pollServices=false,resized=false;
+            bool pollServices=false,pollSurface=false,resized=false;
             {
                 std::unique_lock lock(mutex);
-                wake.wait_until(lock,navigatorDirty?std::min(nextServices,navigatorWake):nextServices,[&]{return closing||resize||dirty||!navigatorWork.empty()||servicesReady||transportFailed||!work.Empty()||pendingHover.has_value()||!previewWork.Empty();});
+                wake.wait_until(lock,surfacePoll.Wake(navigatorDirty?std::min(nextServices,navigatorWake):nextServices),[&]{return closing||resize||dirty||!navigatorWork.empty()||servicesReady||transportFailed||!work.Empty()||pendingHover.has_value()||!previewWork.Empty();});
                 if(closing) break;
                 if(resize) {
                     auto next=desired;resize=false;probeReady=false;
@@ -1356,11 +1357,23 @@ void CanvasWindow::Run() {
                     if(closing)break;
                 }
                 pollServices=std::exchange(servicesReady,false)||std::chrono::steady_clock::now()>=nextServices;
+                pollSurface=!pollServices&&!dirty&&!transportFailed&&work.Empty()&&!pendingHover.has_value()&&surfacePoll.Due(std::chrono::steady_clock::now());
+            }
+            if(pollSurface){
+                bool pending=false;auto surfaceResult=capy_poll_surface(host,&pending);
+                if(surfaceResult<0){if(capy_device_lost(host))continue;Fail(NativeString(capy_error()).get());break;}
+                dirty|=surfaceResult!=0;surfacePoll.Schedule(pending,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
+                CapySnapshotInfo routing{};
+                if(auto snapshot=capy_snapshot(host,&routing)){
+                    NativeString owned(snapshot,capy_string_free);
+                    Publish(std::move(owned.bytes),routing);
+                }
             }
             if(pollServices){
                 auto serviceResult=capy_poll_services(host);
                 if(serviceResult<0){if(capy_device_lost(host))continue;Fail(NativeString(capy_error()).get());break;}
                 nextServices=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
+                surfacePoll.Schedule(capy_surface_pending(host)>0,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
                 dirty|=serviceResult!=0;
                 TracePresentation(false,dirty);
                 if(!dirty&&presentationTrace.Withheld(std::chrono::steady_clock::now())){presentationTrace.Repeat();repeat=dirty=true;}
@@ -1431,6 +1444,7 @@ void CanvasWindow::Run() {
             if(result<0){if(capy_device_lost(host))continue;Fail(NativeString(capy_error()).get());break;}
             dirty=result!=0;
             PresentNavigators();navigatorWake=std::chrono::steady_clock::now()+RefreshPeriod(nativeWindow);
+            surfacePoll.Schedule(capy_surface_pending(host)>0,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
             TracePresentation(true,dirty,std::exchange(repeat,false)&&pending.empty()&&!hover);
             if(!inputStarted){
                 inputStarted=true;inputDispatcher.TryEnqueue([weak=weak_from_this(),zoomIn,zoomOut]{

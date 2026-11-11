@@ -917,6 +917,18 @@ int main() {
     }
     std::cout<<"Canvas queries: an idle canvas answers every query kind without acquiring or presenting a frame\n";
     {
+        auto at=[](int ms){return std::chrono::steady_clock::time_point{}+std::chrono::hours(1)+std::chrono::milliseconds(ms);};
+        auto refresh=std::chrono::milliseconds(16);auto services=at(250);
+        CanvasSurfacePoll poll;
+        assert(poll.Wake(services)==services&&!poll.Due(at(1000)));
+        poll.Schedule(true,at(0),refresh);
+        assert(poll.Wake(services)==at(16)&&!poll.Due(at(15))&&poll.Due(at(16)));
+        poll.Schedule(true,at(16),refresh);assert(poll.Wake(services)==at(32));
+        poll.Schedule(false,at(32),refresh);assert(poll.Wake(services)==services&&!poll.Due(at(1000)));
+        poll.Schedule(true,at(240),refresh);assert(poll.Wake(services)==services&&poll.Due(at(256)));
+    }
+    std::cout<<"Pending chrome acknowledgements wake the idle render loop at the next refresh, not the service tick\n";
+    {
         auto origin=PresentationTrace::Clock::time_point{}+std::chrono::hours(1);
         auto at=[&](int ms){return origin+std::chrono::milliseconds(ms);};
         PresentationTrace presentation(true);

@@ -8,6 +8,8 @@
 #include <string>
 #include <utility>
 #include <atomic>
+#include <algorithm>
+#include <chrono>
 
 enum class CanvasQueryKind { Filters, Thumbnails, LayerMenu, Workspace, Document, Papers };
 using PreviewPacket=NativePreview;
@@ -51,6 +53,14 @@ inline CanvasRenderStep NextCanvasRenderStep(bool canvasPending,CanvasWorkBuffer
 }
 
 inline bool CanAnswerCanvasQueryAfterFrame(bool closing){return !closing;}
+
+class CanvasSurfacePoll {
+    std::optional<std::chrono::steady_clock::time_point> due;
+public:
+    void Schedule(bool pending,std::chrono::steady_clock::time_point now,std::chrono::nanoseconds refresh){if(pending)due=now+refresh;else due.reset();}
+    std::chrono::steady_clock::time_point Wake(std::chrono::steady_clock::time_point services)const{return due?std::min(*due,services):services;}
+    bool Due(std::chrono::steady_clock::time_point now)const{return due&&now>=*due;}
+};
 
 class CanvasQuerySlots {
     struct Slot {

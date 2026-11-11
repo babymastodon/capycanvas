@@ -512,6 +512,14 @@ impl CapyHost {
         changed||finished
     }
 
+    fn poll_surface(&mut self)->Result<(),String> {
+        if self.surface_ready.pending()&&let Some(gpu)=self.native.session.engine().backend().0.as_ref(){
+            gpu.device().poll(wgpu::PollType::Poll).map_err(err)?;
+        }
+        if self.observe_surface(){self.native.invalidate_snapshot();}
+        Ok(())
+    }
+
     fn frame(&mut self, now: u64, presentation: u64) -> Result<i32, String> {
         self.gpu.check()?;
         // A tab command can arrive after DXGI acquisition. Retire that image
@@ -813,10 +821,23 @@ pub unsafe extern "C" fn capy_poll_services(host: u64) -> i32 {
         if let Some(presenter)=host.presenter.as_mut() {
             host.native.poll_canvas_presentation(presenter)?;
         }
-        if host.surface_ready.pending()&&let Some(gpu)=host.native.session.engine().backend().0.as_ref(){
-            gpu.device().poll(wgpu::PollType::Poll).map_err(err)?;
-        }
-        if host.observe_surface(){host.native.invalidate_snapshot();}
+        host.poll_surface()?;
+        Ok(i32::from(host.native.dirty))
+    })
+}
+/// # Safety
+/// Exclusive render-owner access to a live host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_surface_pending(host: u64) -> i32 {
+    guard(host, |host| Ok(i32::from(host.surface_ready.pending())))
+}
+/// # Safety
+/// Exclusive render-owner access to a live host; `pending` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_poll_surface(host: u64, pending: *mut bool) -> i32 {
+    guard(host, |host| {
+        host.poll_surface()?;
+        if let Some(pending)=unsafe { pending.as_mut() } { *pending=host.surface_ready.pending(); }
         Ok(i32::from(host.native.dirty))
     })
 }
