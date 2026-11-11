@@ -31,26 +31,23 @@ Please validate on the pool and push it:
     `a99e7b7d2`, `67db62758`), fix the cause and push it with the divider commit.
   - If it does, note that here; the laptop will treat it as a slow-hardware problem.
 
-## 2. Unclassified fixture failures from the laptop
+**Pool result: the chrome follows.** Shared sessions run at 2560 × 1600 and 150 %, where the fixture window leaves
+Properties/Layers unsqueezed. With the window set locally to the laptop's 1500 × 968 px (minimum heights fit,
+preferred heights don't), both themes pass: the divider moves ±40 DIP, chrome revisions rise 11→43, presented
+revisions trail by one or two (at most 235 ms), and the composed divider gap tracks the XAML divider within a frame.
+The laptop keeps the lag as a slow-hardware problem.
 
-These are first attempts with the local private-desktop runner at `3a98291d7` plus the divider patch. None has a
-matched control yet.
+## 2. Laptop fixture failures on the pool
 
-| Selector | First error |
-| --- | --- |
-| toolbar-components | pen drag did not lower strength (possible stale native presentation after `d7b6a0fb6`) |
-| canvas-editing:smoke-light | Cancel did not restore selection artwork: move preview and cancel |
-| persistence | Close exceeded five seconds after authorization |
-| scopes | property-action-calibrate-white is clipped outside any scroll container |
-| activation | SetFocus: Target element cannot receive focus |
-| workspace-pickup, column-stacks:scroll-light | Windows did not move the mouse to the requested point |
+First attempts on shared sessions in full round B at `7c07885d3`:
 
-Also unclassified, from the `a99e7b7d2` validation: `idle-brush` (pointer placement), `enclose-fill`
-(`tool-choice-region-edges-2` missing; the native trace shows the controls exist below the panel viewport) and
-`expansion` (viewport acknowledgement). These skipped-presentation handoff rows were never run:
-`liquify-pixels`, `photo-tools:transform-dark`, `tool-bubbles:default`, `tool-bubbles:RapidOnly` (the folding-card
-tap failed on the candidate and passed on a `17d381a1b` control), `tool-bubbles:SlidersOnly`, `vector-edges` and
-`vector-layers:light`.
+- Pass on the pool: `toolbar-components`, `canvas-editing:smoke-light`, `persistence`, `workspace-pickup`,
+  `column-stacks:scroll-light`, `idle-brush`, `enclose-fill`, `expansion` (fixed by `67db62758`), `liquify-pixels`,
+  `photo-tools:transform-dark`, `tool-bubbles:default`, `tool-bubbles:RapidOnly`, `vector-edges` and
+  `vector-layers:light`. Their laptop failures are slow-hardware or private-runner effects for the laptop to keep.
+- Fail on the pool, owned by the shared-pool queue: `scopes` (Auto Undo exact pixels is fixed in review; the clipped
+  calibrate-white control is the next stage), `activation` (zoom-menu capture loss; receipt pending) and
+  `tool-bubbles:SlidersOnly` (the input-language indicator covers the bubble; environment fix pending).
 
 ## 3. Fixture-collector fix: branch `handoff-fixture-cim` (c0bfa6a38)
 
