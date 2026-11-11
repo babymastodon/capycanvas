@@ -1152,7 +1152,7 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         for(auto hit:{hstring(L"ring"),hstring(L"intensity")}){
             auto downMode=hit==L"ring"?L"ring":L"intensity";
             auto resetType=hit==L"ring"?L"reset_ring":L"set_intensity";
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             press(hit,1000000);
             co_await winrt::resume_after(std::chrono::milliseconds(GetDoubleClickTime()+50));co_await apartment;
             auto repeated=press(hit,1000000+threshold/2);
@@ -1161,23 +1161,23 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
             require(repeated->mode==L"reset",L"Delayed handling lost the bubble event double tap");
             require(str(action,L"type")==resetType,L"Bubble event double tap dispatched the wrong reset");
             if(hit==L"intensity")require(num(action,L"stops",-1)==0,L"Intensity double tap did not reset stops");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             press(hit,2000000);auto separate=press(hit,2000000+threshold+1000);
             action=object(actions->back(),L"action");
             require(actions->size()==2&&separate->mode==downMode&&str(action,L"type")==hit&&str(action,L"phase")==L"down",L"Compressed handling invented a bubble event double tap");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             press(hit,3000000);record->id=18;auto another=press(hit,3000000+threshold/2);record->id=17;
             action=object(actions->back(),L"action");
             require(another->mode==downMode&&str(action,L"type")==hit&&str(action,L"phase")==L"down",L"Bubble double tap crossed record identity");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             auto slop=std::max(8.,double(std::max(GetSystemMetrics(SM_CXDOUBLECLK),GetSystemMetrics(SM_CYDOUBLECLK))));
             press(hit,4000000);auto distant=press(hit,4000000+threshold/2,{float(slop+1),0});
             action=object(actions->back(),L"action");
             require(distant->mode==downMode&&str(action,L"type")==hit&&str(action,L"phase")==L"down",L"Bubble double tap crossed its existing slop");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             press(hit,5000000,{},Device::Mouse);auto pen=press(hit,5000000+threshold/2,{},Device::Pen);
             require(pen->mode==L"reset"&&str(object(actions->back(),L"action"),L"type")==resetType,L"Bubble event timing changed cross-device pairing");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             auto resumed=press(hit,6000000);bubbles->restore(resumed);
             bubbles->begin(resumed,{},6000000+threshold+1000);
             action=object(actions->back(),L"action");
