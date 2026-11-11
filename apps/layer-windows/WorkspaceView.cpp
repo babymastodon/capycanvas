@@ -1311,8 +1311,13 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         if(drawers){
             auto sources=drawers->Sources();
             if(sources.Stringify()!=data->drawerSources.Stringify()){
+                auto facing=[](A const& list){
+                    A result;for(auto value:list){auto source=value.GetObject();result.Append(O({{L"anchor",object(source,L"anchor")},{L"direction",S(str(source,L"direction"))}}));}
+                    return result.Stringify();
+                };
+                bool reface=facing(sources)!=facing(data->drawerSources);
                 data->drawerSources=sources;
-                for(auto& [id,group]:groups){group.backgroundKey.reset();if(group.body)group.body->Apply(!group.hidden,true);}
+                for(auto& [id,group]:groups){group.backgroundKey.reset();if(reface&&group.body)group.body->Apply(!group.hidden,true);}
                 collapsed->Apply();
                 queueMeasurements();
             }

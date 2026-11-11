@@ -895,8 +895,9 @@ bool HeaderView::CancelGesture(){
 }
 bool HeaderView::CancelNativeContacts(){return impl->data->pointerCancels.CancelAll();}
 void HeaderView::SetDrawerSources(A const& sources){
-    if(sources.Stringify()==impl->data->drawerSources.Stringify())return;
-    impl->data->drawerSources=A::Parse(sources.Stringify());if(impl->built){impl->applyItems();impl->present();}
+    A anchored;for(auto value:sources)if(str(object(value.GetObject(),L"anchor"),L"kind")==L"header")anchored.Append(value);
+    auto key=anchored.Stringify();if(key==impl->data->drawerSources.Stringify())return;
+    impl->data->drawerSources=A::Parse(key);if(impl->built){impl->applyItems();impl->present();}
 }
 void HeaderView::AppendGlass(A& regions,UIElement const& reference)const{if(impl->built)impl->glass(regions,impl->editing?impl->capySurface.as<DependencyObject>():impl->root.as<DependencyObject>(),reference);}
 std::vector<winrt::Windows::Graphics::RectInt32> HeaderView::DragRegions(float scale,uint32_t width)const{return impl->built?impl->drag(scale,width):std::vector<winrt::Windows::Graphics::RectInt32>{};}
