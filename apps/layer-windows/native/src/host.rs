@@ -1355,56 +1355,56 @@ pub unsafe extern "C" fn capy_snapshot(host: u64, info: *mut CapySnapshotInfo) -
     guard(host, |host| {
         if host.observe_surface() { host.native.invalidate_snapshot(); }
         let generation = host.native.localization_generation();
-        let localization = if host.localization_generation != Some(generation) {
-            Some(crate::settings::localization_presentation(&mut host.native)?)
-        } else { None };
-        let mut metadata = WindowsMetadata {
-            localization,
-            layout_input: None,
-            windows_gpu_generation: host.gpu_generation,
-            windows_active_tag: host.native.session.localization().language().tag(),
-            windows_display: serde_json::json!({"output": host.display, "format": host.config.as_ref().map(|c| format!("{:?}", c.format)), "headroom": host.config.as_ref().map_or(1., |c| host.display.available_headroom(c.format)), "analysis": host.documents.as_ref().map(|s| s.tone.status())}),
-            windows_rendering_suspended: host.native.session.rendering_suspended(),
-            windows_surface_ready: host.surface_ready.ready(),
-            windows_recovery: host.documents.as_ref().and_then(|service|service.recovery_status(&host.native)),
-            windows_tabs: host.documents.as_ref().map(|d| d.tabs_view(&host.native)),
-            windows_palettes: host.documents.as_ref().map(|d| d.palettes.status()),
-            windows_papers: host.documents.as_ref().map(|d| d.papers.status()),
-            windows_glass: serde_json::json!({
-                "regions": host.chrome.glass.count(),
-                "chrome_revision": host.chrome.presented_revision,
-                "document": host.chrome.presented_document,
-                "frames": host.presenter.as_ref().map_or([0; 2], |p| p.backdrop_frames()),
-            }),
-            windows_document: host.documents.as_ref().and_then(|service| service.status()),
-            windows_proof_form: host.documents.as_ref().map(|service|service.proof.form(&host.native)).unwrap_or_else(||serde_json::json!(layer_ui::proof_workflow::proof_copy(&host.native.session))),
-            windows_proof: host
-                .documents
-                .is_some()
-                .then(|| host.native.proof.observe(&host.native.session)),
-            windows_workspace: host.workspaces.as_ref().map(|owner|owner.with(|service|serde_json::to_value(service.status(&host.native)).map_err(err))).transpose()?,
-            windows_settings_close: host.services.as_ref().map(|s| s.close_status().clone()),
-            windows_scopes: host.scopes.revision(host.native.session.state()),
-            windows_request_copy: {
-                let localization = host.native.session.localization();
-                host.native.session.state().requests.iter().filter_map(|request| match &request.kind {
-                    layer_ui::HostRequestKind::Document { request: document } => Some((request.id.to_string(), serde_json::json!({
-                        "title": document.title(localization), "accept_label": document.accept_label(localization), "filter": document.filter(localization),
-                    }))),
-                    _ => None,
-                }).collect()
-            },
-            windows_filter_load: host.filters.as_ref().map(|s| s.status().clone()),
-            windows_isolated_settings: crate::storage::isolated(),
-            windows_adapter: host.native.session.engine().backend().0.as_ref().map(|gpu| {
-                let info = gpu.adapter().get_info();
-                format!("{} ({:?})", info.name, info.device_type)
-            }),
-        };
         let glass_changed=host.published_chrome_revision!=host.chrome.presented_revision||host.published_glass_count!=host.chrome.glass.count();
         let update=host.native.take_layout_update_bytes().map_err(err)?;
         let bytes=match update {
             Some(bytes)=>{
+                let localization = if host.localization_generation != Some(generation) {
+                    Some(crate::settings::localization_presentation(&mut host.native)?)
+                } else { None };
+                let mut metadata = WindowsMetadata {
+                    localization,
+                    layout_input: None,
+                    windows_gpu_generation: host.gpu_generation,
+                    windows_active_tag: host.native.session.localization().language().tag(),
+                    windows_display: serde_json::json!({"output": host.display, "format": host.config.as_ref().map(|c| format!("{:?}", c.format)), "headroom": host.config.as_ref().map_or(1., |c| host.display.available_headroom(c.format)), "analysis": host.documents.as_ref().map(|s| s.tone.status())}),
+                    windows_rendering_suspended: host.native.session.rendering_suspended(),
+                    windows_surface_ready: host.surface_ready.ready(),
+                    windows_recovery: host.documents.as_ref().and_then(|service|service.recovery_status(&host.native)),
+                    windows_tabs: host.documents.as_ref().map(|d| d.tabs_view(&host.native)),
+                    windows_palettes: host.documents.as_ref().map(|d| d.palettes.status()),
+                    windows_papers: host.documents.as_ref().map(|d| d.papers.status()),
+                    windows_glass: serde_json::json!({
+                        "regions": host.chrome.glass.count(),
+                        "chrome_revision": host.chrome.presented_revision,
+                        "document": host.chrome.presented_document,
+                        "frames": host.presenter.as_ref().map_or([0; 2], |p| p.backdrop_frames()),
+                    }),
+                    windows_document: host.documents.as_ref().and_then(|service| service.status()),
+                    windows_proof_form: host.documents.as_ref().map(|service|service.proof.form(&host.native)).unwrap_or_else(||serde_json::json!(layer_ui::proof_workflow::proof_copy(&host.native.session))),
+                    windows_proof: host
+                        .documents
+                        .is_some()
+                        .then(|| host.native.proof.observe(&host.native.session)),
+                    windows_workspace: host.workspaces.as_ref().map(|owner|owner.with(|service|serde_json::to_value(service.status(&host.native)).map_err(err))).transpose()?,
+                    windows_settings_close: host.services.as_ref().map(|s| s.close_status().clone()),
+                    windows_scopes: host.scopes.revision(host.native.session.state()),
+                    windows_request_copy: {
+                        let localization = host.native.session.localization();
+                        host.native.session.state().requests.iter().filter_map(|request| match &request.kind {
+                            layer_ui::HostRequestKind::Document { request: document } => Some((request.id.to_string(), serde_json::json!({
+                                "title": document.title(localization), "accept_label": document.accept_label(localization), "filter": document.filter(localization),
+                            }))),
+                            _ => None,
+                        }).collect()
+                    },
+                    windows_filter_load: host.filters.as_ref().map(|s| s.status().clone()),
+                    windows_isolated_settings: crate::storage::isolated(),
+                    windows_adapter: host.native.session.engine().backend().0.as_ref().map(|gpu| {
+                        let info = gpu.adapter().get_info();
+                        format!("{} ({:?})", info.name, info.device_type)
+                    }),
+                };
                 metadata.layout_input=snapshot_layout_input(&bytes,&host.native)?;
                 let extension=serde_json::to_vec(&metadata).map_err(err)?;
                 Some(layer_host::extend_update(bytes,&extension))
