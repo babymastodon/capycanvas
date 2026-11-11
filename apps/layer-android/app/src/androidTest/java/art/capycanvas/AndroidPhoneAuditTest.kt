@@ -244,6 +244,7 @@ class AndroidPhoneAuditTest {
                         kotlin.math.abs(viewport.getDouble(0)-decor.width/density)<.01 && kotlin.math.abs(viewport.getDouble(1)-decor.height/density)<.01 &&
                         expected.indices.all { kotlin.math.abs(reported.getDouble(it)-expected[it]/activity.resources.displayMetrics.density)<.001 }
                 }
+                android.app.UiAutomation::class.java.getMethod("syncInputTransactions").invoke(instrumentation.uiAutomation)
                 for(theme in listOf("light","dark")) {
                     host.drain(obj("type" to "set_theme","theme" to theme))
                     val color = host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
