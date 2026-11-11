@@ -144,8 +144,8 @@ extension XCTestCase {
         }
     }
     @MainActor func editorTextMatches(_ field: XCUIElement, _ expected: String) -> Bool {
-        guard let actual = field.value as? String else { return false }
-        return actual == expected || (expected.isEmpty && actual == field.placeholderValue)
+        let actual = field.value as? String
+        return actual == expected || (expected.isEmpty && (actual == nil || actual == field.placeholderValue))
     }
     #endif
     @MainActor func replaceEditorText(_ field: XCUIElement, with value: String, in app: XCUIApplication) {
