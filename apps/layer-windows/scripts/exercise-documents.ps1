@@ -30,10 +30,7 @@ public static class CapyDocumentControls {
     [StructLayout(LayoutKind.Sequential)] public struct Rect {public int left,top,right,bottom;}
     [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
-    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect rect);
-    [StructLayout(LayoutKind.Sequential)] public struct Point {public int x,y;}
-    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point point);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr h,uint message,UIntPtr w,IntPtr l,uint flags,uint timeout,out UIntPtr result);
     [DllImport("user32.dll",SetLastError=true)] public static extern bool PostMessage(IntPtr h,uint message,UIntPtr w,IntPtr l);
@@ -626,20 +623,16 @@ function Package-Action([string]$Name) {
 function Stroke-InkPixels {
     $context=[CapyDocumentControls]::SetThreadDpiAwarenessContext([IntPtr](-4))
     try {
-        $rect=[CapyDocumentControls+Rect]::new()
-        if(![CapyDocumentControls]::GetClientRect($drawing.Handle,[ref]$rect)){throw 'No canvas bounds'}
-        $bitmap=[Drawing.Bitmap]::new($rect.right,$rect.bottom)
+        $model=Model;$camera=$model.state.camera;$tab=@($model.state.tabs|Where-Object active)[0]
+        if($camera.rotation -ne 0 -or $camera.flipped[0] -or $camera.flipped[1]){throw 'Stroke sampling requires the initial unrotated camera'}
+        $bounds=(Control 'drawing-canvas' -Within $root -Arranged -NoPopups).Current.BoundingRectangle
+        $bitmap=[Drawing.Bitmap]::new(30,20)
         try {
             $graphics=[Drawing.Graphics]::FromImage($bitmap)
-            try{
-                $origin=[CapyDocumentControls+Point]::new()
-                if(![CapyDocumentControls]::ClientToScreen($drawing.Handle,[ref]$origin)){throw 'No canvas origin'}
-                $graphics.CopyFromScreen($origin.x,$origin.y,0,0,$bitmap.Size)
-            }finally{$graphics.Dispose()}
             # Early pen segment, away from its current cursor and chrome.
-            $left=[int][Math]::Floor($rect.right*0.4)+20;$top=[int][Math]::Floor($rect.bottom/2)+10
+            try{$graphics.CopyFromScreen([int]($bounds.X+$camera.translation[0]+$camera.zoom*$tab.width*.3),[int]($bounds.Y+$camera.translation[1]+$camera.zoom*$tab.height*.53),0,0,$bitmap.Size)}finally{$graphics.Dispose()}
             $ink=0
-            for($y=$top;$y -lt $top+20;$y++){for($x=$left;$x -lt $left+30;$x++){
+            for($y=0;$y -lt 20;$y++){for($x=0;$x -lt 30;$x++){
                 $pixel=$bitmap.GetPixel($x,$y)
                 if($pixel.R -lt 128 -and $pixel.G -lt 128 -and $pixel.B -lt 128){$ink++}
             }}

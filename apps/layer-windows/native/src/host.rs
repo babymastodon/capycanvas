@@ -1537,11 +1537,19 @@ pub unsafe extern "C" fn capy_suspend(host: u64) -> i32 {
         Ok(0)
     })
 }
+#[repr(C)]
+pub struct CapyView { revision: u64, document_to_surface: [f32; 6], document: [f32; 2] }
 /// # Safety
-/// `host` must be null or a valid host with no concurrent mutation or destruction.
+/// `host` must be null or a valid host with no concurrent mutation or destruction;
+/// `output` must be null or writable for one `CapyView`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn capy_view_revision(host: u64) -> u64 {
-    borrow::<CapyHost>(host).map_or(0, |h| h.native.session.state().camera.revision)
+pub unsafe extern "C" fn capy_view(host: u64, output: *mut CapyView) -> bool {
+    let Ok(host) = borrow::<CapyHost>(host) else { return false; };
+    if output.is_null() { return false; }
+    let session = &host.native.session;let camera = &session.state().camera;
+    unsafe { *output = CapyView { revision: camera.revision, document_to_surface: camera.document_to_surface(),
+        document: session.engine().document().composition().size.map(|side| side as f32) }; }
+    true
 }
 
 // The backbuffer is sized in physical pixels. SwapChainPanel otherwise scales

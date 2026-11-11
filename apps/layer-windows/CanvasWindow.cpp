@@ -759,7 +759,7 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
         {std::lock_guard lock(snapshots->mutex);snapshots->pending.Push(std::move(owned.bytes),true,true);}
         QueueSnapshots();
     }
-    {std::lock_guard lock(mutex);revision=capy_view_revision(host);inputScale=desired.scale;}
+    {std::lock_guard lock(mutex);capy_view(host,&inputView);inputScale=desired.scale;}
     status.Text(CapyUi::str(bootstrap,L"preparing_brush"));
     inputController=Microsoft::UI::Dispatching::DispatcherQueueController::CreateOnDedicatedThread();
     inputDispatcher=inputController.DispatcherQueue();
@@ -818,8 +818,8 @@ void CanvasWindow::Replay(ReplayKind kind) {
         bool pan=kind==ReplayKind::Pan,backlog=kind==ReplayKind::Backlog;
         bool pen=kind==ReplayKind::Pen||kind==ReplayKind::PenBegin||kind==ReplayKind::PenEnd;
         auto self=weak.lock();if(!self)return;
-        Size size;uint64_t view;
-        {std::lock_guard lock(self->mutex);if(self->closing)return;size=self->desired;view=self->revision;}
+        CapyView view;
+        {std::lock_guard lock(self->mutex);if(self->closing)return;view=self->inputView;}
         std::vector<CapyPointer> records;records.reserve(CanvasWorkBuffer::PointerBatch);
         uint32_t count=backlog?32768:pan?3:42;
         if(kind==ReplayKind::PenEnd&&!self->replayTime)return;
@@ -827,14 +827,8 @@ void CanvasWindow::Replay(ReplayKind kind) {
         if(kind==ReplayKind::PenBegin)self->replayTime=start;
         uint32_t first=kind==ReplayKind::PenEnd?21:0,limit=kind==ReplayKind::PenBegin?21:count;
         for(uint32_t i=first;i<limit;i++) {
-            CapyPointer p{};
+            auto p=CanvasReplaySample(view,i,count,pen,pan,backlog);
             p.id=77;p.sequence=++self->sequence;p.timestamp_ns=start+i*1000000ULL;
-            p.view_revision=view;p.tool=pen?0:1;p.button=pan?1:0;p.flags=2;
-            p.pressure=pen?0.2f+0.7f*float(i)/float(count-1):1.0f;
-            if(pen){p.tilt_x=0.4f*std::sin(float(i)/7);p.tilt_y=0.2f*std::cos(float(i)/7);p.twist=float(i)/42;}
-            p.phase=i==0?1:i==count-1?3:2;
-            p.x=size.width*0.4f+(pan?0.0f:float(backlog?i%42:i)*5);
-            p.y=pan?(i==0?size.height*0.5f:28.0f):size.height*0.5f+24.0f*std::sin(float(i)/6);
             records.push_back(p);
             if(records.size()==CanvasWorkBuffer::PointerBatch){
                 if(!self->SendIndependent(std::move(records)))return;
@@ -1045,7 +1039,7 @@ std::vector<CapyPointer> CanvasWindow::PointerSamples(Microsoft::UI::Input::Poin
         }
         if(phase==4){std::lock_guard lock(mutex);penSources.Forget(current.PointerId());}
     }
-    uint64_t view;float scale;{std::lock_guard lock(mutex);view=revision;scale=inputScale;}
+    uint64_t view;float scale;{std::lock_guard lock(mutex);view=inputView.revision;scale=inputScale;}
     uint32_t deviceFlags=0;
     if(current.PointerDeviceType()==Microsoft::UI::Input::PointerDeviceType::Pen){
         POINTER_INFO info{};POINTER_DEVICE_INFO device{};
@@ -1346,7 +1340,7 @@ void CanvasWindow::Run() {
                     lock.unlock();
                     auto result=capy_resize(host,next.width,next.height,next.scale);
                     if(result<0){if(capy_device_lost(host))continue;throw std::runtime_error(NativeString(capy_error()).get());}
-                    {std::lock_guard geometryLock(mutex);revision=capy_view_revision(host);inputScale=next.scale;}
+                    {std::lock_guard geometryLock(mutex);capy_view(host,&inputView);inputScale=next.scale;}
                     dirty=true;resized=true;lock.lock();
                     if(closing)break;
                 }
@@ -1432,7 +1426,7 @@ void CanvasWindow::Run() {
                     if(auto self=weak.lock()){self->zoomInCursor=zoomIn;self->zoomOutCursor=zoomOut;self->StartInput();}
                 });
             }
-            {std::lock_guard lock(mutex);revision=capy_view_revision(host);}
+            {std::lock_guard lock(mutex);capy_view(host,&inputView);}
             CapySnapshotInfo routing{};
             if(auto snapshot=capy_snapshot(host,&routing)) {
                 NativeString owned(snapshot,capy_string_free);
@@ -1538,7 +1532,7 @@ void CanvasWindow::SaveAfterGpuFailure(std::string const& reason) {
             if(resize){
                 auto next=desired;resize=false;lock.unlock();
                 if(capy_resize(host,next.width,next.height,next.scale)<0)throw std::runtime_error(NativeString(capy_error()).get());
-                lock.lock();revision=capy_view_revision(host);inputScale=next.scale;
+                lock.lock();capy_view(host,&inputView);inputScale=next.scale;
             }
             pending=work.Take();query=previewWork.Take();
         }

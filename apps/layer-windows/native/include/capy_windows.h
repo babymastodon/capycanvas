@@ -45,6 +45,11 @@ typedef struct CapyPointer {
     uint32_t button; /* primary=0, pan=1, other=2 */
     uint32_t flags; /* shared predicted/primary/barrel/inverted bits; 0x40 indirect pen */
 } CapyPointer;
+typedef struct CapyView {
+    uint64_t revision;
+    float document_to_surface[6];
+    float document[2];
+} CapyView;
 
 /* Prepare on the startup worker; view returns an owned text handle.
    A launch is adopted at most once. */
@@ -151,7 +156,7 @@ __declspec(dllimport) int32_t capy_scroll(CapyHost, float x, float y, float dx, 
 /* 0=refresh, 1=motion, 2=contact, 3=leave. Returns handled/dismiss bits. */
 __declspec(dllimport) int32_t capy_chrome(CapyHost, uint32_t kind, float x, float y, bool canvas, bool popup_open);
 __declspec(dllimport) int32_t capy_suspend(CapyHost);
-__declspec(dllimport) uint64_t capy_view_revision(CapyHost);
+__declspec(dllimport) bool capy_view(CapyHost, CapyView*);
 /* Acquisition: 0=wait, 1=image, 2=surface reconfiguration, 3=commands only while a drawing renderer is unavailable. Can wait for DXGI. Drain newly arrived input after this call. */
 __declspec(dllimport) int32_t capy_acquire(CapyHost);
 __declspec(dllimport) int32_t capy_frame(CapyHost, uint64_t now_ns, uint64_t presentation_ns);

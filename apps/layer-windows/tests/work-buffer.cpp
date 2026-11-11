@@ -495,6 +495,26 @@ int main() {
     actual.pressure=1.1f;
     assert(PrepareCanvasPrediction(actual)&&actual.pressure==1.1f); // real validation remains in Rust
     std::cout<<"Canvas predictions: extrapolated pressure bounded, invalid predictions rejected, real input preserved\n";
+    {
+        auto camera=[](float zoom,float rotation,bool flip,float x,float y,float width,float height){
+            float sx=flip?-zoom:zoom;
+            return CapyView{9,{std::cos(rotation)*sx,std::sin(rotation)*sx,-std::sin(rotation)*zoom,std::cos(rotation)*zoom,x,y},{width,height}};
+        };
+        auto inside=[](CapyView const& view,CapyPointer const& p){
+            auto const& m=view.document_to_surface;float det=m[0]*m[3]-m[1]*m[2],x=p.x-m[4],y=p.y-m[5];
+            float u=(m[3]*x-m[2]*y)/det,v=(m[0]*y-m[1]*x)/det;
+            return u>0&&u<view.document[0]&&v>0&&v<view.document[1];
+        };
+        for(auto view:{camera(3.3257809f,0,false,709.65f,889.36f,128,96),camera(.35f,.7f,true,1500,-120,2048,1536),camera(1,-1.9f,false,240,1100,32,24)}){
+            for(bool pen:{false,true})for(uint32_t i=0;i<42;i++){
+                auto p=CanvasReplaySample(view,i,42,pen,false,false);
+                assert(inside(view,p)&&p.view_revision==view.revision&&p.phase==(i==0?1u:i==41?3u:2u));
+            }
+            for(uint32_t i=0;i<32768;i+=97)assert(inside(view,CanvasReplaySample(view,i,32768,false,false,true)));
+            assert(inside(view,CanvasReplaySample(view,0,3,false,true,false)));
+        }
+    }
+    std::cout<<"Test replays stay inside the drawing under off-centre, rotated and flipped cameras\n";
     WorkspacePublication publication;
     assert(!publication.Accept(false,10,4,40));
     assert(!publication.Accept(false,10,4,40,true));

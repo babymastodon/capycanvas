@@ -129,7 +129,7 @@ private:
     std::set<uint32_t> xamlContacts;
     // Captured together under mutex; never pair a new DPI with an old camera.
     float inputScale=1;
-    uint64_t revision=0;
+    CapyView inputView{};
     std::unordered_map<uint32_t,std::pair<std::wstring,std::wstring>> heldKeys; // UI thread
     std::unordered_set<uint32_t> penButtons; // input thread
     PenSourceCache penSources;
