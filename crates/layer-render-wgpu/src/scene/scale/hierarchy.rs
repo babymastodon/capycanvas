@@ -110,6 +110,7 @@ impl Hierarchy {
         r.memory.scene_limit().saturating_sub(CACHE_BYTES)
     }
     pub fn fits(&self, r: &WgpuRasterizer) -> bool { self.bytes <= Self::budget(r) }
+    fn admits_half(&self, r: &WgpuRasterizer, sources: [&Image; 2]) -> bool { self.bytes + half_bytes(sources) <= Self::budget(r) }
     fn new(r: &mut WgpuRasterizer, cache: &Cache, packet: FramePacket<'_>, encoder: &mut crate::submission::CommandEncoder) -> Option<Self> {
         if !eligible(packet.scene) { return None; }
         #[cfg(not(target_arch = "wasm32"))]
@@ -184,24 +185,33 @@ impl Cache {
     }
     /// Create the half-float copies of the presented levels when those levels
     /// change. Later writes accumulate in `half_stale` for the presenter.
-    pub(super) fn present_half(&mut self, r: &mut WgpuRasterizer, packet: FramePacket<'_>, encoder: &mut crate::submission::CommandEncoder) -> Result<(), GpuRasterError> {
-        let (Some(root), Some(next)) = (self.pixels.root(), self.pixels.next()) else { self.half = None; return Ok(()) };
-        if self.plan.level == 0 || self.placed.is_some() { self.half = None; return Ok(()); }
+    pub(super) fn present_half(&mut self, r: &mut WgpuRasterizer, packet: FramePacket<'_>, encoder: &mut crate::submission::CommandEncoder) -> Result<bool, GpuRasterError> {
+        self.settling = false;
+        let (Some(root), Some(next)) = (self.pixels.root(), self.pixels.next()) else { self.half = None; return Ok(false) };
+        if self.plan.level == 0 || self.placed.is_some() { self.half = None; return Ok(false); }
         let sources = [root, next];
-        if self.half.as_ref().is_some_and(|half| half.presents(sources)) { return Ok(()); }
+        if self.half.as_ref().is_some_and(|half| half.presents(sources)) { return Ok(false); }
         let previous = self.half.take();
         let admitted = match &self.hierarchy {
-            Some(hierarchy) => hierarchy.bytes + half_bytes(sources) <= Hierarchy::budget(r),
+            Some(hierarchy) => hierarchy.admits_half(r, sources),
             None => half_bytes(sources) <= self.auxiliary_budget(r, packet),
         };
-        if !admitted { return Ok(()); }
+        if !admitted { return Ok(false); }
         let half = Half::new(r, sources, previous);
         *self.half_stale.get_mut().unwrap() = PixelRect::EMPTY;
         r.metrics.half_level_passes += 1;
         encoder.reserve_passes(1);
         half.convert(&r.scene_pipelines.scale.half, encoder, &mut r.uploads, PixelRect::full([next.texture.width(), next.texture.height()]))?;
         self.half = Some(half);
-        Ok(())
+        Ok(true)
+    }
+    pub(crate) fn settle(&mut self, r: &mut WgpuRasterizer, packet: FramePacket<'_>, encoder: &mut crate::submission::CommandEncoder, moved: bool) -> Result<bool, GpuRasterError> {
+        if !moved { return if self.settling { self.present_half(r, packet, encoder) } else { Ok(false) }; }
+        let settling = matches!((&self.hierarchy, self.pixels.root(), self.pixels.next()), (Some(hierarchy), Some(root), Some(next))
+            if self.plan.level > 0 && self.placed.is_none() && !self.half.as_ref().is_some_and(|half| half.presents([root, next]))
+                && hierarchy.admits_half(r, [root, next]) && r.scene_pipelines.scale.half.ready());
+        self.settling = settling;
+        Ok(false)
     }
     /// Convert the parts of the presented levels written since the last
     /// presentation into their half-float copies.

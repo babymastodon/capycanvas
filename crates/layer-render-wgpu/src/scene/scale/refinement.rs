@@ -104,7 +104,7 @@ impl Cache {
 
     pub fn has_pending_work(&self, r: &WgpuRasterizer) -> bool {
         if r.moving_layer.is_some() || self.transform.as_ref().is_some_and(|preview| preview.moving) { return false; }
-        if self.approximating() { return true; }
+        if self.approximating() || self.settling { return true; }
         if r.artwork_frame.as_ref().is_some_and(|frame| frame.scene.view().order().iter().any(|h| frame.scene.view().object_layer(*h).is_some() || frame.scene.view().vector_layer(*h).is_some())) { return false; }
         self.ready && self.next_missing_page().is_some()
     }

@@ -9,6 +9,34 @@ is 4248 × 2832.
 - Geometry measurements use the 12 MP photo at Fit zoom. Older UI-only rows
   name their own canvas sizes.
 
+## Settled Fit half-float presentation
+
+Measured 2026-11-11: `3a98291d7` → `440f2dbff`, release Rust/unminified
+benchmark APKs that differ only in `liblayer_android.so`, B/C/C/B order run
+twice. Each build has twelve six-second contacts per row on the 12 MP JPEG at
+factory density 320/font scale 1 and thermal status 0. "After Fit" zooms in
+one step and fits before each 1024 px stroke. Brushes count fresh
+input-attributed updates; navigation counts actual canvas presents. Rates are
+medians of contact summaries; gaps are the worst contact p99.
+
+| Row | Hz, base → candidate | Gap p99 ms, base → candidate |
+| --- | ---: | ---: |
+| G-Pen after Fit | 31.383 → 31.373 | 84.513 → 72.496 |
+| Pencil after Fit | 13.809 → 13.793 | 123.571 → 119.550 |
+| Pan, Navigator open | 60.023 → 60.023 | 16.853 → 16.860 |
+| Pinch, Navigator open | 54.519 → 54.519 | 33.442 → 33.489 |
+| Two-finger rotate, Navigator open | 59.505 → 59.505 | 33.311 → 33.327 |
+| Pinch, Navigator closed | 48.156 → 48.156 | 50.006 → 49.992 |
+| Smooth Zoom, left/right | 53.143 → 53.143 | 33.492 → 33.505 |
+| Smooth Zoom, up/down | 53.143 → 53.143 | 33.492 → 33.472 |
+
+Pan with Navigator open meets the tier in both builds; the other rows miss in
+both. No rate differs between builds (rank-test p 0.07–0.89). Rotate with
+Navigator open has a two-frame gap p99 in 2 of 12 control and 4 of 12
+candidate contacts (Fisher p 0.64). Median gesture onset after Fit is
+58.6–75.5 ms against 59.2–75.4 ms, and pen-down to first submitted update
+after Fit is 53.1–63.1 ms against 55.2–61.2 ms, above the 33 ms limit in both.
+
 ## Paper without texture
 
 Measured 2026-11-09 against `0d5dee316`: optimized benchmark APKs in ABBA

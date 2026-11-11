@@ -51,7 +51,7 @@ fn view(matrix: [f32; 6]) -> ViewState {
 }
 
 fn submit(r: &mut WgpuRasterizer, doc: &layer_core::Document, view: ViewState, all: bool, bounded: bool) {
-    let mut frame=FramePacket {view,inspect_mask:doc.working.inspect_mask,composite_all:all,..packet(doc.scene(),doc.composition().size)};
+    let mut frame=FramePacket {view,inspect_mask:doc.working.inspect_mask,composite_all:all,blend_space:doc.composition().blend,..packet(doc.scene(),doc.composition().size)};
     let deadline = std::time::Instant::now() + READBACK_TIMEOUT;
     loop {
         if bounded {working_scene_frame(r,frame);}
@@ -826,5 +826,125 @@ fn painting_at_fit_updates_the_half_float_level_it_presents() {
         assert!(crate::test_support::max_error(&painted_pixels, &before) > 0.3, "bounded {bounded}: the strokes show");
         let error = crate::test_support::max_error(&painted_pixels, &fresh_pixels);
         assert!(error < 2e-3, "bounded {bounded}: strokes painted at Fit present like a fresh display: {error}");
+    }
+}
+
+#[test]
+fn native_to_fit_stroke_undo_preserves_attachment_precision_and_pixels() {
+    use layer_core::EffectValue;
+    use layer_engine::{CanvasEngine, PenPhase, SampleFlags, ViewTransform, input_queue};
+    let extent = [2133, 1600];
+    let mut doc = Document::new(PortableId::random(), extent[0], extent[1], layer_core::DocumentNames {paint:"Ink".into(),paper:"Paper".into()});
+    composition_mut(&mut doc).color = DocumentColor {space:RgbSpace::Srgb,depth:SampleDepth::U8};
+    composition_mut(&mut doc).blend = layer_core::BlendSpace::Perceptual;
+    let paper = doc.scene().order()[1];
+    set_effect_value(&mut doc,paper,"texture",EffectValue::Texture(layer_core::paper::built_in_paper("cold_press").unwrap().texture.clone()));
+    set_effect_value(&mut doc,paper,"relief",EffectValue::Number(100.));
+    set_effect_value(&mut doc,paper,"light",EffectValue::Number(225.));
+    set_effect_value(&mut doc,paper,"color",EffectValue::Color(layer_core::color::RgbColor::new(RgbSpace::Srgb,[244./255.,241./255.,232./255.,1.]).unwrap()));
+    let authored = doc.artwork.clone();
+    let native = ViewState {width_px:1418,height_px:988,document_to_surface:[1.,0.,0.,1.,0.,0.]};
+    let fit = ViewState {document_to_surface:[0.19957805,0.,0.,0.19957805,524.65,425.83755],..native};
+    let color = doc.composition().color;
+    let (mut input, consumer) = input_queue(64);
+    let mut engine = CanvasEngine::new(WgpuRasterizer::new_native_headless(color).unwrap(),doc,consumer,native,ViewTransform::IDENTITY).unwrap();
+    let flush = |engine:&mut CanvasEngine<WgpuRasterizer>| {
+        let deadline = std::time::Instant::now()+READBACK_TIMEOUT;
+        loop {
+            engine.render_frame().unwrap();
+            if !engine.has_pending_input() && !engine.has_pending_document_edits()
+                && (engine.has_active_stroke() || !engine.backend().has_pending_work()) {break;}
+            assert!(std::time::Instant::now()<deadline,"native-to-Fit engine work did not publish");
+            std::thread::yield_now();
+        }
+    };
+    flush(&mut engine);
+    let resident = engine.backend().scale_display.as_ref().unwrap().resident_bytes();
+    assert!(resident>0,"initial native view must admit the resident hierarchy before Fit");
+    let inverse = ViewTransform {revision:1,surface_to_document:[1./fit.document_to_surface[0],0.,0.,1./fit.document_to_surface[3],-fit.document_to_surface[4]/fit.document_to_surface[0],-fit.document_to_surface[5]/fit.document_to_surface[3]]};
+    let conversions = engine.backend().metrics.half_level_passes;
+    engine.set_view(fit,inverse);
+    engine.render_frame().unwrap();
+    let (moved,settling) = (engine.backend().metrics.half_level_passes,engine.backend().has_pending_work());
+    flush(&mut engine);
+    let fitted = engine.backend().metrics.half_level_passes;
+    let capture = |r:&WgpuRasterizer| {
+        let formats = r.presentation_views().unwrap().map(|view|view.texture().format());
+        let (texture,target) = create_target(&r.device,[fit.width_px,fit.height_px],wgpu::TextureFormat::Bgra8UnormSrgb,"native-to-Fit attachment");
+        let mut presenter = ViewportPresenter::for_surface(r,wgpu::TextureFormat::Bgra8UnormSrgb,crate::SdrSurfaceColor::Srgb).unwrap();
+        pollster::block_on(presenter.prepare(r)).unwrap();
+        presenter.present(r,&target,fit,[0.2,0.2,0.2,1.]).unwrap();
+        (formats,crate::layer_tests::page_bytes(r,&texture))
+    };
+    let baseline = capture(engine.backend());
+    for (i,phase) in [PenPhase::Down,PenPhase::Move,PenPhase::Up].into_iter().enumerate() {
+        let mut event = crate::test_support::pen(i as u64+1,phase,[780.+i as f32*12.,630.],SampleFlags::PRIMARY);
+        event.view_revision = inverse.revision;
+        input.push(event).unwrap();
+        flush(&mut engine);
+    }
+    let painted = capture(engine.backend());
+    let stroked = engine.backend().metrics.half_level_passes;
+    let stroke_checkpoint = engine.checkpoint();
+    let undo_applied = engine.undo().unwrap();
+    flush(&mut engine);
+    let undone = capture(engine.backend());
+    let restored = engine.backend().metrics.half_level_passes;
+    let mut fresh = WgpuRasterizer::new_native_headless(color).unwrap();
+    submit(&mut fresh,engine.document(),fit,true,false);
+    let control = capture(&fresh);
+    let center = ((634*fit.width_px+796)*4) as usize;
+    let paper_visible = baseline.1[center..center+3].iter().all(|v|*v>180) && baseline.1[center+3]==255;
+    let restored_authored = engine.document().artwork == authored;
+    let differences = baseline.1.iter().zip(&undone.1).filter(|(a,b)|a!=b).count();
+    assert!(paper_visible,"first fitted attachment must contain the lit paper");
+    assert!(painted.1!=baseline.1,"seed stroke must visibly change the attachment");
+    assert!(restored_authored && engine.checkpoint()!=stroke_checkpoint && !engine.can_undo() && engine.can_redo(),"real Undo must return the authored baseline and advance history");
+    assert!(undo_applied,"seed stroke must produce a real Undo entry");
+    assert_eq!(baseline.0,undone.0,"camera-only Fit and real Undo must select stable attachment precision");
+    assert_eq!(baseline.0,control.0,"fresh Fit must select the baseline attachment precision");
+    assert!(baseline.1==undone.1,"real Undo changed {differences} attachment bytes");
+    assert!(baseline.1==control.1,"fresh Fit differs from the first fitted baseline attachment");
+    assert!(settling,"the moved Fit frame asks for a settle frame");
+    assert_eq!([moved,fitted,stroked,restored],[conversions,conversions+1,conversions+1,conversions+1],"camera-only Fit converts its reused pair once it settles; the stroke and Undo refresh it");
+}
+
+#[test]
+fn moving_fit_levels_convert_only_once_the_camera_settles() {
+    let extent = [2133, 1600];
+    let doc = patterned(extent);
+    let native = ViewState { width_px: 1418, height_px: 988, document_to_surface: [1., 0., 0., 1., 0., 0.] };
+    let zoom = |scale: f32| ViewState { document_to_surface: [scale, 0., 0., scale, (1418. - scale * 2133.) / 2., (988. - scale * 1600.) / 2.], ..native };
+    let mut dab = crate::tests::test_dab([1000., 800.], [0.9, 0.02, 0.1, 0.8], 1.);
+    dab.radii = [60.; 2];
+    let batch = dab_batch(source_at(&doc, 0), crate::layer_tests::preset_style(layer_core::DefaultBrushPreset::GPen), dab.bounds());
+    for (admitted, pen) in [(true, false), (false, false), (true, true)] {
+        let mut r = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
+        submit(&mut r, &doc, native, true, false);
+        let resident = r.scale_display.as_ref().unwrap().resident_bytes();
+        assert!(resident > 0, "admitted {admitted}: the native view keeps a resident hierarchy");
+        let conversions = r.metrics.half_level_passes;
+        let frame = |r: &mut WgpuRasterizer, view: ViewState, settle: bool| {
+            let frame = FramePacket { view, composite_all: false, ..packet(doc.scene(), extent) };
+            let frame = if pen && settle { FramePacket { dabs: std::slice::from_ref(&dab), dab_batches: std::slice::from_ref(&batch), ..frame } } else { frame };
+            if !admitted { crate::memory::memory_tests::scene_frame_with_budget(r, frame, resident + CACHE_BYTES); }
+            let (submissions, revision, dabs) = (r.metrics.submissions, r.composite_revision, r.metrics.dabs);
+            crate::test_support::submit_ready(r, frame).unwrap();
+            let cache = r.scale_display.as_ref().unwrap();
+            assert_eq!((cache.resident_bytes(), r.metrics.submissions), (resident, submissions + 1), "admitted {admitted}, pen {pen}: frames reuse the resident levels in one submission");
+            assert_eq!(r.metrics.dabs > dabs, pen && settle, "admitted {admitted}, pen {pen}: contact ink shares the settle frame");
+            (cache.plan.level, r.metrics.half_level_passes - conversions, half_float_presentation(r), r.composite_revision != revision)
+        };
+        let moving: Vec<_> = [0.45, 0.22, 0.11, 0.19957805].map(|scale| frame(&mut r, zoom(scale), false)).into();
+        assert_eq!(moving, [1, 2, 3, 2].map(|level| (level, 0, false, false)), "admitted {admitted}, pen {pen}: moving frames convert nothing");
+        assert_eq!(r.has_pending_work(), admitted, "admitted {admitted}, pen {pen}: only an admitted pair asks for a settle frame");
+        assert_eq!(frame(&mut r, zoom(0.19957805), true), (2, u64::from(admitted), admitted, admitted), "admitted {admitted}, pen {pen}: the settle frame converts and presents its pair once");
+        assert!(pen || !r.has_pending_work(), "admitted {admitted}: the settle frame leaves no display work");
+        assert_eq!(frame(&mut r, zoom(0.19957805), false), (2, u64::from(admitted), admitted, false), "admitted {admitted}, pen {pen}: settled frames convert nothing");
+        let cache = r.scale_display.as_ref().unwrap();
+        let pair = [cache.pixels.root().unwrap(), cache.pixels.next().unwrap()].map(|image| image.bytes() / 2).into_iter().sum::<u64>();
+        assert_eq!(cache.half.as_ref().map_or(0, hierarchy::Half::bytes), if admitted { pair } else { 0 }, "admitted {admitted}, pen {pen}: only an admitted pair allocates half-float copies");
+        crate::memory::memory_tests::scene_frame_with_budget(&mut r, FramePacket { view: zoom(0.19957805), composite_all: false, ..packet(doc.scene(), extent) }, resident + CACHE_BYTES + pair);
+        assert!(pen || !r.has_pending_work(), "admitted {admitted}: a later budget grant asks for no idle frame");
     }
 }

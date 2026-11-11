@@ -5,6 +5,33 @@
 Reference: Wacom MovinkPad Pro 14 (DTHA140) with a 1800 × 2880, 120 Hz OLED. The
 canvas is 9504 × 6336. Every row targets **120 fps** unless marked soft.
 
+## Settled Fit half-float presentation
+
+Measured 2026-11-11: `3a98291d7` → `440f2dbff`, release Rust/unminified
+benchmark APKs that differ only in `liblayer_android.so`, B/C/C/B order run
+three times. Each build has eighteen six-second contacts per row on the 61 MP
+JPEG at factory density 280/font scale 1, 120 Hz and thermal status 0. "After
+Fit" zooms in one step and fits before each 2048 px stroke. Brushes count
+fresh input-attributed updates; navigation counts actual canvas presents.
+Rates are medians of contact summaries; gaps are the worst contact p99.
+
+| Row | Hz, base → candidate | Gap p99 ms, base → candidate |
+| --- | ---: | ---: |
+| G-Pen after Fit | 90.973 → 90.697 | 25.684 → 25.031 |
+| Pencil after Fit | 123.100 → 121.484 | 16.767 → 19.452 |
+| Smooth Zoom, left/right | 116.289 → 116.548 | 16.668 → 16.668 |
+| Smooth Zoom, up/down | 116.548 → 116.381 | 16.667 → 16.668 |
+
+Smooth Zoom meets the tier in both builds, with no rate difference (rank-test
+p 0.30 and 0.94) and unchanged viewport GPU time (p50 7.2 ms, p95 10.2 ms).
+G-Pen and Pencil after Fit miss in both builds without a significant
+difference (p 0.52 and 0.30); the first order includes the tablet's warm-up
+drift. Pen-down to first submitted update after Fit is 65.5 and 44.7 ms
+against 69.9 and 50.1 ms, above the 17 ms limit in both. Median Smooth Zoom
+onset after Fit is 66.1 ms against 67.0–68.1 ms. The tablet drops every
+injected finger contact ("all windows would just receive ACTION_OUTSIDE"),
+so pan, pinch and rotate remain unmeasured.
+
 ## Stored image-source format comparison
 
 Measured 2026-11-06–07: frozen `01fe577d9` → format commit 1 candidate APK

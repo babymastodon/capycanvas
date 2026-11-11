@@ -5513,6 +5513,14 @@ impl WgpuRasterizer {
             self.object_deferred=false;
             self.composite_damage = published;
             evaluated_objects = packet.scene.order().iter().any(|&owner| packet.scene.object_layer(owner).is_some());
+        } else if let Some(mut cache) = self.scale_display.take() {
+            let moved = self.artwork_frame.as_ref().is_none_or(|frame| frame.view != packet.view);
+            let converted = cache.settle(self, packet, &mut encoder, moved);
+            self.scale_display = Some(cache);
+            if converted? {
+                self.composite_damage = PixelRect::full(packet.document_extent);
+                self.composite_revision = self.composite_revision.wrapping_add(1);
+            }
         }
         let mut navigator = std::mem::take(&mut self.navigator);
         let navigator_revision = navigator.revision;
