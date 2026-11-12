@@ -784,12 +784,12 @@ if($idleFps.Count -ne 1){throw 'Missing actual idle Diagnostics assertion'}
 & {
     . ([scriptblock]::Create($idleFps[0].Extent.Text))
     $samples=@{}
-    function Control([string]$Id){
-        if($Id -ne 'renderer-stat-2'){throw 'Unexpected idle Diagnostics reading'}
+    function Renderer-Stats {
+        $samples.frameReads++
+        if($samples.frameReads -gt 2){throw 'Idle Diagnostics read more than its before and after snapshots'}
         if($samples.after){$samples.fpsReads++}
-        [pscustomobject]@{Current=@{Name=$(if($samples.after){$samples.fps}else{'0'})}}
+        [pscustomobject]@{frames=$(if($samples.after){$samples.frames}else{10});rows=@($null,$null,[pscustomobject]@{value=$(if($samples.after){$samples.fps}else{'0'})})}
     }
-    function Drawing-Frames{$samples.frameReads++;if($samples.frameReads -gt 2){throw 'Idle Diagnostics sampled Frames more than once after the interval'};if($samples.after){$samples.frames}else{10}}
     function Start-Sleep([int]$Milliseconds){if($Milliseconds -ne 1500){throw 'Idle Diagnostics changed its sample interval'};$samples.sleeps++;$samples.after=$true}
     function Wait-Until([scriptblock]$Condition,[string]$Message,[int]$Seconds){if($Seconds -ne 15 -or !(& $Condition)){throw $Message}}
     foreach($case in @(@{frames=10;fps='0';fail=$false},@{frames=11;fps='0';fail=$true},@{frames=10;fps='7';fail=$true})){
