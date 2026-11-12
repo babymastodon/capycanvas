@@ -164,8 +164,7 @@ extension XCTestCase {
             XCTAssertTrue(folderTitle(provider).waitForExistence(timeout: 10))
             workspaceActivate(app.cells[folder + ", Folder"])
             XCTAssertTrue(folderTitle(folder).waitForExistence(timeout: 10))
-            let input = fileProviderFile("Unprofiled-f32.exr", in: app).images.firstMatch
-            XCTAssertTrue(input.waitForExistence(timeout: 10)); workspaceActivate(input)
+            workspaceActivate(revealFileProviderFile("Unprofiled-f32.exr", in: app))
             submitFileProviderSelection(in: app)
             #endif
             XCTAssertTrue(app.buttons["photo-profile-use"].waitForExistence(timeout: 30))

@@ -37,10 +37,13 @@ extension XCTestCase {
         app.cells.matching(NSPredicate(format: "identifier == %@ OR identifier == %@",
             provider + ", Container", provider + ", Folder")).firstMatch
     }
-    @MainActor func fileProviderFile(_ name: String, in app: XCUIApplication) -> XCUIElement {
+    @MainActor func revealFileProviderFile(_ name: String, in app: XCUIApplication) -> XCUIElement {
         let file = URL(fileURLWithPath: name)
-        return app.cells.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@",
+        let cell = app.cells.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@",
             file.deletingPathExtension().lastPathComponent + ", " + file.pathExtension, name + ",")).firstMatch
+        XCTAssertTrue(cell.waitForExistence(timeout: 15))
+        revealEditorControl(cell, in: app.collectionViews["File View"].firstMatch)
+        return cell.images.firstMatch
     }
     @MainActor func submitFileProviderSelection(in app: XCUIApplication) {
         let picker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]

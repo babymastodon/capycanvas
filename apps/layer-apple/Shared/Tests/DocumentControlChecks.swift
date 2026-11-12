@@ -794,8 +794,7 @@ extension XCTestCase {
         XCTAssertTrue(open.waitForNonExistence(timeout: 20))
         #else
         enterRunnerFolder()
-        let input = fileProviderFile("Unsupported.capy", in: app).images.firstMatch
-        XCTAssertTrue(input.waitForExistence(timeout: 10)); workspaceActivate(input)
+        workspaceActivate(revealFileProviderFile("Unsupported.capy", in: app))
         submitFileProviderSelection(in: app)
         #endif
         let preview = app.descendants(matching: .any)["preserved-package-preview"].firstMatch

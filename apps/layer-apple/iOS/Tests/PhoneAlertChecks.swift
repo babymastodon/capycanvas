@@ -208,8 +208,7 @@ extension XCTestCase {
         XCTAssertTrue(root.waitForExistence(timeout: 15)); workspaceActivate(root)
         let directory = app.cells["Capy Files " + token + ", Folder"]
         XCTAssertTrue(directory.waitForExistence(timeout: 10)); workspaceActivate(directory)
-        let file = fileProviderFile(name, in: app).images.firstMatch
-        XCTAssertTrue(file.waitForExistence(timeout: 10)); workspaceActivate(file)
+        workspaceActivate(revealFileProviderFile(name, in: app))
         if submitSelection { submitFileProviderSelection(in: app) }
     }
 }

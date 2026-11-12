@@ -643,8 +643,8 @@ extension XCTestCase {
         try location()
         workspaceActivate(app.cells[folder+", Folder"])
         XCTAssertTrue(app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: "+folder].waitForExistence(timeout:15))
-        let file=fileProviderFile(fileName+".png",in:app).images.firstMatch
-        XCTAssertTrue(file.waitForExistence(timeout:15));captureState("import-file-selected");workspaceActivate(file)
+        let file=revealFileProviderFile(fileName+".png",in:app)
+        captureState("import-file-selected");workspaceActivate(file)
         XCTAssertTrue(file.waitForNonExistence(timeout:20))
         #endif
         properties();expect(texture,value:fileName);noError()
