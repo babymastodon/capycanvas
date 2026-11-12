@@ -16,7 +16,7 @@ self.addEventListener("install", (event) => {
       // Integrity makes an incomplete/mixed deployment fail installation, leaving
       // the previous version usable. HTTP caches cannot substitute stale assets.
       await cache.addAll(FILES.map((file) => new Request(new URL(file.path, BASE), {
-        cache: "reload", integrity: file.integrity,
+        cache: "no-cache", integrity: file.integrity,
       })));
     } catch (error) {
       if (!existed) await caches.delete(CACHE);

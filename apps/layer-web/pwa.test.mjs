@@ -33,12 +33,11 @@ export async function servePackage() {
   writeFileSync(join(update, "index.html"), html);
   writeWorker(update);
   const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml", ".png": "image/png" };
-  const state = { online: true, update: false, broken: false, requests: [], htmlRequests: [] };
+  const state = { online: true, update: false, broken: false, downloads: [], htmlRequests: [] };
   const server = createServer((req, res) => {
     const pathname = decodeURIComponent(new URL(req.url, "http://local").pathname);
     const nested = pathname.startsWith("/nested/capy/");
     const path = pathname.slice(nested ? "/nested/capy/".length : 1) || "index.html";
-    state.requests.push(pathname);
     if (path === "index.html") state.htmlRequests.push({pathname, cacheControl: req.headers["cache-control"]});
     if (!state.online) { res.writeHead(503); res.end(); return; }
     const directory = state.update && !nested ? join(fixture, "update") : source;
@@ -46,8 +45,11 @@ export async function servePackage() {
     if (!file.startsWith(directory + "/")) { res.writeHead(403); res.end(); return; }
     try {
       const body = state.broken && path.endsWith(".wasm") ? Buffer.from("mismatched release") : readFileSync(file);
-      res.writeHead(200, { "Content-Type": mime[extname(file)] || "text/plain",
-        "Cache-Control": path.startsWith("assets/") ? "public, max-age=31536000, immutable" : path === "apple-touch-icon.png" ? "no-cache" : "max-age=600" });
+      const headers = { "Content-Type": mime[extname(file)] || "text/plain", ETag: `"${createHash("sha256").update(body).digest("hex")}"`,
+        "Cache-Control": path.startsWith("assets/") ? "public, max-age=31536000, immutable" : path === "apple-touch-icon.png" ? "no-cache" : "max-age=600" };
+      if (req.headers["if-none-match"] === headers.ETag) { res.writeHead(304, headers); res.end(); return; }
+      state.downloads.push(pathname);
+      res.writeHead(200, headers);
       res.end(body);
     } catch { res.writeHead(404); res.end(); }
   });
@@ -201,6 +203,9 @@ async function checkPointerIds({ call, evaluate, settle, canvasPixels }) {
 export async function checkPwa({ call, evaluate, settle, canvasPixels: capturePixels, host, storageOnly = false }) {
   const canvasPixels=readyCanvasPixels({evaluate,settle,capturePixels});
   const settledDocument = () => settleDocument(evaluate);
+  const controlled = () => evaluate(`navigator.serviceWorker.ready.then(()=>new Promise(resolve=>{if(navigator.serviceWorker.controller)resolve(true);else navigator.serviceWorker.addEventListener('controllerchange',()=>resolve(true),{once:true})}))`);
+  await controlled();
+  assert.deepEqual(host.state.downloads.filter((path, index, all) => all.indexOf(path) !== index), [], "A first visit downloads each file once");
   await settledDocument();
   await evaluate("layerApp.dispatch({type:'invoke',command:'new_document'})");
   await evaluate(createDrawing());
@@ -314,7 +319,7 @@ export async function checkPwa({ call, evaluate, settle, canvasPixels: capturePi
     assert.equal(apple.headers.get("cache-control"), "no-cache");
     const png = Buffer.from(await apple.arrayBuffer());
     assert.equal(png.readUInt32BE(16), 180); assert.equal(png.readUInt32BE(20), 180);
-    await evaluate(`navigator.serviceWorker.ready.then(()=>new Promise(resolve=>{if(navigator.serviceWorker.controller)resolve(true);else navigator.serviceWorker.addEventListener('controllerchange',()=>resolve(true),{once:true})}))`);
+    await controlled();
     assert.deepEqual((await call("Page.getInstallabilityErrors")).installabilityErrors, []);
     assert.ok(await evaluate(`(async()=>{const keys=await caches.keys();return keys.some(k=>k.startsWith('capycanvas:'+location.href+':'))})()`));
     await offline(true);

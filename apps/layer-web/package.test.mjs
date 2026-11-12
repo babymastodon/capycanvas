@@ -377,7 +377,7 @@ test("complete installation activates automatically without deleting open tabs' 
   await w.lifetime("install"); await w.lifetime("activate");
   assert.ok(w.state.skipped && w.state.claimed);
   assert.deepEqual(w.deleted, []);
-  assert.ok(w.installed.every(r => r.url.startsWith(w.scope) && r.cache === "reload" && r.integrity));
+  assert.ok(w.installed.every(r => r.url.startsWith(w.scope) && r.cache === "no-cache" && r.integrity));
 });
 
 test("startup and refresh revalidate HTML without replacing the complete offline fallback", async t => {
