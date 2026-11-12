@@ -177,6 +177,8 @@ test arguments with `-e name value`. Gradle can run the same selection with
 and `ANDROID_SERIAL` set, but it uninstalls the APKs afterwards, so combine it
 with an isolated application ID on a tablet.
 
+Run `AndroidDrawerCompositionTest` with `-e theme light` and `-e theme dark`.
+
 Read the instrumentation result: `OK (N tests)` or `FAILURES!!!`. `am instrument`
 can exit 0 when tests fail, so the exit status proves nothing. Opt-in tests skip
 through JUnit assumptions when their `-e` argument is missing, so confirm that

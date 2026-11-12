@@ -212,12 +212,73 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
     }
 }
 
+private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
+    var active by mutableStateOf(true)
+    var keep = retain
+    val heights = mutableStateListOf<Pair<Int, Float>?>().apply { repeat(model.array("columns").length()) { add(null) } }
+    val measurement = mutableStateOf<JSONObject?>(null)
+    val planContext = mutableStateOf<String?>(null)
+    val toolbars = mutableStateOf<Map<String, JSONObject>>(emptyMap())
+    val geometry = mutableStateOf<JSONObject?>(null)
+    val visible = mutableStateOf(false)
+    val prepared = mutableStateOf<Pair<String,JSONObject>?>(null)
+    val recorded = arrayOfNulls<String>(1)
+    val colorFit = mutableStateOf<JSONObject?>(null)
+    val wheelHeight = mutableFloatStateOf(0f)
+    val toolPanels = mutableStateMapOf<String, JSONObject>()
+    val lastTarget = arrayOfNulls<String>(1)
+    val lastAnchor = mutableStateOf<String?>(null)
+    val pagePosition = mutableFloatStateOf(0f)
+    val layerSizes = mutableStateOf<JSONObject?>(null)
+    val layerSizesContext = mutableStateOf<String?>(null)
+    val navigator = NavigatorPanelState()
+    fun close() {
+        active=false
+        geometry.value=null
+        visible.value=false
+        recorded[0]=null
+        lastTarget[0]=null
+    }
+}
+
 @Composable internal fun ContentDrawers(host: CanvasHost, snapshot: JSONObject, panels: Map<String, JSONObject>, dock: DockInteraction) {
     val customization = snapshot.getJSONObject("state").getJSONObject("customization")
     val models = customization.array("column_drawers").objects().associateBy { it.getJSONObject("anchor").getInt("column").toString() }.toMutableMap()
     customization.objectOrNull("drawer")?.let { models["tool"] = it }
-    val retained = remember { mutableStateMapOf<String, JSONObject>() }
-    LaunchedEffect(models.mapValues { it.value.toString() }) { models.forEach { (id, model) -> retained[id] = model } }
+    val phone = snapshot.getJSONObject("layout").objectOrNull("phone") != null
+    val state = snapshot.getJSONObject("state")
+    val workspace = state.getJSONObject("workspace").getJSONObject("layout").let { layout -> layout.keys().asSequence().associateWith { layout.get(it) } }
+    val metrics = listOf(LocalDensity.current,host.languageTag,state.optString("theme"))
+    val retained = remember(phone,workspace,metrics) { mutableStateMapOf<String, DrawerContentState>() }
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    DisposableEffect(retained,context) {
+        val callbacks=object : android.content.ComponentCallbacks2 {
+            override fun onConfigurationChanged(configuration:android.content.res.Configuration) = Unit
+            override fun onLowMemory() { onTrimMemory(android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE) }
+            override fun onTrimMemory(level:Int) {
+                retained.values.forEach { it.keep=false }
+                retained.keys.filter { retained[it]?.active==false }.forEach { retained.remove(it) }
+            }
+        }
+        context.registerComponentCallbacks(callbacks)
+        onDispose { context.unregisterComponentCallbacks(callbacks) }
+    }
+    fun identity(id:String, model:JSONObject) = if(phone && id=="tool") model.getJSONObject("anchor").toString() else id
+    val current = models.mapKeys { (id,model) -> identity(id,model) }
+    for((id,model) in models) {
+        val identity=identity(id,model)
+        val previous=retained[identity]
+        val from=if(phone && id=="tool")retained.values.firstOrNull { it.retain && it.active && it!==previous } else null
+        val entry=if(previous==null || listOf("columns","tabs","compact").any { previous.model.opt(it).toString()!=model.opt(it).toString() })
+            DrawerContentState(model,phone && id=="tool" && model.getJSONObject("anchor").optString("kind")=="phone").also { retained[identity]=it } else previous
+        if(!entry.active || entry!==previous) {
+            val source=from ?: previous?.takeIf { it.active }
+            entry.geometry.value=source?.geometry?.value
+            entry.lastAnchor.value=source?.lastAnchor?.value ?: entry.lastAnchor.value
+        }
+        entry.model=model
+        entry.active=true
+    }
     val activeTool = models["tool"] != null
     val openColumns = snapshot.getJSONObject("layout").array("collapsed").objects().filter { it.objectOrNull("open") != null }
     BackHandler(snapshot.getJSONObject("layout").objectOrNull("phone") == null && (models.isNotEmpty() || openColumns.isNotEmpty())) {
@@ -226,39 +287,63 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
             host.customize(obj("type" to "toggle_column_drawer", "group" to it.getInt("group"), "panel" to it.getString("origin")))
         }
     }
-    (retained.keys + models.keys).sortedBy { it == "tool" }.forEach { id ->
-        key(id) { ContentDrawer(host, snapshot, models[id], models[id] ?: retained.getValue(id), panels, dock, id) { retained.remove(id) } }
+    retained.toMap().forEach { (identity,entry) ->
+        val id=if(entry.model.getJSONObject("anchor").optString("kind")=="column")
+            entry.model.getJSONObject("anchor").getInt("column").toString() else "tool"
+        if(models[id]!=null && current[identity]==null) {
+            entry.close()
+            if(!entry.keep)retained.remove(identity)
+        }
+        key(entry) {
+            val placeContent=entry.active && entry.prepared.value!=null
+            Layout(content={
+                ReusableContentHost(entry.active) {
+                    ContentDrawer(host,snapshot,current[identity],entry,panels,dock,id) {
+                        entry.close()
+                        if(!entry.keep)retained.remove(identity)
+                    }
+                }
+            }) { children,constraints ->
+                val content=if(entry.active) {
+                    val childConstraints=constraints.copy(minWidth=0,minHeight=0)
+                    children.map { it.measure(childConstraints) }
+                } else emptyList()
+                layout(if(entry.active)constraints.maxWidth else 0,if(entry.active)constraints.maxHeight else 0) {
+                    if(placeContent)content.forEach { it.place(0,0) }
+                }
+            }
+        }
     }
 }
 
-@Composable private fun ContentDrawer(host: CanvasHost, snapshot: JSONObject, current: JSONObject?, retained: JSONObject,
+@Composable private fun ContentDrawer(host: CanvasHost, snapshot: JSONObject, current: JSONObject?, entry: DrawerContentState,
     panels: Map<String, JSONObject>, dock: DockInteraction, id: String, closed: () -> Unit) {
-    val model = current ?: retained
+    val model = current ?: entry.model
     val glass=rememberDrawerGlass(host,dock)
     val colors=LocalPalette.current
     val bodies = remember { mutableMapOf<String, JSONObject>() }.apply { putAll(panels) }
     val columns = model.array("columns").values().map { it as JSONArray }
     val tabs = model.objectOrNull("tabs")
-    val heights = remember(model.array("columns").toString(), tabs?.toString()) { mutableStateListOf<Pair<Int, Float>?>().apply { repeat(columns.size) { add(null) } } }
-    var measurement by remember { mutableStateOf<JSONObject?>(null) }
+    val heights = entry.heights
+    var measurement by entry.measurement
     val measure = measurement?.objectOrNull("measure")
     val plan = measure?.objectOrNull("placement")
-    var planContext by remember { mutableStateOf<String?>(null) }
-    var toolbars by remember { mutableStateOf<Map<String, JSONObject>>(emptyMap()) }
-    val geometry = remember { mutableStateOf<JSONObject?>(null) }
-    var visible by remember { mutableStateOf(false) }
-    var prepared by remember { mutableStateOf<Pair<String,JSONObject>?>(null) }
-    val recorded=remember { arrayOfNulls<String>(1) }
-    var colorFit by remember { mutableStateOf<JSONObject?>(null) }
-    var wheelHeight by remember { mutableFloatStateOf(0f) }
-    val toolPanels = remember { mutableStateMapOf<String, JSONObject>() }
+    var planContext by entry.planContext
+    var toolbars by entry.toolbars
+    val geometry = entry.geometry
+    var visible by entry.visible
+    var prepared by entry.prepared
+    val recorded=entry.recorded
+    var colorFit by entry.colorFit
+    var wheelHeight by entry.wheelHeight
+    val toolPanels = entry.toolPanels
     val placementKey = listOf("anchor", "columns", "dismissal", "tabs", "compact").map { model.opt(it) }.toString().takeIf { current != null }
     val tabHeight = if (tabs == null) 0f else 36f
     val inspector = model.has("layer_properties")
     val propertiesOpen = model.optBoolean("layer_properties")
-    var pagePosition by remember { mutableFloatStateOf(0f) }
-    var layerSizes by remember { mutableStateOf<JSONObject?>(null) }
-    var layerSizesContext by remember { mutableStateOf<String?>(null) }
+    var pagePosition by entry.pagePosition
+    var layerSizes by entry.layerSizes
+    var layerSizesContext by entry.layerSizesContext
     val columnId = id.toIntOrNull()
     val tileOrigins = if (id == "tool") dock.drawerTileRevision else 0
     val toolbarInputs = columns.flatMap { it.values() }.mapNotNull { bodies[it.toString()] }
@@ -301,9 +386,9 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
     }
     val sizingContext = listOf(anchor, source, model.array("columns"), tabs, layout.getJSONArray("viewport"), phone?.opt("keyboard"),
         snapshot.opt("header_presentation_height"), snapshot.opt("workspace_bottom_inset"), tileOrigins, toolbarInputs).toString()
-    var lastAnchor by remember { mutableStateOf<String?>(null) }
+    var lastAnchor by entry.lastAnchor
     LaunchedEffect(placementKey, sizingContext) {
-        if (current == null) return@LaunchedEffect
+        if (current == null || entry.retain && planContext==sizingContext) return@LaunchedEffect
         val reply=host.awaitQuery(obj("type" to "drawer_measure", "column" to columnId, "tiles" to dock.drawerTileMeasurements())) ?: return@LaunchedEffect
         reply.objectOrNull("measure") ?: return@LaunchedEffect
         toolbars=reply.array("toolbars").objects().associate { it.getString("panel") to it.getJSONObject("layout") }
@@ -312,7 +397,7 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
     }
     val scope=rememberCoroutineScope()
     val animation=remember { arrayOfNulls<kotlinx.coroutines.Job>(1) }
-    val lastTarget=remember { arrayOfNulls<String>(1) }
+    val lastTarget=entry.lastTarget
     val colorHdr = snapshot.objectOrNull("color_panel")?.optBoolean("hdr") == true
     fun placeMeasured() {
         if(current==null && geometry.value==null) {closed();return}
@@ -415,8 +500,7 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
                 (bounds.number("height")*dock.density).roundToInt().coerceAtLeast(0)))
             layout(measured.width,measured.height) { measured.place(0,0) }
         }
-        Layout(modifier = Modifier.fillMaxSize().zIndex(z.toFloat()), content = {
-            Layout(modifier=outerPosition.zIndex(z.toFloat())
+        Layout(modifier=outerPosition.zIndex(z.toFloat())
                 .testTag(if (id == "tool") "tool-drawer" else "column-drawer-$id").chromeRegion(dock,active=visible)
                 .then(if (columnId != null) Modifier.columnDrawerBounds(dock, columnId, if (current != null) tabs?.getInt("group") else null) else Modifier)
                 .panelOpening(opening).graphicsLayer { clip=true; this.shape=shape() }
@@ -479,7 +563,7 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
                         Box(Modifier.fillMaxWidth().then(if (together) Modifier else Modifier.weight(1f)).then(if (tabbed) Modifier.background(LocalPalette.current.panelFill) else Modifier)
                             .clipToBounds()) {
                             CompositionLocalProvider(LocalDrawerColumn provides columnId,
-                                LocalWorkspaceZ provides (200 + (columnId ?: 100)), LocalPanelOpening provides opening) {
+                                LocalWorkspaceZ provides (200 + (columnId ?: 100)), LocalPanelOpening provides opening, LocalNavigatorPanelState provides entry.navigator) {
                                 if(inspector) LayerInspector(host, host.snapshot?.getJSONObject("state") ?: snapshot.getJSONObject("state"), propertiesOpen,
                                     pagePosition, bounds.number("height"), layerSizes?.number("footer_height",49.0) ?: 49f,
                                     sizingContext, drawerMeasure=measure) { layerSizesContext=sizingContext; layerSizes = it; placeMeasured() }
@@ -517,10 +601,6 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
                 val content=children.single().measure(Constraints.fixed((bounds.number("width")*dock.density).roundToInt().coerceAtLeast(0),
                     (height*dock.density).roundToInt().coerceAtLeast(0)))
                 layout(constraints.maxWidth,if(together)content.height else constraints.maxHeight) { content.place(0,0) }
-            }
-        }) { measurables, constraints ->
-            val content = measurables.single().measure(constraints.copy(minWidth = 0, minHeight = 0))
-            layout(constraints.maxWidth, constraints.maxHeight) { if (contentKey!=null) content.place(0, 0) }
         }
     }
 }

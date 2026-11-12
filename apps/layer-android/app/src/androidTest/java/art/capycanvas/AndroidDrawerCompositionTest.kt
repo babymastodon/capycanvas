@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.IntSize
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -16,6 +17,214 @@ import java.util.concurrent.atomic.AtomicInteger
 class AndroidDrawerCompositionTest {
     @get:Rule(order=0) val device = CapyDeviceRule()
     @get:Rule(order=1) val compose = createAndroidComposeRule<MainActivity>()
+
+    @Before fun applyRequestedTheme() {
+        val theme=androidx.test.platform.app.InstrumentationRegistry.getArguments().getString("theme") ?: return
+        require(theme in listOf("light","dark"))
+        val host=compose.activity.host
+        host.awaitReady(compose=compose)
+        host.drain(obj("type" to "set_theme","theme" to theme))
+        compose.waitForIdle()
+    }
+
+    @Test fun closedPhoneDrawerFamiliesRetainFrozenBodiesWithoutInputOrGlass() {
+        val host=compose.activity.host
+        host.awaitReady(compose=compose)
+        assumeTrue("Requires the native phone layout",host.snapshot!!.getJSONObject("layout").objectOrNull("phone") != null)
+        host.awaitMain("launch reveal removed",30_000,{ "" },compose) { findTag("launch-splash")==null }
+        val dock=checkNotNull(host.workspaceInteraction)
+        val color=host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout")
+            .array("phone").objects().first { it.getJSONObject("control").getString("kind")=="color" }.getInt("id")
+        val families=listOf(
+            Triple("tool_settings",obj("kind" to "tool_settings"),"ToolSettingsControls"),
+            Triple("color",obj("kind" to "tool","tile" to color),"ColorPanelControls"),
+            Triple("navigator",obj("kind" to "panel","panel" to "navigator"),"NavigatorPanel"))
+        val bodies=mutableMapOf<String,LayoutInfo>()
+        val initialGlass=compose.runOnIdle { host.glassBoxesForTest.map { it.take(4) }.toSet() }
+        val initialConnections=compose.runOnIdle { host.glassConnectionsForTest.map { it.toString() }.toSet() }
+        val initialChrome=compose.runOnIdle { dock.chromeRegions.keys.toSet() }
+        val initialSources=compose.runOnIdle { dock.regions.keys.toSet() }
+        fun open(action:org.json.JSONObject,panel:String) {
+            host.drain(obj("type" to "phone","action" to action))
+            host.awaitMain("$panel drawer settled",30_000,{ "drawer=${dock.drawer}" },compose) {
+                findTag("drawer-panel-$panel")?.second?.boundsInRoot?.isEmpty==false &&
+                    dock.drawer?.objectOrNull("placement")?.objectOrNull("bounds")?.number("height")?.let { it>0f }==true
+            }
+            compose.mainClock.advanceTimeBy(400)
+            compose.waitForIdle()
+        }
+        fun close() {
+            host.drain(obj("type" to "customize","action" to obj("type" to "close_expanded")))
+            compose.mainClock.advanceTimeBy(400)
+            compose.waitForIdle()
+            host.awaitMain("drawer close completed",30_000,{ "drawer=${dock.drawer}" },compose) {
+                findTag("tool-drawer")==null
+            }
+            host.drain()
+            compose.runOnIdle {
+                for(panel in bodies.keys) {
+                    assertNull("$panel exposes no closed semantics",findTag("drawer-panel-$panel"))
+                }
+                assertTrue("Closed drawer chrome cannot receive native input",dock.chromeRegions.filterKeys { it !in initialChrome }.values.all { it.bounds.isEmpty })
+                assertTrue("Closed drawer bodies cannot receive native input",dock.regions.filterKeys { it !in initialSources }.values.all { it.bounds.isEmpty })
+                assertTrue("Closed drawer has no native glass",host.glassBoxesForTest.none { it.take(4) !in initialGlass })
+                assertTrue("Closed drawer has no bridge glass",host.glassConnectionsForTest.none { it.toString() !in initialConnections })
+            }
+            val display=kotlinx.coroutines.runBlocking { host.withNative { org.json.JSONObject(Native.displayStatus(it)) } }
+            assertEquals("Closed Navigator has no native overview",0,display.getInt("overview_count"))
+        }
+        val tracedBodies=families.map { it.third }+listOf("ContentDrawer","PalettePanel")
+        compose.runOnIdle { CompositionCounts { info ->
+            info.substringBefore(" (").substringAfterLast('.').takeIf { it in tracedBodies }
+        } }.use { counts ->
+            for((panel,action,bodyName) in families) {
+                open(action,panel)
+                compose.runOnIdle {
+                    assertTrue("The tracer sees the real $panel body",counts[bodyName]>0)
+                    bodies[panel]=checkNotNull(findTag("drawer-panel-$panel")).second.layoutInfo
+                }
+                close()
+            }
+            compose.runOnIdle {
+                for(bodyName in tracedBodies)assertTrue("The tracer observes $bodyName while priming",counts[bodyName]>0)
+                counts.clear()
+            }
+            val revision=host.snapshot!!.getJSONObject("state").getJSONObject("document_file").getLong("revision")
+            host.drain(obj("type" to "set_color","rgba" to org.json.JSONArray(listOf(.12,.68,.31,1))))
+            kotlinx.coroutines.runBlocking { host.withNative { handle ->
+                val viewport=host.snapshot!!.getJSONObject("state").getJSONObject("camera").array("viewport")
+                val now=System.nanoTime()
+                val samples=(0..7).flatMap { step -> listOf(viewport.getDouble(0)*(.45+step*.01),viewport.getDouble(1)*.5,
+                    if(step==7)0.0 else .7,0.0,0.0,0.0,0.0,(now+step*10_000_000L).toDouble(),
+                    when(step){0->1.0;7->3.0;else->2.0}) }.toDoubleArray()
+                Native.pointer(handle,72,0,0,samples,samples.size,false,0)
+            } }
+            compose.runOnIdle { host.canvasChanged() }
+            host.awaitMain("stroke publishes a document revision",30_000,{ "" },compose) {
+                host.snapshot!!.getJSONObject("state").getJSONObject("document_file").getLong("revision")>revision
+            }
+            host.drain()
+            compose.waitForIdle()
+            compose.runOnIdle {
+                for(bodyName in tracedBodies)assertEquals("Closed retained $bodyName ignores stroke and color publications",0,counts[bodyName])
+            }
+            repeat(2) {
+                for((panel,action,_) in families) {
+                    open(action,panel)
+                    compose.runOnIdle { assertSame("$panel reuses its retained body across family switches",bodies.getValue(panel),checkNotNull(findTag("drawer-panel-$panel")).second.layoutInfo) }
+                    close()
+                }
+            }
+        }
+    }
+
+    @Test fun warmPhoneDrawerStartsMovingWithinSixNativeFrames() {
+        val host=compose.activity.host
+        host.awaitReady(compose=compose)
+        assumeTrue("Requires the native phone layout",host.snapshot!!.getJSONObject("layout").objectOrNull("phone") != null)
+        host.awaitMain("launch reveal removed",30_000,{ "" },compose) { findTag("launch-splash")==null }
+        val dock=checkNotNull(host.workspaceInteraction)
+        val color=host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout")
+            .array("phone").objects().first { it.getJSONObject("control").getString("kind")=="color" }.getInt("id")
+        val frames=mutableMapOf<String,Int>()
+        val root=compose.activity.window.decorView
+        for((family,action) in listOf("tool" to obj("kind" to "tool_settings"),
+            "color" to obj("kind" to "tool","tile" to color),"navigator" to obj("kind" to "panel","panel" to "navigator"))) {
+            host.drain(obj("type" to "phone","action" to action))
+            compose.mainClock.advanceTimeBy(400)
+            compose.waitForIdle()
+            host.awaitMain("$family primer visible",30_000,{ "" },compose) { findTag("tool-drawer")?.second?.boundsInRoot?.isEmpty==false }
+            host.drain(obj("type" to "customize","action" to obj("type" to "close_expanded")))
+            compose.mainClock.advanceTimeBy(400)
+            compose.waitForIdle()
+            host.awaitMain("$family primer closed",30_000,{ "" },compose) { findTag("tool-drawer")==null }
+            var count=0
+            var firstMoving:Int?=null
+            val observer=ViewTreeObserver.OnPreDrawListener {
+                count++
+                val bounds=dock.drawer?.objectOrNull("placement")?.objectOrNull("bounds")
+                val pane=findTag("tool-drawer")?.second
+                if(firstMoving==null && bounds!=null && bounds.number("width")>0f && bounds.number("height")>0f &&
+                    pane?.layoutInfo?.isPlaced==true && !pane.boundsInRoot.isEmpty)firstMoving=count
+                true
+            }
+            compose.runOnUiThread {
+                root.viewTreeObserver.addOnPreDrawListener(observer)
+                host.dispatch(obj("type" to "phone","action" to action))
+            }
+            try {
+                host.awaitMain("$family warm first moving native frame",30_000,{ "frames=$count; drawer=${dock.drawer}" },compose) { firstMoving!=null }
+                compose.runOnIdle { frames[family]=checkNotNull(firstMoving) }
+            } finally {
+                compose.runOnUiThread { root.viewTreeObserver.removeOnPreDrawListener(observer) }
+            }
+            compose.mainClock.advanceTimeBy(400)
+            compose.waitForIdle()
+            host.drain(obj("type" to "customize","action" to obj("type" to "close_expanded")))
+            compose.mainClock.advanceTimeBy(400)
+            compose.waitForIdle()
+            host.awaitMain("$family warm drawer fully closed",30_000,{ "" },compose) { findTag("tool-drawer")==null }
+        }
+        compose.activity.getExternalFilesDir(null)!!.resolve("drawer-warm-native-frames.json")
+            .writeText(org.json.JSONObject(frames as Map<*,*>).toString())
+        assertTrue("Warm action to first moving native frame: $frames",frames.values.all { it<=6 })
+    }
+
+    @Test fun closedPhoneDrawerReleasesItsBodyAfterMemoryPressureLayoutAndWorkspaceChanges() {
+        val host=compose.activity.host
+        host.awaitReady(compose=compose)
+        assumeTrue("Requires the native phone layout",host.snapshot!!.getJSONObject("layout").objectOrNull("phone") != null)
+        host.awaitMain("launch reveal removed",30_000,{ "" },compose) { findTag("launch-splash")==null }
+        fun open():LayoutInfo {
+            host.drain(obj("type" to "phone","action" to obj("kind" to "tool_settings")))
+            host.awaitMain("Tool Settings visible",30_000,{ "" },compose) {
+                findTag("drawer-panel-tool_settings")?.second?.boundsInRoot?.isEmpty==false
+            }
+            compose.mainClock.advanceTimeBy(400)
+            return compose.runOnIdle { checkNotNull(findTag("drawer-panel-tool_settings")).second.layoutInfo }
+        }
+        fun close() {
+            host.drain(obj("type" to "customize","action" to obj("type" to "close_expanded")))
+            host.awaitMain("Tool Settings closed",30_000,{ "" },compose) {
+                findTag("tool-drawer")==null
+            }
+        }
+        val original=open()
+        close()
+        compose.runOnIdle { compose.activity.application.onTrimMemory(android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) }
+        compose.waitForIdle()
+        val afterPressure=open()
+        assertNotSame("Memory pressure releases the closed body",original,afterPressure)
+        close()
+        val surface=compose.runOnIdle { checkNotNull(compose.activity.window.decorView.descendant<CanvasSurfaceView>()) }
+        val originalSize=compose.runOnIdle { surface.holder.surfaceFrame.let { IntSize(it.width(),it.height()) } }
+        val density=surface.resources.displayMetrics.density
+        try {
+            compose.runOnIdle { host.resize((1200*density).toInt(),(480*density).toInt(),density) }
+            host.awaitMain("Expanded viewport uses desktop layout",30_000,{ "" },compose) {
+                host.snapshot!!.getJSONObject("layout").objectOrNull("phone")==null
+            }
+        } finally {
+            compose.runOnIdle { host.resize(originalSize.width,originalSize.height,density) }
+            host.awaitMain("Actual viewport restores phone layout",30_000,{ "" },compose) {
+                host.snapshot!!.getJSONObject("layout").objectOrNull("phone")!=null
+            }
+        }
+        val afterLayoutChange=open()
+        assertNotSame("Leaving the phone layout releases its closed body",afterPressure,afterLayoutChange)
+        close()
+        val workspace=host.workspaceManager!!.getString("id")
+        compose.runOnIdle { host.workspaceInput(obj("type" to "switch","id" to "builtin:workspace:photographer")) }
+        host.awaitMain("Photo workspace",30_000,{ "${host.workspaceManager}" },compose) {
+            host.workspaceManager?.optString("id")=="builtin:workspace:photographer" && host.workspaceManager?.optBoolean("busy")==false
+        }
+        compose.runOnIdle { host.workspaceInput(obj("type" to "switch","id" to workspace)) }
+        host.awaitMain("Starting workspace restored",30_000,{ "${host.workspaceManager}" },compose) {
+            host.workspaceManager?.optString("id")==workspace && host.workspaceManager?.optBoolean("busy")==false
+        }
+        assertNotSame("Changing workspace releases the prior body's layout nodes",afterLayoutChange,open())
+        close()
+    }
 
     @Test fun closingColorDrawerRetainsPaletteCompositionWhileBoundsMove() {
         val host=compose.activity.host
