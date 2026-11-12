@@ -156,16 +156,19 @@ measured on low and mid tiers:
   [Mid](performance/mid-tier.md#retained-map-liquify) and
   [Top](performance/top-tier.md#retained-map-liquify) profiles.
 - Galaxy Note 10 phone chrome (2026-11-11, minified `.fix` APKs, 12 MP at Fit
-  plus Paint, inherited font scale 1.1): by SurfaceFlinger actual presentations,
-  the 12 drawer trials (Tool and Color, three column counts, open and close) meet
-  57 fps and 33.3 ms p99 in 18/24 over two ABBA runs both on `d529d8784`
-  (`292d137d`) and with drawer glass only at rest (`1480a523`); thermal status
-  stays 0. The first Tool close misses in every run of both builds (33–83 ms
-  gaps) and the first Color open in three of four: RenderThread compiles HWUI
-  shaders on first use. The other misses are single late presents; passing
-  trials reach 60.02–60.08 fps with 16.66–16.79 ms p99. Size's HWUI window p90
-  improves from 15.07–35.93 to 13.37–14.71 ms (`f6c90479` → `207c7fdb`); its
-  presented cadence remains unmeasured.
+  plus Paint, inherited font scale 1.1, thermal status 0): frozen APKs
+  `f97e1ad6` → `f6cfbfff` improve median action → first moving SF present
+  from 228 → 174 ms Tool, 264 → 209 ms Color and 279 → 146 ms Navigator
+  (three warm opens per family/build); all miss 100 ms. Clean 12-case ABBA,
+  admitted at AP 34.9–35.2°C with CPU residency/frequency recorded, passes
+  57 fps and 33.3 ms p99 in 20/24 → 20/24 cases: Tool and Color each
+  10/12 → 10/12. All 48 cases have complete unique SF joins. Dedicated warm
+  Tool/Color runs still miss cadence (8/8 → 6/8 each), including 55 Hz openings.
+  The first Tool close and first Color open after launch miss on every build
+  measured: RenderThread compiles HWUI shaders on first use. Size's HWUI window
+  p90 improves from 15.07–35.93 to 13.37–14.71 ms (`f6c90479` → `207c7fdb`);
+  its presented cadence remains unmeasured. These inherited settings and short
+  transitions remain diagnostic qualification.
 
 The tier tables identify the exact frozen builds and measurement conditions.
 Exact GPU bounds queries on the top-tier 61 MP canvas take 95–135 ms for a

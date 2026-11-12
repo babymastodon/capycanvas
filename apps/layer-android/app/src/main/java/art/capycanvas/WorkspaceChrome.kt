@@ -111,10 +111,9 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
         view.postInvalidateOnAnimation()
     }
     suspend fun hide() {
-        if(frame!=null) {
-            presented=false
-            awaitOpaqueCommit()
-        }
+        if(frame==null)return
+        presented=false
+        awaitOpaqueCommit()
         clear()
         host.glassPresented()
     }

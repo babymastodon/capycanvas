@@ -11,6 +11,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -224,6 +225,24 @@ class AndroidDrawerCompositionTest {
         }
         assertNotSame("Changing workspace releases the prior body's layout nodes",afterLayoutChange,open())
         close()
+    }
+
+    @Test fun emptyDrawerGlassHidesWithoutSuspending() {
+        val host=compose.activity.host
+        host.awaitReady(compose=compose)
+        val dock=checkNotNull(host.workspaceInteraction)
+        var job:kotlinx.coroutines.Job?=null
+        try {
+            compose.runOnIdle {
+                val glass=DrawerGlass(host,dock,androidx.compose.ui.unit.Density(dock.density),compose.activity.window.decorView)
+                var completed=false
+                job=kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main.immediate)
+                    .launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { glass.hide();completed=true }
+                assertTrue("An empty glass hides without a native presentation handoff",completed)
+            }
+        } finally {
+            instrumentation.runOnMainSync { job?.cancel() }
+        }
     }
 
     @Test fun closingColorDrawerRetainsPaletteCompositionWhileBoundsMove() {
