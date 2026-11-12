@@ -184,12 +184,12 @@ try{
   $scrubBounds=$bounds;$scrubCamera=Camera-Pose;$scrubSamples=@(@(($cx-48),($cy-50)),@($cx,($cy-50)),@(($cx+48),($cy-50)))
   Scrub-Park;$scrubEmpty=Wait-StablePixels {Scrub-Pixels}
  }
+ $seedRevision=(Model).state.document_file.revision
  [CapyRowPointer]::Down('mouse',($cx-60),($cy-50))
  try{for($i=1;$i -le 24;$i++){[CapyRowPointer]::Move(($cx-60+$i*5),($cy-50+[int](10*[Math]::Sin($i/4))));Start-Sleep -Milliseconds 8}}finally{[CapyRowPointer]::Up()}
- Wait-Until {(Model).state.document_file.modified} 'Visible mouse seed stroke did not finish'
- $settled=@{value=''};Wait-Until {$now=Signature;$same=$now -eq $settled.value;$settled.value=$now;Start-Sleep -Milliseconds 150;$same} 'Seed stroke did not settle'
+ Wait-Until {$m=Model;$m.state.document_file.revision -gt $seedRevision -and $m.state.document_file.modified} 'Visible mouse seed stroke did not finish'
  if($ScrubOnly){Scrub-Park;Check-Scrubs;return}
- $seeded=$settled.value;$unpanned=Camera
+ $seeded=Signature;$unpanned=Camera
  [CapyRowPointer]::RightDrag(($cx+40),($cy+40),($cx+100),($cy+70))
  Wait-Until {[Math]::Abs((Camera).translation[0]-$unpanned.translation[0]) -gt 20} 'Mouse right-drag did not pan'
  if((Signature) -ne $seeded){throw 'Mouse right-drag painted'}

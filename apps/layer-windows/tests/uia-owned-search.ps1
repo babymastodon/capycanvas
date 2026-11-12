@@ -2996,3 +2996,43 @@ namespace CapyEditorRegrowTest {
  }
  'Actual Edit Color regrow:144dpi workarea-fit and96dpi offset monitor pass;232 full/159..231 short and retained native wheel reject invalid output.'
 }
+
+& {
+    Add-Type -TypeDefinition @'
+namespace CapyCanvasSeedTest {
+ public static class Driver {
+  public static bool Panned;
+  public static void RightDrag(int x0,int y0,int x1,int y1){Panned=true;}
+ }
+}
+'@
+    $tokens=$null;$errors=$null
+    $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-canvas-touch.ps1'),[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw ($errors|Out-String)}
+    $signature=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Signature'},$true)
+    if(!$signature){throw 'Missing actual canvas touch signature'}
+    . ([scriptblock]::Create($signature.Extent.Text))
+    $wait=$source.Find({param($n)$n-is[Management.Automation.Language.CommandAst]-and$n.GetCommandName()-eq'Wait-Until'-and@($n.CommandElements|Where-Object {$_.Value-eq'Visible mouse seed stroke did not finish'}).Count-eq1},$true)
+    if(!$wait){throw 'Missing actual canvas touch seed acknowledgement'}
+    $first=$wait
+    while($first.Parent-isnot[Management.Automation.Language.StatementBlockAst]){$first=$first.Parent;if(!$first){throw 'Missing actual canvas touch seed block'}}
+    $statements=@($first.Parent.Statements);$start=[array]::IndexOf($statements,$first)
+    $last=@(for($i=$start;$i-lt$statements.Count;$i++){if($statements[$i]-is[Management.Automation.Language.IfStatementAst]-and$statements[$i].Extent.Text.Contains("throw 'Mouse right-drag painted'")){$i}})
+    if($last.Count-ne1){throw 'Missing unchanged mouse right-drag artwork assertion'}
+    $sequence=[scriptblock]::Create(($statements[$start..$last[0]].Extent.Text-join"`n").Replace('[CapyRowPointer]','[CapyCanvasSeedTest.Driver]'))
+    $seedRevision=0;$ScrubOnly=$false;$cx=100;$cy=100;$seedState=@{committed=$false;sleeps=0}
+    [CapyCanvasSeedTest.Driver]::Panned=$false
+    function Model{
+        $done=$seedState.committed-or[CapyCanvasSeedTest.Driver]::Panned
+        [pscustomobject]@{state=[pscustomobject]@{document_file=[ordered]@{revision=$(if($done){1}else{0});modified=$true};layers=@([pscustomobject]@{id=1;paint_revision=$(if($done){73735}else{65537});mask_revision=0})}}
+    }
+    function Camera{[pscustomobject]@{translation=@($(if([CapyCanvasSeedTest.Driver]::Panned){60}else{0}),0)}}
+    function Start-Sleep{param($Milliseconds)$seedState.sleeps++}
+    function Wait-Until([scriptblock]$Condition,[string]$Message){
+        for($poll=1;$poll-le8;$poll++){if($poll-ge3){$seedState.committed=$true};if(& $Condition){return}}
+        throw $Message
+    }
+    . $sequence
+    if(!$seedState.committed-or$seedState.sleeps){throw 'Canvas touch captured its seed before commit or used a settling sleep'}
+}
+Write-Output 'Canvas touch acknowledges the committed seed before mouse navigation despite early modified state and repeated equal pending signatures.'
