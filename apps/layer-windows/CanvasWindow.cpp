@@ -790,7 +790,7 @@ bool CanvasWindow::RequestPreviews(CanvasQueryKind kind,std::string json,Preview
             auto deliver=[reservation,reply=std::move(reply),packet=std::move(packet)]()mutable{reply(std::move(packet));};
             state->Reply(std::move(deliver));
         };
-        if(!previewWork.Push(CanvasQuery{kind,std::move(json),std::move(ordered)}))return false;
+        if(!previewWork.Push(CanvasQuery{kind,std::move(json),std::move(ordered),work.Pushed()}))return false;
     }
     wake.notify_one();return true;
 }
@@ -1471,7 +1471,7 @@ void CanvasWindow::Run() {
                 probeReady=true;
             }
             std::optional<CanvasQuery> preview;
-            {std::lock_guard lock(mutex);if(CanAnswerCanvasQueryAfterFrame(closing))preview=previewWork.Take();}
+            {std::lock_guard lock(mutex);if(CanAnswerCanvasQueryAfterFrame(closing))preview=previewWork.Take({},work.Taken());}
             if(preview)answer(*preview);
             if(overflow)break;
         }

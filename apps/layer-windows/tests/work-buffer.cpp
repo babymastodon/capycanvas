@@ -901,6 +901,20 @@ int main() {
             service(false);assert(answered==2&&afterFrame.Empty()&&!pendingInput.Empty());
             service(false);assert(answered==2);
         }
+        CanvasWorkBuffer work;CanvasQueryQueue ordered;
+        assert(ordered.Push({CanvasQueryKind::Workspace,"held-stamp",{},work.Pushed()}));
+        assert(work.Push(CanvasCommand{CanvasCommandKind::Action,"toggle-sliders"}));
+        assert(ordered.Push({CanvasQueryKind::Workspace,"menu-refresh",{},work.Pushed()}));
+        auto earlier=ordered.Take({},work.Taken());assert(earlier&&earlier->json=="held-stamp");
+        assert(!ordered.Take({},work.Taken())&&"A post-frame query must not overtake a command queued before it");
+        assert(work.Take().size()==1);
+        auto refreshed=ordered.Take({},work.Taken());assert(refreshed&&refreshed->json=="menu-refresh"&&ordered.Empty());
+        assert(work.Push(std::vector<CapyPointer>(1)));
+        assert(work.Push(CanvasCommand{CanvasCommandKind::Action,"behind-held-pointer"}));
+        assert(ordered.Push({CanvasQueryKind::LayerMenu,"context",{},work.Pushed()}));
+        assert(work.TakeBeforePointers().empty()&&!ordered.Take({},work.Taken()));
+        assert(work.Take().size()==2);
+        auto context=ordered.Take({},work.Taken());assert(context&&context->json=="context");
     }
     {
         CanvasWorkBuffer admitted;

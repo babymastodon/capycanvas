@@ -10,12 +10,13 @@
 #include <atomic>
 #include <algorithm>
 #include <chrono>
+#include <limits>
 
 enum class CanvasQueryKind { Filters, Thumbnails, LayerMenu, Workspace, Document, Papers };
 using PreviewPacket=NativePreview;
 using PreviewReply=std::function<void(PreviewPacket)>;
 using PreviewTransport=std::function<bool(CanvasQueryKind,std::string,PreviewReply)>;
-struct CanvasQuery {CanvasQueryKind kind;std::string json;PreviewReply reply;};
+struct CanvasQuery {CanvasQueryKind kind;std::string json;PreviewReply reply;uint64_t after=0;};
 
 // Optional UI queries never consume the input queue's reserved command space.
 // Each cache allows one outstanding reply; this queue also bounds the window
@@ -31,10 +32,10 @@ public:
         if(items.size()>=MaxItems)return false;
         items.emplace_back(std::move(item));return true;
     }
-    std::optional<CanvasQuery> Take(std::optional<CanvasQueryKind> kind={}){
+    std::optional<CanvasQuery> Take(std::optional<CanvasQueryKind> kind={},uint64_t taken=std::numeric_limits<uint64_t>::max()){
         auto next=items.end();
         for(auto it=items.begin();it!=items.end();++it){
-            if(kind&&it->kind!=*kind)continue;
+            if((kind&&it->kind!=*kind)||it->after>taken)continue;
             if(next==items.end())next=it;
             if(it->kind==CanvasQueryKind::LayerMenu){next=it;break;}
         }

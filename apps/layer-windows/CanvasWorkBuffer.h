@@ -1,6 +1,7 @@
 #pragma once
 #include "native/include/capy_windows.h"
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <string>
@@ -38,13 +39,13 @@ public:
         if(!CanPush(item))return false;
         auto cost=Bytes(item);
         items.emplace_back(std::move(item));
-        bytes+=cost;
+        bytes+=cost;++pushed;
         return true;
     }
     std::deque<CanvasWork> Take() {
         std::deque<CanvasWork> result;
         result.swap(items);
-        bytes=0;
+        bytes=0;taken=pushed;
         return result;
     }
     std::deque<CanvasWork> TakeBeforePointers() {
@@ -52,10 +53,12 @@ public:
         while(!items.empty()&&!std::holds_alternative<std::vector<CapyPointer>>(items.front())) {
             bytes-=Bytes(items.front());
             result.emplace_back(std::move(items.front()));
-            items.pop_front();
+            items.pop_front();++taken;
         }
         return result;
     }
+    uint64_t Pushed() const { return pushed; }
+    uint64_t Taken() const { return taken; }
 private:
     static size_t Bytes(CanvasWork const& item) {
         // Capacity counts retained allocations, including spare vector/string
@@ -68,4 +71,5 @@ private:
     }
     std::deque<CanvasWork> items;
     size_t bytes=0;
+    uint64_t pushed=0,taken=0;
 };
