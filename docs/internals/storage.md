@@ -99,10 +99,10 @@ back to writing without its version copy.
 
 When a workspace can't be opened, the status and the manager offer **Restore
 Earlier Workspaces…** for the newest retained copy that this build can open and
-that contains the workspace. Without one, an included workspace offers **Restore
-Starting Layout…**, which keeps a version copy of the whole store and then
-replaces only that item, even when it can't be decoded. Other workspaces offer
-**Save as New Workspace…**.
+that contains the workspace; startup then opens that workspace. Without one, an
+included workspace offers **Restore Starting Layout…**, which keeps a version
+copy of the whole store and then replaces only that item, even when it can't be
+decoded. Other workspaces offer **Save as New Workspace…**.
 
 To restore a native copy, close every Capy Canvas process. Move the current
 database and its `-wal` and `-shm` sidecars into a separate recovery folder.

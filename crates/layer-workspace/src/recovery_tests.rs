@@ -134,7 +134,7 @@ fn an_earlier_copy_that_opens_recovers_workspaces_this_build_cannot_open() {
         assert_eq!(recovery(&controller), ManagerAction::RestoreCopy(kept.clone()), "{id}");
     }
     send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Open { page: ManagerPage::Workspaces });
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Select { id: Some(PAINT.into()) });
+    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Select { id: Some(SKETCH.into()) });
     assert_eq!(controller.view.primary, "Restore Earlier Workspaces…");
     assert!(controller.view.enabled);
     let before = records.copies();
@@ -148,7 +148,7 @@ fn an_earlier_copy_that_opens_recovers_workspaces_this_build_cannot_open() {
     settle(&mut controller, &mut host, WEB_NOW, |c| c.view.ready && !c.view.busy && c.view.prompt.is_none());
     assert!(controller.view.error.is_none());
     assert_eq!(controller.view.page, None);
-    assert_eq!(controller.manager.active_id().as_deref(), Some(PAINT));
+    assert_eq!(controller.manager.active_id().as_deref(), Some(SKETCH), "the restored copy opens the workspace that couldn't be opened");
     for (id, _) in DEFAULT_WORKSPACES {
         assert!(opens(&controller, id), "{id}");
     }
@@ -156,8 +156,8 @@ fn an_earlier_copy_that_opens_recovers_workspaces_this_build_cannot_open() {
     assert_eq!(added.len(), 1);
     assert_eq!(records.json(&added[0])["items"][PAINT]["entity"], pre_recovery["items"][PAINT]["entity"]);
     assert!(records.marker.borrow().as_ref().unwrap().copies.iter().any(|copy| copy.id == added[0]));
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Switch { id: SKETCH.into() });
-    assert_eq!(controller.manager.active_id().as_deref(), Some(SKETCH));
+    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Switch { id: PAINT.into() });
+    assert_eq!(controller.manager.active_id().as_deref(), Some(PAINT));
     assert!(controller.view.status.is_none());
 }
 
@@ -292,8 +292,8 @@ fn native_stores_recover_included_workspaces_they_cannot_open() {
         for (id, _) in DEFAULT_WORKSPACES {
             assert!(opens(&controller, id), "{id}");
         }
+        assert_eq!(controller.manager.active_id().as_deref(), Some(SKETCH));
         if !retained {
-            assert_eq!(controller.manager.active_id().as_deref(), Some(SKETCH));
             assert_eq!(stored_layout(&controller, SKETCH), starting_layout(SKETCH, Platform::Gtk));
         }
         let added: Vec<_> = native_copies(&directory).into_iter().filter(|id| !before.contains(id)).collect();

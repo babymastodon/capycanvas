@@ -242,7 +242,7 @@ enum Outcome {
     Editing(Option<Box<StoredEntity>>),
     Done,
     Deleted(String),
-    Restart,
+    Restart(Option<String>),
     Dismiss,
     Closed,
     Focus(FocusTarget),
@@ -525,9 +525,9 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         self.quiet = true;
     }
     fn initialize(&mut self, now: u64) {
-        self.start(Startup::Stored, now);
+        self.start(Startup::Stored, now, None);
     }
-    fn start(&mut self, stage: Startup, now: u64) {
+    fn start(&mut self, stage: Startup, now: u64, open: Option<String>) {
         self.startup = Some(stage);
         self.incoming = None;
         self.incoming_renew = None;
@@ -547,6 +547,12 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             m.reopen(stage == Startup::SetAside).await?;
             m.load_editing().await?;
             m.refresh_switcher().await?;
+            if let Some(id) = open {
+                m.initialize_catalog(now).await?;
+                if m.items().iter().any(|item| item.id == id) {
+                    return Ok(Outcome::adopt(m.prepare_startup(&id, now).await?));
+                }
+            }
             let mut bound = Vec::new();
             for key in keys {
                 if let StoreResponse::Binding(Some(id)) =
@@ -581,7 +587,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             return false;
         };
         self.startup_error = Some(error);
-        self.start(next, now);
+        self.start(next, now, None);
         true
     }
     fn startup_notice_copy(&self) -> Option<WorkspaceNoticeCopy> {
@@ -1296,6 +1302,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             .then(|| session.capture_workspace())
             .transpose()
             .map_err(StoreError::invalid)?;
+        let open = self.recovery.as_ref().filter(|recovery| recovery.recovery == action).map(|recovery| recovery.id.clone());
         self.run(async move {
             let install = |config, replace, group, exact_name| {
                 Outcome::Install(Box::new(Install {
@@ -1308,7 +1315,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             Ok(match action {
                 ManagerAction::RestoreWorkspaces(id) | ManagerAction::RestoreCopy(id) => {
                     m.restore_snapshot(id).await?;
-                    Outcome::Restart
+                    Outcome::Restart(open)
                 }
                 ManagerAction::RestoreIncluded(id) => Outcome::adopt(m.restore_included(&id, now).await?),
                 ManagerAction::New => Outcome::adopt(m.create_workspace(&name, now).await?),
@@ -1717,10 +1724,10 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 Ok(outcome) => {
                     let keep_prompt = matches!(outcome, Outcome::Adopt(_) | Outcome::Editing(Some(_)) | Outcome::Install(_));
                     match outcome {
-                        Outcome::Restart => {
+                        Outcome::Restart(open) => {
                             merge(&mut change, self.dismiss(session));
                             self.view.ready = false; self.preferences=None; self.refreshed_editing=None; self.renew=None; self.recovery=None;
-                            self.start(Startup::Stored,now);
+                            self.start(Startup::Stored,now,open);
                         },
                         Outcome::Adopt(incoming) => {
                             if self
