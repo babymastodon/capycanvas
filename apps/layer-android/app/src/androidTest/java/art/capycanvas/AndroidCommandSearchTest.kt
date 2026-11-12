@@ -188,6 +188,25 @@ class AndroidCommandSearchTest {
         closeWithEscape("committed composition closes normally")
     }
 
+    @Test fun imeSearchHidesTheKeyboardWithoutExecutingAResult() {
+        open(); query("lay")
+        val root = tagged("command-search")!!.first.view
+        main { root.windowInsetsController?.show(android.view.WindowInsets.Type.ime()) }
+        waitFor("Search keyboard is visible") { root.rootWindowInsets.isVisible(android.view.WindowInsets.Type.ime()) }
+        val before = state().getJSONObject("customization").toString()
+        val selected = search()!!.getJSONArray("results").getJSONObject(search()!!.getInt("selected")).getString("id")
+        main {
+            val connection = root.onCreateInputConnection(android.view.inputmethod.EditorInfo())!!
+            assertTrue(connection.performEditorAction(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH))
+        }
+        waitFor("IME Search keeps results") { search()?.optString("query") == "lay" && tagged("command-result-0") != null }
+        waitFor("IME Search hides the keyboard") { !root.rootWindowInsets.isVisible(android.view.WindowInsets.Type.ime()) }
+        assertEquals(before, state().getJSONObject("customization").toString())
+        assertEquals(selected, search()!!.getJSONArray("results").getJSONObject(search()!!.getInt("selected")).getString("id"))
+        pressKey(KeyEvent.KEYCODE_ENTER)
+        waitFor("Hardware Enter executes the highlighted command") { search() == null }
+    }
+
     @Test fun nativeKeyboardTouchPenAndPerformance() {
         if (mainWindow.resources.configuration.orientation != android.content.res.Configuration.ORIENTATION_LANDSCAPE) {
             assertTrue(instrumentation.uiAutomation.setRotation(if (mainWindow.display.rotation % 2 == 0) android.app.UiAutomation.ROTATION_FREEZE_90 else android.app.UiAutomation.ROTATION_FREEZE_0))

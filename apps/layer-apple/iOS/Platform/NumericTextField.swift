@@ -22,6 +22,7 @@ struct NumericTextField: UIViewRepresentable {
     var selectsOnFocus = true
     var monospaced = true
     var rounded = false
+    var softSubmit: (() -> Void)? = nil
     @Environment(\.isEnabled) private var enabled
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> Field {
@@ -57,6 +58,10 @@ struct NumericTextField: UIViewRepresentable {
             coordinator.parent.text = text; coordinator.parent.cancel()
         }
         field.step = step; field.submit = submit
+        field.hardwareSubmit = softSubmit.map { _ in { [weak field, coordinator = context.coordinator] in
+            guard let field, let text = NativeTextContext.committedText(in: field) else { return }
+            coordinator.parent.text = text; _ = coordinator.parent.submit(true)
+        } }
         if focused && !field.isFirstResponder {
             let coordinator = context.coordinator
             DispatchQueue.main.async { [weak field] in
@@ -103,6 +108,7 @@ struct NumericTextField: UIViewRepresentable {
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
             guard let text = NativeTextContext.committedText(in: textField) else { return false }
             parent.text = text
+            if let softSubmit = parent.softSubmit { softSubmit(); textField.resignFirstResponder(); return true }
             return parent.submit(true)
         }
     }
@@ -114,6 +120,7 @@ struct NumericTextField: UIViewRepresentable {
         var cancel: () -> Void = {}
         var step: ((Int) -> Void)?
         var submit: (Bool) -> Bool = { _ in true }
+        var hardwareSubmit: (() -> Void)?
         override var keyCommands: [UIKeyCommand]? {
             guard markedTextRange == nil else { return super.keyCommands }
             var commands = [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(cancelEdit))]
@@ -127,6 +134,7 @@ struct NumericTextField: UIViewRepresentable {
         override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
             guard markedTextRange == nil else { super.pressesBegan(presses, with: event); return }
             if presses.contains(where: { $0.key?.keyCode == .keyboardEscape }) { cancel(); return }
+            if let hardwareSubmit, presses.contains(where: { $0.key?.keyCode == .keyboardReturnOrEnter }) { hardwareSubmit(); return }
             if presses.contains(where: { $0.key?.keyCode == .keyboardTab }), !submit(false) { return }
             super.pressesBegan(presses, with: event)
         }

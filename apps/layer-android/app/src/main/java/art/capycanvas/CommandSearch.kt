@@ -56,7 +56,6 @@ import org.json.JSONObject
     val results = view.array("results").objects()
     val selected = view.optInt("selected")
     val configuration = LocalConfiguration.current
-    val keyboard = LocalSoftwareKeyboardController.current
     val editor = LocalView.current
     val focus = remember { FocusRequester() }
     val list = rememberLazyListState()
@@ -77,6 +76,7 @@ import org.json.JSONObject
     LaunchedEffect(selected, parameterId) { if (parameter == null && selected in results.indices) list.scrollToItem(selected) }
     Dialog(onDismissRequest = { back() }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val root = LocalView.current
+        val keyboard = LocalSoftwareKeyboardController.current
         val window = (root.parent as DialogWindowProvider).window
         DisposableEffect(window) {
             window.setDimAmount(0f)
@@ -95,7 +95,7 @@ import org.json.JSONObject
             val bounds = placement ?: return@BoxWithConstraints
             val availableHeight = minOf(bounds.number("height").dp,(maxHeight-bounds.number("y").dp).coerceAtLeast(0.dp))
             var placed by remember { mutableStateOf(false) }
-            LaunchedEffect(placed,bounds.toString(),parameterId) {
+            LaunchedEffect(placed,parameterId) {
                 if(!placed)return@LaunchedEffect
                 focus.requestFocus()
                 if (configuration.keyboard == Configuration.KEYBOARD_NOKEYS) keyboard?.show()
@@ -133,7 +133,9 @@ import org.json.JSONObject
                                 text = it
                                 if (parameter == null) send(obj("type" to "query", "text" to it.text))
                             }, singleLine = true, textStyle = LocalTextStyle.current.copy(color = colors.text), cursorBrush = SolidColor(colors.accent),
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, autoCorrectEnabled = false), keyboardActions = KeyboardActions(onSearch = { commit() }),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, autoCorrectEnabled = false), keyboardActions = KeyboardActions(onSearch = {
+                                    if (text.composition == null) { send(obj("type" to "search", "text" to text.text)); keyboard?.hide() }
+                                }),
                                 modifier = Modifier.weight(1f).textCursorRegion().focusRequester(focus).onFocusChanged { entryFocused = it.isFocused; }.testTag("command-search").semantics { contentDescription = parameter?.getString("label") ?: copy.getString("search_commands") },
                                 decorationBox = { inner -> Box { if (text.text.isEmpty()) Text(if (parameter == null) copy.getString("search_commands") else copy.getString("enter_value"), color = colors.secondary); inner() } })
                             parameter?.getJSONObject("parameter")?.getJSONObject("numeric")?.optString("unit")?.takeIf { it.isNotEmpty() }?.let { Text(it, color = colors.secondary) }

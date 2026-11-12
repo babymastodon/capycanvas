@@ -144,7 +144,7 @@ private struct CommandSearchBar: View {
                 if toCanvas { send(["type": "commit", "text": text]) }
                 return true
             }, cancel: back, step: { _ = move(-$0) }, placeholder: prompt, alignment: .natural, returnKey: .search,
-            selectsReplacedText: true)
+            selectsReplacedText: true, softSubmit: { send(["type": "search", "text": text]) })
             .frame(height: 24)
         #else
         TextField(prompt, text: $text, selection: $selection)

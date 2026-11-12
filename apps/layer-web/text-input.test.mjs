@@ -4,6 +4,34 @@ import {captureTextComposition, composingKey, compositionBusy} from './text-inpu
 import {colorDialogDom, dialogProjection, fakeColorApp} from './color-dialog-fixture.mjs';
 import {chooseColor} from './color-editor.js';
 import {createPreviewPanel} from './preview-panel.js';
+import {createCommandBar} from './command-bar.js';
+
+test('command search Enter hides a reported phone keyboard and preserves hardware submission', t => {
+  const {doc, element, button, icon, actions} = colorDialogDom(t);
+  const previousMatchMedia = globalThis.matchMedia;
+  globalThis.matchMedia = () => ({matches:true});
+  t.after(() => { globalThis.matchMedia = previousMatchMedia; });
+  doc.addEventListener = () => {};
+  let keyboard = 180, blurred = 0;
+  const app = {...dialogProjection, state:() => ({phone:{keyboard}}), bootstrap_view:() => ({common:{}}),
+    command_search_placement:() => ({x:0,y:0,width:300,height:200})};
+  const bar = createCommandBar({app, element, button, icon, dispatch:action => actions.push(action), style:{}, canvas:element('canvas'), layoutChanged() {}, nativeCopy:{search:{}}});
+  const dialog = doc.body.descendants().find(node => node.id === 'command-bar');
+  const input = doc.body.descendants().find(node => node.id === 'command-search');
+  input.blur = () => { blurred++; };
+  const view = {query:'lay', results:[], selected:0, detail:'', parameter:null, dialog:{frame:{kind:'editor'},role:'canvas_panel',modal:true}};
+  const enter = () => dialog.dispatchEvent({type:'keydown', key:'Enter', target:input, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}});
+  bar.refresh(view); enter();
+  assert.deepEqual(actions.pop(), {type:'command_search',action:{type:'search',text:'lay'}});
+  assert.equal(blurred, 1);
+  keyboard = 0; enter();
+  assert.deepEqual(actions.pop(), {type:'command_search',action:{type:'commit',text:'lay'}});
+  assert.equal(blurred, 1);
+  keyboard = 180;
+  bar.refresh({...view, parameter:{id:'tool_setting.size',label:'Size',parameter:{text:'24',numeric:{unit:'px'}}}}); enter();
+  assert.deepEqual(actions.pop(), {type:'command_search',action:{type:'search',text:'24'}});
+  bar.refresh(null);
+});
 
 function editor(field = {}, releaseKey, receiver = field, defaultAction) {
   const root = new EventTarget(), dialog = {};

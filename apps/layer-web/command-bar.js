@@ -57,7 +57,9 @@ export function createCommandBar({app,element, button, icon, dispatch, style, ca
     if (["ArrowDown", "ArrowUp"].includes(e.key) && !view?.parameter) {
       e.preventDefault(); send({type:"move", delta:e.key === "ArrowDown" ? 1 : -1});
     } else if (e.key === "Enter" && e.target !== close) {
-      e.preventDefault(); send({type:"commit", text:input.value});
+      const search = app.state().phone.keyboard > 0;
+      e.preventDefault(); send({type:search ? "search" : "commit", text:input.value});
+      if (search) input.blur();
     }
   });
   return {
