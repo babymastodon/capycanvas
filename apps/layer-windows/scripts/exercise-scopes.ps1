@@ -418,6 +418,9 @@ try{
     $autoEpoch=(Model).state.document_file.epoch
     Open-Project $autoFile
     Wait-Until {(Model).state.document_file.epoch -gt $autoEpoch -and (Model).state.document_file.location.uri -eq $autoFile -and !(Model).state.document_file.busy -and !(Model).state.document_file.modified -and (Model).brush_ready} 'Auto Levels did not reopen as a fresh clean drawing' 60
+    $levels=@((Model).state.layers|Where-Object label -eq 'Levels')[0].id
+    Select-Panel 'layers';Invoke ('layer-'+$levels+'-name')
+    Wait-Until {(Model).state.layer_tools.editing_layer.id -eq $levels} 'The reopened Levels layer did not become active'
     Select-Panel 'properties';Fit-Canvas
     Wait-Until {((Model).state.camera|Select-Object viewport,zoom,rotation,translation,work_area|ConvertTo-Json -Depth 8 -Compress) -eq $autoProjection} 'Reopened Auto did not restore the same fitted pixel projection'
     Wait-Until {(Properties-Json) -eq $autoProperties} 'Reopening lost the saved Auto Levels parameters'
