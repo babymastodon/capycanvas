@@ -980,7 +980,7 @@ try {
     foreach($drift in $bodyDrifts){
       foreach($moveSettle in $(if($drift -eq 6){@(0,35)}else{@(0)})){
         $source=Source-Id;$item=Control ('workspace-manager-row-'+$source) -Arranged;$list=Control 'workspace-manager-items';$scroll=$null
-        $hasScroll=$list.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$scroll)
+        $scroll=Scroll-Pattern $list;$hasScroll=$null -ne $scroll
         $beforeScroll=if($hasScroll){$scroll.Current.VerticalScrollPercent}else{$null}
         $trace=Native-TapAt $item $drift -Vertical:($drift -eq 6) -Fraction .4 -MoveSettleMilliseconds $moveSettle;$trace.case='row-body-'+$drift+$(if($moveSettle){'-settled'}else{''});$trace.expected=$source;$trace.scroll_before=$beforeScroll
         try{Wait-Until {(Manager).selected -eq $source -and !(Manager).loading} "$Device row-body $drift DIP tap no longer previews";$trace.passed=$true}
@@ -1102,7 +1102,7 @@ try {
         }
         $active=(Storage).id
         Open-Manager;Preview-Select
-        $scroller=(Control 'workspace-manager-items').GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+        $scroller=Scroll-Pattern (Control 'workspace-manager-items')
         Wait-Until {$scroller.Current.VerticallyScrollable} 'Rows did not overflow'
         $scroller.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll,0)
         Wait-Until {$scroller.Current.VerticalScrollPercent -le 1} 'Rows did not scroll to the beginning'

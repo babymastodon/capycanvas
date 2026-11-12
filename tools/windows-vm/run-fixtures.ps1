@@ -190,6 +190,12 @@ foreach ($script in Get-ChildItem (Join-Path $scripts 'exercise-*.ps1')) {
         $choices = ($parameter.Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' }).PositionalArguments.Value
         foreach ($choice in $choices | Where-Object { $null -ne $_ -and $_ -ne $parameter.DefaultValue.Value }) { $runs["${fixture}:$choice"] = @{arguments=@(Get-FixtureVariantArguments $fixture $option $choice);hardware_gpu=$false} }
     }
+    if($fixture -eq 'popup'){
+        $runs.Remove('popup');$runs.Remove('popup:light')
+        foreach($group in 'controls','text-layout'){
+            $runs["popup:${group}-light"]=@{arguments=@('-Group',$group,'-Theme','light');hardware_gpu=$false}
+        }
+    }
 }
 $runs.Remove('edge-reach:SweepOnly')
 foreach($scenario in 'photo','photo-open','photo-collapsed','paint'){
@@ -234,6 +240,13 @@ function Select-Fixtures([string[]]$Available,[string[]]$Requested) {
                 'tool-bubbles:light-pen','toolbar-components:default','window:default','window:light',
                 'workspace-layout:default','workspace-layout:light','workspace-pickup:default','zoom-readout:touch'
             }
+            default{$_}
+        }
+    })
+    $Requested=@($Requested|ForEach-Object {
+        switch($_){
+            'popup:default'{foreach($group in 'controls','text-layout'){"popup:$group"}}
+            'popup:light'{foreach($group in 'controls','text-layout'){"popup:${group}-light"}}
             default{$_}
         }
     })

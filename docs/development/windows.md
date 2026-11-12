@@ -452,6 +452,9 @@ group; omitting `-SweepScenario` keeps all four scenarios. Samples cover edge
 reach bands, group gaps and empty closed-strip space. Run direct checks with
 each `-Device` and both `-Theme` values.
 
+`fixtures popup` runs `controls` and `text-layout` in both themes; direct
+`exercise-popup.ps1 -Group controls` or `-Group text-layout` selects one group.
+
 Run `gh workflow run windows-readiness.yml -f source_ref=<commit-sha>` for x64
 WARP fixtures on hosted Windows VMs; its `fixtures` input takes a JSON array
 such as `["canvas-bar:default","canvas-bar:light"]`. For a document crash,

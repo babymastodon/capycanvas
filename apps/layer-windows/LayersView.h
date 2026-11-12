@@ -3,6 +3,7 @@
 #include "LayerThumbnails.h"
 #include "NativeMenus.h"
 #include "LayerRowDrag.h"
+#include "RowSwipePresenter.h"
 #include "TextureDialog.h"
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Animation.h>
@@ -42,15 +43,11 @@ struct LayerRow : std::enable_shared_from_this<LayerRow> {
     double id=0;
     hstring epoch;
     Border root;
-    Grid body,swipeFrame;
-    Grid swipeActions;
+    Grid body;
+    CapyUi::RowSwipePresenter swipePresenter;
     std::map<std::wstring,Button> swipeButtons;
     hstring swipeKey;
-    TranslateTransform swipeTransform;
-    double swipeOffset=0;
-    CompositionTarget::Rendering_revoker swipeFrames;
     void swipe(double offset,bool animate=true);
-    void positionSwipe(double offset);
     double revealWidth()const;
     bool canSwipe()const;
     Button eye{nullptr},check{nullptr},content{nullptr},load{nullptr},mask{nullptr},link{nullptr},texture{nullptr},name{nullptr},grip{nullptr};

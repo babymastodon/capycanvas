@@ -339,6 +339,61 @@ foreach($case in @(@{option='CanvasResetOnly';journey='Check-CanvasReset'},@{opt
     'Sweep leaves preserve exact eight-case routing, List/alias selection, manual defaults and actual generated sample coverage.'
 }
 & {
+    $popupPath=Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/exercise-popup.ps1'
+    $popup=[Management.Automation.Language.Parser]::ParseFile($popupPath,[ref]$tokens,[ref]$errors)
+    if(@($errors).Count){throw ($errors|Out-String)}
+    $groups=@('controls','text-layout');$dark=@($groups|ForEach-Object {'popup:'+$_});$light=@($dark|ForEach-Object {$_+'-light'});$leaves=$dark+$light
+    $actual=@($edgeRuns.Keys|Where-Object {($_ -split ':')[0] -eq 'popup'})
+    if(($actual -join ',') -cne ($leaves -join ',')){throw 'Popup matrix must contain only its exact four group/theme leaves'}
+    foreach($group in $groups){
+        if(($edgeRuns[('popup:'+$group)].arguments -join ',') -cne "-Group,$group" -or ($edgeRuns[('popup:'+$group+'-light')].arguments -join ',') -cne "-Group,$group,-Theme,light"){throw 'Popup leaf changed its group/theme arguments'}
+    }
+    $deduplicated=@(Select-Fixtures @($edgeRuns.Keys) (@('popup:default','popup:light')+$leaves+@('popup:default')))
+    if(($deduplicated -join ',') -cne ($leaves -join ',')){throw 'Popup parent aliases and explicit leaves repeated or lost a group/theme pair'}
+    $expected=@($popup.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -eq '$expected'})
+    $aggregate=@($popup.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -eq '!$Group'})
+    $driver=@($popup.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.TryStatementAst]})
+    if($expected.Count -ne 1 -or $aggregate.Count -ne 1 -or $driver.Count -ne 1){throw 'Popup split lost its actual group counts, direct invocation or child lifecycle'}
+    $validation=@($driver[0].Body.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -like '*$result.exit_code*'})
+    if($validation.Count -ne 1){throw 'Popup child lost its native result validation'}
+    $probe=[scriptblock]::Create($popup.ParamBlock.Extent.Text+"`n"+$expected[0].Extent.Text+"`n"+'[pscustomobject]@{group=$Group;theme=$Theme;counts=$expected}')
+    $counts=@{controls=@(17,0);'text-layout'=@(7,16)};$popupTotal=0;$imeTotal=0
+    foreach($group in $groups){
+        $bound=& $probe -Executable 'C:\owned\Popup.exe' -Group $group
+        if(($bound.counts -join ',') -cne ($counts[$group] -join ',')){throw 'Popup group no longer requires its exact original assertion counts'}
+        $popupTotal+=$bound.counts[0];$imeTotal+=$bound.counts[1]
+        foreach($fault in 'none','group','popup','ime','exit'){
+            $result=[pscustomobject]@{group=$group;passed=$counts[$group][0];ime_passed=$counts[$group][1];exit_code=0};$expected=$counts[$group];$Group=$group;$run='owned-test'
+            switch($fault){'group'{$result.group='wrong'} 'popup'{$result.passed--} 'ime'{$result.ime_passed--} 'exit'{$result.exit_code=1}}
+            $failed=$false;try{. ([scriptblock]::Create($validation[0].Extent.Text))}catch{$failed=$true}
+            if($failed -ne ($fault -ne 'none')){throw 'Popup native result accepted another group or incomplete counts, or rejected its exact result'}
+        }
+    }
+    if($popupTotal -ne 24 -or $imeTotal -ne 16){throw 'Popup split lost the 24 popup and 16 IME assertion union'}
+    $manual=Join-Path ([IO.Path]::GetTempPath()) ('capy-popup-groups-'+[guid]::NewGuid().ToString('N')+'.ps1')
+    try{
+        'param([string]$Executable,[string]$Theme,[string]$Group);[pscustomobject]@{executable=$Executable;theme=$Theme;group=$Group}'|Set-Content -LiteralPath $manual
+        $dispatch=@($aggregate[0].Clauses[0].Item2.Statements|Where-Object {$_ -isnot [Management.Automation.Language.ReturnStatementAst]})
+        foreach($theme in 'dark','light'){
+            $command=($dispatch.Extent.Text -join "`n").Replace('$PSCommandPath',("'"+$manual.Replace("'","''")+"'"))
+            $visited=@(& {$Executable='C:\owned\Popup.exe';$Theme=$theme;. ([scriptblock]::Create($command))})
+            if(($visited.group -join ',') -cne ($groups -join ',') -or @($visited|Where-Object {$_.theme -cne $theme -or $_.executable -cne 'C:\owned\Popup.exe'}).Count){throw 'Direct Popup invocation must visit each original group exactly once with its chosen theme and executable'}
+        }
+    }finally{Remove-Item -LiteralPath $manual}
+    . (Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/CapyEnvironment.ps1')
+    $before=@($popup.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -in '$beforeTrace','$beforePath','$beforeTheme','$beforeGroup','$process'})
+    if($before.Count -ne 5 -or @($driver[0].Finally.Statements|Where-Object {$_.Extent.Text -like "Restore-CapyEnvironmentValue 'CAPY_POPUP_GROUP'*"}).Count -ne 1){throw 'Popup child must save and restore its group environment through the existing helper'}
+    & {
+        . ([scriptblock]::Create(($before.Extent.Text -join "`n")))
+        try{$env:CAPY_TRACE_UI='child';$env:CAPY_POPUP_FIXTURE='child';$env:CAPY_POPUP_THEME='child';$env:CAPY_POPUP_GROUP='child'}
+        finally{. ([scriptblock]::Create(($driver[0].Finally.Statements.Extent.Text -join "`n")))}
+        foreach($entry in @(@('CAPY_TRACE_UI',$beforeTrace),@('CAPY_POPUP_FIXTURE',$beforePath),@('CAPY_POPUP_THEME',$beforeTheme),@('CAPY_POPUP_GROUP',$beforeGroup))){
+            if([Environment]::GetEnvironmentVariable($entry[0]) -cne $entry[1]){throw 'Popup child environment escaped its finally restoration'}
+        }
+    }
+    'Popup leaves preserve exact counts, aliases, direct invocation and environment restoration.'
+}
+& {
     $localization=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/exercise-localization.ps1'),[ref]$tokens,[ref]$errors)
     if(@($errors).Count){throw ($errors|Out-String)}
     $aliases=@($localization.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -match '^if\(\$Theme.StartsWith\('})
@@ -376,23 +431,26 @@ $smoke=@(
     'drawers','drawers:light','editor','effects:light',
     'header','header:light','image-rows','layer-pickup',
     'layers','layers:PaperLight','localization-smoke:light','navigator',
-    'navigator:light','persistence','popup','popup:light',
+    'navigator:light','persistence','popup:controls','popup:text-layout',
+    'popup:controls-light','popup:text-layout-light',
     'saved-data:light','scopes','selection:light','startup-close',
     'switcher-drag:mouse','switcher','tab-drag','tab-drag:light',
     'tool-bubbles:light-pen','toolbar-components','window','window:light',
     'workspace-layout','workspace-layout:light','workspace-pickup','zoom-readout:touch'
 )
 $smokePlan=@(Select-Fixtures @($edgeRuns.Keys) @('smoke'))
-if($smokePlan.Count -ne 40 -or ($smokePlan -join ',') -ne ($smoke -join ',')){throw 'Smoke must select its exact forty inventory entries'}
+if($smokePlan.Count -ne 42 -or ($smokePlan -join ',') -ne ($smoke -join ',')){throw 'Smoke must select its exact forty-two inventory entries'}
 if(((Select-Fixtures @($edgeRuns.Keys) @('smoke','popup:default')) -join ',') -ne ($smoke -join ',')){throw 'An explicit smoke entry must not duplicate or expand variants'}
 $smokeExtended=@($edgeRuns.Keys|Where-Object {$_ -in $smoke -or $_ -eq 'navigator:PixelsOnly'})
 if(((Select-Fixtures @($edgeRuns.Keys) @('smoke','navigator:PixelsOnly')) -join ',') -ne ($smokeExtended -join ',')){throw 'Smoke must preserve an explicitly requested extra variant'}
-$available=@('header','header:catalog-only','header:catalog-only-light','popup','popup:light','effects')
+$popupDark=@('popup:controls','popup:text-layout');$popupLight=@($popupDark|ForEach-Object {$_+'-light'});$popupLeaves=$popupDark+$popupLight
+$available=@('header','header:catalog-only','header:catalog-only-light')+$popupLeaves+@('effects')
 if(((Select-Fixtures $available @()) -join ',') -ne ($available -join ',')){throw 'An empty fixture request must select every available selector'}
 if(((Select-Fixtures $available $null) -join ',') -ne ($available -join ',')){throw 'A null fixture request must select every available selector'}
 if(((Select-Fixtures $available @('header-settings')) -join ',') -ne 'header:catalog-only,header:catalog-only-light'){throw 'Header settings must exercise both catalog themes'}
-if(((Select-Fixtures $available @('popup:default')) -join ',') -ne 'popup'){throw 'Default selection expanded variants'}
-if(((Select-Fixtures $available @('popup')) -join ',') -ne 'popup,popup:light'){throw 'Fixture selection lost theme variants'}
+if(((Select-Fixtures $available @('popup:default')) -join ',') -cne ($popupDark -join ',')){throw 'Popup default alias lost its two dark leaves'}
+if(((Select-Fixtures $available @('popup:light')) -join ',') -cne ($popupLight -join ',')){throw 'Popup light alias lost its two light leaves'}
+if(((Select-Fixtures $available @('popup')) -join ',') -cne ($popupLeaves -join ',')){throw 'Popup family selection lost its four group/theme leaves'}
 foreach($name in 'button-feedback','sdk-feedback','scroll-indicators','navigator-allocation'){if((Control-Fixture $name) -ne 'Feedback'){throw "Wrong feedback entry point: $name"}}
 if((Control-Fixture 'popup') -ne 'Popup' -or $null -ne (Control-Fixture 'effects') -or $null -ne (Control-Fixture 'compact-color')){throw 'Control routing changed the editor entry point'}
 if((Control-Fixture 'layer-pickup' @('-PendingDropOnly')) -ne 'LayerDrop' -or $null -ne (Control-Fixture 'layer-pickup') -or $null -ne (Control-Fixture 'layer-pickup' @('-ClippedEdgesOnly'))){throw 'Layer drop overlap must use its separate control executable'}
@@ -513,7 +571,7 @@ try{
     $priorityAssignments=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -like '*PriorityClass'},$true))
     if($priorityAssignments.Count -ne 1 -or $priorityAssignments[0].Left.Extent.Text -ne '$process.PriorityClass'){throw 'Only the fixture input driver process should receive High priority'}
     $all=@('shortcuts')+@($edgeRuns.Keys)
-    foreach($case in @(@{names=$null;controls='Feedback,LayerDrop,Popup'},@{names='navigator:default';controls='';runs=@('navigator')},@{names='button-feedback:default,popup:default';controls='Feedback,Popup'},@{names='layer-pickup:default';controls='LayerDrop'},@{names='smoke';controls='LayerDrop,Popup';runs=$smoke},@{names='smoke,popup:default';controls='LayerDrop,Popup';runs=$smoke},@{names='smoke,navigator:PixelsOnly';controls='LayerDrop,Popup';runs=$smokeExtended})){
+    foreach($case in @(@{names=$null;controls='Feedback,LayerDrop,Popup'},@{names='navigator:default';controls='';runs=@('navigator')},@{names='popup:default';controls='Popup';runs=$popupDark},@{names='popup:light';controls='Popup';runs=$popupLight},@{names='popup';controls='Popup';runs=$popupLeaves},@{names='button-feedback:default,popup:default';controls='Feedback,Popup'},@{names='layer-pickup:default';controls='LayerDrop'},@{names='smoke';controls='LayerDrop,Popup';runs=$smoke},@{names='smoke,popup:default';controls='LayerDrop,Popup';runs=$smoke},@{names='smoke,navigator:PixelsOnly';controls='LayerDrop,Popup';runs=$smokeExtended})){
         $selection=@{};if($case.names){$selection.Name=$case.names}
         $json=& (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'run-fixtures.ps1') -Executable 'C:\not-built\CapyCanvas.exe' -Output $cacheRun @selection -List
         if($LASTEXITCODE){throw 'Listing fixture controls required a build or desktop'}

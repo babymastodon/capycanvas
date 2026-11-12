@@ -321,7 +321,7 @@ void LayersView::layoutConnections(){
         if(!row->current()||!row->root.IsLoaded()||row->content.ActualWidth()<=0||!order.contains(row->id))continue;
         auto rect=row->content.TransformToVisual(list).TransformBounds({0,0,float(row->content.ActualWidth()),float(row->content.ActualHeight())});
         geometry[row->id]=rect;auto [index,depth]=order.at(row->id);
-        if(index<first){first=index;column=rect.X+row->swipeOffset-std::min(depth*8,24.);}last=std::max(last,index);
+        if(index<first){first=index;column=row->root.TransformToVisual(list).TransformPoint(row->content.TransformToVisual(row->body).TransformPoint({0,0})).X-std::min(depth*8,24.);}last=std::max(last,index);
     }
     A shapes;auto edges=array(view(),L"connections");double height=list.ActualHeight();
     auto endpoint=[&](double id,bool bottom)->std::optional<double>{

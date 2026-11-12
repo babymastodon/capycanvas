@@ -317,6 +317,15 @@ int main() {
         contacts.Cancel(2);assert(canceled.back()=="other"&&canceled.size()==4);
         contacts.Observe(3,&scroll,[&]{canceled.push_back("cleared");});contacts.Clear();contacts.Cancel(3);assert(canceled.size()==4);
     }
+    {
+        PointerCancelRegistry contacts;int row,scroll;int rowCanceled=0,scrollCanceled=0,otherCanceled=0;
+        contacts.Observe(1,&row,[&]{++rowCanceled;});contacts.Observe(1,&scroll,[&]{++scrollCanceled;});
+        contacts.Observe(2,&row,[&]{++otherCanceled;});
+        contacts.Forget(1,&row);contacts.Cancel(1);
+        assert(rowCanceled==0&&scrollCanceled==1&&otherCanceled==0);
+        contacts.Observe(1,&row,[&]{++rowCanceled;});contacts.Cancel(1);assert(rowCanceled==1);
+        contacts.Cancel(2);assert(otherCanceled==1);
+    }
     std::cout<<"Capture transfer cancels every native owner once while preserving reentrant and unrelated contacts\n";
 
     {

@@ -16,9 +16,9 @@
 namespace CapyUi {
 struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
     using K=Windows::System::VirtualKey;
-    std::shared_ptr<WorkspaceData> data;Grid root;TextBlock plain,selectorText;StackPanel strip;Button selector;Flyout popup;Grid listSurface;ListView list;
+    std::shared_ptr<WorkspaceData> data;Grid root;TextBlock plain,selectorText;StackPanel strip;Button selector;Flyout popup;Grid listSurface;ItemsView list{nullptr};
     struct Tab{Grid box;Border shade,separator;Button select,close;TextBlock text;MenuFlyout menu;bool chosen=false,hovered=false,pressed=false;};
-    struct Row{ListViewItem item;Button grip,remove;TextBlock text,location;MenuFlyout menu;hstring title,locationSource;};
+    struct Row{ItemContainer item{nullptr};Button grip,remove;TextBlock text,location;MenuFlyout menu;hstring title,locationSource;};
     std::map<uint64_t,Tab> tabs;std::map<uint64_t,Row> rows;std::unique_ptr<WorkspaceRowDrag> rowDrag;
     struct SlideCopy{uint64_t id=0;Border copy;double target=0;Microsoft::UI::Composition::Vector3KeyFrameAnimation animation{nullptr};};
     Canvas overlay;std::vector<SlideCopy> copies;A slideOrder,slideHits;J slideClip,slide;bool animateSlide=true;
@@ -163,7 +163,7 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
         }
         if(dragged||wasHeld)e.Handled(true);
     }
-    void activateItem(winrt::Windows::Foundation::IInspectable const& value){for(auto const& [id,row]:rows)if(value==row.item||value==row.item.Content()){select(id);return;}}
+    void activateItem(winrt::Windows::Foundation::IInspectable const& value){for(auto const& [id,row]:rows)if(value==row.item||value==row.item.Child()){select(id);return;}}
     void show(FrameworkElement anchor=nullptr){refresh();popup.ShowAt(anchor?anchor:selector);}
     void styleTab(Tab& t){
         t.box.CornerRadius({corner(),corner(),corner(),corner()});t.select.CornerRadius({corner(),corner(),corner(),corner()});t.close.CornerRadius({12*CornerFit,12*CornerFit,12*CornerFit,12*CornerFit});
@@ -206,20 +206,20 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
                 t.box.AddHandler(UIElement::PointerPressedEvent(),box_value(PointerEventHandler([weak,id](auto&&,auto&&){if(auto self=weak.lock()){auto& tab=self->tabs.at(id);tab.pressed=true;self->paintTab(tab,tab.chosen);self->separators();}})),true);
                 for(auto event:{UIElement::PointerReleasedEvent(),UIElement::PointerCanceledEvent(),UIElement::PointerCaptureLostEvent()})t.box.AddHandler(event,box_value(PointerEventHandler([weak,id](auto&&,auto&&){if(auto self=weak.lock()){auto& tab=self->tabs.at(id);tab.pressed=false;self->paintTab(tab,tab.chosen);self->separators();}})),true);
                 styleTab(t);tabs.emplace(id,t);
-                Row r;r.item.Tag(box_value(key));AutomationProperties::SetAutomationId(r.item,L"drawing-row-"+key);Grid row;row.ColumnDefinitions().Append(ColumnDefinition());ColumnDefinition first;first.Width({28,GridUnitType::Pixel});row.ColumnDefinitions().InsertAt(0,first);ColumnDefinition lastColumn;lastColumn.Width({28,GridUnitType::Pixel});row.ColumnDefinitions().Append(lastColumn);auto title=str(spec,L"title");
+                Row r;r.item=selectableRow();rowTap(r.item,[weak,id]{if(auto self=weak.lock();self&&!self->updating&&!self->rowDrag->SuppressClick())self->select(id);});r.item.Tag(box_value(key));AutomationProperties::SetAutomationId(r.item,L"drawing-row-"+key);Grid row;row.ColumnDefinitions().Append(ColumnDefinition());ColumnDefinition first;first.Width({28,GridUnitType::Pixel});row.ColumnDefinitions().InsertAt(0,first);ColumnDefinition lastColumn;lastColumn.Width({28,GridUnitType::Pixel});row.ColumnDefinitions().Append(lastColumn);auto title=str(spec,L"title");
                 r.grip=button(data,data->copyCaption(L"header",L"reorder_drawing"),[]{});r.grip.Content(panelGrip(data->theme()));r.grip.Padding({0,0,0,0});r.grip.MinWidth(0);AutomationProperties::SetAutomationId(r.grip,L"drawing-grip-"+key);
                 r.remove=button(data,data->copyCaption(L"header",L"close_drawing"),[weak,id]{if(auto self=weak.lock())self->close(id);});r.remove.Content(icon(L"close",data->theme()));r.remove.Padding({0,0,0,0});r.remove.MinWidth(0);Grid::SetColumn(r.remove,2);AutomationProperties::SetAutomationId(r.remove,L"drawing-row-close-"+key);r.menu=menu(id);
-                StackPanel labels;r.text=CapyUi::label(data,label);r.location=CapyUi::label(data,L"");r.location.FontSize(data->textSize()/1.2);opticalText(r.location,r.location.FontSize());r.location.TextTrimming(TextTrimming::CharacterEllipsis);labels.Children().Append(r.text);labels.Children().Append(r.location);Grid::SetColumn(labels,1);row.Children().Append(r.grip);row.Children().Append(labels);row.Children().Append(r.remove);r.item.Content(row);
+                StackPanel labels;r.text=CapyUi::label(data,label);r.location=CapyUi::label(data,L"");r.location.FontSize(data->textSize()/1.2);opticalText(r.location,r.location.FontSize());r.location.TextTrimming(TextTrimming::CharacterEllipsis);labels.Children().Append(r.text);labels.Children().Append(r.location);Grid::SetColumn(labels,1);row.Children().Append(r.grip);row.Children().Append(labels);row.Children().Append(r.remove);r.item.Child(row);
                 rowDrag->Attach(r.item,r.grip,r.remove,nullptr,r.menu,key);rows.emplace(id,r);
             }
             auto& t=tabs.at(id);t.text.Text(label);t.text.Foreground(data->brush(L"text"));paintTab(t,id==uint64_t(num(m,L"selected")));t.select.IsEnabled(available());t.close.IsEnabled(available());tooltip(t.select,str(spec,L"location",label));AutomationProperties::SetName(t.select,label);
-            auto& r=rows.at(id);r.text.Text(label);auto location=str(spec,L"location");if(r.locationSource!=location){r.locationSource=location;r.location.Text(data->caption(O({{L"type",S(L"drawing_location")},{L"location",S(location)}})));AutomationProperties::SetHelpText(r.location,location);}r.item.IsEnabled(available());r.remove.IsEnabled(available());
+            auto& r=rows.at(id);rowColors(r.item,data);r.text.Text(label);auto location=str(spec,L"location");if(r.locationSource!=location){r.locationSource=location;r.location.Text(data->caption(O({{L"type",S(L"drawing_location")},{L"location",S(location)}})));AutomationProperties::SetHelpText(r.location,location);}r.item.IsEnabled(available());r.remove.IsEnabled(available());
             auto title=str(spec,L"title");if(r.title!=title){r.title=title;auto close=data->caption(O({{L"type",S(L"close_drawing")},{L"title",S(title)}}));AutomationProperties::SetName(r.remove,close);tooltip(r.remove,close);AutomationProperties::SetName(t.close,close);tooltip(t.close,close);}
             auto children=strip.Children();PlaceChild(children,index,t.box,holdsFocus);
-            auto items=list.Items();PlaceChild(items,index,r.item,holdsFocus);++index;
-            if(id==uint64_t(num(m,L"selected"))){selectorText.Text(label);if(!showing||selectionChanged)list.SelectedItem(r.item);}
+            auto items=rowItems(list);PlaceChild(items,index,r.item,holdsFocus);++index;
+            if(id==uint64_t(num(m,L"selected"))){selectorText.Text(label);if(!showing||selectionChanged)selectRow(list,r.item);}
         }
-        while(strip.Children().Size()>index)strip.Children().RemoveAtEnd();while(list.Items().Size()>index)list.Items().RemoveAtEnd();
+        while(strip.Children().Size()>index)strip.Children().RemoveAtEnd();while(rowItems(list).Size()>index)rowItems(list).RemoveAtEnd();
         std::erase_if(tabs,[&](auto const& p){return !live.contains(p.first);});std::erase_if(rows,[&](auto const& p){return !live.contains(p.first);});rowDrag->Refresh(order);selector.IsEnabled(available());
         auto error=str(m,L"storage_error");if(!storageTooltipReady||storageError!=error){storageTooltipReady=true;storageError=error;tooltip(selector,error.empty()?data->caption(L"header",L"choose_drawing"):data->caption(O({{L"type",S(L"drawing_storage")},{L"detail",S(error)}})));}
         AutomationProperties::SetHelpText(root,error);if(plain.Text()!=plainTitle())plain.Text(plainTitle());plain.Foreground(data->brush(L"text"));separators();layout();updating=false;
@@ -243,11 +243,11 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
             receiveFileDrop(event,O({{L"operation",S(L"open_paths")}}),[weak](std::string json){if(auto self=weak.lock())self->data->document(std::move(json));});});
         overlay.HorizontalAlignment(HorizontalAlignment::Left);overlay.VerticalAlignment(VerticalAlignment::Top);overlay.IsHitTestVisible(false);overlay.Visibility(Visibility::Collapsed);
         AutomationProperties::SetAutomationId(overlay,L"drawing-tab-slide");AutomationProperties::SetName(overlay,data->caption(L"header",L"slide"));root.Children().Append(overlay);
-        AutomationProperties::SetAutomationId(list,L"drawing-list");
-        list.IsItemClickEnabled(true);list.SelectionMode(ListViewSelectionMode::Single);list.MaxHeight(420);listSurface.Children().Append(list);listSurface.Width(360);popup.Content(listSurface);TrackPopup(popup,data);
-        rowDrag=std::make_unique<WorkspaceRowDrag>(list,listSurface,[weak]{auto s=weak.lock();return s&&s->available();},[weak](hstring id,std::optional<hstring> before,std::function<void()> ready){if(auto s=weak.lock())s->send(O({{L"op",S(L"reorder")},{L"id",N(double(std::stoull(id.c_str())))},{L"before",before?N(double(std::stoull(before->c_str()))):JsonValue::CreateNullValue()}}),std::move(ready));},[]{});
+        list=selectableRows(data);AutomationProperties::SetAutomationId(list,L"drawing-list");
+        list.MaxHeight(420);listSurface.Children().Append(list);listSurface.Width(360);popup.Content(listSurface);TrackPopup(popup,data);
+        rowDrag=std::make_unique<WorkspaceRowDrag>(list,listSurface,data,[weak]{auto s=weak.lock();return s&&s->available();},[weak](hstring id,std::optional<hstring> before,std::function<void()> ready){if(auto s=weak.lock())s->send(O({{L"op",S(L"reorder")},{L"id",N(double(std::stoull(id.c_str())))},{L"before",before?N(double(std::stoull(before->c_str()))):JsonValue::CreateNullValue()}}),std::move(ready));},[]{});
         popup.Closed([weak](auto&&,auto&&){if(auto s=weak.lock()){s->showing=false;AutomationProperties::SetItemStatus(s->selector,s->data->caption(L"header",L"closed"));s->rowDrag->Cancel();}});popup.Opened([weak,data=data](auto&&,auto&&){if(auto s=weak.lock()){s->showing=true;AutomationProperties::SetItemStatus(s->selector,data->caption(L"header",L"open"));}});
-        list.ItemClick([weak](auto&&,ItemClickEventArgs const& e){if(auto s=weak.lock();s&&!s->updating&&!s->rowDrag->SuppressClick()){s->activateItem(e.ClickedItem());}});
+        list.ItemInvoked([weak](auto&&,ItemsViewItemInvokedEventArgs const& e){if(auto s=weak.lock();s&&!s->updating&&!s->rowDrag->SuppressClick()){s->activateItem(e.InvokedItem());}});
         ShortcutKeys(list,[weak](auto&&,KeyRoutedEventArgs const& e){if(auto s=weak.lock()){
             if(e.Key()==Windows::System::VirtualKey::Escape&&s->rowDrag->Escape()){e.Handled(true);return;}
             bool control=GetKeyState(VK_CONTROL)&0x8000,shift=GetKeyState(VK_SHIFT)&0x8000;auto key=e.Key();
@@ -256,7 +256,7 @@ struct DrawingTabs:std::enable_shared_from_this<DrawingTabs>{
                     e.Handled(true);if(!s->available())return;
                     if(key==K::Delete)s->close(id);else s->send(O({{L"op",S(L"step")},{L"id",N(double(id))},{L"forward",B(key==K::Down)}}));return;
                 }
-            if(e.Key()!=Windows::System::VirtualKey::Enter)return;
+            if(e.Key()!=K::Enter&&e.Key()!=K::Space)return;
             for(auto node=Input::FocusManager::GetFocusedElement(s->list.XamlRoot()).try_as<DependencyObject>();node&&node!=s->list;node=VisualTreeHelper::GetParent(node)){
                 if(node.try_as<Button>())return;
                 for(auto const& [id,row]:s->rows)if(node==row.item){e.Handled(true);s->select(id);return;}
