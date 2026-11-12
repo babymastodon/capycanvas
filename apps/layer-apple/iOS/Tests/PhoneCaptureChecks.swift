@@ -189,11 +189,7 @@ extension XCTestCase {
             "native_only": id.row["native_only"] as? Bool ?? false,
             "document_fixture": app.launchEnvironment["CAPY_STORAGE_DIR"].flatMap { phoneDrawingFixtures[$0] }
                 ?? ["status": "STATE", "reason": "The current drawing has no canonical document proof"],
-            "visible_text_measurements": app.staticTexts.allElementsBoundByIndex.prefix(12).filter { $0.isHittable }.map {
-                let frame = $0.frame
-                return ["identifier": $0.identifier, "text": $0.label,
-                    "bounds": [frame.minX, frame.minY, frame.width, frame.height]] as [String: Any]
-            }, "required_unverified": extra["required_unverified"] as? [String] ?? []]
+            "required_unverified": extra["required_unverified"] as? [String] ?? []]
         for (key, value) in extra where key != "required_unverified" {
             guard metadata[key] == nil else { return XCTFail("Capture details must not override observed identity: \(key)") }
             metadata[key] = value
