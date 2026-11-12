@@ -28,6 +28,102 @@ class AndroidDrawerCompositionTest {
         compose.waitForIdle()
     }
 
+    @Test fun phoneDrawerFacesShareTheirConnectionPaintAndJoinedCorners() {
+        val host=compose.activity.host
+        host.awaitReady(compose=compose)
+        assumeTrue("Requires the native phone layout",host.snapshot!!.getJSONObject("layout").objectOrNull("phone")!=null)
+        host.awaitMain("launch reveal removed",30_000,{ "" },compose) { findTag("launch-splash")==null }
+        val activity=compose.activity
+        val original=activity.requestedOrientation
+        val dock=checkNotNull(host.workspaceInteraction)
+        val density=activity.resources.displayMetrics.density
+        fun frame(menu:Boolean)=if(menu)dock.phone?.menu?.frame else dock.drawer
+        try {
+            for(orientation in listOf(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)) {
+                compose.runOnUiThread { activity.requestedOrientation=orientation }
+                host.awaitMain("phone orientation",30_000,{ "" },compose) {
+                    (activity.resources.configuration.orientation==android.content.res.Configuration.ORIENTATION_PORTRAIT)==(orientation==android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) && host.snapshot!!.getJSONObject("layout").array("viewport").let {
+                        (it.getDouble(0)<it.getDouble(1))==(orientation==android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+                    }
+                }
+                val tiles=host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
+                val selected=host.snapshot!!.array("phone_tools").objects().indexOfFirst { it.optBoolean("selected") }
+                assertTrue("Painter has a selected tool",selected>=0)
+                for((family,action) in listOf("capy" to obj("kind" to "capy"),"settings" to obj("kind" to "tool_settings"),
+                    "selected" to obj("kind" to "tool","tile" to tiles[selected].getInt("id")))) {
+                    val menu=family=="capy"
+                    host.drain(obj("type" to "phone","action" to action))
+                    compose.mainClock.advanceTimeBy(400)
+                    host.awaitMain("$family glass presented",30_000,{ "frame=${frame(menu)}" },compose) {
+                        frame(menu)?.objectOrNull("connection")!=null && host.glassConnectionsForTest.isNotEmpty()
+                    }
+                    compose.waitForIdle()
+                    val settled=compose.runOnIdle { checkNotNull(frame(menu)).copy() }
+                    fun pixels(opaque:Boolean) {
+                        val placement=settled.getJSONObject("placement")
+                        val anchor=placement.getJSONObject("anchor").rect()
+                        val body=placement.getJSONObject("bounds").rect()
+                        val bridge=settled.getJSONObject("connection").getJSONObject("bounds").rect()
+                        val direction=placement.getString("direction")
+                        val vertical=direction in listOf("top","bottom")
+                        val sign=if(direction in listOf("top","left"))-1 else 1
+                        val tangent=if(vertical)anchor.left+anchor.width*.25f else anchor.top+anchor.height*.25f
+                        val edge=when(direction){"top"->anchor.top;"bottom"->anchor.bottom;"left"->anchor.left;else->anchor.right}
+                        val bodyEdge=when(direction){"top"->body.bottom;"bottom"->body.top;"left"->body.right;else->body.left}
+                        fun point(normal:Float)=if(vertical)androidx.compose.ui.geometry.Offset(tangent*density,normal) else androidx.compose.ui.geometry.Offset(normal,tangent*density)
+                        val face=point(edge*density-sign*8)
+                        val joint=point((if(vertical)bridge.center.y else bridge.center.x)*density)
+                        val inside=point(bodyEdge*density+sign*8)
+                        val corners=when(direction){"top"->listOf(anchor.topLeft,anchor.topRight);"bottom"->listOf(anchor.bottomLeft,anchor.bottomRight)
+                            "left"->listOf(anchor.topLeft,anchor.bottomLeft);else->listOf(anchor.topRight,anchor.bottomRight)}
+                        if(!opaque)compose.runOnIdle {
+                            val native=Rect(anchor.topLeft*density+dock.origin-host.surfaceOrigin,anchor.bottomRight*density+dock.origin-host.surfaceOrigin)
+                            val chip=host.glassBoxesForTest.single { it[0]<=native.left+1 && it[1]<=native.top+1 && it[0]+it[2]>=native.right-1 && it[1]+it[3]>=native.bottom-1 }
+                            val bounds=Rect(chip[0],chip[1],chip[0]+chip[2],chip[1]+chip[3])
+                            listOf(bounds.topLeft,bounds.topRight,bounds.bottomRight,bounds.bottomLeft).forEachIndexed { index,corner ->
+                                if(corners.any { (it*density+dock.origin-host.surfaceOrigin-corner).getDistance()<1f })assertEquals("Joined chip glass corner",0f,chip[4+index],0f)
+                            }
+                        }
+                        val expected=android.graphics.Color.parseColor(host.snapshot!!.getJSONObject("state").getJSONObject("palette").getString("panel"))
+                        val suffix=if(opaque)"opaque" else "rest"
+                        var inspected=false
+                        screenshot("validation/drawer-faces/$orientation-$family-$suffix.png") { image ->
+                            inspected=true
+                            fun pixel(at:androidx.compose.ui.geometry.Offset)=image.getPixel(kotlin.math.round(at.x+dock.origin.x).toInt(),kotlin.math.round(at.y+dock.origin.y).toInt())
+                            fun equal(label:String,want:Int,actual:Int,tolerance:Int) {
+                                val delta=listOf(16,8,0).map { kotlin.math.abs((want shr it and 255)-(actual shr it and 255)) }
+                                assertTrue("$family $orientation $suffix $label: expected=${Integer.toHexString(want)} actual=${Integer.toHexString(actual)} delta=$delta",delta.all { it<=tolerance })
+                            }
+                            val reference=if(opaque)expected else pixel(inside)
+                            for((label,at) in listOf("face" to face,"bridge" to joint,"body" to inside))equal(label,reference,pixel(at),if(opaque)0 else 3)
+                            if(opaque) {
+                                for(inset in 1..8)equal("face joint strip $inset",reference,pixel(point(edge*density-sign*inset)),0)
+                                for(corner in corners) {
+                                    val at=corner*density+androidx.compose.ui.geometry.Offset(if(corner.x==anchor.left)2f else -2f,if(corner.y==anchor.top)2f else -2f)
+                                    equal("joined corner $corner",reference,pixel(at),0)
+                                }
+                            }
+                        }
+                        assertTrue("$family $suffix captures pixels",inspected)
+                    }
+                    pixels(false)
+                    compose.mainClock.autoAdvance=false
+                    host.drain(if(menu)obj("type" to "phone","action" to obj("kind" to "capy")) else obj("type" to "customize","action" to obj("type" to "close_expanded")))
+                    repeat(3) { compose.mainClock.advanceTimeByFrame();instrumentation.waitForIdleSync() }
+                    host.awaitMain("$family glass retired",10_000,{ "" }) { host.glassConnectionsForTest.isEmpty() }
+                    assertNotNull("Opaque connection remains until the animation advances",frame(menu)?.objectOrNull("connection"))
+                    pixels(true)
+                    compose.mainClock.autoAdvance=true
+                    compose.mainClock.advanceTimeBy(400)
+                    host.awaitMain("$family drawer closed",30_000,{ "" },compose) { frame(menu)==null }
+                }
+            }
+        } finally {
+            compose.mainClock.autoAdvance=true
+            compose.runOnUiThread { activity.requestedOrientation=original }
+        }
+    }
+
     @Test fun closedPhoneDrawerFamiliesRetainFrozenBodiesWithoutInputOrGlass() {
         val host=compose.activity.host
         host.awaitReady(compose=compose)

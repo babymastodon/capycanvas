@@ -59,7 +59,9 @@ private data class PanelMeasurement(val tab: MeasuredTab? = null, val body: Meas
  * docking, sizing, undo transactions and Zen visibility on every platform. */
 internal class DockInteraction(val host: CanvasHost) {
     private companion object { var panelMetricGeneration = 0L }
-    data class DrawerSource(val direction: String, val bounds: Rect, val anchor: JSONObject? = null)
+    data class DrawerSource(val direction: String, val bounds: Rect, val anchor: JSONObject? = null, val glass: DrawerGlass? = null) {
+        val presented get() = glass?.presented == true
+    }
     data class Region(val token: Any, val action: JSONObject?, val bounds: Rect, val z: Int, val priority: Int,
         val context: JSONObject?, val cursor: Int, val holdToDrag: Boolean, val depth: Int = 0)
     val regions = mutableMapOf<Any, Region>()
@@ -72,8 +74,10 @@ internal class DockInteraction(val host: CanvasHost) {
     val drawerSources = mutableStateMapOf<String, DrawerSource>()
     var drawerTileRevision by mutableIntStateOf(0)
         private set
-    fun tileDrawerSource(panel: String, tile: Int) =
-        drawerSources["tool"]?.takeIf { it.anchor?.optString("panel") == panel && it.anchor.optInt("tile") == tile }
+    fun anchorSource(anchor: JSONObject): DrawerSource? {
+        val key=anchor.toString()
+        return drawerSources.values.firstOrNull { it.anchor?.toString()==key }
+    }
     private val drawerTiles = mutableMapOf<String, JSONObject>()
     private var drawerMeasurementsRevision by mutableIntStateOf(0)
     private var lastDrawerReport = "[]"

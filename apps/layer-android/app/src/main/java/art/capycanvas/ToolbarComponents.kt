@@ -238,9 +238,10 @@ private fun formatted(language: String, control: JSONObject, value: Float, units
                         }
                     }
                 }
-                val source = dock.tileDrawerSource(panel.getString("id"), id)
+                val source = dock.anchorSource(obj("kind" to "tile", "panel" to panel.getString("id"), "tile" to id))
                 Box(Modifier.placed(layout.getJSONObject("more"), density).dragSource(dock, item, holdToDrag = true)
                     .clip(drawerButtonShape(source?.direction))
+                    .background(if(source!=null)LocalPalette.current.drawerFill(source.presented) else Color.Transparent)
                     .testTag("toolbar-more-$id").clickable { host.dispatch(obj("type" to "activate_tile", "panel" to panel.getString("id"), "tile" to id)) }, contentAlignment = Alignment.Center) {
                     SharedIcon("more", "More tool options", Modifier.size(iconSize.dp))
                 }

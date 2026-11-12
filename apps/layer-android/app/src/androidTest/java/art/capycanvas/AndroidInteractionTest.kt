@@ -2642,7 +2642,7 @@ class AndroidInteractionTest {
                 tap(bounds("tile-toolbar-$id").center)
                 waitFor("$theme tile $id opens its nested content drawer") {
                     state().getJSONObject("customization").objectOrNull("drawer")?.getJSONObject("anchor")?.optInt("tile") == id &&
-                        shown("tool-drawer") && host.workspaceInteraction?.tileDrawerSource("toolbar", id) != null
+                        shown("tool-drawer") && host.workspaceInteraction?.anchorSource(obj("kind" to "tile","panel" to "toolbar","tile" to id)) != null
                 }
                 val source = bounds("tile-toolbar-$id").intersect(bounds("column-drawer-41"))
                 lateinit var expected: Rect

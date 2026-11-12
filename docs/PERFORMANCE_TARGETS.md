@@ -171,7 +171,11 @@ measured on low and mid tiers:
   value (Activity/popup). The present-gap p99 is 33.4 → 33.3 ms, and the value
   settles 67–102 → 45–62 ms after the last input. Strength misses 0 → 0 and
   settles 8–23 → 0 ms. Expected frames come from replaying the injected input
-  offline. These inherited settings and short transitions remain diagnostic
+  offline. Drawer faces (2026-11-12, APKs `01c40bcd` → `7dae63b9`, three warm
+  Tool/Color cycles each, AP 42.0 → 39.8°C) pass cadence in 8/12 → 11/12
+  transitions: Tool 3/6 → 5/6 and Color 5/6 → 6/6, with complete SF joins. The remaining
+  55 fps Tool close shares the parent's cadence miss.
+  These inherited settings and short transitions remain diagnostic
   qualification.
 
 The tier tables identify the exact frozen builds and measurement conditions.

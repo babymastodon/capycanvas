@@ -52,9 +52,9 @@ import kotlin.math.roundToInt
                     return@forEachIndexed
                 }
                 val colors = LocalPalette.current
-                val source = dock.tileDrawerSource(panel.getString("id"), tile.getInt("id"))
-                val shape = drawerButtonShape(source?.direction)
                 val anchor = obj("kind" to "tile", "panel" to panel.getString("id"), "tile" to tile.getInt("id"))
+                val source = dock.anchorSource(anchor)
+                val shape = drawerButtonShape(source?.direction)
                 val activation=pickerClick(host,tile.getJSONObject("resolved_control"),anchor) {
                     host.dispatch(obj("type" to "activate_tile","panel" to panel.getString("id"),"tile" to tile.getInt("id")))
                 }
@@ -65,6 +65,7 @@ import kotlin.math.roundToInt
                 Box(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxSize().clip(shape).alpha(if (enabled) 1f else .4f)
                     .background(when {
+                        source != null -> colors.drawerFill(source.presented)
                         tile.optBoolean("selected") -> colors.active
                         else -> Color.Transparent
                     })

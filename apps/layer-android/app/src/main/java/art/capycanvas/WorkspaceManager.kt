@@ -230,7 +230,7 @@ internal fun workspaceSwitcherMenu(view: JSONObject?): JSONObject = view?.optJSO
                 }
             }
         }
-        HeaderButton(view.getString("switcher_options_label"), false, true, false,
+        HeaderButton(view.getString("switcher_options_label"), false, true, null,
             Modifier.size(20.dp, 26.dp).testTag("workspace-switcher-options"), surface = false, shape = SquircleShape(50), onClick = options) {
             SharedIcon("more-small", view.getString("switcher_options_label"), Modifier.size(16.dp), tint = colors.secondary)
         }

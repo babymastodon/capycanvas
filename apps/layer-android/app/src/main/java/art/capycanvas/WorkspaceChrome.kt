@@ -59,6 +59,8 @@ internal fun drawerButtonShape(direction: String?): SquircleShape {
     return SquircleShape(corner("top", "left"), corner("top", "right"), corner("bottom", "right"), corner("bottom", "left"))
 }
 
+internal fun Palette.drawerFill(presented: Boolean) = if(presented)onGlass.panelFill else panel
+
 /** Ancestor clipping must preserve the connected source corners, including those its rounding reaches. */
 internal fun DockInteraction.drawerContainerShape(bounds: JSONObject, radius: Float = SurfaceRadius.value, joined: JSONArray? = null,
     sources: Collection<DockInteraction.DrawerSource> = drawerSources.values): SquircleShape {
@@ -82,7 +84,8 @@ internal fun DockInteraction.drawerContainerShape(bounds: JSONObject, radius: Fl
 internal class DrawerGlass(private val host: CanvasHost, private val dock: DockInteraction,
     private val density: Density, private val view: android.view.View) {
     private val key=Any()
-    private var frame:JSONObject?=null
+    private var frame by mutableStateOf<JSONObject?>(null)
+    val active get() = frame != null
     var presented by mutableStateOf(false)
         private set
     var strength=1f
@@ -451,7 +454,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
                     "closing" to (current==null),"clip_contents" to true).toString()))
                 geometry.value=reply;pagePosition=position
                 if(reply.objectOrNull("connection")!=null)reply.getJSONObject("placement").let { placement ->
-                    val source=DockInteraction.DrawerSource(placement.getString("direction"),placement.getJSONObject("anchor").rect(),model.getJSONObject("anchor"))
+                    val source=DockInteraction.DrawerSource(placement.getString("direction"),placement.getJSONObject("anchor").rect(),model.getJSONObject("anchor"),glass)
                     if(dock.drawerSources[id]!=source)dock.drawerSources[id]=source
                 } else dock.drawerSources.remove(id)
                 if(id=="tool"){dock.drawer=reply;dock.refresh()}
@@ -504,7 +507,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
                 .then(if (columnId != null) Modifier.columnDrawerBounds(dock, columnId, if (current != null) tabs?.getInt("group") else null) else Modifier)
                 .panelOpening(opening).graphicsLayer { clip=true; this.shape=shape() }
                 .drawWithContent {
-                    drawRect(if(!visible || tabbed && glass.presented)Color.Transparent else if(glass.presented)colors.onGlass.panelFill else colors.panel)
+                    drawRect(if(!visible || tabbed && glass.presented)Color.Transparent else colors.drawerFill(glass.presented))
                     drawContent()
                 }
                 .then(if (together) Modifier.panelScroll(rememberScrollState()) else Modifier),content={
@@ -604,7 +607,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
     }
 }
 
-@Composable private fun DrawerChrome(geometry: State<JSONObject?>, dock: DockInteraction, absolute: Boolean, nested: Boolean, z: Int, glass: DrawerGlass) {
+@Composable internal fun DrawerChrome(geometry: State<JSONObject?>, dock: DockInteraction, absolute: Boolean, nested: Boolean, z: Int, glass: DrawerGlass) {
     val frame=geometry.value ?: return
     val placement=frame.getJSONObject("placement")
     val bounds=placement.getJSONObject("bounds")
@@ -722,6 +725,6 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
         move(0f,0f); line(length,0f); line(length,depth-r1)
         corner(Offset(length+r1,depth-r1), Offset(-r1,0f), Offset(0f,r1))
         line(-r0,depth); corner(Offset(-r0,depth-r0), Offset(0f,r0), Offset(r0,0f))
-        path.close(); drawPath(path,if(glass==null || glass.presented)colors.onGlass.panelFill else colors.panel)
+        path.close(); drawPath(path,colors.drawerFill(glass==null || glass.presented))
     }
 }
