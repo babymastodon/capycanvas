@@ -993,19 +993,55 @@ int main() {
         auto busy=[&]{++asked;return false;};
         PresentationTrace untraced(false);
         untraced.Observe(true,false,false,2,1,at(0));
-        for(int ms=0;ms<=60000;ms+=250){if(untraced.Withheld(at(ms)))untraced.Repeat();assert(!untraced.PresentsHeld(quiet));}
+        for(int ms=0;ms<=60000;ms+=250){if(untraced.Withheld(at(ms)))untraced.Repeat();assert(untraced.Repeats(quiet)==PresentationTrace::Repetition::None);}
         assert(asked==0);
         PresentationTrace presentation(true);
         presentation.Observe(true,false,false,10,9,at(0));
-        assert(!presentation.PresentsHeld(quiet)&&asked==0);
+        assert(presentation.Repeats(quiet)==PresentationTrace::Repetition::None&&asked==0);
         assert(presentation.Withheld(at(1000)));presentation.Repeat();
-        assert(!presentation.PresentsHeld(busy)&&asked==1&&!presentation.PresentsHeld(quiet)&&asked==1);
+        assert(presentation.Repeats(busy)==PresentationTrace::Repetition::None&&asked==1&&presentation.Repeats(quiet)==PresentationTrace::Repetition::None&&asked==1);
         presentation.Observe(true,false,false,11,10,at(1100));
         assert(presentation.required==11&&presentation.Withheld(at(2100)));presentation.Repeat();
-        assert(presentation.PresentsHeld(quiet)&&asked==2&&!presentation.PresentsHeld(quiet)&&asked==2);
+        assert(presentation.Repeats(quiet)==PresentationTrace::Repetition::Held&&asked==2&&presentation.Repeats(quiet)==PresentationTrace::Repetition::None&&asked==2);
         presentation.Observe(true,false,true,12,10,at(2200));assert(presentation.required==11);
     }
     std::cout<<"Presentation trace: only a traced repeat with no input or frame demand re-presents the held image instead of drawing a canvas frame\n";
+    {
+        auto origin=PresentationTrace::Clock::time_point{}+std::chrono::hours(1);
+        auto at=[&](int ms){return origin+std::chrono::milliseconds(ms);};
+        auto quiet=[]{return true;};
+        using Repetition=PresentationTrace::Repetition;
+        auto flush=[&](PresentationTrace& trace,uint64_t last,uint64_t shown,int ms){
+            assert(trace.Stalled(at(ms)));auto before=trace.displayed;trace.Observe(false,false,false,last,shown,at(ms));return trace.Flushed(before);
+        };
+        PresentationTrace presentation(true);
+        presentation.Observe(true,false,false,20,18,at(0));
+        assert(presentation.Withheld(at(1000)));presentation.Repeat();
+        assert(presentation.Repeats(quiet)==Repetition::Held);
+        presentation.Observe(true,false,true,21,18,at(1100));
+        assert(!presentation.Stalled(at(2000)));
+        assert(!flush(presentation,21,18,2100)&&presentation.Repeats(quiet)==Repetition::None);
+        assert(flush(presentation,21,18,2350)&&presentation.Repeats(quiet)==Repetition::Drawn&&presentation.Repeats(quiet)==Repetition::None);
+        presentation.Observe(true,false,true,22,18,at(2400));assert(presentation.required==20);
+        for(int ms=2650;ms<=20000;ms+=250){
+            if(presentation.Stalled(at(ms)))assert(!flush(presentation,22,18,ms));
+            assert(!presentation.Withheld(at(ms))&&presentation.Repeats(quiet)==Repetition::None);
+        }
+        PresentationTrace moved(true);
+        moved.Observe(true,false,false,30,28,at(0));
+        assert(moved.Withheld(at(1000)));moved.Repeat();assert(moved.Repeats(quiet)==Repetition::Held);
+        moved.Observe(true,false,true,31,28,at(1100));
+        assert(!flush(moved,31,29,2100)&&moved.Repeats(quiet)==Repetition::None);
+        assert(!flush(moved,31,30,3100)&&moved.Repeats(quiet)==Repetition::None&&!moved.Stalled(at(9000)));
+        PresentationTrace untraced(false);
+        untraced.Observe(true,false,false,40,38,at(0));
+        for(int ms=0;ms<=60000;ms+=250){
+            if(untraced.Withheld(at(ms)))untraced.Repeat();
+            if(untraced.Stalled(at(ms))){auto before=untraced.displayed;untraced.Observe(false,false,false,40,38,at(ms));assert(!untraced.Flushed(before));}
+            assert(untraced.Repeats(quiet)==Repetition::None);
+        }
+    }
+    std::cout<<"Presentation trace: a held repeat whose stalled flushes leave the statistic unchanged draws one full frame per content, never more\n";
     CanvasQuerySlots slots;
     std::vector<std::shared_ptr<void>> held;
     std::deque<std::function<void()>> deferred;

@@ -159,18 +159,22 @@ void CanvasWindow::TraceTextInput(bool pressed) {
     PublishTraceFile(textInputTrace,"text-input-"+process+"-"+window+".json","{\"process_id\":"+process+",\"window_id\":"+window+
         ",\"composing\":"+(CapyUi::focusedTextComposing(root.XamlRoot())?"true":"false")+",\"pointer_presses\":"+std::to_string(textInputPresses)+"}");
 }
-void CanvasWindow::TracePresentation(bool frame,bool dirty,bool repeat) {
+bool CanvasWindow::TracePresentation(bool frame,bool dirty,bool repeat) {
     auto& trace=presentationTrace;
-    if(!trace.enabled)return;
-    if(!frame&&!dirty&&trace.Stalled(std::chrono::steady_clock::now()))DwmFlush();
+    if(!trace.enabled)return false;
+    bool stalled=!frame&&!dirty&&trace.Stalled(std::chrono::steady_clock::now());
+    auto before=trace.displayed;
+    if(stalled)DwmFlush();
     uint64_t stats[6]{};
     auto shown=capy_presentation_stats(host,stats)==0?std::optional<uint64_t>(stats[1]):std::nullopt;
     trace.Observe(frame,dirty,repeat,stats[0],shown,std::chrono::steady_clock::now());
-    if(frame)return;
+    bool draw=stalled&&trace.Flushed(before);
+    if(frame)return draw;
     auto value="{\"process_id\":"+std::to_string(GetCurrentProcessId())+",\"window_id\":"+std::to_string(windowId)+
         ",\"presentation_epoch\":"+std::to_string(trace.epoch)+",\"required\":"+std::to_string(trace.required)+
         ",\"displayed\":"+(trace.displayed?std::to_string(*trace.displayed):std::string("null"))+"}";
     TraceState("presentation-state",value);
+    return draw;
 }
 std::string CanvasWindow::SystemTheme(){
     using winrt::Windows::UI::ViewManagement::UIColorType;
@@ -1375,7 +1379,7 @@ void CanvasWindow::Run() {
                 nextServices=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
                 surfacePoll.Schedule(capy_surface_pending(host)>0,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
                 dirty|=serviceResult!=0;
-                TracePresentation(false,dirty);
+                dirty|=TracePresentation(false,dirty);
                 if(!dirty&&presentationTrace.Withheld(std::chrono::steady_clock::now())){presentationTrace.Repeat();dirty=true;}
                 CapySnapshotInfo routing{};
                 if(auto snapshot=capy_snapshot(host,&routing)){
@@ -1435,8 +1439,8 @@ void CanvasWindow::Run() {
             if(overflow){sentModifiers.store(0);if(capy_input(host,R"({"type":"blur"})")<0){Fail(NativeString(capy_error()).get());break;}}
             if(capy_device_lost(host))continue;
             auto now=Now();
-            auto held=presentationTrace.PresentsHeld([&]{return pending.empty()&&!hover&&!overflow&&capy_needs_frame(host)==0;});
-            auto result=held?capy_present_held(host):capy_frame(host,now,now);
+            auto repetition=presentationTrace.Repeats([&]{return pending.empty()&&!hover&&!overflow&&capy_needs_frame(host)==0;});
+            auto result=repetition==PresentationTrace::Repetition::Held?capy_present_held(host):capy_frame(host,now,now);
             if(latencyTrace.enabled){
                 auto end=Now();uint64_t stats[6]{};auto error=capy_presentation_stats(host,stats);
                 CapyFrameTiming timing{};capy_frame_timing(host,&timing);
@@ -1446,7 +1450,7 @@ void CanvasWindow::Run() {
             dirty=result!=0;
             PresentNavigators();navigatorWake=std::chrono::steady_clock::now()+RefreshPeriod(nativeWindow);
             surfacePoll.Schedule(capy_surface_pending(host)>0,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
-            TracePresentation(true,dirty,held);
+            TracePresentation(true,dirty,repetition!=PresentationTrace::Repetition::None);
             if(!inputStarted){
                 inputStarted=true;inputDispatcher.TryEnqueue([weak=weak_from_this(),zoomIn,zoomOut]{
                     if(auto self=weak.lock()){self->zoomInCursor=zoomIn;self->zoomOutCursor=zoomOut;self->StartInput();}

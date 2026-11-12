@@ -58,7 +58,7 @@ private:
     CanvasLatencyTrace latencyTrace{GetEnvironmentVariableW(L"CAPY_LATENCY_TRACE",nullptr,0)!=0};
     PresentationTrace presentationTrace{GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0)!=0};
     bool brushReady=false;
-    void TracePresentation(bool frame,bool dirty,bool repeat=false);
+    bool TracePresentation(bool frame,bool dirty,bool repeat=false);
     std::shared_ptr<OrderedTraceFile> textInputTrace;uint64_t textInputPresses=0;
     void TraceTextInput(bool pressed);
     std::vector<std::wstring> launchFiles;

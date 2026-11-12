@@ -24,16 +24,25 @@ public:
         required=dirty?last+(frame&&presented?0:1):content;
         ++epoch;
     }
+    enum class Repetition {None,Held,Drawn};
     bool Withheld(Clock::time_point now) const { return Unacknowledged(now)&&repeated!=content; }
     bool Stalled(Clock::time_point now) const { return Unacknowledged(now)&&repeated==content; }
-    void Repeat() { repeated=content; held=true; }
-    template<class Quiet> bool PresentsHeld(Quiet quiet) { return std::exchange(held,false)&&quiet(); }
+    void Repeat() { repeated=content; request=Repetition::Held; }
+    bool Flushed(std::optional<uint64_t> before) {
+        if(displayed!=before||escalated==content||std::exchange(flushed,content)!=content)return false;
+        escalated=content;request=Repetition::Drawn;
+        return true;
+    }
+    template<class Quiet> Repetition Repeats(Quiet quiet) {
+        auto pending=std::exchange(request,Repetition::None);
+        return pending!=Repetition::None&&quiet()?pending:Repetition::None;
+    }
 private:
     bool Unacknowledged(Clock::time_point now) const {
         return enabled&&displayed&&*displayed<content&&now-presentedAt>=Patience&&now-displayedAt>=Patience;
     }
-    uint64_t presentations=0,content=0,repeated=0;
-    bool held=false;
+    uint64_t presentations=0,content=0,repeated=0,flushed=0,escalated=0;
+    Repetition request=Repetition::None;
     Clock::time_point presentedAt{},displayedAt{};
 };
 
