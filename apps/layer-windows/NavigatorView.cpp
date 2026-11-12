@@ -74,7 +74,7 @@ struct NavigatorView::Impl : std::enable_shared_from_this<Impl> {
     }
     void init(){
         auto weak=weak_from_this();
-        root.Background(data->brush(L"panel"));
+        root.Background(clear());
         copyName(data,root,data->copyCaption(L"color",L"navigator_panel"));
         inputSurface.Background(data->brush(L"panel"));overview.Content(inputSurface);
         if(data->navigatorSurface){
