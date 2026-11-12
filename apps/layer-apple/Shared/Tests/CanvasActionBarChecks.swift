@@ -161,7 +161,7 @@ extension XCTestCase {
             editorMenu(in: app, menu: "Edit", id: "search_commands", label: "Search Commands…")
             let search = app.textFields["command-search"]
             XCTAssertTrue(search.waitForExistence(timeout: 5), "Reset is a command, not a bar item")
-            search.typeText("Reset transform\n")
+            runCommandSearch("Reset transform", field: search, in: app)
             XCTAssertTrue(search.waitForNonExistence(timeout: 5))
         }
 
