@@ -532,6 +532,17 @@ class CanvasHost @JvmOverloads constructor(application: Application, screen: JSO
             if (!disposed && handle != 0L) Native.shaderInput(handle)
         }
     }
+    private val sliderInputs = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, JSONObject>()
+    internal fun sliderEdit(context: JSONObject, setting: String, value: Float) {
+        val key = context.toString() to setting
+        val action = obj("type" to "toolbar_edit", "context" to context,
+            "action" to obj("type" to "set_tool_setting", "id" to setting, "value" to value))
+        if (sliderInputs.put(key, action) == null) post {
+            val latest = sliderInputs.remove(key) ?: return@post
+            if (!documentInputBlocked) dispatchOwned(latest, moving = true)
+        }
+    }
+    internal fun sliderReleased(published: () -> Unit) = post { publish(true); wake(); main.post { published() } }
     internal suspend fun <T> withNative(block: (Long) -> T): T = kotlin.coroutines.suspendCoroutine { continuation ->
         if (!worker.post {
             val result = runCatching { check(!disposed && handle != 0L) { bootstrapForOwner?.getString("editor_closed").orEmpty() }; block(handle) }
@@ -603,22 +614,16 @@ class CanvasHost @JvmOverloads constructor(application: Application, screen: JSO
         finally { if (tracing) android.os.Trace.endSection() }
         refreshLanguage()
         refreshChrome()
-        if (type == "pen_input") {
-            if (!penPublicationQueued) { penPublicationQueued = true; choreographer?.postFrameCallback(penPublication) }
-        } else if (moving) presentMotion() else { publish(true); wake() }
+        if (type == "pen_input" || moving) {
+            if (!framePublicationQueued) { framePublicationQueued = true; choreographer?.postFrameCallback(framePublication) }
+            if (moving) wake()
+        } else { publish(true); wake() }
         if (published != null) main.post { published() }
     }
-    private var motionAt = 0L
-    private var penPublicationQueued = false
-    private val penPublication = Choreographer.FrameCallback {
-        penPublicationQueued = false
+    private var framePublicationQueued = false
+    private val framePublication = Choreographer.FrameCallback {
+        framePublicationQueued = false
         if (!disposed && handle != 0L) attempt(canvas = false) { publish(true) }
-    }
-    private val motionPublication = Runnable { if (!disposed && handle != 0L) attempt(canvas = false) { publish(true) } }
-    private fun presentMotion() {
-        motionAt = SystemClock.uptimeMillis()
-        wake()
-        if (!worker.hasCallbacks(motionPublication)) worker.postAtTime(motionPublication, maxOf(motionAt, snapshotAt + publicationInterval))
     }
     private data class WorkspacePresentation(val preview: JSONObject?, val reply: (Any?) -> Unit)
     private var workspacePresentation: WorkspacePresentation? = null // Native owner only.
@@ -936,7 +941,7 @@ class CanvasHost @JvmOverloads constructor(application: Application, screen: JSO
                 val publicationStart = if (measuredFrames != null) System.nanoTime() else 0L
                 // Shader warmup needs polling, not hundreds of empty presents/s.
                 if (again || awaitingSurfaceFrame) wake(if (lastStartupStage < 2) (frameInterval / 1_000_000).coerceAtLeast(1L) else 1L)
-                if (SystemClock.uptimeMillis() - motionAt >= publicationInterval) publish(!again)
+                if (!framePublicationQueued) publish(!again)
                 if (!startupCatalogFinished && lastCanvasReady) {
                     Native.finishStartupCatalog(handle)
                     startupCatalogFinished = true

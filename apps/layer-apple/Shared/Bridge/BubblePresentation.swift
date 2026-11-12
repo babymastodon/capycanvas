@@ -282,7 +282,7 @@ enum BubbleUI {
             if self.needsFrame { store.wake?() }
         }
     }
-    func action(_ action: [String: Any]) { store?.dispatch(["type": "bubble", "action": action]) }
+    func action(_ action: [String: Any]) { store?.dispatch(["type": "bubble", "action": action], moving: action["phase"] as? String == "move") }
     func take(_ grab: JSON, at point: CGPoint, valid: @escaping () -> Bool, completion: @escaping (TakeResult) -> Void) {
         guard let store else { completion(.retired); return }
         let drawing = drawing, token = request

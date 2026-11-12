@@ -130,9 +130,10 @@ private fun formatted(language: String, control: JSONObject, value: Float, units
     val field = model.objectOrNull("numeric")
     val opacity = control.getString("kind") != "brush_size_slider"
     val spec = field?.getJSONObject("numeric") ?: remember(control.toString()) { toolbarUi(host.languageTag, obj("type" to "slider_spec", "control" to control)) }
-    val value = field?.number("value") ?: spec.number("min")
     val label = field?.getString("label") ?: fallbackLabel
     val setting = field?.getString("id") ?: if (opacity) "strength" else "size"
+    var dragValue by remember(context.toString(), setting) { mutableStateOf<Float?>(null) }
+    val value = dragValue ?: field?.number("value") ?: spec.number("min")
     val shown = formatted(host.languageTag, spec, value)
     val marks = model.array("bookmarks").objects()
     val geometry = remember(width, height, vertical, style, sliderStyle.toString()) { JSONObject(Native.toolbarUi(obj("type" to "slider_layout", "width" to width,
@@ -157,11 +158,17 @@ private fun formatted(language: String, control: JSONObject, value: Float, units
         }
         ToolbarSlider(shown.number("fill"), marks, opacity, vertical, field != null, label,
             Modifier.placed(geometry.getJSONObject("track"), density).testTag("component-slider-$id"),
-            contact = { down, moved -> preview = down || !moved }, phone = phone, host = host, control = control, band = bounds, dock = dock, context = context.toString()) { fill, snap, travel ->
+            contact = { down, moved -> preview = down || !moved }, phone = phone, host = host, band = bounds, dock = dock, context = context.toString(), phase = { phase ->
+                val clear: (() -> Unit)? = if (phase == "down") null else { { dragValue = null } }
+                if (phone != null) host.dispatch(obj("type" to "phone", "action" to obj("kind" to "slider", "control" to control, "phase" to phase)), published = clear)
+                else if (clear != null) host.sliderReleased(clear)
+            }) { fill, snap, travel ->
             val next = if (snap) org.json.JSONTokener(Native.toolbarUi(obj("type" to "slider_bookmark_value", "control" to control,
                 "values" to JSONArray(marks.map { it.number("value") }), "position" to fill, "travel" to travel).toString(), host.languageTag)).nextValue() as Number
             else JSONObject(Native.number(obj("control" to spec, "value" to value, "operation" to obj("type" to "position", "position" to fill)).toString(), host.languageTag)).number("value")
-            edit(obj("type" to "set_tool_setting", "id" to setting, "value" to next.toFloat()))
+            dragValue = next.toFloat()
+            if (snap) edit(obj("type" to "set_tool_setting", "id" to setting, "value" to next.toFloat()))
+            else host.sliderEdit(context, setting, next.toFloat())
         }
         if (preview && field != null) stamp?.let { brush ->
             BrushSliderPreview(brush, stampImage ?: return@let, control, style, value, maxOf(width, height), vertical, marks.any { it.getBoolean("selected") },
@@ -613,20 +620,19 @@ internal fun menuButtonWidth(caption: String, textWidth: (String) -> Float, dens
 
 @Composable private fun ToolbarSlider(fill: Float, marks: List<JSONObject>, opacity: Boolean, vertical: Boolean, enabled: Boolean,
     label: String, modifier: Modifier, contact: (Boolean, Boolean) -> Unit, phone: JSONObject?, host: CanvasHost,
-    control: JSONObject, band: JSONObject, dock: DockInteraction, context: String, change: (Float, Boolean, Float) -> Unit) {
+    band: JSONObject, dock: DockInteraction, context: String, phase: (String) -> Unit, change: (Float, Boolean, Float) -> Unit) {
     val onChange by rememberUpdatedState(change)
     val onContact by rememberUpdatedState(contact)
     val colors = LocalPalette.current
     var origin by remember { mutableStateOf(Offset.Zero) }
     val currentPhone by rememberUpdatedState(phone)
     val currentBand by rememberUpdatedState(band)
-    val phase: (String) -> Unit = { if (currentPhone != null) host.phone(obj("kind" to "slider", "control" to control, "phase" to it)) }
     val onPhase by rememberUpdatedState(phase)
     Canvas(modifier.padding(if (vertical) PaddingValues(horizontal = 5.dp, vertical = 2.dp) else PaddingValues(horizontal = 2.dp, vertical = 5.dp))
         .onGloballyPositioned { origin = (it.positionInRoot() - dock.origin) / dock.density }
         .alpha(if (enabled) 1f else .4f).semantics {
             contentDescription = label; progressBarRangeInfo = ProgressBarRangeInfo(fill, 0f..1f)
-            if (enabled) setProgress { onChange(it, false, 0f); onContact(false, false); true } else disabled()
+            if (enabled) setProgress { onPhase("down"); onChange(it, false, 0f); onPhase("up"); onContact(false, false); true } else disabled()
         }.edgeControl().pointerInput(vertical, enabled, context, phone?.toString(), if (phone != null) host.phoneContactEpoch else 0) {
             if (!enabled) return@pointerInput
             val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]!!
@@ -663,7 +669,7 @@ internal fun menuButtonWidth(caption: String, textWidth: (String) -> Float, dens
                         val delta = (c.position - down.position) / density
                         if (org.json.JSONTokener(Native.toolbarUi(obj("type" to "slider_dragging", "moved" to moved,
                                 "delta" to JSONArray(listOf(delta.x, delta.y))).toString(), host.languageTag)).nextValue() != true) continue
-                        moved = true; c.consume(); onPhase("move"); pick(c.position, false)
+                        moved = true; c.consume(); pick(c.position, false)
                     }
                 } finally { onPhase(if (finished) "up" else "cancel"); onContact(false, moved || !finished); input?.jobs?.remove(job) }
 

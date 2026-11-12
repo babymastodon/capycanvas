@@ -366,10 +366,13 @@ import UIKit
         workspaces?.keepOpen()
         completion()
     }
-    func dispatch(_ action: JSON) {
-        guard !launchVisible || action["type"].string != "invoke" else { return }
+    func dispatch(_ action: JSON, moving: Bool = false, completion: (@MainActor (JSON?) -> Void)? = nil) {
+        guard !launchVisible || action["type"].string != "invoke", let native else { completion?(nil); return }
         if action["type"].string == "invoke" && action["command"].string == "search_commands" { reportCommandFocus() }
-        native?.submit(0, action); wake?()
+        let reply: (@Sendable (JSON?) -> Void)? = completion.map { completion in
+            { result in DispatchQueue.main.async { completion(result) } }
+        }
+        native.submit(0, action, moving: moving, completion: reply); wake?()
     }
     func commandFocus() -> String {
         #if os(macOS)
@@ -382,10 +385,12 @@ import UIKit
     private func reportCommandFocus() {
         native?.submit(0, JSON(["type": "command_search", "action": ["type": "focus", "focus": commandFocus()]]))
     }
-    func dispatch(_ value: [String: Any]) { dispatch(JSON(value)) }
-    func edit(_ value: [String: Any], completion: @escaping @MainActor (String?) -> Void) {
+    func dispatch(_ value: [String: Any], moving: Bool = false, completion: (@MainActor (JSON?) -> Void)? = nil) {
+        dispatch(JSON(value), moving: moving, completion: completion)
+    }
+    func edit(_ value: [String: Any], moving: Bool = false, completion: @escaping @MainActor (String?) -> Void) {
         guard let native else { completion("The canvas session is unavailable"); return }
-        native.edit(JSON(value)) { error in DispatchQueue.main.async { completion(error) } }
+        native.edit(JSON(value), moving: moving) { error in DispatchQueue.main.async { completion(error) } }
         wake?()
     }
     func invoke(_ command: String) { dispatch(["type": "invoke", "command": command]) }

@@ -98,6 +98,7 @@ private final class LaunchFrame: @unchecked Sendable {
 
 final class NativeOwner: @unchecked Sendable {
     private let queue: RenderOwnerQueue
+    private let sliderInput = LatestOwnerInput<JSON>()
     private let drawingWorker = DispatchQueue(label: "art.capycanvas.drawing-activation", qos: .userInitiated)
     private let languageWorker = DispatchQueue(label: "art.capycanvas.language", qos: .userInitiated)
     private var languageReady = false
@@ -846,16 +847,18 @@ final class NativeOwner: @unchecked Sendable {
             if !active && motionPublicationPending { try publish() }
         }
     }
-    func submit(_ kind: UInt32, _ value: JSON, completion: (@Sendable (JSON?) -> Void)? = nil) {
+    private func publish(moving: Bool) throws {
+        if moving && framePublicationActive { motionPublicationPending = true }
+        else { try publish() }
+    }
+    func submit(_ kind: UInt32, _ value: JSON, moving: Bool = false, completion: (@Sendable (JSON?) -> Void)? = nil) {
         queue.async { [self] in
             defer { if launchFrame != nil { try? publish() } }
             if kind == 1 && launchVisible && value["type"].string != "blur" { completion?(nil); return }
             do {
                 let result = try request(kind, value)
-                if framePublicationActive && kind == 0 && value["type"].string == "bubble" && value["action"]["phase"].string == "move" {
-                    motionPublicationPending = true
-                } else if kind != 2 || !motionPublicationPending {
-                    do { try publish() } catch { receive(nil, error.localizedDescription) }
+                if kind != 2 || !motionPublicationPending {
+                    do { try publish(moving: moving) } catch { receive(nil, error.localizedDescription) }
                 }
                 completion?(result)
             } catch {
@@ -869,15 +872,17 @@ final class NativeOwner: @unchecked Sendable {
     }
     /// Editable controls own validation feedback. Publish the resulting state
     /// before acknowledging the edit, including when semantic validation fails.
-    func edit(_ action: JSON, completion: @escaping @Sendable (String?) -> Void) {
-        queue.async { [self] in
+    func edit(_ action: JSON, moving: Bool = false, completion: @escaping @Sendable (String?) -> Void) {
+        let apply: @Sendable (JSON) -> Void = { [self] action in
             var failure: String?
             do { _ = try request(3, action) }
             catch { failure = error.localizedDescription }
-            do { try publish() }
-            catch { receive(nil, error.localizedDescription) }
+            do { try publish(moving: moving) } catch { receive(nil, error.localizedDescription) }
             completion(failure)
         }
+        if moving {
+            sliderInput.submit(action["context"].stableKey + ":" + action["action"]["id"].string, action, owner: queue, apply: apply)
+        } else { queue.async { apply(action) } }
     }
     /// Resolve and apply the shared placement action on the same serial owner.
     func headerAction(_ value: JSON, completion: @escaping @Sendable () -> Void) {
