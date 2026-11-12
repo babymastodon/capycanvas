@@ -65,15 +65,19 @@ private fun formatted(language: String, control: JSONObject, value: Float, units
         result = null
         if (!active) return@LaunchedEffect
         while (isActive) {
-            val next = host.awaitQuery(query.copy().put("known_request", result?.first?.optLong("request_id")))
-            if (next?.optJSONArray("alpha")?.length()?.let { it > 0 } == true) {
-                val image = withContext(Dispatchers.Default) {
-                    val alpha = next.getJSONArray("alpha"); val size = next.getInt("size")
-                    android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ALPHA_8).apply {
-                        copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(ByteArray(alpha.length()) { alpha.getInt(it).toByte() }))
+            val reply = suspendCancellableCoroutine<Array<Any>?> { continuation ->
+                host.toolbarStamp(query.objectOrNull("context"), result?.first?.optLong("request_id") ?: 0) {
+                    if (continuation.isActive) continuation.resume(it)
+                }
+            }
+            if (reply != null && (reply[1] as ByteArray).isNotEmpty()) {
+                result = withContext(Dispatchers.Default) {
+                    val next = JSONObject(reply[0] as String)
+                    val alpha = reply[1] as ByteArray; val size = next.getInt("size")
+                    next to android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ALPHA_8).apply {
+                        copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(alpha))
                     }.asImageBitmap()
                 }
-                result = next to image
             }
             delay(16)
         }

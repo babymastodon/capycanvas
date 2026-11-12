@@ -165,10 +165,14 @@ measured on low and mid tiers:
   10/12 → 10/12. All 48 cases have complete unique SF joins. Dedicated warm
   Tool/Color runs still miss cadence (8/8 → 6/8 each), including 55 Hz openings.
   The first Tool close and first Color open after launch miss on every build
-  measured: RenderThread compiles HWUI shaders on first use. Size's HWUI window
-  p90 improves from 15.07–35.93 to 13.37–14.71 ms (`f6c90479` → `207c7fdb`);
-  its presented cadence remains unmeasured. These inherited settings and short
-  transitions remain diagnostic qualification.
+  measured: RenderThread compiles HWUI shaders on first use. Size and Strength
+  slider drags (APKs `67419936` → `9666d20d`, 120 Hz input, three warm
+  contacts each) miss 155/157 → 0/0 of about 833 frames that carry a new Size
+  value (Activity/popup). The present-gap p99 is 33.4 → 33.3 ms, and the value
+  settles 67–102 → 45–62 ms after the last input. Strength misses 0 → 0 and
+  settles 8–23 → 0 ms. Expected frames come from replaying the injected input
+  offline. These inherited settings and short transitions remain diagnostic
+  qualification.
 
 The tier tables identify the exact frozen builds and measurement conditions.
 Exact GPU bounds queries on the top-tier 61 MP canvas take 95–135 ms for a

@@ -286,6 +286,10 @@ impl NativeHost {
     pub fn take_filter_preview_image(&mut self) -> Option<layer_render::FilterPreviewImage> {
         self.filter_preview_image.take()
     }
+    pub fn toolbar_stamp(&mut self, context: Option<layer_ui::ToolbarContext>, known_request: Option<u64>) -> Result<Option<layer_ui::BrushStamp>, String> {
+        let context = context.unwrap_or_else(|| self.session.state().toolbar_context());
+        self.session.toolbar_stamp(context, known_request)
+    }
     pub fn launch(platform: layer_ui::Platform, saved: &str, preferred_tags: &[&str]) -> Result<Self, String> {
         Self::launch_localized(platform, saved, layer_ui::launch_localization(saved, preferred_tags))
     }
@@ -988,9 +992,9 @@ impl NativeHost {
             Query::BubbleHit { id, x, y } => json!(self.session.bubbles().iter().find(|view| view.id == id).and_then(|view| view.hit([x, y]))),
             Query::BubbleGrab { grab, held } => json!(self.session.bubble_grab(grab, held)),
             Query::CanTakeBubble { grab, position, viewport } => json!(self.session.can_take_bubble(grab, position, viewport)),
-            Query::BubbleStamp { known_request } => json!(self.session.toolbar_stamp(self.session.state().toolbar_context(), known_request)?),
+            Query::BubbleStamp { known_request } => json!(self.toolbar_stamp(None, known_request)?),
             Query::BubbleWheelColor => json!(self.session.state().colors.definition()),
-            Query::ToolbarStamp { context, known_request } => json!(self.session.toolbar_stamp(context, known_request)?),
+            Query::ToolbarStamp { context, known_request } => json!(self.toolbar_stamp(Some(context), known_request)?),
             Query::ApplicationMenu { menu } => json!(self.session.application_menu(menu)),
             Query::ApplicationMenuHover { open, hovered } => json!(layer_ui::ApplicationMenu::switches_on_hover(open, hovered)),
             Query::ApplicationLink { link } => json!(link.url()),

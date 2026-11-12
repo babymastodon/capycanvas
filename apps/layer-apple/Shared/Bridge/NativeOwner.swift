@@ -412,6 +412,16 @@ final class NativeOwner: @unchecked Sendable {
             } catch { completion(FilterPreviewReply(status: JSON(), atlas: nil, error: error.localizedDescription)) }
         }
     }
+    func toolbarStamp(_ context: JSON, knownRequest: UInt64?, completion: @escaping @Sendable (NativeBrushStamp?) -> Void) {
+        queue.async { [self] in
+            do {
+                let source = context.isNull ? "" : try context.encoded()
+                let stamp = source.withCString { capy_apple_toolbar_stamp(nativeValue(handle), $0, knownRequest ?? 0) }
+                if let error = takeNativeText(capy_apple_error(nativeValue(handle))) { throw HostFailure(message: error) }
+                completion(stamp == 0 ? nil : NativeBrushStamp(stamp))
+            } catch { receive(nil, error.localizedDescription); completion(nil) }
+        }
+    }
     func glassRegions(_ value: JSON) {
         perform { [self] in
             let source = try value.encoded()
@@ -870,8 +880,6 @@ final class NativeOwner: @unchecked Sendable {
     func input(_ value: JSON, completion: (@Sendable (JSON?) -> Void)? = nil) {
         submit(1, value, completion: completion)
     }
-    /// Editable controls own validation feedback. Publish the resulting state
-    /// before acknowledging the edit, including when semantic validation fails.
     func edit(_ action: JSON, moving: Bool = false, completion: @escaping @Sendable (String?) -> Void) {
         let apply: @Sendable (JSON) -> Void = { [self] action in
             var failure: String?

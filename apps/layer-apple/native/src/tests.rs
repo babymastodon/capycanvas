@@ -208,7 +208,7 @@ mod fixtures {
         })
     }
 
-    pub(super) fn until(app: &App, what: &str, done: impl Fn() -> bool) {
+    pub(super) fn until(app: &App, what: &str, mut done: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !done() {
             assert!(std::time::Instant::now() < deadline, "{what}");

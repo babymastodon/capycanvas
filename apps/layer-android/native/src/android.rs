@@ -1498,6 +1498,36 @@ pub extern "system" fn Java_art_capycanvas_Native_glassRegions(
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_art_capycanvas_Native_toolbarStamp(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    context: JString,
+    known_request: jlong,
+) -> jni::sys::jobjectArray {
+    crate::jni_entry!(env, handle, capy_app, {
+        let result = (|| {
+            let context = read(&mut env, &context)?;
+            let context = if context.is_empty() { None } else { Some(serde_json::from_str(&context).map_err(error)?) };
+            capy_app.observe_gpu_failure(true);
+            let Some(mut stamp) = capy_app.host.toolbar_stamp(context, (known_request > 0).then_some(known_request as u64))? else {
+                return Ok(std::ptr::null_mut());
+            };
+            let alpha = std::mem::take(&mut stamp.alpha);
+            let mut metadata = serde_json::to_value(stamp).map_err(error)?;
+            metadata.as_object_mut().unwrap().remove("alpha");
+            let values = env.new_object_array(2, "java/lang/Object", JObject::null()).map_err(error)?;
+            let metadata = env.new_string(metadata.to_string()).map_err(error)?;
+            let alpha = env.byte_array_from_slice(&alpha).map_err(error)?;
+            env.set_object_array_element(&values, 0, metadata).map_err(error)?;
+            env.set_object_array_element(&values, 1, alpha).map_err(error)?;
+            Ok(values.into_raw())
+        })();
+        or_throw(&mut env, result, std::ptr::null_mut())
+    })
+}
+
 /// One small metadata record and one packed RGBA array, not JSON per channel.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_art_capycanvas_Native_takeFilterPreviews(

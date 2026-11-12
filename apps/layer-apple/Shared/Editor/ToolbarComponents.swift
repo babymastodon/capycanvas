@@ -161,18 +161,16 @@ private struct BrushSliderComponent: View {
         let request = UUID(); session.request = request
         session.task = Task { @MainActor in
             while !Task.isCancelled && session.open && session.request == request {
-                var query: [String: Any] = ["type": "toolbar_stamp", "context": context.raw]
-                if let known = session.knownRequest { query["known_request"] = known }
-                let reply: JSON = await withCheckedContinuation { continuation in
-                    store.query(query) { continuation.resume(returning: $0) }
+                let reply: NativeBrushStamp? = await withCheckedContinuation { continuation in
+                    store.toolbarStamp(context, knownRequest: session.knownRequest) { continuation.resume(returning: $0) }
                 }
                 guard !Task.isCancelled && session.request == request else { return }
-                if !reply["alpha"][0].isNull {
-                    let image = await Task.detached(priority: .utility) { SliderStampImage(image: SliderPreviewSession.image(reply)) }.value.image
+                if let reply, reply.count > 0 {
+                    let image = await Task.detached(priority: .utility) { SliderStampImage(image: reply.image()) }.value.image
                     guard !Task.isCancelled && session.request == request else { return }
                     if let image {
-                        session.stamp = (image, reply["extent"].number)
-                        session.knownRequest = reply["request_id"].uint
+                        session.stamp = (image, reply.metadata["extent"].number)
+                        session.knownRequest = reply.metadata["request_id"].uint
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(16))
@@ -257,15 +255,6 @@ struct SliderStampImage: @unchecked Sendable { let image: CGImage? }
     func close(_ preview: ToolbarSliderPreview) {
         request = nil; task?.cancel(); task = nil
         if open { open = false; preview.close(id) }
-    }
-    nonisolated static func image(_ reply: JSON) -> CGImage? {
-        let side = Int(reply["size"].uint), alpha = reply["alpha"].array
-        guard side > 0, alpha.count == side * side else { return nil }
-        let bytes = alpha.flatMap { value -> [UInt8] in [0, 0, 0, UInt8(clamping: Int(value.uint))] }
-        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
-        return CGImage(width: side, height: side, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: side * 4,
-            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 }
 

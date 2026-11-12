@@ -716,6 +716,11 @@ class CanvasHost @JvmOverloads constructor(application: Application, screen: JSO
             main.post { reply(null) }
         }
     }
+    internal fun toolbarStamp(context: JSONObject?, knownRequest: Long, reply: (Array<Any>?) -> Unit) = post {
+        val response = Native.toolbarStamp(handle, context?.toString().orEmpty(), knownRequest)
+        if (Native.renderingPending(handle)) wake()
+        main.post { reply(response) }
+    }
     fun input(input: JSONObject, reply: ((JSONObject) -> Unit)? = null) = post {
         if(documentInputBlocked && input.optString("type") in listOf("key_down", "scroll")) return@post
         val value = JSONObject(Native.input(handle, input.toString()))

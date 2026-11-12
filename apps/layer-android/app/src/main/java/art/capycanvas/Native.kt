@@ -60,6 +60,7 @@ internal object Native {
     @JvmStatic external fun navigatorPlacements(handle: Long, placements: String)
     @JvmStatic external fun glassRegions(handle: Long, glass: String, triangles: FloatArray)
     @JvmStatic external fun takeFilterPreviews(handle: Long): Array<Any>?
+    @JvmStatic external fun toolbarStamp(handle: Long, context: String, knownRequest: Long): Array<Any>?
     @JvmStatic external fun takeScopes(handle: Long): Array<Any>?
     @JvmStatic external fun documentTabs(handle: Long, request: String): String
     @JvmStatic external fun documentSwitch(handle: Long, id: Long, close: Boolean): Long

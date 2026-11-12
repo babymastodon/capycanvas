@@ -2,6 +2,49 @@
 use super::*;
 use layer_render::FilterPreviewImage;
 
+#[derive(Default)]
+#[repr(C)]
+pub struct CapyBrushStampInfo {
+    pub request: u64,
+    pub pending: bool,
+    pub size: u32,
+    pub extent: f32,
+    pub count: usize,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_apple_toolbar_stamp(app: u64, context: *const c_char, known_request: u64) -> u64 {
+    let Some(mut app) = handles::app(app) else { return 0; };
+    app.perform(|app| {
+        let context = if context.is_null() { None } else {
+            let source = unsafe { CStr::from_ptr(context) }.to_str().map_err(|e| e.to_string())?;
+            if source.is_empty() { None } else { Some(serde_json::from_str(source).map_err(|e| e.to_string())?) }
+        };
+        Ok(app.host.toolbar_stamp(context, (known_request != 0).then_some(known_request))?
+            .map(handles::store).unwrap_or(0))
+    }).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_brush_stamp_read(stamp: u64, output: *mut CapyBrushStampInfo) -> bool {
+    if output.is_null() { return false; }
+    unsafe { output.write(CapyBrushStampInfo::default()); }
+    let Some(stamp) = handles::shared::<layer_ui::BrushStamp>(stamp) else { return false; };
+    unsafe { output.write(CapyBrushStampInfo {
+        request: stamp.request_id, pending: stamp.pending, size: stamp.size, extent: stamp.extent, count: stamp.alpha.len(),
+    }); }
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_brush_stamp_copy(stamp: u64, offset: usize, output: *mut u8, length: usize) -> bool {
+    handles::shared::<layer_ui::BrushStamp>(stamp).is_some_and(|stamp|
+        unsafe { layer_host::ffi::copy_bytes(&stamp.alpha, offset, output, length) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_brush_stamp_free(stamp: u64) { handles::free::<layer_ui::BrushStamp>(stamp); }
+
 /// # Safety
 /// Stateless geometry on any thread. Input is a readable NUL-terminated JSON
 /// object containing a published ResolvedLayout, point, pointer kind and contact.

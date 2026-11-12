@@ -440,6 +440,10 @@ import UIKit
         guard let native else { completion(JSON()); return }
         native.submit(2, JSON(value)) { result in DispatchQueue.main.async { completion(result ?? JSON()) } }
     }
+    func toolbarStamp(_ context: JSON = JSON(), knownRequest: UInt64?, completion: @escaping @MainActor (NativeBrushStamp?) -> Void) {
+        guard let native else { completion(nil); return }
+        native.toolbarStamp(context, knownRequest: knownRequest) { result in DispatchQueue.main.async { completion(result) } }
+    }
     func headerAction(_ value: [String: Any], completion: @escaping @MainActor () -> Void) {
         guard let native else { completion(); return }
         native.headerAction(JSON(value)) { DispatchQueue.main.async { completion() } }
