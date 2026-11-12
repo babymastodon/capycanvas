@@ -262,6 +262,7 @@ After changing the tablet proxy, run its tests with
 | `native_localized_photo_histogram_bounds`, `native_hue_ranges_colorize_retains_values`, `native_pointwise_filters_controls_and_persistence` | Viewports 1100 and 640 pixels wide, such as `LAYER_MOTION_VIEWPORT=1100x800` and `640x1000` |
 | `native_colorize_threshold_visible_artwork`, `native_animated_filter_moves` | A viewport 1100 pixels wide |
 | `native_panel_tab_lower_contours` | `LAYER_NATIVE_TEST_TIMEOUT_MS=300000`, at `LAYER_MOTION_SCALE` 1 and 2 |
+| `native_fractional_chrome_seams` | `LAYER_MOTION_VIEWPORT=2400x1500` at `LAYER_MOTION_SCALE` 1.5 and 1.25, `3200x2000` at 2 |
 | `native_window_resize_presentations` | `LAYER_NATIVE_EVENT_MS=4`, `LAYER_NATIVE_INPUT_TRACE=1` and `LAYER_TEST_ARTIFACTS`; add `LAYER_NATIVE_RESIZE_RESOURCE_ONLY=1` for allocation and paint-only reports |
 | `native_window_resize_inventory` | `GTK_DEBUG=snapshot`, apart from timing runs |
 | `native_workspace_tab_motion_input` | `LAYER_NATIVE_EVENT_MS=4 LAYER_MOTION_MIN_HZ=114` |

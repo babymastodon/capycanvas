@@ -127,7 +127,11 @@ corner pieces. Content clips near a window corner use radii that merge with the
 window outline, with cache entries scoped to that corner geometry. The shell
 keeps its exact squircle contour; content clipping can
 change edge antialiasing. Corner paths retain their identity as panel height
-changes; internal boundaries meet on the device-pixel grid. Small image clips
+changes; internal boundaries meet on the device-pixel grid, measured from the
+window surface's own offset. Inside each dock child, edges where chrome
+surface fills meet, such as a tab strip and its panel body, are rounded to
+that grid too, while the child's outline keeps its shadow-matched position.
+Tab strips redraw when a move changes their pixel phase. Small image clips
 and SVG details retain cached masks. Native color nodes
 keep their original color states. Conversion descends
 through bridge masks, color matrices, crossfades, blends and blur nodes. Both
@@ -197,6 +201,8 @@ appear in native drag snapshots.
 
 ## Checks
 
+- Fractional scales: GTK `native_fractional_chrome_seams` finds one-pixel alpha
+  dips between chrome surfaces in a floating window.
 - Panel tabs: GTK `native_panel_tab_lower_contours` at 1x/2x, Web `--tab-styles`,
   and Android `panelHoverCornersFollowEveryActiveTab` in both themes cover
   inactive neighbours, active neighbours and strip ends. GTK and Web also

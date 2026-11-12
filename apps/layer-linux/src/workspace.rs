@@ -385,7 +385,10 @@ mod allocation {
                 if child.has_css_class("expanded-panel") && !child.has_css_class("gpu-panel-surface") {
                     native.pop();
                 }
-                let node = native.to_node();
+                let node = native.to_node().map(|node| match child.compute_bounds(&*self.obj()) {
+                    Some(bounds) => crate::squircle::outline(node, &bounds),
+                    None => node,
+                });
                 if let Some(owner) = &owner {
                     holes.extend(
                         owner
@@ -3238,6 +3241,9 @@ impl Workspace {
             write!(css, "--capy-preference-trough: {};", palette.controls.preference_trough).unwrap();
         }
         let glass = palette.glass;
+        if let Some(squircles) = self.window.content().and_downcast::<crate::squircle::Squircles>() {
+            squircles.set_surfaces(&glass.surfaces());
+        }
         for (name, color) in [
             ("panel", glass.panel),
             ("strip", glass.strip),
