@@ -11,6 +11,7 @@
 #include "../ThumbnailOwners.h"
 #include "../PointerScrub.h"
 #include "../PressRepeat.h"
+#include "../BubbleMotion.h"
 #include <limits>
 #include "../CanvasQueryQueue.h"
 #include "../CanvasLatencyTrace.h"
@@ -463,6 +464,20 @@ int main() {
         press.Reset();assert(!press.Next(limits,3600000,0,0));
     }
     std::cout<<"Double presses need the second press within the double-click time and rectangle of the first\n";
+
+    {
+        CapyBubbles::Tween card{1};card.to(0,150);
+        CapyBubbles::MotionTicks ticks;ticks.polling=true;
+        double asked=0;std::vector<double> fading;
+        for(int frame=0;frame<=30;++frame){
+            auto now=frame*1000./60;if(ticks.busy&&now-asked>=200)ticks.replied(true);
+            ticks.tick(now,[&](double at){bool moving=card.step(at,false);if(card.value>0&&card.value<1)fading.push_back(at);return moving;},[&]{asked=now;return true;});
+        }
+        assert(fading.size()>=8&&fading.back()<150&&card.value==0&&"A retiring card must fade on every frame while motion replies are 200 ms apart");
+        ticks.replied(false);
+        assert(!ticks.tick(1000,[&](double at){return card.step(at,false);},[]{return true;})&&"Idle bubbles must stop their frames");
+    }
+    std::cout<<"Retiring bubble parts fade on every frame however late motion replies arrive, and idle bubbles stop their frames\n";
 
     for(uint32_t phase=0;phase<=4;++phase) {
         assert(CanvasPointerPhase(phase,false)==phase);

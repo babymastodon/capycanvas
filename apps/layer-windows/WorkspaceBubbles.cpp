@@ -144,43 +144,56 @@ void WorkspaceBubbles::Impl::apply(){
     }
     if(menuId&&(!records.contains(menuId)||records.at(menuId)->source!=menuSource))dismiss();
     reattach();thumbnails();
-    if(records.empty()){active=false;frames.revoke();if(replaced&&changed)changed();}
+    if(records.empty()){ticks.polling=false;frames.revoke();if(replaced&&changed)changed();}
     else wake();
 }
 void WorkspaceBubbles::Impl::wake(){
     if(records.empty())return;
-    ++wakes;active=true;if(frames)return;
+    ++wakes;ticks.polling=true;if(frames)return;
     frames=CompositionTarget::Rendering(auto_revoke,[weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->frame();});
 }
 void WorkspaceBubbles::Impl::frame(){
-    if(disposed||!workspace.IsLoaded()){frames.revoke();return;}if(busy)return;
-    if(!active){frames.revoke();return;}
-    auto now=milliseconds();auto reduced=!SystemUiSettings().AnimationsEnabled();auto ticket=owners,wake=wakes;busy=true;
-    auto request=JsonUnsignedFields(to_string(O({{L"type",S(L"bubble_motion")},{L"reduced",B(reduced)}}).Stringify()),
-        {{"now_ns",uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count())}});
-    if(!QueryWorkspace(data->query,std::move(request),[weak=weak_from_this(),ticket,wake,now,reduced](J reply){if(auto self=weak.lock()){
-        self->busy=false;if(self->disposed)return;auto motion=object(reply,L"result");if(ticket==self->owners&&motion.Size())self->step(motion,now,reduced,wake);
-    }}))busy=false;
+    if(disposed||!workspace.IsLoaded()){frames.revoke();return;}
+    auto reduced=!SystemUiSettings().AnimationsEnabled();
+    if(!ticks.tick(milliseconds(),[&](double now){return advance(now,reduced);},[&]{return request(reduced);}))frames.revoke();
 }
-void WorkspaceBubbles::Impl::step(J const& motion,double now,bool reduced,uint64_t requestedWake){
-    active=requestedWake!=wakes||flag(motion,L"moving")||contact||candidate&&candidate->moving;
-    auto fade=array(motion,L"fade");bool down=fade.Size()&&fade.GetBooleanAt(0);active=active||down;
-    std::set<uint32_t> faded;if(fade.Size()>1)for(auto id:fade.GetArrayAt(1))faded.insert(uint32_t(id.GetNumber()));
-    if(down){restoreAt=-1;for(auto const& [id,r]:records){r->faded=faded.contains(id);r->fade.to(r->faded?.2:1,140);}}
-    else if(stroke)restoreAt=now+180;stroke=down;
-    if(restoreAt>=0){if(now>=restoreAt){restoreAt=-1;for(auto const& [id,r]:records){r->faded=false;r->fade.to(1,140);}}else active=true;}
-    for(auto value:array(motion,L"placements")){auto p=value.GetObject();auto found=records.find(uint32_t(num(p,L"id")));if(found==records.end())continue;auto& r=*found->second;
-        r.center=point(array(p,L"center"));r.lifted=flag(p,L"lifted");r.homing=flag(p,L"homing");r.root.Visibility(Visibility::Visible);}
-    if(contact&&!contact->paired)contact->record->hovered=hit(*contact->record,contact->last);
+bool WorkspaceBubbles::Impl::request(bool reduced){
+    auto now=milliseconds();auto ticket=owners,wake=wakes;
+    auto message=JsonUnsignedFields(to_string(O({{L"type",S(L"bubble_motion")},{L"reduced",B(reduced)}}).Stringify()),
+        {{"now_ns",uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count())}});
+    return QueryWorkspace(data->query,std::move(message),[weak=weak_from_this(),ticket,wake,now](J reply){if(auto self=weak.lock()){
+        if(self->disposed)return;auto motion=object(reply,L"result");if(ticket==self->owners&&motion.Size())self->step(motion,now,wake);else self->ticks.busy=false;
+    }});
+}
+bool WorkspaceBubbles::Impl::advance(double now,bool reduced){
+    if(restoreAt>=0&&now>=restoreAt){restoreAt=-1;for(auto const& [id,r]:records){r->faded=false;r->fade.to(1,140);}}
+    bool animating=false;
+    for(auto const& [id,r]:records){animating=r->fade.step(now,reduced)||animating;
+        for(auto const& [key,p]:r->parts)animating=p->step(now,reduced)||p->inspector&&p->inspector->animating||animating;}
+    if(animating)present();
+    return animating||restoreAt>=0;
+}
+void WorkspaceBubbles::Impl::present(){
     bool overlayChanged=false;
-    for(auto const& [id,r]:records){active=r->fade.step(now,reduced)||active;
-        for(auto it=r->parts.begin();it!=r->parts.end();){auto& p=*it->second;active=p.step(now,reduced)||active;
-            if(p.appearance.value==0&&p.appearance.target==0){remove(r->root,p.root);it=r->parts.erase(it);continue;}
-            overlayChanged=draw(r,it->second)||overlayChanged;++it;}
+    for(auto const& [id,r]:records){
+        for(auto it=r->parts.begin();it!=r->parts.end();){auto const& p=it->second;
+            if(p->appearance.value==0&&p->appearance.target==0){remove(r->root,p->root);it=r->parts.erase(it);continue;}
+            overlayChanged=draw(r,p)||overlayChanged;++it;}
         r->place();r->root.IsHitTestVisible(!r->faded);Canvas::SetZIndex(r->root,(r->lifted?800:700)+r->order);
         stamp(r);
     }
-    contactSurface();if(changed)changed();if(overlayChanged&&overlayApplied)overlayApplied();
+    if(changed)changed();if(overlayChanged&&overlayApplied)overlayApplied();
+}
+void WorkspaceBubbles::Impl::step(J const& motion,double now,uint64_t requestedWake){
+    bool moving=requestedWake!=wakes||flag(motion,L"moving")||contact||candidate&&candidate->moving;
+    auto fade=array(motion,L"fade");bool down=fade.Size()&&fade.GetBooleanAt(0);
+    std::set<uint32_t> faded;if(fade.Size()>1)for(auto id:fade.GetArrayAt(1))faded.insert(uint32_t(id.GetNumber()));
+    if(down){restoreAt=-1;for(auto const& [id,r]:records){r->faded=faded.contains(id);r->fade.to(r->faded?.2:1,140);}}
+    else if(stroke)restoreAt=now+180;stroke=down;
+    for(auto value:array(motion,L"placements")){auto p=value.GetObject();auto found=records.find(uint32_t(num(p,L"id")));if(found==records.end())continue;auto& r=*found->second;
+        r.center=point(array(p,L"center"));r.lifted=flag(p,L"lifted");r.homing=flag(p,L"homing");r.root.Visibility(Visibility::Visible);}
+    if(contact&&!contact->paired)contact->record->hovered=hit(*contact->record,contact->last);
+    ticks.replied(moving||down);contactSurface();present();
 }
 void WorkspaceBubbles::Impl::update(std::shared_ptr<Record> const& r,J const& packet){
     if(r->packet.Size()&&r->packet.Stringify()==packet.Stringify())return;
@@ -271,7 +284,7 @@ bool WorkspaceBubbles::Impl::draw(std::shared_ptr<Record> const& r,std::shared_p
     if(p->contentDirty&&!p->retired){p->contentDirty=false;content(r,p);}
     if(p->inspector&&!p->retired){auto& inspector=*p->inspector;bool open=flag(p->data,L"properties");
         p->cardHost.Width(p->size.Width);p->cardHost.Height(p->size.Height);
-        if(inspector.animating){auto t=SystemUiSettings().AnimationsEnabled()?std::clamp(std::chrono::duration<double>(Clock::now()-inspector.started).count()/.2,0.,1.):1.;inspector.position=inspector.startPosition+(inspector.targetPosition-inspector.startPosition)*(1-std::pow(1-t,3));inspector.animating=t<1;active=active||inspector.animating;}
+        if(inspector.animating){auto t=SystemUiSettings().AnimationsEnabled()?std::clamp(std::chrono::duration<double>(Clock::now()-inspector.started).count()/.2,0.,1.):1.;inspector.position=inspector.startPosition+(inspector.targetPosition-inspector.startPosition)*(1-std::pow(1-t,3));inspector.animating=t<1;}
         inspector.place(p->layers->Root(),p->size.Width,p->size.Height,data->panelMetric(L"disclosure_height"),open);
         if(!inspector.animating&&!open&&inspector.anchor.Size()&&p->layers->layers->restoreAnchor(inspector.anchor))inspector.anchor=J{};
     }

@@ -1,5 +1,6 @@
 #pragma once
 #include "WorkspaceBubbles.h"
+#include "BubbleMotion.h"
 #include "WorkspaceGeometry.h"
 #include "WorkspaceQuery.h"
 #include "IntensityImage.h"
@@ -30,15 +31,6 @@ inline V ui(std::shared_ptr<WorkspaceData> const& data,J const& request){
 }
 inline hstring kind(V const& value){return value&&value.ValueType()==JsonValueType::String?value.GetString():L"";}
 enum class OverlayPhase:uint8_t { Idle=0, Hover=18, Pressed=36 };
-struct Tween {
-    double value=0,target=0,from=0,start=-1,duration=0,delay=0;
-    bool smooth=false;
-    explicit Tween(double initial=0,bool smooth=false):value(initial),target(initial),from(initial),smooth(smooth){}
-    void snap(double next){value=target=from=next;start=-1;}
-    void to(double next,double ms,double wait=0){if(target==next)return;from=value;target=next;duration=ms;delay=wait;start=-1;}
-    bool step(double now,bool reduced){if(value==target)return false;if(start<0)start=now;
-        auto t=reduced||duration==0?1.:std::clamp((now-start-delay)/duration,0.,1.);value=from+(target-from)*(smooth?t*t*(3-2*t):1-std::pow(1-t,3));return t<1.;}
-};
 struct RingArt {
     Canvas root;
     Shapes::Path body,track,value;
@@ -168,7 +160,8 @@ struct WorkspaceBubbles::Impl:std::enable_shared_from_this<WorkspaceBubbles::Imp
     winrt::hstring menuSource;
     bool keepMenu=false;
     uint64_t epoch=0,owners=0,wakes=0,menuGeneration=0;
-    bool busy=false,active=false,stroke=false,releasing=false,disposed=false,hovering=false;
+    CapyBubbles::MotionTicks ticks;
+    bool stroke=false,releasing=false,disposed=false,hovering=false;
     bool pointerPen=false,pointerHidden=false;
     double restoreAt=-1;
     CapyUi::PressRepeat lastRing;
@@ -180,7 +173,10 @@ struct WorkspaceBubbles::Impl:std::enable_shared_from_this<WorkspaceBubbles::Imp
     void reattach();
     void wake();
     void frame();
-    void step(CapyUi::J const&,double,bool,uint64_t);
+    bool request(bool);
+    bool advance(double,bool);
+    void present();
+    void step(CapyUi::J const&,double,uint64_t);
     void update(std::shared_ptr<CapyBubbles::Record> const&,CapyUi::J const&);
     void refresh(std::shared_ptr<CapyBubbles::Record> const&);
     bool draw(std::shared_ptr<CapyBubbles::Record> const&,std::shared_ptr<CapyBubbles::Part> const&);
