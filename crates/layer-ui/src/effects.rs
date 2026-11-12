@@ -820,7 +820,7 @@ pub(super) fn publish_properties(view:&mut LayerPropertiesView,doc:&Document,sta
     let domain=effect.filter(|effect|effect.choice("domain")==Some("log_hdr")).and_then(|effect|match effect.value("hdr_stops"){Some(EffectValue::Number(stops))=>Some(CurveDomain::LogHdr{stops:*stops}),_=>None}).unwrap_or(CurveDomain::Encoded);
     for control in &mut view.controls {
         if matches!(control.value,EffectValue::Gradient(_)) {
-            control.gradient=Some(GradientControls::new(GradientDestination::Effect {layer:view.layer.unwrap(),key:control.key.clone(),epoch:view.epoch},match &control.value {EffectValue::Gradient(value)=>value,_=>unreachable!()},l));
+            control.gradient=Some(GradientControls::new(GradientDestination::Effect {layer:view.layer.unwrap(),key:control.key.clone(),epoch:view.epoch},match &control.value {EffectValue::Gradient(value)=>value,_=>unreachable!()},state.stop(&control.key),l));
         }
         let EffectValue::Curve(points)=&control.value else{continue;};
         let selected=if gesture.is_some_and(|gesture|gesture.key==control.key && gesture.detached_curve_point){None}else{state.selected(&control.key,points)};

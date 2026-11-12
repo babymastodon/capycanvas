@@ -68,14 +68,15 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
     std::shared_ptr<ControlCapture> capture;
     struct Contact{J owner;int index;double x,width,position;};
     std::optional<Contact> contact;std::optional<std::pair<J,int>> held;
-    int selected=0;bool syncing=false;hstring owner,drawn,choices;
+    bool syncing=false;hstring owner,drawn,choices;
     J control()const{return source.control();}
     J value()const{return object(object(control(),L"value"),L"value");}
     A stops()const{return array(value(),L"stops");}
-    J stop()const{auto all=stops();return all.Size()?all.GetObjectAt(uint32_t(std::clamp(selected,0,int(all.Size())-1))):J{};}
+    J stop()const{auto all=stops();return all.Size()?all.GetObjectAt(uint32_t(std::clamp(selected(),0,int(all.Size())-1))):J{};}
     J gradient()const{return object(control(),L"gradient");}
+    int selected()const{return int(num(gradient(),L"selected"));}
     J target()const{return object(gradient(),L"destination");}
-    hstring context()const{return owner+L"/"+to_hstring(selected)+L"/"+to_hstring(stops().Size());}
+    hstring context()const{return owner+L"/"+to_hstring(selected())+L"/"+to_hstring(stops().Size());}
     void send(J const& edit,hstring const& phase={},J const& destination={})const{
         source.send(O({{L"op",S(L"gradient")},{L"target",destination.Size()?destination:target()},{L"edit",edit}}),phase);
     }
@@ -89,8 +90,8 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
         if(held){auto destination=held->first;held.reset();send(O({{L"kind",S(L"reset")}}),L"cancel",destination);}
     }
     void removeSelected(){
-        int index=selected,count=int(stops().Size());if(index<=0||index+1>=count)return;
-        selected=std::max(0,index-1);send(stopEdit(N(index),0,JsonValue::CreateNullValue(),true));
+        int index=selected(),count=int(stops().Size());if(index<=0||index+1>=count)return;
+        send(stopEdit(N(index),0,JsonValue::CreateNullValue(),true));
     }
     Button iconButton(wchar_t const* glyph,hstring const& suffix,std::function<void()> action){
         auto pick=raisedButton(data,L"",std::move(action));pick.Width(data->panelMetric(L"control_height"));pick.Height(data->panelMetric(L"control_height"));pick.Content(icon(glyph,data->theme(),data->panelMetric(L"icon_size")));
@@ -107,7 +108,7 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
             auto modes=array(self->gradient(),L"interpolations");auto index=self->interpolation.SelectedIndex();
             if(index>=0&&uint32_t(index)<modes.Size())self->send(O({{L"kind",S(L"interpolation")},{L"value",S(modes.GetArrayAt(uint32_t(index)).GetStringAt(0))}}));
         }});
-        reverse=iconButton(L"flip-horizontal",L"reverse",[weak]{if(auto self=weak.lock()){self->selected=int(self->stops().Size())-1-self->selected;self->send(O({{L"kind",S(L"reverse")}}));}});
+        reverse=iconButton(L"flip-horizontal",L"reverse",[weak]{if(auto self=weak.lock())self->send(O({{L"kind",S(L"reverse")}}));});
         reset=iconButton(L"reset",L"reset",[weak]{if(auto self=weak.lock())self->send(O({{L"kind",S(L"reset")}}));});
         Grid::SetColumn(reverse,1);Grid::SetColumn(reset,2);
         for(FrameworkElement part:{FrameworkElement(interpolation),FrameworkElement(reverse),FrameworkElement(reset)})top.Children().Append(part);
@@ -136,16 +137,16 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
         presentation.identity=[weak]{if(auto self=weak.lock())return self->context();return hstring();};
         positionGate.Content(number(data,presentation.title(),object(data->catalog,L"opacity"),
             [weak]{if(auto self=weak.lock())return num(self->stop(),L"position");return 0.;},
-            [weak](double position){if(auto self=weak.lock())self->send(positionEdit(self->selected,O({{L"type",S(L"value")},{L"value",N(position)}})));},
+            [weak](double position){if(auto self=weak.lock())self->send(positionEdit(self->selected(),O({{L"type",S(L"value")},{L"value",N(position)}})));},
             fields,nullptr,true,source.id+L"-position",false,presentation));
         positionGate.IsTabStop(false);positionGate.HorizontalContentAlignment(HorizontalAlignment::Stretch);positionGate.VerticalAlignment(VerticalAlignment::Center);
         remove=iconButton(L"minus",L"remove",[weak]{if(auto self=weak.lock())self->removeSelected();});
         colorPick=CompactColorField(data,source.id,[weak]{if(auto self=weak.lock())return self->data->caption(L"color",L"color");return hstring();},
             [weak]{if(auto self=weak.lock())return object(self->stop(),L"color");return J{};},
-            [weak](J color){if(auto self=weak.lock())self->send(stopEdit(N(self->selected),num(self->stop(),L"position"),color));},
+            [weak](J color){if(auto self=weak.lock())self->send(stopEdit(N(self->selected()),num(self->stop(),L"position"),color));},
             fields,[weak]{if(auto self=weak.lock())return self->context();return hstring();});
         colorPick.VerticalAlignment(VerticalAlignment::Center);
-        bucket=iconButton(L"fill",L"use-color",[weak]{if(auto self=weak.lock())self->send(O({{L"kind",S(L"use_current_color")},{L"index",N(self->selected)}}));});
+        bucket=iconButton(L"fill",L"use-color",[weak]{if(auto self=weak.lock())self->send(O({{L"kind",S(L"use_current_color")},{L"index",N(self->selected())}}));});
         Grid::SetColumn(remove,1);Grid::SetColumn(colorPick,2);Grid::SetColumn(bucket,3);
         for(FrameworkElement part:{FrameworkElement(positionGate),FrameworkElement(remove),FrameworkElement(colorPick),FrameworkElement(bucket)})bottom.Children().Append(part);
         for(FrameworkElement part:{FrameworkElement(top),FrameworkElement(focus),FrameworkElement(bottom)})root.Children().Append(part);
@@ -164,10 +165,10 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
         if(existing<0&&!flag(gradient(),L"can_add"))return;
         focus.Focus(FocusState::Pointer);
         if(!capture->Begin(e))return;
-        int index=existing>=0?existing:below;selected=index;
+        int index=existing>=0?existing:below;
         contact=Contact{target(),index,p.Position().X,width,existing>=0?num(all.GetObjectAt(uint32_t(existing)),L"position"):at};
         send(stopEdit(existing>=0?N(existing):JsonValue::CreateNullValue(),contact->position),L"down",contact->owner);
-        e.Handled(true);drawDots();
+        e.Handled(true);
     }
     void drag(double x){
         if(!contact)return;
@@ -184,7 +185,7 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
         if(pressedKey==K::Escape&&(contact||held)){cancel();e.Handled(true);}
         else if(pressedKey==K::Delete||pressedKey==K::Back){cancel();removeSelected();e.Handled(true);}
         else if(step){
-            auto phase=held?L"move":L"down";if(!held)held=std::pair{target(),selected};
+            auto phase=held?L"move":L"down";if(!held)held=std::pair{target(),selected()};
             bool shift=(GetKeyState(VK_SHIFT)&0x8000)!=0;
             send(positionEdit(held->second,O({{L"type",S(L"step")},{L"steps",N((pressedKey==K::Left?-1:1)*(shift?10:1))}})),phase,held->first);
             e.Handled(true);
@@ -192,10 +193,10 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
     }
     void drawDots(){
         double width=std::max(0.,focus.ActualWidth()-12);auto all=stops();
-        auto next=all.Stringify()+L"/"+to_hstring(selected)+L"/"+to_hstring(width)+data->theme();
+        auto next=all.Stringify()+L"/"+to_hstring(selected())+L"/"+to_hstring(width)+data->theme();
         if(next==drawn)return;drawn=next;dots.Children().Clear();
-        for(uint32_t i=0;i<all.Size();++i){
-            double radius=int(i)==selected?4:2.5;Shapes::Ellipse dot;dot.Width(radius*2);dot.Height(radius*2);dot.Fill(data->brush(L"text"));
+        for(uint32_t i=0,chosen=uint32_t(selected());i<all.Size();++i){
+            double radius=i==chosen?4:2.5;Shapes::Ellipse dot;dot.Width(radius*2);dot.Height(radius*2);dot.Fill(data->brush(L"text"));
             Canvas::SetLeft(dot,6+num(all.GetObjectAt(i),L"position")*width-radius);Canvas::SetTop(dot,39-radius);dots.Children().Append(dot);
         }
     }
@@ -204,9 +205,8 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
         auto destination=target();auto field=[&destination](wchar_t const* name){return destination.GetNamedValue(name,JsonValue::CreateNullValue());};
         auto nextOwner=O({{L"document",named(branch(data->state,L"document_file"),L"epoch")},
             {L"kind",field(L"kind")},{L"layer",field(L"layer")},{L"key",field(L"key")}}).Stringify();
-        if(nextOwner!=owner){cancel();selected=0;owner=nextOwner;}
+        if(nextOwner!=owner){cancel();owner=nextOwner;}
         auto all=stops();if(all.Size()<2)return;
-        selected=std::clamp(selected,0,int(all.Size())-1);
         auto modes=array(gradient(),L"interpolations");
         if(auto next=modes.Stringify();next!=choices){
             choices=next;syncing=true;interpolation.Items().Clear();
@@ -220,7 +220,7 @@ struct EditorView:std::enable_shared_from_this<EditorView> {
         name(reverse,str(gradient(),L"reverse_label"));name(reset,data->caption(L"color",L"reset_gradient"));
         name(remove,data->caption(L"color",L"remove_stop"));name(bucket,data->caption(L"color",L"use_selected"));
         AutomationProperties::SetName(focus,data->caption(L"color",L"add_stop"));tooltip(focus,data->caption(L"color",L"add_stop"));
-        bool enabled=source.enabled(),interior=selected>0&&selected+1<int(all.Size());
+        int index=selected();bool enabled=source.enabled(),interior=index>0&&index+1<int(all.Size());
         for(Control control:{Control(interpolation),Control(reverse),Control(reset),Control(focus),Control(bucket),Control(colorPick)})control.IsEnabled(enabled);
         positionGate.IsEnabled(enabled&&interior);remove.IsEnabled(enabled&&interior);
         if(!enabled)cancel();

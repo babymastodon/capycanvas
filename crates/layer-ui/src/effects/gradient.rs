@@ -21,13 +21,14 @@ pub enum GradientEdit {
 pub struct GradientControls {
     pub destination:GradientDestination,
     pub can_add:bool,
+    pub selected:usize,
     pub interpolation_label:String,
     pub interpolations:Vec<(ColorMixSpace,String)>,
     pub reverse_label:String,
 }
 impl GradientControls {
-    pub(super) fn new(destination:GradientDestination,gradient:&GradientDefinition,l:&Localizer)->Self {
-        Self {destination,can_add:gradient.stops.len()<32,interpolation_label:l.text(MessageId::RESOURCES_GRADIENT_INTERPOLATION).to_string(),
+    pub(super) fn new(destination:GradientDestination,gradient:&GradientDefinition,selected:usize,l:&Localizer)->Self {
+        Self {destination,can_add:gradient.stops.len()<32,selected:selected.min(gradient.stops.len().saturating_sub(1)),interpolation_label:l.text(MessageId::RESOURCES_GRADIENT_INTERPOLATION).to_string(),
             interpolations:[(ColorMixSpace::Oklab,MessageId::RESOURCES_GRADIENT_MIX_OKLAB),(ColorMixSpace::LinearRgb,MessageId::RESOURCES_GRADIENT_MIX_LINEAR),(ColorMixSpace::Classic,MessageId::RESOURCES_GRADIENT_MIX_CLASSIC)].map(|(value,id)|(value,l.text(id).to_string())).into(),
             reverse_label:l.text(MessageId::RESOURCES_PARAMETER_GRADIENT_MAP_REVERSE).to_string()}
     }
@@ -43,7 +44,7 @@ impl<R:CanvasRenderer> UiSession<R> {
         if !matches!(self.layer_interaction.tool,LayerCanvasTool::Gradient {..}) {return Vec::new();}
         let definition=self.tool_gradient();
         let mut control=PropertyControl::new("gradient",&self.localization().text(MessageId::COMMAND_GRADIENT),PropertyKind::Gradient,EffectValue::Gradient(definition.clone()),EffectValue::Gradient(GradientDefinition::default()));
-        control.gradient=Some(GradientControls::new(GradientDestination::Tool {epoch:self.state.document_file.epoch},&definition,self.localization()));
+        control.gradient=Some(GradientControls::new(GradientDestination::Tool {epoch:self.state.document_file.epoch},&definition,self.layer_interaction.gradient_stop,self.localization()));
         vec![ToolOption::Choice {id:"gradient-shape",label:self.localization().text(MessageId::RESOURCES_PARAMETER_GRADIENT_FILL_STYLE),
             segmented:true, labeled:false,columns:None,beside:None,items:self.group_choices(ToolControlGroup::Slot(ToolSlotId::Gradient),None).into_iter().map(|(_,item)|item).collect()},ToolOption::Gradient(Box::new(control))]
     }
@@ -59,6 +60,14 @@ impl<R:CanvasRenderer> UiSession<R> {
                 if matches!(edit,GradientEdit::Reset) {return self.effect_action(EffectAction::Reset {layer:*layer,key:key.clone()});}
                 let EffectValue::Gradient(gradient)=self.effect_parameter(*layer,key)? else {return Err(self.localization().text(MessageId::RESOURCES_ERROR_GRADIENT_REQUIRED).to_string());};gradient
             },
+        };
+        let count=gradient.stops.len();
+        let selected=match &edit {
+            GradientEdit::Reverse=>Some(count-1-self.gradient_stop(&target).min(count-1)),
+            GradientEdit::UseCurrentColor {index}|GradientEdit::Position {index,..}|GradientEdit::Stop {index:Some(index),remove:false,..}=>Some(*index),
+            GradientEdit::Stop {index:Some(index),remove:true,..}=>Some(if *index>0 && index+1<count {index-1} else {*index}),
+            GradientEdit::Stop {index:None,position,..}=>Some(gradient.stops.partition_point(|stop|stop.position<position.clamp(0.,1.))),
+            GradientEdit::Interpolation {..}|GradientEdit::Reset=>None,
         };
         match edit {
             GradientEdit::Reverse=>gradient.reverse(),
@@ -96,11 +105,23 @@ impl<R:CanvasRenderer> UiSession<R> {
             _=>return Ok(()),
         }
         gradient.validate()?;
+        if let Some(index)=selected {
+            match &target {
+                GradientDestination::Tool {..}=>self.layer_interaction.gradient_stop=index,
+                GradientDestination::Effect {key,..}=>self.property_editor.select_stop(key,index),
+            }
+        }
         match target {
             GradientDestination::Tool {..}=>self.layer_interaction.gradient.definition=Some(gradient),
             GradientDestination::Effect {layer,key,..}=>self.effect_action(EffectAction::Set {layer,key,value:EffectValue::Gradient(gradient)})?,
         }
         Ok(())
+    }
+    fn gradient_stop(&self,target:&GradientDestination)->usize {
+        match target {
+            GradientDestination::Tool {..}=>self.layer_interaction.gradient_stop,
+            GradientDestination::Effect {key,..}=>self.property_editor.stop(key),
+        }
     }
 }
 fn move_stop(gradient:&mut GradientDefinition,index:usize,position:f32) {
