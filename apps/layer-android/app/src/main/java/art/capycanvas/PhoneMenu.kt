@@ -215,7 +215,7 @@ private fun Modifier.menuGestures(input: PhoneMenuInteraction, width: Float, rtl
         glass.hide()
         workspaceFrames(200) { p ->
             val current = JSONObject(Native.drawerFrame(obj("from" to from, "to" to to,
-                "progress" to (1f-(1f-p)*(1f-p)*(1f-p)), "closing" to !open, "clip_contents" to true).toString()))
+                "progress" to (1f-(1f-p)*(1f-p)*(1f-p)), "closing" to !open, "clip_contents" to true,"pixel_scale" to dock.density).toString()))
             input.frame = current
             current.objectOrNull("connection")?.let {
                 dock.drawerSources["menu"] = DockInteraction.DrawerSource(current.getJSONObject("placement").getString("direction"),

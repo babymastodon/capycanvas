@@ -35,17 +35,18 @@ class AndroidDrawerCompositionTest {
         host.awaitMain("launch reveal removed",30_000,{ "" },compose) { findTag("launch-splash")==null }
         val activity=compose.activity
         val original=activity.requestedOrientation
-        val dock=checkNotNull(host.workspaceInteraction)
         val density=activity.resources.displayMetrics.density
-        fun frame(menu:Boolean)=if(menu)dock.phone?.menu?.frame else dock.drawer
+        val failures=mutableListOf<String>()
         try {
             for(orientation in listOf(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)) {
                 compose.runOnUiThread { activity.requestedOrientation=orientation }
                 host.awaitMain("phone orientation",30_000,{ "" },compose) {
-                    (activity.resources.configuration.orientation==android.content.res.Configuration.ORIENTATION_PORTRAIT)==(orientation==android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) && host.snapshot!!.getJSONObject("layout").array("viewport").let {
+                    host.workspaceInteraction?.phone!=null && (activity.resources.configuration.orientation==android.content.res.Configuration.ORIENTATION_PORTRAIT)==(orientation==android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) && host.snapshot!!.getJSONObject("layout").array("viewport").let {
                         (it.getDouble(0)<it.getDouble(1))==(orientation==android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
                     }
                 }
+                val dock=checkNotNull(host.workspaceInteraction)
+                fun frame(menu:Boolean)=if(menu)dock.phone?.menu?.frame else dock.drawer
                 val tiles=host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
                 val selected=host.snapshot!!.array("phone_tools").objects().indexOfFirst { it.optBoolean("selected") }
                 assertTrue("Painter has a selected tool",selected>=0)
@@ -95,7 +96,7 @@ class AndroidDrawerCompositionTest {
                             fun pixel(at:androidx.compose.ui.geometry.Offset)=image.getPixel(kotlin.math.round(at.x+dock.origin.x).toInt(),kotlin.math.round(at.y+dock.origin.y).toInt())
                             fun equal(label:String,want:Int,actual:Int,tolerance:Int) {
                                 val delta=listOf(16,8,0).map { kotlin.math.abs((want shr it and 255)-(actual shr it and 255)) }
-                                assertTrue("$family $orientation $suffix $label: expected=${Integer.toHexString(want)} actual=${Integer.toHexString(actual)} delta=$delta",delta.all { it<=tolerance })
+                                if(delta.any { it>tolerance })failures+="$family $orientation $suffix $label: expected=${Integer.toHexString(want)} actual=${Integer.toHexString(actual)} delta=$delta"
                             }
                             val reference=if(opaque)expected else pixel(inside)
                             for((label,at) in listOf("face" to face,"bridge" to joint,"body" to inside))equal(label,reference,pixel(at),if(opaque)0 else 3)
@@ -129,6 +130,18 @@ class AndroidDrawerCompositionTest {
                                 equal("concave corner $index at $inner versus $outer",pixel(outer),pixel(inner),2)
                             }
                             if(opaque) {
+                                val start=project(0f,connection.number("depth")*density)+dock.origin
+                                val end=project(connection.number("length")*density,connection.number("depth")*density)+dock.origin
+                                val near=if(vertical)minOf(start.x,end.x) else minOf(start.y,end.y)
+                                val far=if(vertical)maxOf(start.x,end.x) else maxOf(start.y,end.y)
+                                val normal=kotlin.math.round(bodyEdge*density+if(vertical)dock.origin.y else dock.origin.x).toInt()
+                                for(along in kotlin.math.ceil(near).toInt() until kotlin.math.floor(far).toInt()) {
+                                    for(across in normal-1..normal) {
+                                        val x=if(vertical)along else across
+                                        val y=if(vertical)across else along
+                                        equal("body joint band ($x,$y)",reference,image.getPixel(x,y),0)
+                                    }
+                                }
                                 for(inset in 1..8)equal("face joint strip $inset",reference,pixel(point(edge*density-sign*inset)),0)
                                 for(corner in corners) {
                                     val at=corner*density+androidx.compose.ui.geometry.Offset(if(corner.x==anchor.left)2f else -2f,if(corner.y==anchor.top)2f else -2f)
@@ -150,6 +163,7 @@ class AndroidDrawerCompositionTest {
                     host.awaitMain("$family drawer closed",30_000,{ "" },compose) { frame(menu)==null }
                 }
             }
+            assertTrue(failures.joinToString("\n"),failures.isEmpty())
         } finally {
             compose.mainClock.autoAdvance=true
             compose.runOnUiThread { activity.requestedOrientation=original }

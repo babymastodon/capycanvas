@@ -422,7 +422,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
                 val color = if (phone != null && colorColumn >= 0 && wheelHeight > 0f) obj("column" to colorColumn,
                     "fixed_height" to (heights[colorColumn]!!.second-wheelHeight).coerceAtLeast(0f), "hdr" to colorHdr) else null
                 val frame = JSONObject(Native.drawerFrame(obj("measure" to measure,"heights" to JSONArray(heights.map { it!!.second }),
-                    "color" to color,"progress" to 1f).toString()))
+                    "color" to color,"progress" to 1f,"pixel_scale" to dock.density).toString()))
                 colorFit = frame.objectOrNull("color_fit")
                 frame.objectOrNull("placement")
             }
@@ -451,7 +451,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
                 val eased=1f-(1f-progress)*(1f-progress)*(1f-progress)
                 val position=if(pageChange)pageFrom+(pageTarget-pageFrom)*eased else pageTarget
                 val reply=JSONObject(Native.drawerFrame(obj("from" to from,"to" to target,"progress" to eased,
-                    "closing" to (current==null),"clip_contents" to true).toString()))
+                    "closing" to (current==null),"clip_contents" to true,"pixel_scale" to dock.density).toString()))
                 geometry.value=reply;pagePosition=position
                 if(reply.objectOrNull("connection")!=null)reply.getJSONObject("placement").let { placement ->
                     val source=DockInteraction.DrawerSource(placement.getString("direction"),placement.getJSONObject("anchor").rect(),model.getJSONObject("anchor"),glass)
@@ -473,7 +473,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
     val contentKey=prepared?.first
     val contentPlacement = prepared?.second ?: plan ?: return
     val closedPlacement=remember(prepared) { prepared?.second?.let {
-        JSONObject(Native.drawerFrame(obj("to" to it,"progress" to 0f,"clip_contents" to true).toString())).getJSONObject("placement")
+        JSONObject(Native.drawerFrame(obj("to" to it,"progress" to 0f,"clip_contents" to true,"pixel_scale" to dock.density).toString())).getJSONObject("placement")
     } }
     val placement = { geometry.value?.objectOrNull("placement") ?: closedPlacement ?: contentPlacement }
     val shape = { dock.drawerContainerShape(placement().getJSONObject("bounds"),
@@ -715,7 +715,11 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
     val bounds = connection.getJSONObject("bounds")
     val position = if (dock.phone != null) Modifier.placedAbsolute(bounds,dock.density) else Modifier.placed(bounds,dock.density)
     Canvas(position.then(modifier).zIndex(z).chromeRegion(dock)) {
-        drawPath(bridgeOutline(connection,dock.density),colors.drawerFill(glass==null || glass.presented))
+        val origin=bounds.rect().topLeft*dock.density
+        val outline=bridgeOutline(connection,dock.density).apply {
+            translate(origin-Offset(origin.x.roundToInt().toFloat(),origin.y.roundToInt().toFloat()))
+        }
+        drawPath(outline,colors.drawerFill(glass==null || glass.presented))
     }
 }
 
