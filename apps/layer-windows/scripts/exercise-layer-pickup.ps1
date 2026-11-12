@@ -354,7 +354,7 @@ function Check-KeyboardContext([long]$Layer) {
     Wait-Until {(Gesture).menu_open} 'Keyboard context action did not open the layer menu'
     $beforeMenuRows=Rows;$beforeMenuRevision=(Model).state.document_file.revision
     $source=Control "layer-$Layer-name";$organize=Control 'menu-organize' -Arranged
-    Tap 'menu-organize'
+    if($Device -eq 'mouse'){$at=Point 'menu-organize';[CapyRowPointer]::Hover($at.x,$at.y)}else{Tap 'menu-organize'}
     $duplicate=Control 'layer-menu-duplicate' -Arranged
     $submenu=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($duplicate)
     $menuItems=$submenu.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::MenuItem))
