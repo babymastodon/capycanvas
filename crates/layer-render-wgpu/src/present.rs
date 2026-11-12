@@ -842,7 +842,7 @@ impl ViewportPresenter {
             color,
             overview_pipeline: None,
             navigator_view: None,
-            overview_buffer: None,
+            overview_buffer: standalone_overview.then(|| Self::overview_buffer(device, std::mem::size_of::<[f32; 21]>() as u64)),
             overviews: Vec::new(),
             overviews_changed: false,
             standalone_overview,
@@ -875,6 +875,15 @@ impl ViewportPresenter {
         }
     }
 
+    fn overview_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("overview placements"),
+            size: size.next_power_of_two(),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
     /// Reuses the composition, bindings and current presentation pass. An
     /// unchanged placement uploads nothing; painting never exports preview pixels.
     pub fn set_overviews(&mut self, renderer: &WgpuRasterizer, placements: &[OverviewPlacement]) {
@@ -896,12 +905,7 @@ impl ViewportPresenter {
                 .as_ref()
                 .is_none_or(|b| b.size() < size)
         {
-            self.overview_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("overview placements"),
-                size: size.next_power_of_two(),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+            self.overview_buffer = Some(Self::overview_buffer(device, size));
         }
         self.pipelines_ready(renderer);
     }

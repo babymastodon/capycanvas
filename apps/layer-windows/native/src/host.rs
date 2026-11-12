@@ -483,6 +483,7 @@ impl CapyHost {
         presenter.adopt_held(self.held_canvas.take());
         self.presenter_key = Some((renderer.document_color(), encoding));
         presenter.pipelines_ready(&renderer);
+        self.navigators.prepare(&renderer, config.format, encoding)?;
         gpu_state.check()?;
         let retired = self.native.replace_renderer(layer_host::Renderer(Some(renderer)))?;
         if let Some(service) = self.documents.as_mut().and_then(|d| d.recovery.as_mut()) { service.retire_renderer(retired); } else { drop(retired); }
@@ -2229,6 +2230,60 @@ mod handle_tests {
         }
     }
     impl Drop for Owner { fn drop(&mut self) { unsafe {capy_destroy(self.0);} } }
+
+    #[test]
+    fn navigator_startup_does_not_pin_a_document_allocation_block() {
+        const CHILD: &str = "CAPY_NAVIGATOR_ALLOCATION_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = std::env::temp_dir().join(format!("capy-navigator-allocation-{}-{}",
+                std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            std::fs::create_dir(&directory).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "host::handle_tests::navigator_startup_does_not_pin_a_document_allocation_block", "--test-threads=1", "--nocapture"])
+                .env(CHILD, "1").env("CAPY_STORAGE_DIR", &directory).output();
+            let _ = std::fs::remove_dir_all(directory);
+            let output = output.unwrap();
+            assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let owner = Owner::new(320, 240);
+        let mut host = borrow::<CapyHost>(owner.0).unwrap();
+        host.prepare_gpu().unwrap();
+        let host = &mut *host;
+        let gpu = host.native.session.engine().backend().0.as_ref().unwrap();
+        let device = gpu.device().clone();
+        let queue = gpu.queue().clone();
+        let settle = || {
+            queue.submit([]);
+            device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(30)) }).unwrap();
+        };
+        settle();
+        let before = device.generate_allocator_report().unwrap();
+        let churn = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Navigator document allocation churn"), size: 96 << 20,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        });
+        let during = device.generate_allocator_report().unwrap();
+        let block = during.blocks.iter().find(|block| during.allocations[block.allocations.clone()]
+            .iter().any(|allocation| allocation.name == "Navigator document allocation churn")).unwrap();
+        assert_eq!(block.size, 128 << 20);
+        assert_eq!(block.allocations.len(), 1, "churn must own its new allocation block");
+        assert_eq!(during.total_reserved_bytes, before.total_reserved_bytes + (128 << 20));
+        let gpu = host.native.session.engine().backend().0.as_deref().unwrap();
+        let config = host.config.as_ref().unwrap();
+        let mut presenter = host.navigators.presenters.take(gpu, config.format, host.display.encoding(config.format)).unwrap();
+        presenter.set_overviews(gpu, &[layer_render_wgpu::OverviewPlacement {
+            bounds: [0., 0., 200., 150.], clip: None, work_area: [[0.; 2]; 4],
+            outline_linear: [1.; 3], scale: 1., opacity: 1.,
+        }]);
+        drop(churn);
+        settle();
+        let after = device.generate_allocator_report().unwrap();
+        assert!(after.total_allocated_bytes <= before.total_allocated_bytes + (4 << 20));
+        assert!(after.total_reserved_bytes <= before.total_reserved_bytes + (4 << 20),
+            "Navigator pinned document allocation block: before={before:?}, after={after:?}");
+    }
 
     #[test]
     fn guarded_mutations_cancel_launch_receipts_before_the_next_snapshot() {

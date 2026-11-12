@@ -141,8 +141,39 @@ mod windows_surface {
         }
     }
     #[derive(Default)]
-    pub(crate) struct NavigatorSurfaces { slots: BTreeMap<u64, Slot>, generation: u64 }
+    pub(crate) struct NavigatorPresenters {
+        prepared: Vec<ViewportPresenter>,
+        key: Option<(wgpu::Device, layer_core::color::DocumentColor, wgpu::TextureFormat, layer_render_wgpu::SdrSurfaceColor)>,
+    }
+    impl NavigatorPresenters {
+        pub(crate) fn prepare(&mut self, gpu: &layer_render_wgpu::WgpuRasterizer, count: usize,
+            format: wgpu::TextureFormat, encoding: layer_render_wgpu::SdrSurfaceColor) -> Result<(), String> {
+            self.prepared = (0..count.max(1)).map(|_| {
+                ViewportPresenter::for_overview_surface(gpu, format, encoding).map_err(|error| error.to_string())
+            }).collect::<Result<_, _>>()?;
+            self.key = Some((gpu.device().clone(), gpu.document_color(), format, encoding));
+            Ok(())
+        }
+        pub(crate) fn take(&mut self, gpu: &layer_render_wgpu::WgpuRasterizer,
+            format: wgpu::TextureFormat, encoding: layer_render_wgpu::SdrSurfaceColor) -> Result<ViewportPresenter, String> {
+            let key = (gpu.device().clone(), gpu.document_color(), format, encoding);
+            let presenter = if self.key.as_ref() == Some(&key) { self.prepared.pop() } else { None };
+            match presenter {
+                Some(presenter) => Ok(presenter),
+                None => ViewportPresenter::for_overview_surface(gpu, format, encoding).map_err(|error| error.to_string()),
+            }
+        }
+    }
+    #[derive(Default)]
+    pub(crate) struct NavigatorSurfaces {
+        slots: BTreeMap<u64, Slot>, generation: u64,
+        pub(crate) presenters: NavigatorPresenters,
+    }
     impl NavigatorSurfaces {
+        pub(crate) fn prepare(&mut self, gpu: &layer_render_wgpu::WgpuRasterizer,
+            format: wgpu::TextureFormat, encoding: layer_render_wgpu::SdrSurfaceColor) -> Result<(), String> {
+            self.presenters.prepare(gpu, self.slots.len(), format, encoding)
+        }
         pub(crate) fn update(&mut self, id: u64, viewport: Option<CapyNavigatorViewport>) -> Result<(), String> {
             if id == 0 { return Err("Invalid Navigator surface id".into()); }
             if let Some(viewport) = viewport {
@@ -184,7 +215,7 @@ mod windows_surface {
                     surface.configure(gpu.device(), &target);
                     unsafe { surface.as_hal::<wgpu::hal::api::Dx12>() }.ok_or("Navigator requires D3D12")?
                         .set_nonblocking().map_err(|error| error.to_string())?;
-                    let presenter = ViewportPresenter::for_overview_surface(gpu, target.format, encoding).map_err(|error| error.to_string())?;
+                    let presenter = self.presenters.take(gpu, target.format, encoding)?;
                     self.generation = self.generation.saturating_add(1);
                     slot.gpu = Some(GpuSurface { pending: None, presenter, surface, handle, config: target, sizing,
                         device: gpu.device().clone(), space: gpu.document_color(), completed: Arc::new(AtomicBool::new(false)), generation: self.generation });
