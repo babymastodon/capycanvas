@@ -139,7 +139,7 @@ fn native_fill_hold_preview_with_three_reference_layers() {
     let local=gtk::graphene::Point::new((m[0]*point[0]+m[2]*point[1]+m[4])/scale,(m[1]*point[0]+m[3]*point[1]+m[5])/scale);
     let at=w.area.compute_point(&w.window,&local).unwrap();
     let displayed=|| {
-        let image=ui_session(&w).engine().backend().capture_in(w.view_color()).unwrap();
+        let image=w.capture_canvas(w.view_color()).unwrap();
         let camera=state(&w).camera;let m=camera.document_to_surface();
         let x=((m[0]*512.+m[2]*200.+m[4])*image.width as f32/camera.viewport[0] as f32) as usize;
         let y=((m[1]*512.+m[3]*200.+m[5])*image.height as f32/camera.viewport[1] as f32) as usize;
@@ -201,11 +201,11 @@ fn native_fill_areas_and_paint_unfilled() {
                 capture_ui(&w,&output,&format!("fill-areas-controls-{theme:?}-{unfilled}.png"));
             }
             let before=raster(&w);
-            let original_image=ui_session(&w).engine().backend().document_pixels(10).unwrap();
+            let original_image=w.document_pixels(10).unwrap();
             let image_pixel=|image:&layer_render::ReadbackImage,x:u32,y:u32|<[u8;4]>::try_from(&image.bytes[(y*image.stride+x*4) as usize..][..4]).unwrap();
             if unfilled {
                 let control=named::<crate::number_control::NumberControl>(&w.panel_widget(Panel::ToolSettings),"tool-setting-unfilled_size");edit_number(&control,"64");
-                let display_frame=||ui_session(&w).engine().backend().capture_in(w.view_color()).unwrap();
+                let display_frame=||w.capture_canvas(w.view_color()).unwrap();
                 let display_pixel=|image:&layer_render::ReadbackImage| {let camera=state(&w).camera;let m=camera.document_to_surface();
                     let x=((m[0]*120.+m[2]*100.+m[4])*image.width as f32/camera.viewport[0] as f32) as usize;
                     let y=((m[1]*120.+m[3]*100.+m[5])*image.height as f32/camera.viewport[1] as f32) as usize;
@@ -228,7 +228,7 @@ fn native_fill_areas_and_paint_unfilled() {
                 input.perform(serde_json::json!([{"point":at([20.,30.]),"down":true},{"point":at([375.,30.])},{"point":at([375.,190.])},{"point":at([20.,190.])},{"point":at([20.,30.])},{"down":false}]));
             }
             committed(&w,&before);let filled=pixels(&raster(&w));
-            let actual_image=ui_session(&w).engine().backend().document_pixels(11).unwrap();
+            let actual_image=w.document_pixels(11).unwrap();
             let points=if unfilled {[[90,100],[150,100],[205,100]]}else{[[85,110],[195,110],[315,110]]};
             for (index,[x,y]) in points.into_iter().enumerate() {
                 let changed=if unfilled {index<2}else{index<=mode_index};
@@ -729,7 +729,7 @@ fn fill_edge_plates(app:&adw::Application,input:&mut RemoteInput,theme:Theme,out
         if !solid {assert_eq!(ui_session(&w).engine().document().scene().paint_source(reference).unwrap(),&original_source);}
         input.perform(serde_json::json!([{"pen":"move","point":screen_point(command(&w,CommandId::Fill).upcast_ref(),&w.window,[0.5,0.5])}]));
         capture_ui(&w,output,&format!("edge-{name}-{theme:?}.png"));
-        let actual=ui_session(&w).engine().backend().document_pixels(1).unwrap();
+        let actual=w.document_pixels(1).unwrap();
         assert_eq!([actual.width,actual.height],sheet.size);
         let direct=Workspace::with_project(app,Some((new_drawing(sheet.size[0],sheet.size[1],&layer_ui::Localizer::shared(layer_ui::UiLanguage::English)).unwrap(),None)));
         direct.window.maximize();direct.window.present();ready(&direct);direct.dispatch(UiAction::SetTheme {theme:Some(theme)});
@@ -737,7 +737,7 @@ fn fill_edge_plates(app:&adw::Application,input:&mut RemoteInput,theme:Theme,out
         ui_session_mut(&direct).import_layer_source("Direct F",std::sync::Arc::unwrap_or_clone(source)).unwrap();direct.wake();ready(&direct);
         let workspace=tool_settings_workspace(&direct,&[CommandId::Fill],true,false);direct.dispatch(UiAction::RestoreWorkspace {workspace:Box::new(workspace)});invoke(&direct,CommandId::FitCanvas);ready(&direct);
         invoke(&direct,CommandId::Fill);
-        let expected=ui_session(&direct).engine().backend().document_pixels(2).unwrap();
+        let expected=direct.document_pixels(2).unwrap();
         assert_eq!([expected.width,expected.height],sheet.size);
         let mut corner_errors=Vec::new();
         for (index,(_,_,_,other)) in grid.iter().enumerate() {
@@ -933,7 +933,7 @@ fn scribble_sheet(app:&adw::Application,input:&mut RemoteInput,theme:Theme,paper
     }
     let paper_layer=ui_session(&w).engine().document().bottom_paper().unwrap();
     w.dispatch(UiAction::Layer {action:LayerAction::Visibility {id:layer_ui::occurrence_token(paper_layer),value:false}});ready(&w);
-    let reference=ui_session(&w).engine().backend().document_pixels(3).unwrap();
+    let reference=w.document_pixels(3).unwrap();
     gtk::gdk::MemoryTexture::new(reference.width as i32,reference.height as i32,gtk::gdk::MemoryFormat::R8g8b8a8,
         &glib::Bytes::from_owned(reference.bytes.clone()),reference.stride as usize)
         .save_to_png(output.join(format!("scribble-reference-raster-{paper}-{theme:?}.png"))).unwrap();

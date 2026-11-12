@@ -44,13 +44,7 @@ fn native_gpu_tone_retains_preview_cancels_and_refreshes_after_drawing() {
             },
         )
     };
-    let capture = || {
-        ui_session(&w)
-            .engine()
-            .backend()
-            .capture()
-            .unwrap()
-    };
+    let capture = || w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
     let before = capture();
     send(PenPhase::Down, 1000., 1000.);
     pump(20);

@@ -90,7 +90,7 @@ fn native_quick_mask_input() {
 
     for theme in [Theme::Light,Theme::Dark] {
         d.w.dispatch(UiAction::SetTheme { theme:Some(theme) }); pump(250);
-        let capture=ui_session(&d.w).engine().backend().capture().unwrap();
+        let capture=d.w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
         let tinted=capture.bytes.as_chunks::<4>().0.iter().filter(|p|p[0]>p[1].saturating_add(30) && p[0]>p[2].saturating_add(30)).count();
         assert!(tinted>100,"{theme:?} mask overlay disappeared: {tinted} pixels");
         if std::env::var_os("LAYER_NATIVE_CAPTURE_DIR").is_some() {
@@ -660,7 +660,7 @@ fn native_tonal_selection_input() {
     let first=wait_selection(&d);
     assert!(byte_pixel(&first,700,700)>240 && byte_pixel(&first,1250,700)>240);
     assert_eq!(byte_pixel(&first,1000,700),0);
-    let image=ui_session(&d.w).engine().backend().capture().unwrap();
+    let image=d.w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
     let m=state(&d.w).camera.document_to_surface();
     let [x,y]=[(m[0]*1250.+m[2]*700.+m[4]) as usize,(m[1]*1250.+m[3]*700.+m[5]) as usize];
     let pixel=&image.bytes[y*image.stride as usize+x*4..][..4];
@@ -715,7 +715,7 @@ fn native_tonal_selection_input() {
     assert_eq!(selection(&d),Some(sampled.clone()));
     if state(&d.w).customization.drawer.is_none() {d.click_name(&opener);}
     save_snapshot(&d.w, 100, || output.join("tonal-quick-mask.png"));
-    let image=ui_session(&d.w).engine().backend().capture().unwrap();
+    let image=d.w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
     assert!(image.bytes.as_chunks::<4>().0.iter().filter(|p|p[0]>p[1].saturating_add(30)).count()>100);
     d.click_name(&opener);
     // The red overlay is excluded from both point and rectangle sampling.

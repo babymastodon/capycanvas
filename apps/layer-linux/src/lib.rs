@@ -432,8 +432,7 @@ fn snapshot(workspace: &workspace::Workspace) -> gtk::gdk::Texture {
 fn with_canvas_snapshot<T>(workspace: &workspace::Workspace, capture: impl FnOnce() -> T) -> T {
     // Explicit screenshot: GTK snapshots omit app-owned child surfaces.
     let color = workspace.view_color();
-    let image = workspace.gpu.borrow().as_ref().unwrap().session.engine().backend()
-        .capture_in(color).expect("capture managed canvas");
+    let image = workspace.capture_canvas(color).expect("capture managed canvas");
     let canvas = color.texture([image.width, image.height],
         gtk::gdk::MemoryFormat::R8g8b8a8Premultiplied, image.stride as usize, image.bytes);
     workspace.area.set_paintable(Some(&canvas));

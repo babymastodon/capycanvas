@@ -4,7 +4,7 @@ use crate::{
     wayland::Geometry,
 };
 use gtk::prelude::*;
-use layer_render::{CanvasRenderer, ReadbackImage};
+use layer_render::CanvasRenderer;
 use layer_ui::{CanvasCursor, UiChange, UiSession};
 
 pub struct GpuCanvas {
@@ -239,9 +239,6 @@ impl GpuCanvas {
                 .push(start.elapsed().as_secs_f64() * 1000.0);
         }
         Ok(changed)
-    }
-    pub fn capture(&mut self) -> Result<ReadbackImage, String> {
-        self.session.renderer_mut().capture()
     }
 }
 

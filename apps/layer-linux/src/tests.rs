@@ -409,6 +409,12 @@ fn process_memory() -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+impl Workspace {
+    fn document_pixels(&self, request_id: u64) -> Result<layer_render::ReadbackImage, String> {
+        let readback = ui_session(self).engine().backend().request_document_pixels(request_id)?;
+        readback.wait()
+    }
+}
 fn ui_session(w: &Workspace) -> std::cell::Ref<'_, layer_ui::UiSession<crate::render_thread::RenderWorker>> {
     std::cell::Ref::map(w.gpu.borrow(), |gpu| &gpu.as_ref().unwrap().session)
 }
@@ -14192,14 +14198,13 @@ async fn read_canvas_pixels(
         w.wake();
         glib::timeout_future(std::time::Duration::from_millis(16)).await;
     }
-    let mut gpu = w.gpu.borrow_mut();
-    let renderer = gpu
-        .as_mut()
-        .ok_or("Canvas unavailable")?
-        .session
-        .renderer_mut();
-    renderer.ready()?;
-    renderer.document_pixels(u64::from(id))
+    let readback = {
+        let mut gpu = w.gpu.borrow_mut();
+        let renderer = gpu.as_mut().ok_or("Canvas unavailable")?.session.renderer_mut();
+        renderer.ready()?;
+        renderer.request_document_pixels(u64::from(id))?
+    };
+    readback.received().await
 }
 
 #[path = "source_repair_tests.rs"]

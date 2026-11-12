@@ -28,7 +28,7 @@ fn point(d: &Driver, p: [f32; 2]) -> [f32; 2] {
 
 fn pixels(d: &Driver, line: [[f32; 2]; 2]) -> Vec<Vec<u8>> {
     until(|| ui_session(&d.w).engine().backend().frames_idle(), "finger pixels use the published canvas frame");
-    let image = ui_session(&d.w).engine().backend().capture().unwrap();
+    let image = d.w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
     (1..10).map(|i| {
         let x = ((line[0][0] + (line[1][0] - line[0][0]) * i as f32 / 10.) * image.width as f32 / d.w.surface.width() as f32) as usize;
         let y = (line[0][1] * image.height as f32 / d.w.surface.height() as f32) as usize;
@@ -112,7 +112,7 @@ fn drawing(d: &mut Driver) {
     assert_eq!(ui_session(&d.w).engine().backend().picker, Some(overlay), "the GTK renderer receives the shared picker");
     assert!(!overlay.classic && overlay.original[..3].iter().all(|v| *v < 0.01));
     capture(d, "hold-active");
-    let held = ui_session(&d.w).engine().backend().capture().unwrap();
+    let held = d.w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
     for angle in [30., 60., 90., 120., 150.] {
         let radians = (angle as f32).to_radians();
         let x = (overlay.center[0] + 39. * overlay.scale * radians.cos()).round() as usize;

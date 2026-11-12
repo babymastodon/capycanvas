@@ -154,6 +154,26 @@ fn native_startup_canvas_uses_current_monitor() {
 
 #[test]
 #[ignore = "private Wayland display and hardware GPU"]
+fn native_canvas_capture_waits_through_the_first_chrome_handoff() {
+    let app = native_test_app("art.capycanvas.FirstChromeCapture");
+    let w = Workspace::new(&app);
+    w.window.present();
+    let chrome = || w.gpu.borrow().as_ref().map(|g| g.session.engine().backend().chrome_status().state());
+    let context = glib::MainContext::default();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !matches!(chrome(), Some(crate::glass::ChromeState::Ready(_))) {
+        assert!(Instant::now() < deadline, "first canvas chrome becomes ready: {:?}", chrome());
+        if !context.iteration(false) { std::thread::sleep(Duration::from_millis(1)); }
+    }
+    let image = w.capture_canvas(w.view_color()).expect("capture during the first chrome handoff");
+    assert!(image.width > 0 && image.height > 0);
+    assert!(matches!(chrome(), Some(crate::glass::ChromeState::Visible(..))), "{:?}", chrome());
+    w.window.destroy();
+    pump(100);
+}
+
+#[test]
+#[ignore = "private Wayland display and hardware GPU"]
 fn native_new_drawing_dialog_review() {
     let app = native_test_app("art.capycanvas.NewDrawingReview");
     let output = std::path::Path::new("../../artifacts/new-drawing-dialog/gtk");

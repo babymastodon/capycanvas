@@ -26,7 +26,7 @@ fn placed_images(doc: &layer_core::Document) -> (layer_core::authored::Occurrenc
 
 /// The rendered document composite at a document pixel.
 fn document_pixel(w: &Workspace, [x, y]: [usize; 2]) -> [u8; 4] {
-    let image = ui_session(w).engine().backend().document_pixels(7001).unwrap();
+    let image = w.document_pixels(7001).unwrap();
     image.bytes[y * image.stride as usize + x * 4..][..4].try_into().unwrap()
 }
 
@@ -861,22 +861,22 @@ fn native_photo_transform_reference_pivot_snap_and_nudge() {
     assert_eq!(ui_session(&w).engine().checkpoint(), checkpoint);
     assert!(state(&w).commands.iter().any(|command| command.id == CommandId::ScaleRotate && command.selected));
     invoke(&w, CommandId::FitCanvas); ready(&w);
-    let original_pixels = ui_session(&w).engine().backend().document_pixels(7101).unwrap().bytes;
+    let original_pixels = w.document_pixels(7101).unwrap().bytes;
     type_number(&mut native, "transform_angle", "30");
     assert_ne!(geometry(), preview, "rotation changes the preview");
     invoke(&w, CommandId::Pencil); ready(&w);
     until(|| state(&w).commands.iter().any(|command| command.id == CommandId::Pencil && command.selected)
         && !state(&w).commands.iter().any(|command| command.id == CommandId::ScaleRotate && command.selected),
         "choosing Pencil accepts the rotated pixels before activating Pencil");
-    let accepted_pixels = ui_session(&w).engine().backend().document_pixels(7102).unwrap().bytes;
+    let accepted_pixels = w.document_pixels(7102).unwrap().bytes;
     assert_ne!(accepted_pixels, original_pixels, "Pencil commits the rotated artwork");
     super::new_photo::capture_ui(&w, &output, "transform-pencil-accepted.png");
     invoke(&w, CommandId::Undo); ready(&w);
-    assert_eq!(ui_session(&w).engine().backend().document_pixels(7103).unwrap().bytes, original_pixels,
+    assert_eq!(w.document_pixels(7103).unwrap().bytes, original_pixels,
         "one Undo restores the pixels from before choosing Pencil");
     assert_eq!(ui_session(&w).engine().checkpoint(), checkpoint, "tool switching accepts exactly one edit");
     invoke(&w, CommandId::Redo); ready(&w);
-    assert_eq!(ui_session(&w).engine().backend().document_pixels(7104).unwrap().bytes, accepted_pixels,
+    assert_eq!(w.document_pixels(7104).unwrap().bytes, accepted_pixels,
         "Redo restores the accepted rotated pixels");
     native.finish(); w.window.destroy(); pump(100);
 }

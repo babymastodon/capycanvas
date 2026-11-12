@@ -1184,7 +1184,7 @@ fn native_spatial_filter_windows() {
     let dir = artifact_dir("../../artifacts/ui/spatial-filter-windows-gtk");
     let pixel=|point:[f32;2]| {
         let camera=state(&w).camera;let m=camera.document_to_surface();
-        let image=ui_session(&w).engine().backend().capture_in(w.view_color()).unwrap();
+        let image=w.capture_canvas(w.view_color()).unwrap();
         let x=((m[0]*point[0]+m[2]*point[1]+m[4])*image.width as f32/camera.viewport[0] as f32) as usize;
         let y=((m[1]*point[0]+m[3]*point[1]+m[5])*image.height as f32/camera.viewport[1] as f32) as usize;
         let offset=y*image.stride as usize+x*4;let value=&image.bytes[offset..offset+4];

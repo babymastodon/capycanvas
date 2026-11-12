@@ -626,7 +626,7 @@ fn native_proof_setup_compare_history_save_reopen_and_rgb_export() {
         .block_on(read_canvas_pixels(&w, 781))
         .unwrap()
         .bytes;
-    let normal = w.gpu.borrow_mut().as_mut().unwrap().capture().unwrap();
+    let normal = w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
     keyboard(
         &w,
         gdk::Key::p,
@@ -662,13 +662,7 @@ fn native_proof_setup_compare_history_save_reopen_and_rgb_export() {
     let saved_proof = snapshot(&w);
     assert_ne!(saved_proof, original);
     assert_ne!(
-        w.gpu
-            .borrow_mut()
-            .as_mut()
-            .unwrap()
-            .capture()
-            .unwrap()
-            .bytes,
+        w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap().bytes,
         normal.bytes
     );
     let recipe = ui_session(&w)

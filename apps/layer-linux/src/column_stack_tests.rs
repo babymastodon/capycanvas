@@ -93,7 +93,7 @@ fn native_column_panel_bridge_configuration() {
                 "ordinary configuration remains a second column of the native panel");
             let expanded = layer_ui::durable_layout(&state(&w).workspace.layout);
             assert_ne!(expanded, before, "configuration reveals the ordinary column through shared policy");
-            let gpu = ui_session(&w).engine().backend().capture().expect("capture retired GPU panel surfaces");
+            let gpu = w.capture_canvas(crate::display_color::ViewColor::Srgb).expect("capture retired GPU panel surfaces");
             let empty = [configuration.x() + configuration.width() * 0.5, (whole.y() + configuration.y()) * 0.5];
             let pixel = column_bridge_pixel(&gpu, viewport, empty);
             let clear = column_bridge_pixel(&gpu, viewport, [viewport[0] * 0.5, empty[1]]);
@@ -494,7 +494,7 @@ fn column_bridge_capture(w: &Workspace) -> layer_render::ReadbackImage {
         let uploaded: Vec<_> = expected.iter().cloned().map(|surface| surface.scaled(scale)).collect();
         !expected.is_empty() && ui_session(w).engine().backend().panel_surfaces == uploaded
     }, "GPU panel surfaces must reach the frame before capture");
-    ui_session(w).engine().backend().capture().expect("capture GPU panel backgrounds")
+    w.capture_canvas(crate::display_color::ViewColor::Srgb).expect("capture GPU panel backgrounds")
 }
 
 fn column_bridge_pixel(image: &layer_render::ReadbackImage, extent: [f32; 2], point: [f32; 2]) -> [u8; 4] {

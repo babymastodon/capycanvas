@@ -329,7 +329,7 @@ fn native_three_finger_scrub() {
         let engine = g.session.engine();
         engine.backend().paint_ready(engine.document(), engine.brush(), false)
     }), "active brush startup");
-    let pixels = |w: &Workspace| ui_session(w).engine().backend().document_pixels(9100).unwrap().bytes;
+    let pixels = |w: &Workspace| w.document_pixels(9100).unwrap().bytes;
     let area = d.w.resolved().work_area;
     let p = [area.x + area.width * 0.45, area.y + area.height * 0.5];
     let blank = pixels(&d.w);

@@ -138,7 +138,7 @@ fn native_vector_tools() {
 }
 
 pub(super) fn presented(d: &Driver, document: [f32; 2]) -> [u8; 4] {
-    let capture = ui_session(&d.w).engine().backend().capture_in(d.w.view_color()).unwrap();
+    let capture = d.w.capture_canvas(d.w.view_color()).unwrap();
     let m = state(&d.w).camera.document_to_surface();
     let x = (m[0] * document[0] + m[2] * document[1] + m[4]).round() as usize;
     let y = (m[1] * document[0] + m[3] * document[1] + m[5]).round() as usize;

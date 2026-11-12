@@ -2334,6 +2334,11 @@ impl Workspace {
             g.session.engine().backend().view_color.with_rendition(document.composition().color, g.session.effective_sdr_rendition())
         })
     }
+    pub(crate) fn capture_canvas(&self, view: crate::display_color::ViewColor) -> Result<layer_render::ReadbackImage, String> {
+        let readback = self.gpu.borrow().as_ref().ok_or("The canvas has not started")?
+            .session.engine().backend().request_capture(view)?;
+        readback.wait()
+    }
     pub(crate) fn paint_view_color(&self) -> crate::display_color::ViewColor {
         self.gpu.borrow().as_ref().map_or(Default::default(), |g| {
             let colors = g.session.state().display_colors();

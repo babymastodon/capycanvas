@@ -841,7 +841,7 @@ fn mouse_paint(d: &mut Driver, phase: &str) {
             Some(d.w.area.clone().upcast()), "{phase}: canvas receives native input");
     }
     let pixels = |d: &Driver| {
-        let image = ui_session(&d.w).engine().backend().capture().unwrap();
+        let image = d.w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
         let scale = [image.width as f32 / d.w.surface.width() as f32, image.height as f32 / d.w.surface.height() as f32];
         let mut samples = Vec::new();
         for step in 0..9 {

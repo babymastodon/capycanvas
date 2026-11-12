@@ -42,7 +42,7 @@ fn chip(w: &Rc<Workspace>, label: &str) {
 }
 
 fn canvas_pixel(w: &Rc<Workspace>, document: [f32; 2]) -> [u8; 4] {
-    let capture = ui_session(w).engine().backend().capture_in(w.view_color()).unwrap();
+    let capture = w.capture_canvas(w.view_color()).unwrap();
     let m = state(w).camera.document_to_surface();
     let x = (m[0] * document[0] + m[2] * document[1] + m[4]).round() as usize;
     let y = (m[1] * document[0] + m[3] * document[1] + m[5]).round() as usize;

@@ -76,6 +76,26 @@ enum FirstChrome {
     Visible,
 }
 
+pub(crate) struct Readback(mpsc::Receiver<Result<ReadbackImage, String>>);
+impl Readback {
+    pub(crate) async fn received(self) -> Result<ReadbackImage, String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match self.0.try_recv() {
+                Ok(image) => return image,
+                Err(mpsc::TryRecvError::Disconnected) => return Err("GPU worker stopped".into()),
+                Err(mpsc::TryRecvError::Empty) if std::time::Instant::now() >= deadline => {
+                    return Err("Canvas readback timed out".into());
+                }
+                Err(mpsc::TryRecvError::Empty) => gtk::glib::timeout_future(Duration::from_millis(1)).await,
+            }
+        }
+    }
+    pub(crate) fn wait(self) -> Result<ReadbackImage, String> {
+        gtk::glib::MainContext::default().block_on(self.received())
+    }
+}
+
 const EIGHT_BIT_SURFACE: &str = "The Wayland canvas requires an 8-bit swapchain format";
 
 fn canvas_refusal(caps: &wgpu::SurfaceCapabilities) -> Option<String> {
@@ -771,18 +791,15 @@ impl RenderWorker {
         Ok(rx)
     }
     #[cfg(test)]
-    pub(super) fn document_pixels(&self, request_id: u64) -> Result<ReadbackImage, String> {
+    pub(super) fn request_document_pixels(&self, request_id: u64) -> Result<Readback, String> {
         let (tx, rx) = mpsc::channel();
         self.send(Command::DocumentPixels(request_id, tx)).map_err(error)?;
-        rx.recv_timeout(Duration::from_secs(30)).map_err(error)?
+        Ok(Readback(rx))
     }
-    pub(super) fn capture(&self) -> Result<ReadbackImage, String> {
-        self.capture_in(crate::display_color::ViewColor::Srgb)
-    }
-    pub(super) fn capture_in(&self, view: crate::display_color::ViewColor) -> Result<ReadbackImage, String> {
+    pub(super) fn request_capture(&self, view: crate::display_color::ViewColor) -> Result<Readback, String> {
         let (tx, rx) = mpsc::channel();
         self.send(Command::Capture(view, tx)).map_err(error)?;
-        rx.recv_timeout(Duration::from_secs(30)).map_err(error)?
+        Ok(Readback(rx))
     }
     pub(super) fn new(
         area: &gtk::Picture,
