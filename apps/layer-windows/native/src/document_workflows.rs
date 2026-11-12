@@ -886,7 +886,8 @@ impl Task {
     pub fn status(&self) -> Value {
         json!({"type":"workflow", "id":self.id,"serial":self.serial,"kind":self.kind,
             "stage":self.stage,"details":self.details,"error":self.error,
-            "spaces":layer_core::color::RgbSpace::ALL.map(|s| (s,s.name()))})
+            "spaces":layer_core::color::RgbSpace::ALL.map(|s| (s,s.name())),
+            "comparison":{"gap":layer_ui::color_comparison::GAP,"height":layer_ui::color_comparison::HEIGHT,"width":layer_ui::color_comparison::WIDTH}})
     }
     pub fn preview(&self, index: usize) -> Result<crate::previews::CapyPreview, String> {
         let previews = match &self.payload {
@@ -924,6 +925,14 @@ mod tests {
     fn ready(task: &mut Task, action: Action) {
         task.work(action);
         assert!(task.error.is_none(), "{}: {:?}", task.kind, task.error);
+    }
+    #[test]
+    fn workflow_status_reserves_the_shared_comparison_slots_before_previews() {
+        let mut host=NativeHost::new(Platform::Windows).unwrap();
+        let task=begin(&mut host,CommandId::DocumentProperties);
+        assert!(task.preview(0).is_err());
+        assert_eq!(task.status()["comparison"],json!({"gap":layer_ui::color_comparison::GAP,
+            "height":layer_ui::color_comparison::HEIGHT,"width":layer_ui::color_comparison::WIDTH}));
     }
     #[test]
     fn proof_profile_library_retains_hidden_entries_without_menu_choices() {
