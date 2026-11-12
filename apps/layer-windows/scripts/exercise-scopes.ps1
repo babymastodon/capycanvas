@@ -143,17 +143,14 @@ function Shown([string]$Panel){@((Model).layout.groups|Where-Object {$_.panels -
 function Canvas-Hash{
     $away=Center (Control 'panel-tab-properties');[CapyRowPointer]::Hover($away[0],$away[1])
     $from=Canvas-Point .15 .3;$to=Canvas-Point .85 .7
-    $settled=@{hash=$null}
-    Wait-Until {
+    Wait-StablePixels {
         $capture=Window-Capture
         try{
             $area=[Drawing.Rectangle]::FromLTRB($from[0]-$capture.window.left,$from[1]-$capture.window.top,$to[0]-$capture.window.left,$to[1]-$capture.window.top)
             $crop=$capture.bitmap.Clone($area,[Drawing.Imaging.PixelFormat]::Format32bppArgb);$stream=[IO.MemoryStream]::new();$sha=[Security.Cryptography.SHA256]::Create()
-            try{$crop.Save($stream,[Drawing.Imaging.ImageFormat]::Png);$hash=[Convert]::ToBase64String($sha.ComputeHash($stream.ToArray()))}finally{$crop.Dispose();$stream.Dispose();$sha.Dispose()}
+            try{$crop.Save($stream,[Drawing.Imaging.ImageFormat]::Png);[Convert]::ToBase64String($sha.ComputeHash($stream.ToArray()))}finally{$crop.Dispose();$stream.Dispose();$sha.Dispose()}
         }finally{$capture.bitmap.Dispose()}
-        $same=$hash -eq $settled.hash;$settled.hash=$hash;if(!$same){Start-Sleep -Milliseconds 400};$same
-    } 'The canvas did not settle'
-    $settled.hash
+    } -Idle
 }
 function Curve-Json{ConvertTo-Json -InputObject (@((Model).state.layer_properties.controls|Where-Object key -eq 'rgb')[0].value.value) -Compress -Depth 6}
 function Properties-Json{(Model).state.layer_properties.controls|ConvertTo-Json -Depth 12 -Compress}
