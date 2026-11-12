@@ -976,6 +976,27 @@ int main() {
         assert(presentation.required==60&&*presentation.displayed==61&&!presentation.Stalled(at(20000))&&!presentation.Withheld(at(20000)));
     }
     std::cout<<"Presentation trace: a final present still unacknowledged after its repeat asks for a compositor flush, never a second repeat\n";
+    {
+        auto origin=PresentationTrace::Clock::time_point{}+std::chrono::hours(1);
+        auto at=[&](int ms){return origin+std::chrono::milliseconds(ms);};
+        int asked=0;
+        auto quiet=[&]{++asked;return true;};
+        auto busy=[&]{++asked;return false;};
+        PresentationTrace untraced(false);
+        untraced.Observe(true,false,false,2,1,at(0));
+        for(int ms=0;ms<=60000;ms+=250){if(untraced.Withheld(at(ms)))untraced.Repeat();assert(!untraced.PresentsHeld(quiet));}
+        assert(asked==0);
+        PresentationTrace presentation(true);
+        presentation.Observe(true,false,false,10,9,at(0));
+        assert(!presentation.PresentsHeld(quiet)&&asked==0);
+        assert(presentation.Withheld(at(1000)));presentation.Repeat();
+        assert(!presentation.PresentsHeld(busy)&&asked==1&&!presentation.PresentsHeld(quiet)&&asked==1);
+        presentation.Observe(true,false,false,11,10,at(1100));
+        assert(presentation.required==11&&presentation.Withheld(at(2100)));presentation.Repeat();
+        assert(presentation.PresentsHeld(quiet)&&asked==2&&!presentation.PresentsHeld(quiet)&&asked==2);
+        presentation.Observe(true,false,true,12,10,at(2200));assert(presentation.required==11);
+    }
+    std::cout<<"Presentation trace: only a traced repeat with no input or frame demand re-presents the held image instead of drawing a canvas frame\n";
     CanvasQuerySlots slots;
     std::vector<std::shared_ptr<void>> held;
     std::deque<std::function<void()>> deferred;

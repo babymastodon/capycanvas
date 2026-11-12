@@ -520,7 +520,7 @@ impl CapyHost {
         Ok(())
     }
 
-    fn frame(&mut self, now: u64, presentation: u64) -> Result<i32, String> {
+    fn frame(&mut self, now: u64, presentation: u64, draw: bool) -> Result<i32, String> {
         self.gpu.check()?;
         // A tab command can arrive after DXGI acquisition. Retire that image
         // before touching the newly selected editor, including failed activation.
@@ -535,8 +535,7 @@ impl CapyHost {
             self.native.session.engine().backend().0.as_ref().unwrap().device().poll(wgpu::PollType::Poll).map_err(err)?;
         }
         let prediction_before = self.prediction_frames.map(|_| self.native.session.engine().metrics());
-        self.native
-            .prepare_canvas_frame(now, presentation, self.blank_presented)?;
+        if draw { self.native.prepare_canvas_frame(now, presentation, self.blank_presented)?; }
         if let Some(timing) = &mut self.frame_timing { timing.prepared_ns = crate::frame_timing::now(); }
         if let (Some(total), Some(before)) = (&mut self.prediction_frames, prediction_before) {
             let after = self.native.session.engine().metrics();
@@ -628,7 +627,7 @@ impl CapyHost {
         if let Some(timing) = &mut self.frame_timing { timing.submitted_ns = crate::frame_timing::now(); }
         gpu.queue().present(target);
         if let Some(timing) = &mut self.frame_timing { timing.presented_ns = crate::frame_timing::now(); }
-        self.native.canvas_frame_rate.submitted();
+        if draw { self.native.canvas_frame_rate.submitted(); }
         self.pacing.submitted(submission);
         let document=self.native.session.engine().document().composition().size;
         let ready=composition.staged&&presenter.chrome_ready();
@@ -1277,14 +1276,23 @@ pub unsafe extern "C" fn capy_localization_input(host: u64, busy: bool) -> i32 {
         Ok(0)
     })
 }
+fn present(host: u64, now: u64, presentation: u64, draw: bool) -> i32 {
+    guard(host, |host| {
+        if let Some(timing) = &mut host.frame_timing { timing.prepared_ns=0;timing.composed_ns=0;timing.submitted_ns=0;timing.presented_ns=0; }
+        host.frame(now, presentation, draw)
+    })
+}
 /// # Safety
 /// `host` must be null or a live host exclusively accessed by this caller.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn capy_frame(host: u64, now: u64, presentation: u64) -> i32 {
-    guard(host, |host| {
-        if let Some(timing) = &mut host.frame_timing { timing.prepared_ns=0;timing.composed_ns=0;timing.submitted_ns=0;timing.presented_ns=0; }
-        host.frame(now, presentation)
-    })
+    present(host, now, presentation, true)
+}
+/// # Safety
+/// `host` must be null or a live host exclusively accessed by this caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_present_held(host: u64) -> i32 {
+    present(host, 0, 0, false)
 }
 
 /// # Safety

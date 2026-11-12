@@ -1328,7 +1328,6 @@ void CanvasWindow::Run() {
         bool inputStarted=false;
         bool probeReady=false;
         unsigned recoveryAttempts=0;
-        bool repeat=false;
         std::optional<std::chrono::steady_clock::time_point> lastFrame;
         auto nextServices=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
         auto navigatorWake=std::chrono::steady_clock::now();
@@ -1377,7 +1376,7 @@ void CanvasWindow::Run() {
                 surfacePoll.Schedule(capy_surface_pending(host)>0,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
                 dirty|=serviceResult!=0;
                 TracePresentation(false,dirty);
-                if(!dirty&&presentationTrace.Withheld(std::chrono::steady_clock::now())){presentationTrace.Repeat();repeat=dirty=true;}
+                if(!dirty&&presentationTrace.Withheld(std::chrono::steady_clock::now())){presentationTrace.Repeat();dirty=true;}
                 CapySnapshotInfo routing{};
                 if(auto snapshot=capy_snapshot(host,&routing)){
                     NativeString owned(snapshot,capy_string_free);
@@ -1436,7 +1435,8 @@ void CanvasWindow::Run() {
             if(overflow){sentModifiers.store(0);if(capy_input(host,R"({"type":"blur"})")<0){Fail(NativeString(capy_error()).get());break;}}
             if(capy_device_lost(host))continue;
             auto now=Now();
-            auto result=capy_frame(host,now,now);
+            auto held=presentationTrace.PresentsHeld([&]{return pending.empty()&&!hover&&!overflow&&capy_needs_frame(host)==0;});
+            auto result=held?capy_present_held(host):capy_frame(host,now,now);
             if(latencyTrace.enabled){
                 auto end=Now();uint64_t stats[6]{};auto error=capy_presentation_stats(host,stats);
                 CapyFrameTiming timing{};capy_frame_timing(host,&timing);
@@ -1446,7 +1446,7 @@ void CanvasWindow::Run() {
             dirty=result!=0;
             PresentNavigators();navigatorWake=std::chrono::steady_clock::now()+RefreshPeriod(nativeWindow);
             surfacePoll.Schedule(capy_surface_pending(host)>0,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
-            TracePresentation(true,dirty,std::exchange(repeat,false)&&pending.empty()&&!hover);
+            TracePresentation(true,dirty,held);
             if(!inputStarted){
                 inputStarted=true;inputDispatcher.TryEnqueue([weak=weak_from_this(),zoomIn,zoomOut]{
                     if(auto self=weak.lock()){self->zoomInCursor=zoomIn;self->zoomOutCursor=zoomOut;self->StartInput();}

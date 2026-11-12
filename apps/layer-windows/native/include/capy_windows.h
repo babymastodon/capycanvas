@@ -163,6 +163,7 @@ __declspec(dllimport) bool capy_view(CapyHost, CapyView*);
 /* Acquisition: 0=wait, 1=image, 2=surface reconfiguration, 3=commands only while a drawing renderer is unavailable. Can wait for DXGI. Drain newly arrived input after this call. */
 __declspec(dllimport) int32_t capy_acquire(CapyHost);
 __declspec(dllimport) int32_t capy_frame(CapyHost, uint64_t now_ns, uint64_t presentation_ns);
+__declspec(dllimport) int32_t capy_present_held(CapyHost);
 /* Returned text handle owns UTF-8 in Rust; release with capy_string_free. Zero=no change/error.
    Optional info is writable/exclusive during the call and reset even on error.
    Ranges address the exact bytes copied through capy_string_copy. */

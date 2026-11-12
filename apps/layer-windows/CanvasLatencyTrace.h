@@ -5,6 +5,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 class PresentationTrace {
@@ -25,12 +26,14 @@ public:
     }
     bool Withheld(Clock::time_point now) const { return Unacknowledged(now)&&repeated!=content; }
     bool Stalled(Clock::time_point now) const { return Unacknowledged(now)&&repeated==content; }
-    void Repeat() { repeated=content; }
+    void Repeat() { repeated=content; held=true; }
+    template<class Quiet> bool PresentsHeld(Quiet quiet) { return std::exchange(held,false)&&quiet(); }
 private:
     bool Unacknowledged(Clock::time_point now) const {
         return enabled&&displayed&&*displayed<content&&now-presentedAt>=Patience&&now-displayedAt>=Patience;
     }
     uint64_t presentations=0,content=0,repeated=0;
+    bool held=false;
     Clock::time_point presentedAt{},displayedAt{};
 };
 
