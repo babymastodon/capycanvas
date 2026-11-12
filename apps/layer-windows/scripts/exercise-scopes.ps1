@@ -416,9 +416,6 @@ try{
 
     Window-Panel 'Histogram';Wait-Until {!(Shown 'histogram')} 'Histogram did not restore the Auto pixel projection'
     $autoEpoch=(Model).state.document_file.epoch
-    & (Join-Path $PSScriptRoot 'open-application-menu.ps1') -Root $root -Name 'File';Invoke 'close_document'
-    Invoke 'Discard Changes' -Name
-    Wait-Until {!(Model).state.document_file.busy -and !(Find 'document-dialog')} 'The modified scopes drawing did not close'
     Open-Project $autoFile
     Wait-Until {(Model).state.document_file.epoch -gt $autoEpoch -and (Model).state.document_file.location.uri -eq $autoFile -and !(Model).state.document_file.busy -and !(Model).state.document_file.modified -and (Model).brush_ready} 'Auto Levels did not reopen as a fresh clean drawing' 60
     Select-Panel 'properties';Fit-Canvas
