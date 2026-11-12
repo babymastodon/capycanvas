@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock};
 pub struct RendererFactory(Arc<Factory>);
 struct Factory {
     adapter: wgpu::Adapter,
+    adapter_summary: Arc<layer_render::GpuAdapter>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     choices: Mutex<Vec<Arc<Choice>>>,
@@ -29,8 +30,8 @@ pub(crate) fn fixture_factory(hardware: &RendererFactory, budget: layer_core::Me
     let mut shared = hardware.0.shared.clone();
     shared.transient_memory = Some(budget.register_owner(layer_core::MemoryOwnerKind::Other, layer_core::MemoryClass::Pinned, Some(memory_device)));
     #[cfg(not(target_arch = "wasm32"))]
-    let memory=Arc::new(crate::memory_sample::fixture_sampler(budget.clone()));
-    let factory = RendererFactory(Arc::new(Factory { adapter: hardware.adapter().clone(), device: hardware.device().clone(), queue: hardware.queue().clone(),
+    let memory=Arc::new(crate::memory_sample::fixture_sampler(budget.clone(), memory_device));
+    let factory = RendererFactory(Arc::new(Factory { adapter: hardware.adapter().clone(), adapter_summary: hardware.0.adapter_summary.clone(), device: hardware.device().clone(), queue: hardware.queue().clone(),
         choices: Default::default(), shared, budget: budget.clone(), memory_device,
         #[cfg(target_arch = "wasm32")] memory_summary: Default::default(),
         #[cfg(target_arch = "wasm32")] memory_update_pending: Default::default(),
@@ -63,7 +64,7 @@ impl RendererFactory {
         let memory_device = budget.register_device(facts);
         let mut shared = pipeline_device::DeviceRecipes::from(device);
         shared.transient_memory = Some(budget.register_owner(layer_core::MemoryOwnerKind::Other, layer_core::MemoryClass::Pinned, Some(memory_device)));
-        let factory = Self(Arc::new(Factory { adapter, device: (**device).clone(), queue, choices: Default::default(), shared, budget, memory_device,
+        let factory = Self(Arc::new(Factory { adapter_summary: Arc::new(adapter_summary(&adapter.get_info())), adapter, device: (**device).clone(), queue, choices: Default::default(), shared, budget, memory_device,
             #[cfg(target_arch = "wasm32")] memory_summary: Default::default(),
             #[cfg(target_arch = "wasm32")] memory_update_pending: Default::default(),
             #[cfg(not(target_arch = "wasm32"))] memory: Default::default(),
@@ -75,6 +76,7 @@ impl RendererFactory {
             .with_working_space(color.space).with_depth(color.depth)
     }
     pub fn adapter(&self) -> &wgpu::Adapter { &self.0.adapter }
+    pub(super) fn adapter_summary(&self) -> Arc<layer_render::GpuAdapter> { self.0.adapter_summary.clone() }
     pub fn device(&self) -> &wgpu::Device { &self.0.device }
     pub fn queue(&self) -> &wgpu::Queue { &self.0.queue }
     #[cfg(not(target_arch = "wasm32"))]
@@ -103,7 +105,7 @@ impl RendererFactory {
             wasm_bindgen_futures::spawn_local(async move {
                 factory.0.budget.flush_reports();
                 let snapshot = factory.0.budget.snapshot();
-                *factory.0.memory_summary.lock().unwrap() = Some(Arc::new(layer_render::MemoryBudgetSummary::new(&snapshot)));
+                *factory.0.memory_summary.lock().unwrap() = Some(Arc::new(layer_render::MemoryBudgetSummary::new(&snapshot, factory.0.memory_device)));
                 factory.0.memory_update_pending.store(false, std::sync::atomic::Ordering::Release);
             });
         }
@@ -384,4 +386,16 @@ mod tests {
         drop(pipeline);
         drop(raw);
     }
+}
+fn adapter_summary(info: &wgpu::AdapterInfo) -> layer_render::GpuAdapter {
+    let api = match info.backend {
+        wgpu::Backend::Vulkan => "Vulkan",
+        wgpu::Backend::Metal => "Metal",
+        wgpu::Backend::Dx12 => "Direct3D 12",
+        wgpu::Backend::Gl => "OpenGL",
+        wgpu::Backend::BrowserWebGpu => "WebGPU",
+        _ => "",
+    };
+    let driver = [info.driver.trim(), info.driver_info.trim()].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+    layer_render::GpuAdapter { name: info.name.trim().to_string(), api, driver }
 }

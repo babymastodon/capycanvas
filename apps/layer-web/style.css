@@ -15,6 +15,12 @@ body { --secondary:color-mix(in srgb,var(--text) 55%,transparent); --popover: va
 }
 /* Match Adwaita's native tooltip: readable text, quiet dark surface, no arrow. */
 .hover-tooltip { position:fixed; inset:auto; width:max-content; margin:0; padding:6px 10px; border:1px solid rgb(255 255 255 / 10%); border-radius:calc(9px * var(--squircle-scale)); background:rgb(0 0 6 / 80%); color:white; box-shadow:none; font:inherit; font-weight:400; line-height:normal; white-space:pre-wrap; overflow-wrap:anywhere; pointer-events:none; user-select:none; }
+.hover-tooltip:popover-open:has(.tip-lines) { display:flex; flex-direction:column; gap:6px; }
+.tip-text { max-width:320px; }
+.tip-lines { display:grid; grid-template-columns:auto minmax(0,38ch); column-gap:16px; row-gap:4px; }
+.tip-key { opacity:.75; }
+.tip-figures { grid-template-columns:auto auto; align-self:flex-start; }
+.tip-figures > :nth-child(even) { text-align:right; font-weight:500; font-variant-numeric:tabular-nums; }
 
 .workspace-manager { width:460px; height:fit-content; max-height:calc(100dvh - 32px); background:var(--settings); --workspace-shade:#fff; --workspace-list-bg:color-mix(in srgb,white 8%,var(--bg)); --workspace-button-bg:color-mix(in srgb,white 10%,transparent); --workspace-button-hover:color-mix(in srgb,white 15%,transparent); }
 body[data-theme="light"] .workspace-manager { --workspace-shade:#000; --workspace-list-bg:var(--card); --workspace-button-bg:color-mix(in srgb,black 7%,transparent); --workspace-button-hover:color-mix(in srgb,black 11%,transparent); }
@@ -858,9 +864,25 @@ body[data-theme="dark"] .toolbar-manager .destructive-action { color: #ff7b63; }
 .gradient-stops { position:relative; height:12px; margin:0 6px; }
 .gradient-stops button { position:absolute; padding:0; width:10px; min-width:0; height:10px; min-height:0; border-radius:50%; transform:translateX(-50%); border:1px solid var(--text); }
 .gradient-stops button.selected { outline:2px solid var(--text); outline-offset:1px; }
-.renderer-stats { display:flex; flex-direction:column; gap:var(--panel-control-spacing); }
+.renderer-stats { display:flex; flex-direction:column; gap:6px; }
 .renderer-stats .numeric { font-variant-numeric:tabular-nums; white-space:nowrap; }
 .renderer-chart { display:block; width:100%; height:46px; }
+.meter-row { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.meter-line,.meter-lead,.meter-heading { display:flex; align-items:center; gap:6px; min-width:0; }
+.meter-lead { flex:1; }
+.meter-label,.meter-note { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.meter-label { min-width:0; }
+.meter-line > .numeric { flex:none; margin-left:auto; text-align:right; }
+.meter-chip { flex:none; font-size:.85em; font-weight:600; padding:0 7px; border-radius:999px; background:color-mix(in srgb,var(--text) 10%,transparent); }
+.meter-chip.warning { background:color-mix(in srgb,var(--error) 16%,transparent); }
+.meter-chip.warning,.meter-line > .warning { color:var(--error); }
+.meter-bar { position:relative; height:12px; box-sizing:border-box; padding:3px 0; border-radius:3px / 6px; overflow:hidden; background-clip:content-box; }
+.meter-bar.limited::after { content:""; position:absolute; top:0; bottom:0; width:1px; left:calc(var(--limit) * 100%); transform:translateX(-1px); background:color-mix(in srgb,var(--text) 60%,transparent); }
+.meter-section,.meter-rows { display:flex; flex-direction:column; gap:8px; }
+.meter-title { font-weight:600; flex:none; }
+.meter-note { opacity:.55; flex:1; }
+.stats-separator { width:100%; height:1px; margin:0; border:0; background:var(--menu-divider); }
+.renderer-stats > button { align-self:flex-start; background:var(--button); }
 
 /* Editor panels share the native host's logical sizing and models. */
 #header-start { min-width:0; }

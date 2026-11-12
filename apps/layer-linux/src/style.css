@@ -392,6 +392,12 @@ window.capy-workspace dialog .number-panel.number-control scale trough, .phone-d
 .content-drawer .effect-properties { margin: var(--panel-inset); }
 .property-section { margin-left: 0; }
 .renderer-stats { margin: var(--panel-inset); }
+.meter-section-title { font-weight: 600; }
+.tip-key { opacity: .75; }
+.tip-figure { font-weight: 500; font-feature-settings: "tnum"; }
+.meter-row label.alert { color: var(--capy-error); }
+label.badge { font-size: .85em; font-weight: 600; padding: 0 7px; border-radius: 999px; background: alpha(currentColor, .1); }
+label.badge.alert { color: var(--capy-error); background: alpha(var(--capy-error), .16); }
 /* The swatch pair intentionally overlaps; round hit regions match the paint. */
 .color-panel .color-swatch, .color-panel .color-utility, .bubble-bead { min-width:0; min-height:0; padding:3px; border-radius:999px; }
 .color-panel .color-swatch, .bubble-bead { padding:1px; background:var(--panel-bg); box-shadow:none; }

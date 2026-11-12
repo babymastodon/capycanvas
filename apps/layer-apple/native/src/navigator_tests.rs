@@ -48,27 +48,13 @@ fn diagnostics_restored_before_gpu_attachment_collects_actual_drawing_samples() 
             assert!(std::time::Instant::now() < deadline, "GPU diagnostics did not deliver drawing samples: {stats}");
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
-        assert_eq!(stats["rows"].as_array().unwrap().len(), 15);
+        assert_eq!(stats["rows"].as_array().unwrap().len(), 3);
         assert_eq!(metric(&stats, "FPS")["value"], "—");
         assert!(!stats["samples"].as_array().unwrap().is_empty());
         assert!(stats["samples"].as_array().unwrap().len() <= 120);
         assert_ne!(metric(&stats, "CPU · ms")["value"], "—");
-        assert!(
-            metric(&stats, "Frames")["value"]
-                .as_str()
-                .unwrap()
-                .parse::<u64>()
-                .unwrap()
-                > 0
-        );
-        assert!(
-            metric(&stats, "Dabs")["value"]
-                .as_str()
-                .unwrap()
-                .parse::<u64>()
-                .unwrap()
-                > 0
-        );
+        assert!(stats["frames"].as_u64().unwrap() > 0);
+        assert!(stats["dabs"].as_u64().unwrap() > 0);
         assert!(
             metric(&stats, "GPU · ms")["description"]
                 .as_str()
@@ -78,10 +64,7 @@ fn diagnostics_restored_before_gpu_attachment_collects_actual_drawing_samples() 
         app.invoke("zoom_in");
         app.draw_frame();
         let navigated = app.request(2, json!({"type":"renderer_stats"})).unwrap();
-        assert_eq!(
-            metric(&navigated, "Dabs")["value"],
-            metric(&stats, "Dabs")["value"]
-        );
+        assert_eq!(navigated["dabs"], stats["dabs"]);
         let samples = navigated["samples"].clone();
         app.action(json!({"type":"customize","action":{"type":"set_panel_visible","panel":"stats","visible":false}}));
         app.stroke();

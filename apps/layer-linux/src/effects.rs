@@ -72,9 +72,11 @@ pub struct EffectPanels {
     property_choice_labels: gtk::SizeGroup,
     section_labels: RefCell<Vec<(usize, gtk::Label)>>,
     property_updating: Rc<Cell<bool>>,
-    stats_labels: RefCell<Vec<gtk::Label>>,
+    stats_timings: crate::meter::MeterRows,
+    stats_rates: crate::meter::MeterRows,
     stats_plot: gtk::DrawingArea,
     stats_samples: Rc<RefCell<Vec<f32>>>,
+    stats_memory: crate::meter::Section,
 }
 enum Field {
     Number(NumberControl),
@@ -216,9 +218,11 @@ impl EffectPanels {
         let stats = gtk::Box::new(gtk::Orientation::Vertical, 6);
         stats.add_css_class("renderer-stats");
         let recording_button = gtk::Button::with_label("Start stroke recording");
-        recording_button.add_css_class("flat");
+        recording_button.set_halign(gtk::Align::Start);
         recording_button.set_widget_name("stroke-recording");
-        stats.append(&recording_button);
+        let stats_timings = crate::meter::MeterRows::new(6);
+        let stats_rates = crate::meter::MeterRows::new(6);
+        let stats_memory = crate::meter::Section::new();
         let stats_plot = gtk::DrawingArea::builder()
             .content_width(180)
             .content_height(46)
@@ -253,6 +257,13 @@ impl EffectPanels {
                 cr.stroke().ok();
             }
         ));
+        stats.append(&stats_timings.root);
+        stats.append(&stats_plot);
+        stats.append(&stats_rates.root);
+        stats.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        stats.append(&stats_memory.root);
+        stats.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        stats.append(&recording_button);
         Self {
             filter_types,
             type_list,
@@ -306,9 +317,11 @@ impl EffectPanels {
             property_choice_labels: gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal),
             section_labels: RefCell::default(),
             property_updating: Rc::new(Cell::new(false)),
-            stats_labels: RefCell::new(Vec::new()),
+            stats_timings,
+            stats_rates,
             stats_plot,
             stats_samples,
+            stats_memory,
         }
     }
     pub fn bind(self: &Rc<Self>, w: &Rc<Workspace>, state: &UiState) {
@@ -1121,39 +1134,22 @@ impl EffectPanels {
         let Some(view) = w.gpu.borrow().as_ref().map(|g| g.session.renderer_stats()) else {
             return;
         };
-        if self.stats_labels.borrow().is_empty() {
-            self.stats_plot.set_tooltip_text(Some(view.chart_label));
-            for (index, metric) in view.rows.iter().enumerate() {
-                let value = gtk::Label::new(None);
-                value.set_xalign(1.);
-                value.add_css_class("numeric");
-                let row = row(&metric.label, &value);
-                row.set_tooltip_text(Some(&metric.description));
-                self.stats
-                    .insert_child_after(&row, self.recording_button.prev_sibling().as_ref());
-                self.stats_labels.borrow_mut().push(value);
-                if index + 1 == view.chart_after_rows {
-                    self.stats.insert_child_after(
-                        &self.stats_plot,
-                        self.recording_button.prev_sibling().as_ref(),
-                    );
-                }
-            }
-        }
-        for (label, metric) in self.stats_labels.borrow().iter().zip(&view.rows) {
-            if label.text().as_str() != metric.value { label.set_text(&metric.value); }
-            if let Some(row) = label.parent() {
-                if let Some(caption) = row.first_child().and_downcast::<gtk::Label>()
-                    && caption.text().as_str() != metric.label
-                { caption.set_text(&metric.label); }
-                if row.tooltip_text().as_deref() != Some(metric.description.as_str())
-                { row.set_tooltip_text(Some(&metric.description)); }
-            }
+        let Some(palette) = w.palette() else {
+            return;
+        };
+        let colors = crate::meter::colors(&palette);
+        let rows: Vec<_> = view.rows.iter().map(|row| layer_ui::MeterRow { label: row.label.clone(), value: row.value.clone(), tip: row.tip.clone(), ..Default::default() }).collect();
+        let (timings, rates) = rows.split_at(view.chart_after_rows.min(rows.len()));
+        self.stats_timings.update(timings, colors, &w.tooltips);
+        self.stats_rates.update(rates, colors, &w.tooltips);
+        if self.stats_plot.tooltip_text().as_deref() != Some(view.chart_label.as_str()) {
+            self.stats_plot.set_tooltip_text(Some(&view.chart_label));
         }
         if *self.stats_samples.borrow() != view.samples {
             *self.stats_samples.borrow_mut() = view.samples;
             self.stats_plot.queue_draw();
         }
+        self.stats_memory.update(&view.memory, colors, &w.tooltips);
     }
 }
 fn empty_preview() -> gtk::gdk::Paintable {

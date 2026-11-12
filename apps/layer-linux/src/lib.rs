@@ -40,6 +40,7 @@ mod swipe_row;
 mod navigator;
 mod notice;
 mod number_control;
+mod meter;
 mod range_control;
 mod palette_grid;
 mod panel_controls;

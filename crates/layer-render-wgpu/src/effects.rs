@@ -206,7 +206,6 @@ pub(super) struct Effects {
     // Reuse the lookup key; ordinary painting/animation does not repack inputs.
     ids: (Vec<OccurrenceHandle>, u32),
     preparation: preparation::Preparation,
-    pub compilations: u64,
 }
 impl std::ops::Deref for Effects {
     type Target = Recipes;
@@ -307,7 +306,6 @@ impl Effects {
             instances: HashMap::new(),
             ids: (Vec::new(), 0),
             preparation: self.preparation.fork(),
-            compilations: 0,
         }
     }
     pub fn merge_validated(&mut self, other: Self) {
@@ -342,7 +340,7 @@ impl Effects {
         if let Some(cache) = &r.validated_effects { return cache.fork(); }
         let recipes = r.recipes.effects.get_or_init(|| Arc::new(Recipes::new(&r.device, uniforms))).clone();
         Self { preparation: preparation::Preparation::from_recipes(recipes.preparation.clone()), recipes,
-            pipelines: Vec::new(), instances: HashMap::new(), ids: (Vec::new(), 0), compilations: 0 }
+            pipelines: Vec::new(), instances: HashMap::new(), ids: (Vec::new(), 0) }
     }
 }
 impl Recipes {
@@ -520,7 +518,6 @@ impl Effects {
                     (pipeline.clone(), *original_independent)
                 } else {
                     shared.push((programs.clone(), stage, pipeline.clone(), original_independent));
-                    self.compilations += 1;
                     (pipeline, original_independent)
                 }
             };

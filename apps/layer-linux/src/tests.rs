@@ -2140,15 +2140,7 @@ fn native_tool_drawers() {
                         .value,
                     "Unavailable"
                 );
-                assert_ne!(
-                    telemetry
-                        .rows
-                        .iter()
-                        .find(|r| r.label == "Frames")
-                        .unwrap()
-                        .value,
-                    "0"
-                );
+                assert_ne!(telemetry.frames, 0);
             }
             // The original dock still owns its own live panel body.
             for (panel, widget) in &w.panels {

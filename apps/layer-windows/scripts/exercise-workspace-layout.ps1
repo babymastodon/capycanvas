@@ -26,17 +26,23 @@ function Panel-Menu([string]$Id){
     }}
     throw "Shared panel menu is missing: $Id"
 }
-function Drawing-Frames {
-    $caption=Control 'Frames' -Name -Type ([System.Windows.Automation.ControlType]::Text)
-    $reading=[System.Windows.Automation.TreeWalker]::RawViewWalker.GetNextSibling($caption)
-    if(!$reading -or $reading.Current.AutomationId -notlike 'renderer-stat-*'){throw 'Diagnostics Frames caption has no adjacent row reading'}
-    [uint64]$reading.Current.Name
+function Renderer-Stats {
+    $state=State-File
+    $owner=Read-Snapshot $state
+    $path=Join-Path (Split-Path -Parent $state) ((Split-Path -Leaf $state) -replace '^ui-state-','renderer-stats-')
+    Wait-Until {Test-Path -LiteralPath $path} 'Diagnostics did not publish its renderer_stats query'
+    $query=Read-Snapshot $path
+    if($query.process_id -ne $review.Id -or $query.window_id -ne $owner.window_id -or $null -eq $query.result.frames){throw 'Diagnostics query belongs to another window or has no frame counter'}
+    $query.result
 }
+function Drawing-Frames { [uint64]((Renderer-Stats).frames) }
 function Idle-Fps{
-    Wait-Until {(Control 'renderer-stat-2').Current.Name -eq '0'} 'Diagnostics did not show zero FPS after canvas activity stopped' 15
-    $frames=Drawing-Frames
+    $snapshot=[ref]$null
+    Wait-Until {$snapshot.Value=Renderer-Stats;$snapshot.Value.rows[2].value -eq '0'} 'Diagnostics did not show zero FPS after canvas activity stopped' 15
+    $frames=[uint64]$snapshot.Value.frames
     Start-Sleep -Milliseconds 1500
-    $fps=(Control 'renderer-stat-2').Current.Name;$after=Drawing-Frames
+    $next=Renderer-Stats
+    $fps=$next.rows[2].value;$after=[uint64]$next.frames
     if($fps -ne '0' -or $after -ne $frames){throw "Idle Diagnostics created canvas drawing updates or reported active FPS: frames_before=$frames frames_after=$after fps=$fps"}
     $frames
 }
@@ -51,7 +57,7 @@ function Assert-DiagnosticsIdentity([string]$Stage,[string]$Expected){
 }
 function Fps-Copy([string]$Tag){
     $catalog=Get-Content -LiteralPath (Join-Path $repo "assets/locales/$Tag/workspace.ftl") -Encoding UTF8
-    foreach($key in 'diagnostics-submitted-fps','diagnostics-submitted-fps-description'){
+    foreach($key in 'diagnostics-submitted-fps','diagnostics-submitted-fps-tip'){
         $line=@($catalog|Where-Object {$_.StartsWith($key+' = ')})
         if($line.Count -ne 1){throw "Missing shared Diagnostics copy: $Tag $key"}
         $line[0].Substring($key.Length+3).Trim()
@@ -350,9 +356,9 @@ try{
     }
     (Control $stats.label -Name -Type ([System.Windows.Automation.ControlType]::MenuItem)).GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
     Wait-Until {@((Model).layout.groups|Where-Object active -eq 'stats').Count -gt 0} 'Diagnostics panel did not appear'
-    Wait-Until {$null -ne (Find 'renderer-stat-7')} 'Diagnostics query did not populate all shared rows'
+    Wait-Until {$null -ne (Find 'renderer-memory-row-0')} 'Diagnostics query did not populate all shared rows'
     $cpu=Control 'renderer-stat-0'
-    if($cpu.Current.HelpText -notmatch 'Not GPU completion or input latency'){throw 'Diagnostics lost measurement scope'}
+    if(!$cpu.Current.HelpText.StartsWith((Renderer-Stats).rows[0].tip.text)){throw 'Diagnostics lost its shared CPU tooltip'}
     $framesBefore=Drawing-Frames
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action 'Test stroke'
     Wait-Until {(Drawing-Frames) -gt $framesBefore} 'Visible Diagnostics did not collect drawing submissions'
@@ -383,7 +389,7 @@ try{
     Invoke 'Test GPU loss' -Name
     Wait-Until {
         $rate=Find 'renderer-stat-2';if($rate -and $rate.Current.Name -eq [string][char]0x2014){$recovery.unavailable_observed=$true}
-        (Model).windows_gpu_generation -eq $generation+1 -and (Model).brush_ready
+        (Model).windows_gpu_generation -eq $generation+1 -and (Model).brush_ready -and (Renderer-Stats).frames -gt 0
     } 'Diagnostics GPU recovery did not replace its renderer' 60
     $copy=@(Fps-Copy 'en')
     Wait-Until {(Control 'renderer-stat-2').Current.Name -match '^[0-9]+$' -and (Control 'renderer-stat-2').Current.HelpText -eq $copy[1] -and (Find $copy[0] -Name -Type ([System.Windows.Automation.ControlType]::Text))} 'Recovered Diagnostics did not resume submitted FPS'
@@ -392,14 +398,18 @@ try{
     Assert-DiagnosticsIdentity 'after-gpu-recovery' $metricIdentity
     [IO.File]::WriteAllText((Join-Path $run 'diagnostics-fps.json'),(@{cached_pan='passed';idle_without_drawing_updates='passed';retained_localized_source='passed';gpu_generation_before=$generation;gpu_generation_after=(Model).windows_gpu_generation;unavailable_observed=$recovery.unavailable_observed;unavailable_scope='200 ms native polling can miss the reset interval; windowless renderer_stats_distinguish_submissions_and_retire_surface_feedback asserts unavailable deterministically'}|ConvertTo-Json -Depth 4))
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawing.Handle.ToInt64() -Action Resize -Width 1500 -Height 1000
-    Wait-Until {$null -ne (Find 'renderer-stat-7')} 'Resize removed Diagnostics content'
+    Wait-Until {$null -ne (Find 'renderer-memory-row-0')} 'Resize removed Diagnostics content'
     Assert-RendererHealthy $review.Id $drawing
-    & (Join-Path $PSScriptRoot 'inspect-window.ps1') -TraceDirectory $CapyTraceDirectory -ProcessId $review.Id -WindowHandle $drawing.Handle.ToInt64() -Output (Join-Path $run 'diagnostics.png') -ClientOnly *> (Join-Path $run 'diagnostics.json')
+    & (Join-Path $PSScriptRoot 'inspect-window.ps1') -TraceDirectory $CapyTraceDirectory -ProcessId $review.Id -WindowHandle $drawing.Handle.ToInt64() -Output (Join-Path $run 'diagnostics.png') -ClientOnly -Composed *> (Join-Path $run 'diagnostics.json')
+    $cpuBounds=(Control 'renderer-stat-0' -Arranged).Current.BoundingRectangle
+    [CapyRowPointer]::Hover([int]($cpuBounds.X+$cpuBounds.Width/2),[int]($cpuBounds.Y+$cpuBounds.Height/2))
+    Wait-Until {@(Capy-Tooltips $review.Id).Count -gt 0} 'Diagnostics CPU rich tooltip did not appear' 5
+    & (Join-Path $PSScriptRoot 'inspect-window.ps1') -TraceDirectory $CapyTraceDirectory -ProcessId $review.Id -WindowHandle $drawing.Handle.ToInt64() -Output (Join-Path $run 'diagnostics-tooltip.png') -ClientOnly -Composed *> (Join-Path $run 'diagnostics-tooltip.json')
     & (Join-Path $PSScriptRoot 'open-application-menu.ps1') -Root $root -Name 'window'
     (Control (Panel-Menu 'stats').label -Name -Type ([System.Windows.Automation.ControlType]::MenuItem)).GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
     Wait-Until {$null -eq (Find 'renderer-stat-0')} 'Hidden Diagnostics retained visible widgets'
     & (Join-Path $PSScriptRoot 'open-application-menu.ps1') -Root $root -Name 'window';Invoke 'undo_workspace'
-    Wait-Until {$null -ne (Find 'renderer-stat-7')} 'Workspace Undo did not restore Diagnostics'
+    Wait-Until {$null -ne (Find 'renderer-memory-row-0')} 'Workspace Undo did not restore Diagnostics'
     Assert-RendererHealthy $review.Id $drawing
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Close -DiscardUnsaved
     if((Get-Item -LiteralPath $stderr).Length){throw 'Native stderr requires inspection'}

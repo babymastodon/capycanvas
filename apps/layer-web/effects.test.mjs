@@ -221,26 +221,50 @@ export async function checkAdjustments({call,evaluate,settle}) {
     await capture(`${String(index+2).padStart(2,"0")}-${effect}`);
     await send({type:"set_layer_visibility",id:view.layer,visible:false});
   }
+  console.log(`PASS: ${choices.length} categorized filters, GPU previews, search, insertion/properties, controls and GPU rendering`);
+}
+
+export async function checkDiagnostics({call,evaluate,settle}) {
+  const directory=process.env.LAYER_IMAGE_CAPTURE_DIR??"artifacts/ui/diagnostics-web";
+  await mkdir(directory,{recursive:true});
+  const send=action=>evaluate(`layerApp.dispatch(${JSON.stringify(action)})`);
+  const wait=async condition=>{const end=Date.now()+25000;while(!await evaluate(condition))if(Date.now()>end)throw Error(`Timed out: ${condition}`);else await new Promise(resolve=>setTimeout(resolve,50));};
+  const capture=async name=>{await wait('layerApp.app.brush_ready()');await settle();const shot=await call("Page.captureScreenshot",{format:"png"});await writeFile(`${directory}/${name}.png`,Buffer.from(shot.data,"base64"));};
   await send({type:"customize",action:{type:"set_panel_visible",panel:"stats",visible:true}});
   await send({type:"move_panel",panel:"stats",viewport:[1440,1000],target:{kind:"float",position:[720,120]}});
-  const editing=await evaluate("Number(layerApp.state().layer_properties.layer)");
-  await send({type:"set_layer_visibility",id:editing,visible:true});
-  for(let i=0;i<20;i++){await send({type:"set_layer_opacity",id:editing,opacity:.8+i*.005});await settle();}
+  await evaluate("(()=>{const workspace=structuredClone(layerApp.state().workspace);for(const group of workspace.layout.floating)if(group.root.panels?.includes('stats')){group.width=242;group.height=450;}layerApp.dispatch({type:'restore_workspace',workspace});})()");await settle();
+  for(let i=0;i<20;i++){await send({type:"set_zoom",zoom:.8+i*.005});await settle();}
   await evaluate(`new Promise((resolve,reject)=>{
     const deadline=performance.now()+10000;
     const ready=()=>{
       const panel=document.querySelector('.renderer-stats');
-      if(panel.getBoundingClientRect().height>0 && panel.children.length===layerApp.app.renderer_stats().rows.length+2)resolve(true);
+      if(panel.getBoundingClientRect().height>0 && panel.children.length===layerApp.app.renderer_stats().rows.length+5)resolve(true);
       else if(performance.now()>deadline)reject(Error('Diagnostics rows and chart did not render'));
       else setTimeout(ready,100);
     };ready();
   })`);
+  assert.equal(await evaluate("document.querySelector('.renderer-stats').closest('.panel').getBoundingClientRect().width"),242);
   assert.equal(await evaluate("document.querySelector('.renderer-chart').getBoundingClientRect().height"),46);
   const stats=await evaluate("JSON.parse(JSON.stringify(layerApp.app.renderer_stats(),(_,v)=>typeof v==='bigint'?Number(v):v))");assert.ok(stats.samples.length>0,JSON.stringify({stats,layout:await evaluate("JSON.stringify(layerApp.app.layout(innerWidth,innerHeight),(_,v)=>typeof v==='bigint'?Number(v):v)"),error:await evaluate("document.querySelector('#status')?.textContent")}));
-  const order=stats.rows.map(row=>row.label);order.splice(Number(stats.chart_after_rows),0,"chart");order.push("stroke-recording");
-  assert.deepEqual(await evaluate("Array.from(document.querySelector('.renderer-stats').children,child=>child.matches('.renderer-chart')?'chart':child.dataset.control??child.firstChild.textContent)"),order);
-  await capture("stats-dark");await send({type:"set_theme",theme:"light"});await capture("stats-light");
-  console.log(`PASS: ${choices.length} categorized filters, GPU previews, search, insertion/properties, controls, GPU rendering and live telemetry`);
+  const order=stats.rows.map(row=>row.label);order.splice(Number(stats.chart_after_rows),0,"chart");order.push("separator","renderer-memory","separator","stroke-recording");
+  assert.deepEqual(await evaluate("Array.from(document.querySelector('.renderer-stats').children,child=>child.matches('.renderer-chart')?'chart':child.matches('hr')?'separator':child.dataset.control??child.querySelector('.meter-label').textContent)"),order);
+  for(const theme of ['dark','light']) {
+    await send({type:'set_theme',theme});await settle();
+    assert.equal(await evaluate("document.querySelectorAll('.meter-rows .meter-row').length"),stats.memory.rows.length);
+    assert.ok(await evaluate("document.querySelector('.meter-rows .meter-bar:not([hidden])')!==null"));
+    for(const [index,selector] of ['.renderer-stats > .meter-row:nth-child(1)','.renderer-stats > .meter-row:nth-child(2)','.renderer-stats > .meter-row:nth-child(4)','[data-control="renderer-memory-row-0"]','[data-control="renderer-memory-row-1"]','[data-control="renderer-memory-heading"]'].entries()) {
+      const expected=await evaluate(`(()=>{const tip=layerApp.app.renderer_stats(),source=${index}<3?tip.rows[${index}].tip:${index}<5?tip.memory.rows[${index}-3].tip:tip.memory.tip;return [source.text,...source.lines.map(line=>line.label)].filter(Boolean);})()`);
+      const point=await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+      await call('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
+      await wait(`(()=>{const tip=document.querySelector('#hover-tooltip:popover-open');return tip&&${JSON.stringify(expected)}.every(text=>tip.textContent.includes(text));})()`);
+      await capture(`stats-tip-${index}-${theme}`);
+      await writeFile(`${directory}/stats-tip-${index}-${theme}.json`,JSON.stringify(await evaluate("(()=>{const r=document.querySelector('#hover-tooltip').getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}})()")));
+    }
+    await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:10,y:10});await settle();
+    await capture(`stats-${theme}`);
+    await writeFile(`${directory}/stats-${theme}.json`,JSON.stringify(await evaluate("(()=>{const rect=n=>{const r=n.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}};return{panel:rect(document.querySelector('.renderer-stats').closest('.panel')),stats:rect(document.querySelector('.renderer-stats')),children:[...document.querySelector('.renderer-stats').children].map(rect)}})()"),null,2));
+  }
+  console.log("PASS: Diagnostics rows, meters and six tooltips in both themes");
 }
 
 export async function checkCurves({call,evaluate,settle}) {

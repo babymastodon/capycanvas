@@ -13,6 +13,7 @@
 #include "NativePresentation.h"
 #include "NativeJson.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Documents.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.UI.Text.h>
 #include <algorithm>
@@ -555,8 +556,13 @@ inline void segmentColors(std::shared_ptr<WorkspaceData> const& data,Primitives:
     buttonColors(data,button,20,data->brush(L"header_selection"));
 }
 inline bool& touchContact(){thread_local bool touch=false;return touch;}
+inline hstring plainTip(J const& tip){
+    auto text=str(tip,L"text");
+    for(auto value:array(tip,L"lines")){auto line=value.GetObject();if(!text.empty())text=text+L"\n";text=text+str(line,L"label")+L": "+str(line,L"value");}
+    return text;
+}
 struct TooltipOwner {
-    weak_ref<DependencyObject> owner;hstring text,lastHelpText;
+    weak_ref<DependencyObject> owner;hstring text,lastHelpText;J tip{nullptr};
     void updateAutomationHelpText(DependencyObject const& target,hstring const& value){
         auto current=AutomationProperties::GetHelpText(target);
         if(current.empty()||current==lastHelpText){AutomationProperties::SetHelpText(target,value);lastHelpText=value;}
@@ -589,8 +595,28 @@ struct TooltipPresentation {
         root.AddHandler(UIElement::PointerPressedEvent(),pressed,true);root.AddHandler(UIElement::KeyDownEvent(),escape,true);
     }
     void Refresh(FrameworkElement const& view,hstring const& value){
-        text.Text(value);AutomationProperties::SetName(frame,value);
-        auto size=view.XamlRoot().Size();frame.MaxWidth(std::min(320.,std::max(1.,double(size.Width)-8)));
+        auto found=tooltipOwners().find(get_abi(view.as<DependencyObject>()));
+        auto tip=found==tooltipOwners().end()?J{nullptr}:found->second.tip;
+        auto lines=tip?array(tip,L"lines"):A{};
+        if(!lines.Size()){text.Text(value);frame.Child(text);}else{
+            auto block=[&](hstring const& value){TextBlock result;result.Text(value);result.Foreground(text.Foreground());result.FontSize(text.FontSize());result.FontFamily(text.FontFamily());result.TextWrapping(TextWrapping::Wrap);return result;};
+            StackPanel stack;stack.Spacing(6);
+            auto intro=str(tip,L"text");if(!intro.empty()){auto lead=block(intro);lead.MaxWidth(320);lead.HorizontalAlignment(HorizontalAlignment::Left);stack.Children().Append(lead);}
+            Grid grid;grid.ColumnSpacing(16);grid.RowSpacing(4);grid.HorizontalAlignment(HorizontalAlignment::Left);
+            for(int i=0;i<2;++i){ColumnDefinition column;column.Width({1,GridUnitType::Auto});grid.ColumnDefinitions().Append(column);}
+            bool figures=flag(tip,L"figures");
+            for(uint32_t i=0;i<lines.Size();++i){
+                RowDefinition row;row.Height({1,GridUnitType::Auto});grid.RowDefinitions().Append(row);auto line=lines.GetObjectAt(i);
+                auto key=block(str(line,L"label"));key.Opacity(.75);key.VerticalAlignment(VerticalAlignment::Top);Grid::SetRow(key,i);grid.Children().Append(key);
+                auto reading=block(str(line,L"value"));Grid::SetRow(reading,i);Grid::SetColumn(reading,1);
+                if(figures){reading.TextAlignment(TextAlignment::Right);reading.FontWeight(Windows::UI::Text::FontWeights::Medium());Documents::Typography::SetNumeralAlignment(reading,FontNumeralAlignment::Tabular);}
+                else reading.MaxWidth(text.FontSize()*.55*38);
+                grid.Children().Append(reading);
+            }
+            stack.Children().Append(grid);frame.Child(stack);
+        }
+        AutomationProperties::SetName(frame,value);
+        auto size=view.XamlRoot().Size();frame.MaxWidth(std::min(lines.Size()?double(size.Width):320.,std::max(1.,double(size.Width)-8)));
         frame.Measure({float(frame.MaxWidth()),std::numeric_limits<float>::infinity()});auto extent=frame.DesiredSize();
         auto bounds=view.TransformToVisual(root).TransformBounds({0,0,float(view.ActualWidth()),float(view.ActualHeight())});
         popup.HorizontalOffset(std::clamp(double(bounds.X+(bounds.Width-extent.Width)/2),0.,std::max(0.,double(size.Width-extent.Width))));
@@ -624,7 +650,7 @@ inline void setTouchContact(bool touch){
     if(touchContact()==touch)return;
     touchContact()=touch;if(touch)tooltipPresentation().Hide();
 }
-inline void tooltip(DependencyObject const& target,hstring const& text){
+inline void setTooltip(DependencyObject const& target,hstring const& text,J const& tip){
     auto& owners=tooltipOwners();auto found=owners.find(get_abi(target));
     bool known=found!=owners.end()&&found->second.owner.get()==target;
     if(!known){
@@ -632,7 +658,7 @@ inline void tooltip(DependencyObject const& target,hstring const& text){
         found=owners.insert_or_assign(get_abi(target),TooltipOwner{make_weak(target)}).first;
     }
     auto& owner=found->second;owner.updateAutomationHelpText(target,text);
-    bool changed=owner.text!=text;owner.text=text;
+    bool changed=owner.text!=text||!JsonEqual(owner.tip,tip);owner.text=text;owner.tip=tip;
     auto view=target.try_as<FrameworkElement>();if(!view)return;
     if(known){
         auto& shown=tooltipPresentation();if(shown.owner.get()==view){if(text.empty())shown.Hide();else if(changed&&shown.popup&&shown.popup.IsOpen())shown.Refresh(view,text);}return;
@@ -650,6 +676,10 @@ inline void tooltip(DependencyObject const& target,hstring const& text){
     });
     view.LostFocus([weak=make_weak(view)](auto&&,RoutedEventArgs const& event){if(auto view=weak.get();view&&tooltipFocusOwner(view,event)&&tooltipPresentation().owner.get()==view)tooltipPresentation().Hide();});
     view.Unloaded([weak=make_weak(view)](auto&&,auto&&){if(tooltipPresentation().owner.get()==weak.get())tooltipPresentation().Hide();});
+}
+inline void tooltip(DependencyObject const& target,hstring const& text){setTooltip(target,text,nullptr);}
+inline void tooltip(DependencyObject const& target,J const& tip){
+    auto text=plainTip(tip);AutomationProperties::SetName(target,text);setTooltip(target,text,tip);
 }
 inline void copyName(std::shared_ptr<WorkspaceData> const& data,FrameworkElement const& target,LocalizedCopy const& text,bool tip=false){
     auto present=[tip](FrameworkElement const& view,hstring const& value){AutomationProperties::SetName(view,value);if(tip)tooltip(view,value);};

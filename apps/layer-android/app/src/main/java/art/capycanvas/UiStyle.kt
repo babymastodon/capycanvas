@@ -449,7 +449,7 @@ private class TileTooltipPositionProvider(private val gap: Int) : PopupPositionP
 /** Hover only: touch holds remain available for editing and context menus. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun HoverTip(label: String, modifier: Modifier = Modifier,
-    resolve: (((String) -> Unit) -> Unit)? = null, enabled: Boolean = true, reveal: Int = 0, content: @Composable () -> Unit) {
+    resolve: (((String) -> Unit) -> Unit)? = null, enabled: Boolean = true, reveal: Int = 0, tipContent: (@Composable (String) -> Unit)? = null, content: @Composable () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val state = rememberTooltipState()
@@ -483,13 +483,55 @@ private class TileTooltipPositionProvider(private val gap: Int) : PopupPositionP
                     positionProvider = position,
                     tooltip = {
                         val shape = RoundedCornerShape(9.dp)
-                        Box(Modifier.testTag("hover-tooltip").widthIn(max = 400.dp).background(Color(0xcc000006), shape)
+                        Box(Modifier.testTag("hover-tooltip").widthIn(max = if (tipContent == null) 400.dp else Dp.Infinity).background(Color(0xcc000006), shape)
                             .border(1.dp, Color.White.copy(alpha = .1f), shape).padding(horizontal = 11.dp, vertical = 7.dp)) {
-                            Text(text, color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                            if (tipContent == null) Text(text, color = Color.White, style = MaterialTheme.typography.bodyMedium) else tipContent(text)
                         }
                     }, state = state,
                     focusable = false, enableUserInput = false,
                     content = { Box(Modifier.fillMaxSize()) })
+            }
+        }
+    }
+}
+
+@Composable internal fun HoverTip(tip: JSONObject, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    if (tip.array("lines").length() == 0) HoverTip(tip.getString("text"), modifier, content = content)
+    else HoverTip(plainTip(tip), modifier, tipContent = { RichTip(tip) }, content = content)
+}
+
+@Composable private fun RichTip(tip: JSONObject) {
+    val text = tip.getString("text")
+    val lines = tip.array("lines").objects()
+    val style = MaterialTheme.typography.bodyMedium
+    val figures = tip.getBoolean("figures")
+    val keyWidth = panelLabelWidth(lines.map { it.getString("label") })
+    val valueStyle = style.copy(fontWeight = if (figures) androidx.compose.ui.text.font.FontWeight.Medium else style.fontWeight,
+        fontFeatureSettings = if (figures) "tnum" else null)
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val valueWidth = with(LocalDensity.current) { measurer.measure("0".repeat(38), style).size.width.toDp() }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (text.isNotEmpty()) Text(text, Modifier.widthIn(max = 400.dp), color = Color.White, style = style)
+        Layout(content = {
+            for (line in lines) {
+                Text(line.getString("label"), color = Color.White.copy(alpha = .75f), style = style)
+                Text(line.getString("value"), color = Color.White, style = valueStyle,
+                    textAlign = if (figures) androidx.compose.ui.text.style.TextAlign.End else androidx.compose.ui.text.style.TextAlign.Start)
+            }
+        }) { children, constraints ->
+            val gap = 16.dp.roundToPx(); val rowGap = 4.dp.roundToPx()
+            val key = keyWidth.roundToPx().coerceAtMost((constraints.maxWidth - gap).coerceAtLeast(0) / 2)
+            val available = (constraints.maxWidth - key - gap).coerceAtLeast(0)
+            val value = if (figures) children.filterIndexed { i, _ -> i % 2 == 1 }.maxOf { it.maxIntrinsicWidth(Constraints.Infinity) }.coerceAtMost(available)
+                else valueWidth.roundToPx().coerceAtMost(available)
+            val rows = children.chunked(2).map { pair -> pair[0].measure(Constraints(maxWidth = key)) to pair[1].measure(Constraints(maxWidth = value)) }
+            val height = rows.sumOf { maxOf(it.first.height, it.second.height) } + rowGap * (rows.size - 1)
+            layout(key + gap + value, height) {
+                var y = 0
+                for ((label, reading) in rows) {
+                    label.placeRelative(0, y); reading.placeRelative(key + gap + if (figures) value - reading.width else 0, y)
+                    y += maxOf(label.height, reading.height) + rowGap
+                }
             }
         }
     }

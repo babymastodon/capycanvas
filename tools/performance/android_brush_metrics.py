@@ -11,7 +11,7 @@ def input_completions(report, processed_timestamps=None):
     motion = report["motion"]
     intervals = motion.get("active_intervals_ns", [[motion["begin_ns"], motion["end_ns"]]])
     last_input = -1
-    last_raster = int(next(row["value"] for row in report["renderer_before"]["rows"] if row["label"] == "Frames"))
+    last_raster = int(report["renderer_before"]["frames"])
     completed = [[] for _ in intervals]
     for row in report["completions"]:
         _, queued, done, raster, consumed = row[:5]
@@ -67,7 +67,7 @@ def object_completions(report):
 def input_feedback(report):
     events = sorted((dict(zip(report["input_fields"], row)) for row in report["inputs"]),
                     key=lambda event: event["arrival_ns"])
-    raster = int(next(row["value"] for row in report["renderer_before"]["rows"] if row["label"] == "Frames"))
+    raster = int(report["renderer_before"]["frames"])
     completions = []
     for row in sorted(report["completions"], key=lambda row: row[2]):
         if row[3] > raster:
@@ -252,8 +252,7 @@ def completion_window(report):
               "snapshot_submitted_per_s": snapshot_submitted / seconds,
               "snapshot_completed_per_s": snapshot_completed / seconds,
               "snapshot_pending": after["submitted_frames"] - after["completed_frames"]}
-    last_raster = int(next(row["value"] for row in report["renderer_before"]["rows"]
-                           if row["label"] == "Frames"))
+    last_raster = int(report["renderer_before"]["frames"])
     submitted = completed = empty = pending = 0
     last_completed = {}
     gaps = []

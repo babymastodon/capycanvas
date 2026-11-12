@@ -124,7 +124,7 @@ import { checkFullscreen } from "./fullscreen.test.mjs";
 import { checkParity } from "./parity.mjs";
 import { checkLayers, checkSelectedPainting, checkLayerRelationships, checkPaperRows } from "./layers.test.mjs";
 import { checkPaperLibrary } from "./paper-library.test.mjs";
-import { checkAdjustments, checkCurves } from "./effects.test.mjs";
+import { checkAdjustments, checkCurves, checkDiagnostics } from "./effects.test.mjs";
 import { checkPreferences, checkSettingsParity, checkLiveLanguage } from "./preferences.test.mjs";
 import {checkLiveHistogramLanguage,checkLiveWorkspaceLanguage,checkLiveDeliveryLanguage,checkLiveProofLanguage,checkLiveColorFormLanguage,checkLiveToolbarLanguage,checkLiveEffectLanguage,checkLiveToolLanguage} from "./localization-journey.test.mjs";
 import { checkPwa, servePackage } from "./pwa.test.mjs";
@@ -249,9 +249,9 @@ try {
   );
   await settle();
   await evaluate(`new Promise((resolve,reject)=>{const deadline=performance.now()+30000;function check(){const v=JSON.parse(layerApp.app.workspace_view());if(v?.ready&&!v.busy)resolve();else if(performance.now()>deadline)reject(Error('Workspace startup: '+JSON.stringify(v)));else setTimeout(check,100);}check();})`);
-  const startupBudget = await evaluate('layerApp.app.renderer_stats().rows.slice(-4)');
-  assert.ok(startupBudget.length === 4 && startupBudget.every(row => /RAM.*[0-9].*MiB.*GPU.*[0-9].*MiB/.test(row.value) && /[0-9]+\.[0-9]+/.test(row.description) && !/NaN|Infinity/.test(row.description)),
-    `Startup samples the shared memory budget and its finite age: ${JSON.stringify(startupBudget)}`);
+  const startupMemory = await evaluate('JSON.parse(JSON.stringify(layerApp.app.renderer_stats().memory))');
+  assert.ok(startupMemory.rows.length >= 1 && startupMemory.rows[0].meter && /[0-9] [MG]B$/.test(startupMemory.rows[0].value) && startupMemory.note === '' && !/NaN|Infinity/.test(JSON.stringify(startupMemory)),
+    `Startup samples the shared memory budget: ${JSON.stringify(startupMemory)}`);
   if (process.env.LAYER_TEST_THEME) {
     assert.ok(['light','dark'].includes(process.env.LAYER_TEST_THEME));
     await evaluate(`layerApp.dispatch({type:'set_theme',theme:${JSON.stringify(process.env.LAYER_TEST_THEME)}})`);
@@ -437,6 +437,7 @@ try {
     [process.argv.includes("--lookup-transport"), () => checkLookupTransport({call,evaluate,settle}), checkErrors],
     [process.argv.includes("--color-pages"), () => checkPointwiseEffects({call,evaluate,settle,motion:false,colorPages:true}), checkErrors],
     [process.argv.includes("--color-pages-smoke"), () => checkPointwiseEffects({call,evaluate,settle,motion:false,colorPages:true,widths:[1100]}), checkErrors],
+    [process.argv.includes("--diagnostics"), () => checkDiagnostics({call,evaluate,settle}), checkErrors],
     [process.argv.includes("--adjustments"), () => checkAdjustments({ call, evaluate, settle }), checkErrors],
     [process.argv.includes("--selection"), () => checkSelectedPainting({ call, evaluate, settle }), checkErrors],
     [process.argv.includes("--layer-relationships"), () => checkLayerRelationships({ call, evaluate, settle }), checkErrors],

@@ -7,14 +7,8 @@ pub struct ScreenState {
     pub assessment: ScreenAssessment,
     pub clipped: Option<bool>,
     pub show_clipped: bool,
-    pub chip: Option<ScreenChip>,
+    pub chip: Option<crate::Chip>,
     pub details: Option<ScreenDetails>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ScreenChip {
-    pub label: std::sync::Arc<str>,
-    pub warning: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -80,19 +74,19 @@ impl<R: CanvasRenderer> UiSession<R> {
         }
     }
 
-    pub fn screen_chip(&self) -> Option<ScreenChip> {
+    pub fn screen_chip(&self) -> Option<crate::Chip> {
         if !self.state.workspace.layout.canvas_info.visible {
             return None;
         }
         let screen = &self.state.screen;
         if screen.clipped == Some(true) {
-            return Some(ScreenChip { label: self.localization().text(MessageId::COMMON_SCREEN_CHIP_CLIPPED), warning: true });
+            return Some(crate::Chip { label: self.localization().text(MessageId::COMMON_SCREEN_CHIP_CLIPPED), warning: true });
         }
         if self.screen_hdr_document() && !self.screen_proofing() {
-            return Some(ScreenChip { label: self.localization().text(self.hdr_view_label()), warning: false });
+            return Some(crate::Chip { label: self.localization().text(self.hdr_view_label()), warning: false });
         }
         (self.screen_proofing() && proof_caveat(&screen.assessment).is_some())
-            .then(|| ScreenChip { label: self.localization().text(MessageId::COMMON_SCREEN_CHIP_PROOF_CAVEAT), warning: false })
+            .then(|| crate::Chip { label: self.localization().text(MessageId::COMMON_SCREEN_CHIP_PROOF_CAVEAT), warning: false })
     }
 
     pub fn screen_details(&self) -> Option<ScreenDetails> {

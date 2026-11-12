@@ -2076,49 +2076,67 @@ class AndroidHostTest {
 
     @Test fun diagnosticsFollowSharedOrder() {
         customize(obj("type" to "set_panel_visible", "panel" to "stats", "visible" to true))
-        floatPanel("stats", 650f, 120f)
+        floatPanel("stats", 450f, 120f)
+        val workspace = JSONObject(state().getJSONObject("workspace").toString())
+        for (floating in workspace.getJSONObject("layout").array("floating").objects()) {
+            if ("stats" in floating.getJSONObject("root").array("panels").values()) { floating.put("width", 242); floating.put("height", 450) }
+        }
+        action(obj("type" to "restore_workspace", "workspace" to workspace))
         compose.waitUntil(180_000) { host.snapshot?.let { it.optBoolean("shaders_ready") && it.optBoolean("canvas_ready") }==true && runBlocking {host.withNative {!Native.renderingPending(it)}} }
         compose.waitUntil(10_000) { compose.onAllNodesWithTag("renderer-stats-chart").fetchSemanticsNodes().isNotEmpty() }
         val themes=androidx.test.platform.app.InstrumentationRegistry.getArguments().getString("theme")?.let {listOf(it)} ?: listOf("light","dark")
+        fun geometry(tag: String): JSONObject {
+            val bounds = screenBounds(compose.onNodeWithTag(tag, useUnmergedTree = true))
+            return obj("x" to bounds.left, "y" to bounds.top, "width" to bounds.width, "height" to bounds.height)
+        }
         for(theme in themes) {
             action(obj("type" to "set_theme", "theme" to theme))
-            customize(obj("type" to "set_panel_visible", "panel" to "stats", "visible" to false))
-            compose.waitUntil(10_000) {compose.onAllNodesWithTag("renderer-stats-chart").fetchSemanticsNodes().isEmpty()}
-            compose.waitForIdle();runBlocking {host.glassPresented()}
-            customize(obj("type" to "set_panel_visible", "panel" to "stats", "visible" to true))
-            compose.waitUntil(10_000) {compose.onAllNodesWithTag("renderer-stats-chart").fetchSemanticsNodes().isNotEmpty()}
             compose.waitForIdle();runBlocking {host.glassPresented()}
             val stats=runBlocking {host.withNative {JSONObject(Native.query(it,obj("type" to "renderer_stats").toString()))}}
-            val labels=stats.array("rows").objects().map {it.getString("label")}.toSet()
-            val values=mutableListOf<Pair<String,Int>>()
-            val matcher=hasAnyAncestor(hasTestTag("renderer-stats")) and !hasAnyAncestor(hasTestTag("stroke-recording")) and SemanticsMatcher("Stats values") {node ->
-                node.config.getOrNull(SemanticsProperties.Text)?.joinToString(""){it.text}?.let {it !in labels}==true
+            val timing = stats.array("rows").objects()
+            val memory = stats.getJSONObject("memory")
+            val rows = memory.array("rows").objects()
+            val readings = timing.indices.map { "renderer-stat-$it" } + rows.indices.map { "renderer-memory-value-$it" }
+            val values = mutableListOf<Pair<String, Int>>()
+            for (id in readings) {
+                val node = compose.onNodeWithTag(id, useUnmergedTree = true).fetchSemanticsNode()
+                compose.runOnIdle {
+                    val layouts = mutableListOf<TextLayoutResult>()
+                    assertTrue(node.config[SemanticsActions.GetTextLayoutResult].action!!.invoke(layouts))
+                    values.add(node.config[SemanticsProperties.Text].joinToString("") { it.text } to layouts.single().lineCount)
+                }
             }
-            val nodes=compose.onAllNodes(matcher,useUnmergedTree=true).fetchSemanticsNodes()
-            compose.runOnIdle {for(node in nodes) {
-                val layouts=mutableListOf<TextLayoutResult>()
-                assertTrue(node.config[SemanticsActions.GetTextLayoutResult].action!!.invoke(layouts))
-                values.add(node.config[SemanticsProperties.Text].joinToString(""){it.text} to layouts.single().lineCount)
-            }}
-            screenshot("validation/stats-layout-$theme.png")
-            val tips=mutableListOf<Pair<String,Boolean>>()
-            for((label,fragment) in listOf("Canvas storage" to "Tracked paint","Process RSS" to "Resident memory for this process")) {
-                compose.onNodeWithText(label).assertIsDisplayed().performMouseInput {enter(center);moveTo(center)}
-                var shown=false
-                try {compose.waitUntil(2_000) {compose.onAllNodes(hasText(fragment,substring=true)).fetchSemanticsNodes().isNotEmpty()};shown=true}
-                catch(_:ComposeTimeoutException) {}
-                tips.add(label to shown)
-                screenshot("validation/stats-tooltip-${label.replace(' ','-')}-$theme.png")
-                compose.onNodeWithText(label).performMouseInput {exit()}
+            assertEquals(timing.size + rows.size, values.size)
+            assertTrue("Stats values stay on one line: $values", values.all { it.second == 1 })
+            for (row in timing) compose.onNodeWithText(row.getString("label")).assertIsDisplayed()
+            for ((index, row) in rows.withIndex()) {
+                compose.onNodeWithTag("renderer-memory-row-$index").assertIsDisplayed()
+                if (!row.isNull("meter")) compose.onNodeWithTag("renderer-memory-bar-$index", useUnmergedTree = true).assertExists()
             }
-            assertEquals(labels.size,values.size)
-            assertTrue("Stats values stay on one line: $values",values.all {it.second==1})
-            assertTrue("Static and live Stats descriptions appear: $tips",tips.all {it.second})
-            for(label in labels)compose.onNodeWithText(label).assertIsDisplayed()
             val gpu=compose.onNodeWithText("GPU · ms").fetchSemanticsNode().boundsInRoot
             val chart=compose.onNodeWithTag("renderer-stats-chart").fetchSemanticsNode().boundsInRoot
-            val frames=compose.onNodeWithText("Frames").fetchSemanticsNode().boundsInRoot
-            assertTrue(chart.top>=gpu.bottom && frames.top>=chart.bottom)
+            val fps=compose.onNodeWithText(timing[2].getString("label")).fetchSemanticsNode().boundsInRoot
+            assertTrue(chart.top>=gpu.bottom && fps.top>=chart.bottom)
+            screenshot("validation/stats-layout-$theme.png")
+            val captures = obj("density" to compose.activity.resources.displayMetrics.density, "panel" to geometry("renderer-stats"), "tips" to JSONArray())
+            val tips = timing.mapIndexed { index, row -> "renderer-stat-row-$index" to row.getJSONObject("tip") } +
+                rows.mapIndexed { index, row -> "renderer-memory-row-$index" to row.getJSONObject("tip") } +
+                listOf("renderer-memory-heading" to memory.getJSONObject("tip"))
+            for ((index, entry) in tips.withIndex()) {
+                val (tag, tip) = entry
+                compose.onNodeWithTag(tag).performMouseInput { enter(center); moveTo(center) }
+                val labels = tip.array("lines").objects().map { it.getString("label") }
+                try {
+                    compose.waitUntil(2_000) {
+                        val popup = hasAnyAncestor(hasTestTag("hover-tooltip"))
+                        (tip.getString("text").isEmpty() || compose.onAllNodes(popup and hasText(tip.getString("text")), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()) &&
+                            labels.all { compose.onAllNodes(popup and hasText(it), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+                    }
+                    captures.getJSONArray("tips").put(geometry("hover-tooltip"))
+                } finally { screenshot("validation/stats-tip-$index-$theme.png") }
+                compose.onNodeWithTag(tag).performMouseInput { exit() }
+            }
+            File(compose.activity.getExternalFilesDir(null), "validation/stats-$theme.json").writeText(captures.toString())
         }
     }
     private fun preferences() = host.snapshot!!.getJSONObject("preferences")

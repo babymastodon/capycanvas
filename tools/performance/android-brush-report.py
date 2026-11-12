@@ -49,13 +49,12 @@ def main():
             cpu = {field.removesuffix("_ns"): distribution([f[field] / 1e6 for f in frames])
                    for field in fields if field.endswith("_ns") and field not in ["vsync_ns", "start_ns", "expected_presentation_ns"]}
             inputs = [r for r in data["inputs"] if begin <= r[0] < end]
-            rows_before = {r["label"]: r["value"] for r in data["renderer_before"]["rows"]}
-            rows_after = {r["label"]: r["value"] for r in data["renderer_after"]["rows"]}
+            before, after = data["renderer_before"], data["renderer_after"]
             progress = completion_window(data)
             completion_gaps = distribution(progress.pop("completion_gaps_ms"))
             input_updates = input_completions(data)
             submitted = progress["submitted"]
-            stamps = int(rows_after["Dabs"]) - int(rows_before["Dabs"])
+            stamps = int(after["dabs"]) - int(before["dabs"])
             times = [f["start_ns"] for f in frames]
             contacts = contact_latencies(data)
             object_edits = motion.get("object_edits", [])
@@ -86,7 +85,7 @@ def main():
                 "refining_contact_next_gpu_ms": distribution([r["next_gpu_ms"] for r in contacts if r["pending_composition"] and r["next_gpu_ms"] is not None]),
                 "input_injected": len(motion["injected"]), "input_records": sum(r[4] for r in inputs),
                 "dabs": stamps, "dabs_per_submitted_update": stamps / max(1, submitted),
-                "raster_updates": int(rows_after["Frames"]) - int(rows_before["Frames"]),
+                "raster_updates": int(after["frames"]) - int(before["frames"]),
                 "rolling_gpu_ms": distribution(data["renderer_after"]["gpu_samples"]),
                 "viewport_gpu_ms": distribution([r[1] / 1e6 for r in data["presentation"] if r[2] == 1]),
                 "resident_bytes": data["renderer_after"]["resident_bytes"],

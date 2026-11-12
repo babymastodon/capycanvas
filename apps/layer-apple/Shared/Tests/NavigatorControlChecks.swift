@@ -68,9 +68,10 @@ extension XCTestCase {
         #endif
         XCTAssertFalse(app.staticTexts["Canvas error"].exists)
         workspaceActivate(app.buttons["panel-tab-stats"])
-        let frames = app.staticTexts["stats-value-3"]
-        XCTAssertTrue(frames.waitForExistence(timeout: 10))
-        XCTAssertGreaterThan(Int(text(frames)) ?? 0, 0)
+        let cpu = app.staticTexts["stats-value-0"]
+        XCTAssertTrue(cpu.waitForExistence(timeout: 10))
+        XCTAssertNotNil(text(cpu).rangeOfCharacter(from: .decimalDigits))
+        XCTAssertTrue(app.descendants(matching: .any)["renderer-memory-row-0"].firstMatch.waitForExistence(timeout: 10))
         workspaceActivate(app.buttons["panel-tab-navigator"])
         XCTAssertTrue(overview.waitForExistence(timeout: 10))
         expectation(for: NSPredicate(format: "value == %@", "Live preview"), evaluatedWith: overview)

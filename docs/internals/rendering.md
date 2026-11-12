@@ -1374,11 +1374,15 @@ which samples every second even while Stats is closed. Linux and Android report 
 Windows reports private commit and its lifetime peak; Apple reports physical
 footprint and the highest sampled footprint. GPU readings cover the selected
 Vulkan device-local heap, DXGI process usage in local memory and its budget, or Metal allocations
-and its working-set recommendation. These are raw readings, separate from cache
-admission allowances. Limit, tracked, pinned and debt rows come from the shared
-ledger. Missing queries, including browser process memory, remain unavailable.
-Process and GPU readings can overlap and are not additive. Canvas storage
-remains tracked renderer allocation, excluding driver overhead.
+and its working-set recommendation. Diagnostics draws one meter per pool from the
+shared ledger: RAM, and the renderer's own device when it has separate memory. A
+device that shares RAM is counted inside the RAM meter and listed by name; the
+meter adds the driver's reading to process memory except on Apple, whose
+footprint already includes it, and never shows less than the ledger. Each
+meter fills to the OS or driver reading against the computer's RAM or the card's
+memory, split into held memory, cache and the rest of the app, with the
+allowance as a notch. Without those readings, as in browsers, it shows tracked
+memory against the allowance.
 
 Live composite color samples and region classification retain their frame while
 cold image-object captures prepare on workers. Polling advances prepared GPU

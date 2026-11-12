@@ -158,6 +158,8 @@ mod workspace_manager_ui;
 pub use session::{FillScope, FillGestureView, FillPillView, ImageLayerDestination, ImagePlacementContext, LayerAction, LayerCanvasTool, LayerDropHint, LayerDropPosition, LayerDropSurface, LayerFooterButton, LayerFooterSlot, LayersView, RegionSource, layer_footer_overflow};
 pub use workspace_manager_ui::{ManagedWorkspace, WorkspaceChoice, WorkspaceCommand};
 mod stats;
+mod readout;
+pub use readout::{byte_share, byte_size, Chip, Meter, MeterRow, MeterSection, MeterSegment, MeterTone, Tip, TipLine};
 pub use session::{HistogramAction, HistogramView};
 pub use session::{
     AdjustmentChoice, ApplicationLink, ApplicationMenu, MenuPageId, ZoomMenu, NAVIGATOR_COMMANDS, clipboard_document, ClipboardCapture, CloseDecision,
@@ -203,7 +205,7 @@ pub use numeric::{
     NumericControl, NumericError, WorkspaceValidationError, NumericKind, NumericMapping, NumericOperation, NumericRequest, NumericSliderSnap, NumericValue,
 };
 pub use session::{Notice, NoticeAction, NoticeActionId, refusal_message};
-pub use session::{ScreenChip, ScreenDetails, ScreenState};
+pub use session::{ScreenDetails, ScreenState};
 pub use session::{CanvasAnchor, CanvasAnchorChoice, CanvasSizeAction, CanvasSizeUnit, CanvasSizeView, CanvasUnitChoice};
 pub use session::{ImageResample, ImageResampleChoice, ImageSizeAction, ImageSizeView};
 pub use session::{NewDrawingAction, NewDrawingChoice, NewDrawingCopy, NewDrawingDialogView, NewDrawingDrawerView, NewDrawingOrder, PaperChoice, PaperColorChoice, PaperColorDrawerView, PaperReliefView, PresetBrowserView, PresetSaveView, PresetTabView, PresetTileView, ResolutionChoice, SheetView};

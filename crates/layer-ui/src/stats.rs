@@ -1,181 +1,190 @@
 //! Compact diagnostics, labels and summaries shared by native hosts.
-use layer_render::{RendererTelemetry, MemorySnapshot, ProcessMemoryKind, MemoryPeak, GpuMemoryKind};
-use crate::{FluentArgs, MessageId};
+use crate::{byte_share, byte_size, Chip, FluentArgs, Localizer, Meter, MeterRow, MeterSection, MessageId, Tip};
+use layer_render::{MemoryPeak, MemoryPool, ProcessMemoryKind, RendererTelemetry};
 use serde::Serialize;
 #[derive(Clone, Debug, Serialize)]
 pub struct StatRow {
     pub label: String,
     pub value: String,
     pub description: String,
+    pub tip: Tip,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct StatsView {
     pub rows: Vec<StatRow>,
+    pub memory: MeterSection,
     pub samples: Vec<f32>,
     /// Raw execution timings for host qualification; keep presentation separate.
     pub gpu_samples: Vec<f32>,
     pub resident_bytes: u64,
+    pub frames: u64,
+    pub dabs: u64,
+    pub effect_passes: u64,
     /// Select › Modify values received and previews drawn since the session
     /// began, for host qualification.
     pub selection_values: u64,
     pub selection_previews: u64,
     pub budget_ms: f32,
-    pub chart_label: &'static str,
+    pub chart_label: String,
     /// Insert the chart after this many metric rows on every frontend.
     pub chart_after_rows: usize,
 }
-fn memory_rows(memory: Option<MemorySnapshot>, localization: &crate::Localizer) -> [StatRow; 3] {
-    let age = memory.map_or_else(|| localization.text(MessageId::DIAGNOSTICS_MEMORY_NO_SAMPLE).to_string(), |sample| {
+const STALE_SECONDS: u64 = 3;
+const BUDGET_FPS: f32 = 120.;
+fn gpu_name(name: &str) -> String {
+    let mut name = ["(R)", "(TM)", "(tm)"].into_iter().fold(name.to_string(), |name, mark| name.replace(mark, ""));
+    while name.trim_end().ends_with(')') && let Some(open) = name.rfind('(') { name.truncate(open); }
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+fn stat(label: impl Into<String>, value: impl Into<String>, tip: Tip) -> StatRow {
+    StatRow { label: label.into(), value: value.into(), description: tip.plain(), tip }
+}
+fn milliseconds(id: MessageId, value: f32, l: &Localizer) -> String {
+    let mut args = FluentArgs::new();
+    args.set("value", format!("{value:.1}"));
+    args.set("fps", format!("{BUDGET_FPS:.0}"));
+    l.format(id, &args)
+}
+fn timing(label: &str, samples: Vec<f32>, text: MessageId, l: &Localizer) -> StatRow {
+    let text = l.text(text).to_string();
+    if samples.is_empty() { return stat(label, "—", Tip::text(text)); }
+    let mut sorted = samples;
+    sorted.sort_by(f32::total_cmp);
+    let at = |q: f32| sorted[((sorted.len() - 1) as f32 * q).round() as usize];
+    let [typical, slow, slowest] = [at(0.5), at(0.95), at(0.99)];
+    let line = |value: f32| {
         let mut args = FluentArgs::new();
-        args.set("seconds", format!("{:.1}", sample.sampled_at.elapsed().as_secs_f64()));
-        localization.format(MessageId::DIAGNOSTICS_MEMORY_AGE, &args)
-    });
-    let value = |bytes: u64| {
-        let mut args = FluentArgs::new();
-        args.set("value", format!("{:.1}", bytes as f64 / 1048576.));
-        localization.format(MessageId::DIAGNOSTICS_MEMORY_MIB, &args)
+        args.set("value", format!("{value:.2}"));
+        l.format(MessageId::DIAGNOSTICS_MILLISECONDS, &args)
     };
-    let unavailable = || localization.text(MessageId::DIAGNOSTICS_MEMORY_UNAVAILABLE).to_string();
-    let row = |label, value, scope: &str, gpu| {
-        let mut args = FluentArgs::new();
-        args.set("scope", scope);
-        args.set("age", age.as_str());
-        StatRow { label: localization.text(label).to_string(), value,
-            description: localization.format(if gpu { MessageId::DIAGNOSTICS_MEMORY_GPU_DESCRIPTION } else { MessageId::DIAGNOSTICS_MEMORY_DESCRIPTION }, &args) }
-    };
-    let process = memory.and_then(|sample| sample.process);
-    let (process_label, current_scope) = process.map_or((MessageId::DIAGNOSTICS_MEMORY_PROCESS, MessageId::DIAGNOSTICS_MEMORY_PROCESS_UNAVAILABLE), |process| match process.kind {
-        ProcessMemoryKind::Resident => (MessageId::DIAGNOSTICS_MEMORY_RESIDENT_LABEL, MessageId::DIAGNOSTICS_MEMORY_RESIDENT),
-        ProcessMemoryKind::PrivateCommit => (MessageId::DIAGNOSTICS_MEMORY_PRIVATE_COMMIT_LABEL, MessageId::DIAGNOSTICS_MEMORY_PRIVATE_COMMIT),
-        ProcessMemoryKind::PhysicalFootprint => (MessageId::DIAGNOSTICS_MEMORY_FOOTPRINT_LABEL, MessageId::DIAGNOSTICS_MEMORY_FOOTPRINT),
-    });
-    let (peak, peak_label, peak_scope) = process.map_or_else(|| (unavailable(), MessageId::DIAGNOSTICS_MEMORY_PEAK, MessageId::DIAGNOSTICS_MEMORY_PEAK_UNAVAILABLE), |process| match process.peak {
-        MemoryPeak::Lifetime(bytes) => (value(bytes), MessageId::DIAGNOSTICS_MEMORY_LIFETIME_LABEL, MessageId::DIAGNOSTICS_MEMORY_LIFETIME_PEAK),
-        MemoryPeak::Sampled(bytes) => (value(bytes), MessageId::DIAGNOSTICS_MEMORY_SAMPLED_LABEL, MessageId::DIAGNOSTICS_MEMORY_SAMPLED_PEAK),
-    });
-    let peak_scope = if process.is_some() {
-        let mut args = FluentArgs::new();
-        let metric = localization.text(process_label);
-        args.set("metric", metric.as_ref());
-        localization.format(peak_scope, &args)
-    } else { localization.text(peak_scope).to_string() };
-    let (gpu_value, gpu_label, gpu_scope) = memory.and_then(|sample| sample.gpu).map_or_else(|| (unavailable(), MessageId::DIAGNOSTICS_MEMORY_GPU, MessageId::DIAGNOSTICS_MEMORY_GPU_UNAVAILABLE), |gpu| {
-        let mut args = FluentArgs::new();
-        args.set("used", format!("{:.1}", gpu.bytes as f64 / 1048576.));
-        let id = if let Some(budget) = gpu.budget {
-            args.set("budget", format!("{:.1}", budget as f64 / 1048576.));
-            MessageId::DIAGNOSTICS_MEMORY_BUDGET
-        } else { MessageId::DIAGNOSTICS_MEMORY_NO_BUDGET };
-        let (label, scope) = match gpu.kind {
-            GpuMemoryKind::VulkanHeap => (MessageId::DIAGNOSTICS_MEMORY_VULKAN_LABEL, MessageId::DIAGNOSTICS_MEMORY_VULKAN),
-            GpuMemoryKind::DxgiLocal => (MessageId::DIAGNOSTICS_MEMORY_DXGI_LABEL, MessageId::DIAGNOSTICS_MEMORY_DXGI),
-            GpuMemoryKind::MetalAllocated => (MessageId::DIAGNOSTICS_MEMORY_METAL_LABEL, MessageId::DIAGNOSTICS_MEMORY_METAL),
+    stat(label, format!("{typical:.2} / {slow:.2} / {slowest:.2}"), Tip::figures(text)
+        .line(l.text(MessageId::DIAGNOSTICS_TYPICAL).to_string(), line(typical))
+        .line(l.text(MessageId::DIAGNOSTICS_SLOWEST_5).to_string(), line(slow))
+        .line(l.text(MessageId::DIAGNOSTICS_SLOWEST_1).to_string(), line(slowest))
+        .line(l.text(MessageId::DIAGNOSTICS_BUDGET).to_string(), milliseconds(MessageId::DIAGNOSTICS_BUDGET_VALUE, 1000. / BUDGET_FPS, l)))
+}
+fn memory(t: &RendererTelemetry, l: &Localizer) -> MeterSection {
+    let text = |id| l.text(id).to_string();
+    let title = text(MessageId::DIAGNOSTICS_MEMORY_TITLE);
+    let key = Tip::text(String::new())
+        .line(text(MessageId::DIAGNOSTICS_MEMORY_DRAWING), text(MessageId::DIAGNOSTICS_MEMORY_KEY_DRAWING))
+        .line(text(MessageId::DIAGNOSTICS_MEMORY_CACHE), text(MessageId::DIAGNOSTICS_MEMORY_KEY_CACHE))
+        .line(text(MessageId::DIAGNOSTICS_MEMORY_REST), text(MessageId::DIAGNOSTICS_MEMORY_KEY_REST))
+        .line(text(MessageId::DIAGNOSTICS_MEMORY_ALLOWANCE), text(MessageId::DIAGNOSTICS_MEMORY_KEY_ALLOWANCE));
+    let Some(budget) = t.memory_budget.as_deref() else { return MeterSection { title, tip: key, ..Default::default() } };
+    let pool_row = |label: String, pool: MemoryPool, whole: Option<u64>, tip: Tip| {
+        let (held, tracked) = (pool.pinned_bytes, pool.physical_bytes);
+        let mut tip = tip.line(text(MessageId::DIAGNOSTICS_MEMORY_DRAWING), byte_size(held, l))
+            .line(text(MessageId::DIAGNOSTICS_MEMORY_CACHE), byte_size(tracked.saturating_sub(held), l));
+        let actual = whole.map(|whole| whole.max(tracked)).zip(pool.total_bytes.filter(|total| *total > 0));
+        if let Some((whole, _)) = actual { tip = tip.line(text(MessageId::DIAGNOSTICS_MEMORY_REST), byte_size(whole.saturating_sub(tracked), l)); }
+        if pool.limit_bytes > 0 { tip = tip.line(text(MessageId::DIAGNOSTICS_MEMORY_ALLOWANCE), byte_size(pool.limit_bytes, l)); }
+        let (value, meter) = match actual {
+            Some((whole, total)) => (byte_share(whole, total, l), Some(Meter::usage(total, if pool.limit_bytes > 0 { pool.limit_bytes } else { total }, held, tracked, whole))),
+            None if pool.limit_bytes > 0 => (byte_share(tracked, pool.limit_bytes, l), Some(Meter::usage(pool.limit_bytes, pool.limit_bytes, held, tracked, 0))),
+            None => (byte_size(tracked, l), None),
         };
-        (localization.format(id, &args), label, scope)
-    });
-    [
-        row(process_label, process.map_or_else(unavailable, |process| value(process.bytes)), &localization.text(current_scope), false),
-        row(peak_label, peak, &peak_scope, false),
-        row(gpu_label, gpu_value, &localization.text(gpu_scope), true),
-    ]
-}
-fn budget_rows(budget: Option<&layer_render::MemoryBudgetSummary>, localization: &crate::Localizer) -> [StatRow; 4] {
-    let age = budget.map_or_else(|| localization.text(MessageId::DIAGNOSTICS_MEMORY_NO_SAMPLE).to_string(), |sample| {
-        let mut args = FluentArgs::new();
-        args.set("seconds", format!("{:.1}", sample.sampled_at.elapsed().as_secs_f64()));
-        localization.format(MessageId::DIAGNOSTICS_MEMORY_AGE, &args)
-    });
-    let pair = |ram: u64, gpu: u64| {
-        let mut args = FluentArgs::new();
-        args.set("ram", format!("{:.1}", ram as f64 / 1048576.));
-        args.set("gpu", format!("{:.1}", gpu as f64 / 1048576.));
-        localization.format(MessageId::DIAGNOSTICS_BUDGET_PAIR, &args)
+        MeterRow { label, chip: None, value, warning: pool.over_bytes() > 0, meter, tip }
     };
-    let row = |label, scope, bytes: Option<(u64, u64)>| {
+    let process = t.memory.and_then(|sample| sample.process);
+    let reading = t.memory.and_then(|sample| sample.gpu);
+    let adapter = t.adapter.as_deref();
+    let gpu_label = adapter.map(|adapter| gpu_name(&adapter.name)).filter(|name| !name.is_empty())
+        .unwrap_or_else(|| text(MessageId::DIAGNOSTICS_MEMORY_GPU_FALLBACK));
+    let shares = budget.gpu.is_some() && budget.gpu_shares_ram;
+    let graphics_outside = process.is_some_and(|process| process.kind != ProcessMemoryKind::PhysicalFootprint);
+    let whole = process.map(|process| process.bytes + if shares && graphics_outside { reading.map_or(0, |reading| reading.bytes) } else { 0 });
+    let lead = if whole.is_none() || budget.ram.total_bytes.is_none_or(|total| total == 0) {
+        text(MessageId::DIAGNOSTICS_MEMORY_TRACKED_ONLY)
+    } else if shares {
         let mut args = FluentArgs::new();
-        let scope = localization.text(scope);
-        args.set("scope", scope.as_ref());
-        args.set("age", age.as_str());
-        StatRow { label: localization.text(label).to_string(),
-            value: bytes.map_or_else(|| localization.text(MessageId::DIAGNOSTICS_MEMORY_UNAVAILABLE).to_string(), |(ram, gpu)| pair(ram, gpu)),
-            description: localization.format(MessageId::DIAGNOSTICS_MEMORY_DESCRIPTION, &args) }
-    };
-    [
-        row(MessageId::DIAGNOSTICS_BUDGET_LIMIT, MessageId::DIAGNOSTICS_BUDGET_LIMIT_DESCRIPTION, budget.map(|b| (b.ram_limit_bytes, b.gpu_limit_bytes))),
-        row(MessageId::DIAGNOSTICS_BUDGET_PHYSICAL, MessageId::DIAGNOSTICS_BUDGET_PHYSICAL_DESCRIPTION, budget.map(|b| (b.ram_physical_bytes, b.gpu_physical_bytes))),
-        row(MessageId::DIAGNOSTICS_BUDGET_PINNED, MessageId::DIAGNOSTICS_BUDGET_PINNED_DESCRIPTION, budget.map(|b| (b.ram_pinned_bytes, b.gpu_pinned_bytes))),
-        row(MessageId::DIAGNOSTICS_BUDGET_DEBT, MessageId::DIAGNOSTICS_BUDGET_DEBT_DESCRIPTION, budget.map(|b| (b.ram_debt_bytes, b.gpu_debt_bytes))),
-    ]
-}
-pub(super) fn view(t: RendererTelemetry, localization: &crate::Localizer) -> StatsView {
-    fn percentiles(values: Vec<f32>) -> String {
-        if values.is_empty() {
-            return "—".into();
-        }
-        let mut v = values;
-        v.sort_by(f32::total_cmp);
-        let p = |q: f32| v[((v.len() - 1) as f32 * q).round() as usize];
-        format!("{:.2} / {:.2} / {:.2}", p(0.5), p(0.95), p(0.99))
+        args.set("gpu", gpu_label.as_str());
+        l.format(MessageId::DIAGNOSTICS_MEMORY_SHARED_WITH, &args)
+    } else { String::new() };
+    let mut ram = pool_row(text(MessageId::DIAGNOSTICS_MEMORY_RAM_LABEL), budget.ram, whole, Tip::figures(lead));
+    if let Some(process) = process {
+        let (MemoryPeak::Lifetime(peak) | MemoryPeak::Sampled(peak)) = process.peak;
+        ram.tip = ram.tip.line(text(MessageId::DIAGNOSTICS_MEMORY_PEAK_LABEL), byte_size(peak, l));
     }
+    if budget.refusals > 0 { ram.tip = ram.tip.line(text(MessageId::DIAGNOSTICS_MEMORY_REFUSED), budget.refusals.to_string()); }
+    let mut rows = vec![ram];
+    let mut over = budget.ram.over_bytes();
+    if let Some(pool) = budget.gpu {
+        let identity = adapter.map(|adapter| [adapter.name.trim(), adapter.api, adapter.driver.as_str()].into_iter()
+            .filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" · ")).unwrap_or_default();
+        rows.push(if shares {
+            over = over.max(pool.over_bytes());
+            let place = text(if cfg!(target_arch = "wasm32") { MessageId::DIAGNOSTICS_MEMORY_BROWSER_GPU } else { MessageId::DIAGNOSTICS_MEMORY_IN_RAM });
+            let lead = [identity, place].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n");
+            let mut tip = Tip::figures(lead).line(text(MessageId::DIAGNOSTICS_MEMORY_DRAWING), byte_size(pool.pinned_bytes, l))
+                .line(text(MessageId::DIAGNOSTICS_MEMORY_CACHE), byte_size(pool.physical_bytes.saturating_sub(pool.pinned_bytes), l));
+            if let Some(reading) = reading {
+                let mut args = FluentArgs::new();
+                args.set("used", byte_size(reading.bytes, l));
+                args.set("total", reading.budget.map_or_else(|| "—".into(), |total| byte_size(total, l)));
+                tip = tip.line(text(MessageId::DIAGNOSTICS_MEMORY_DRIVER), l.format(MessageId::DIAGNOSTICS_MEMORY_OF, &args));
+            }
+            MeterRow {
+                label: gpu_label, value: byte_size(pool.physical_bytes, l), warning: pool.over_bytes() > 0, meter: None, tip,
+                chip: (!cfg!(target_arch = "wasm32")).then(|| Chip { label: l.text(MessageId::DIAGNOSTICS_MEMORY_SHARED_CHIP), warning: false }),
+            }
+        } else {
+            over += pool.over_bytes();
+            let mut row = pool_row(gpu_label, pool, reading.map(|reading| reading.bytes), Tip::figures(identity));
+            if let Some(available) = reading.and_then(|reading| reading.budget) {
+                row.tip = row.tip.line(text(MessageId::DIAGNOSTICS_MEMORY_AVAILABLE), byte_size(available, l));
+            }
+            row
+        });
+    }
+    let mut warnings = Vec::new();
+    if over > 0 {
+        let mut args = FluentArgs::new();
+        args.set("amount", byte_size(over, l));
+        warnings.push(l.format(MessageId::DIAGNOSTICS_MEMORY_OVER, &args));
+    }
+    if budget.pressure { warnings.push(text(MessageId::DIAGNOSTICS_MEMORY_LOW)); }
+    let age = budget.sampled_at.elapsed().as_secs();
+    let note = if age > STALE_SECONDS {
+        let mut args = FluentArgs::new();
+        args.set("seconds", age);
+        l.format(MessageId::DIAGNOSTICS_MEMORY_STALE, &args)
+    } else { String::new() };
+    MeterSection {
+        title, note,
+        chip: warnings.first().map(|warning| Chip { label: warning.as_str().into(), warning: true }),
+        tip: Tip { text: warnings.join(" · "), ..key },
+        rows,
+    }
+}
+pub(super) fn view(t: RendererTelemetry, l: &Localizer) -> StatsView {
     let samples = t.cpu.ordered();
     let submitted = t.frame_rate.is_some_and(|rate| rate.source == layer_render::FrameRateSource::Submitted);
-    let mut rows = vec![
-        StatRow {
-            label: "CPU · ms".into(),
-            value: percentiles(samples.clone()),
-            description: "Median / p95 / p99: prepare, encode and submit. Not GPU completion or input latency.".into(),
-        },
-        StatRow {
-            label: "GPU · ms".into(),
-            value: if t.gpu_timestamps {
-                percentiles(t.gpu.ordered())
-            } else {
-                "Unavailable".into()
-            },
-            description: "Median / p95 / p99 GPU execution, including GPU scheduling gaps. Excludes presentation. Browser timestamps may be quantized.".into(),
-        },
-        StatRow {
-            label: localization.text(if submitted { crate::MessageId::DIAGNOSTICS_SUBMITTED_FPS } else { crate::MessageId::DIAGNOSTICS_FPS }).to_string(),
-            value: t.frame_rate.map_or_else(|| "—".into(), |rate| format!("{:.0}", rate.fps)),
-            description: localization.text(if submitted { crate::MessageId::DIAGNOSTICS_SUBMITTED_FPS_DESCRIPTION } else { crate::MessageId::DIAGNOSTICS_FPS_DESCRIPTION }).to_string(),
-        },
-        StatRow {
-            label: "Frames".into(),
-            value: t.submissions.to_string(),
-            description: "Submitted drawing updates. Cached canvas navigation and compositor frames are not counted.".into(),
-        },
-        StatRow {
-            label: "Canvas storage".into(),
-            value: format!("{:.1} MiB", t.resident_bytes as f64 / 1048576.),
-            description: "Tracked paint, preview, proof, masks, effect parameters, composite and scene scratch allocation. Excludes driver overhead and imported assets; not total VRAM use.".into(),
-        },
-        StatRow {
-            label: "Dabs".into(),
-            value: t.dabs.to_string(),
-            description: "Brush dabs submitted since renderer creation.".into(),
-        },
-        StatRow {
-            label: "Effect passes".into(),
-            value: t.effect_passes.to_string(),
-            description: "GPU effect render passes in the latest drawing update. Compatible chains and tile draws share passes.".into(),
-        },
-        StatRow {
-            label: "Pipelines".into(),
-            value: t.compiled_effects.to_string(),
-            description: "Cached effect pipelines. Parameter edits do not compile new pipelines.".into(),
-        },
+    let gpu = if t.gpu_timestamps {
+        timing("GPU · ms", t.gpu.ordered(), MessageId::DIAGNOSTICS_GPU_TIP, l)
+    } else {
+        stat("GPU · ms", "Unavailable", Tip::text(l.text(if cfg!(target_arch = "wasm32") { MessageId::DIAGNOSTICS_GPU_BROWSER_TIP } else { MessageId::DIAGNOSTICS_GPU_UNAVAILABLE_TIP }).to_string()))
+    };
+    let rows = vec![
+        timing("CPU · ms", samples.clone(), MessageId::DIAGNOSTICS_CPU_TIP, l),
+        gpu,
+        stat(l.text(if submitted { MessageId::DIAGNOSTICS_SUBMITTED_FPS } else { MessageId::DIAGNOSTICS_FPS }).to_string(),
+            t.frame_rate.map_or_else(|| "—".into(), |rate| format!("{:.0}", rate.fps)),
+            Tip::text(l.text(if submitted { MessageId::DIAGNOSTICS_SUBMITTED_FPS_TIP } else { MessageId::DIAGNOSTICS_FPS_TIP }).to_string())),
     ];
-    rows.extend(memory_rows(t.memory, localization));
-    rows.extend(budget_rows(t.memory_budget.as_deref(), localization));
     StatsView {
+        memory: memory(&t, l),
         rows,
         samples,
         gpu_samples: if t.gpu_timestamps { t.gpu.ordered() } else { Vec::new() },
         resident_bytes: t.resident_bytes,
+        frames: t.submissions,
+        dabs: t.dabs,
+        effect_passes: t.effect_passes,
         selection_values: 0,
         selection_previews: 0,
-        budget_ms: 1000. / 120.,
-        chart_label: "CPU render · last 120 updates",
+        budget_ms: 1000. / BUDGET_FPS,
+        chart_label: milliseconds(MessageId::DIAGNOSTICS_CHART_TIP, 1000. / BUDGET_FPS, l),
         chart_after_rows: 2,
     }
 }
@@ -183,39 +192,50 @@ pub(super) fn view(t: RendererTelemetry, localization: &crate::Localizer) -> Sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use layer_render::{GpuAdapter, GpuMemory, GpuMemoryKind, MemoryBudgetSummary, MemorySnapshot, ProcessMemory, ProcessMemoryKind};
+    use std::sync::Arc;
+
+    const MB: u64 = 1 << 20;
+
+    fn english() -> Arc<Localizer> { Localizer::shared(crate::UiLanguage::English) }
+
+    fn lines(tip: &Tip) -> Vec<(&str, &str)> { tip.lines.iter().map(|line| (line.label.as_str(), line.value.as_str())).collect() }
 
     #[test]
-    fn diagnostics_orders_chart_and_storage_with_their_metrics() {
-        let localization = crate::Localizer::shared(crate::UiLanguage::English);
-        let view = view(RendererTelemetry::default(), &localization);
-        assert_eq!(
-            view.rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
-            [
-                "CPU · ms",
-                "GPU · ms",
-                "FPS",
-                "Frames",
-                "Canvas storage",
-                "Dabs",
-                "Effect passes",
-                "Pipelines",
-                "Process memory",
-                "Process peak",
-                "GPU memory",
-                "Memory limit",
-                "Tracked memory",
-                "Pinned memory",
-                "Memory debt"
-            ]
-        );
+    fn diagnostics_shows_timings_then_memory_and_keeps_counters_off_screen() {
+        let telemetry = RendererTelemetry { submissions: 12, dabs: 34, effect_passes: 5, ..Default::default() };
+        let view = view(telemetry, &english());
+        assert_eq!(view.rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(), ["CPU · ms", "GPU · ms", "FPS"]);
         assert_eq!(view.rows[view.chart_after_rows - 1].label, "GPU · ms");
-        assert_eq!(view.rows[view.chart_after_rows].label, "FPS");
-        assert_eq!(serde_json::to_value(&view).unwrap()["chart_after_rows"], 2);
+        assert_eq!((view.frames, view.dabs, view.effect_passes), (12, 34, 5));
+        assert_eq!(view.chart_label, "CPU time for the last 120 frames. The dashed line is the 8.3 ms budget.");
+        assert_eq!(view.memory.title, "Memory");
+        assert!(view.memory.rows.is_empty());
+        assert_eq!(lines(&view.memory.tip).iter().map(|line| line.0).collect::<Vec<_>>(), ["Drawing", "Cache", "Rest of app", "Allowance"]);
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!((json["chart_after_rows"].as_u64(), json["frames"].as_u64()), (Some(2), Some(12)));
+    }
+
+    #[test]
+    fn timing_tips_name_each_figure_against_the_frame_budget() {
+        let mut telemetry = RendererTelemetry { gpu_timestamps: true, ..Default::default() };
+        for ms in 1..=100 { telemetry.cpu.push(ms as f32 / 10.); }
+        let view = view(telemetry, &english());
+        let cpu = &view.rows[0];
+        assert_eq!(cpu.value, "5.10 / 9.50 / 9.90");
+        assert_eq!(cpu.tip.text, "Time Capy takes to prepare each canvas frame.");
+        assert_eq!(lines(&cpu.tip), [("Typical", "5.10 ms"), ("Slowest 5%", "9.50 ms"), ("Slowest 1%", "9.90 ms"), ("Budget", "8.3 ms (120 fps)")]);
+        assert!(cpu.tip.figures);
+        assert!(cpu.description.starts_with("Time Capy takes") && cpu.description.contains("Typical: 5.10 ms"));
+        assert_eq!((view.rows[1].value.as_str(), view.rows[1].tip.lines.len()), ("—", 0));
+        let unavailable = super::view(RendererTelemetry::default(), &english());
+        assert_eq!((unavailable.rows[1].value.as_str(), unavailable.rows[1].tip.text.as_str()), ("Unavailable", "This graphics card doesn’t report timings."));
+        assert_eq!(unavailable.rows[2].tip.text, "Canvas frames shown in the last second. 0 while nothing on the canvas changes.");
     }
 
     #[test]
     fn fps_uses_presentation_feedback_without_substituting_submission_or_gpu_rates() {
-        let localization = crate::Localizer::shared(crate::UiLanguage::English);
+        let localization = english();
         let mut telemetry = RendererTelemetry { submissions: 1200, ..Default::default() };
         telemetry.gpu.push(1.);
         assert_eq!(view(telemetry.clone(), &localization).rows[2].value, "—");
@@ -227,101 +247,104 @@ mod tests {
 
     #[test]
     fn submission_fallback_is_explicit_and_does_not_claim_presentation() {
-        let localization = crate::Localizer::shared(crate::UiLanguage::English);
         let telemetry = RendererTelemetry { frame_rate: Some(layer_render::FrameRate { fps: 120., source: layer_render::FrameRateSource::Submitted }), ..Default::default() };
-        let metric = &view(telemetry, &localization).rows[2];
+        let metric = &view(telemetry, &english()).rows[2];
         assert_eq!(metric.label, "Submitted FPS");
         assert_eq!(metric.value, "120");
-        assert!(metric.description.contains("unavailable"));
+        assert!(metric.description.contains("doesn’t report when they appear"));
     }
 
-    fn memory_view(process: Option<layer_render::ProcessMemory>, gpu: Option<layer_render::GpuMemory>, age: u64) -> StatsView {
-        let localization = crate::Localizer::shared(crate::UiLanguage::English);
-        view(RendererTelemetry { resident_bytes: 1048576, memory: Some(MemorySnapshot {
-            sampled_at: std::time::Instant::now() - std::time::Duration::from_secs(age), process, gpu,
-        }), ..Default::default() }, &localization)
+    fn pool(total: Option<u64>, limit: u64, physical: u64, pinned: u64) -> MemoryPool {
+        MemoryPool { total_bytes: total.map(|total| total * MB), limit_bytes: limit * MB, physical_bytes: physical * MB, pinned_bytes: pinned * MB }
     }
 
-    #[test]
-    fn memory_unavailable_is_not_zero_and_old_samples_keep_their_age() {
-        let localization = crate::Localizer::shared(crate::UiLanguage::English);
-        let absent = view(RendererTelemetry::default(), &localization);
-        for row in &absent.rows[8..11] {
-            assert_eq!(row.value, "Unavailable");
-            assert!(row.description.contains("No sample available"));
-        }
-        let old = memory_view(None, None, 42);
-        for row in &old.rows[8..11] {
-            assert_eq!(row.value, "Unavailable");
-            let age = row.description.split("Sample age: ").nth(1).unwrap().split_whitespace().next().unwrap().parse::<f64>().unwrap();
-            assert!(age >= 42.);
+    fn telemetry(ram: MemoryPool, gpu: Option<MemoryPool>, shares: bool, adapter: &str) -> RendererTelemetry {
+        RendererTelemetry {
+            memory: Some(MemorySnapshot { sampled_at: web_time::Instant::now(),
+                process: Some(ProcessMemory { kind: ProcessMemoryKind::Resident, bytes: 2150 * MB, peak: MemoryPeak::Lifetime(2610 * MB) }),
+                gpu: Some(GpuMemory { kind: GpuMemoryKind::VulkanHeap, bytes: 3020 * MB, budget: Some(11_264 * MB) }) }),
+            memory_budget: Some(Arc::new(MemoryBudgetSummary { sampled_at: web_time::Instant::now(), ram, gpu, gpu_shares_ram: shares, pressure: false, refusals: 0 })),
+            adapter: Some(Arc::new(GpuAdapter { name: adapter.into(), api: "Vulkan", driver: "NVIDIA 580.95.05".into() })),
+            ..Default::default()
         }
     }
 
     #[test]
-    fn process_metrics_keep_their_scope_mib_units_and_peak_semantics() {
-        use layer_render::ProcessMemory;
-        for (kind, scope) in [
-            (ProcessMemoryKind::Resident, "including shared pages"),
-            (ProcessMemoryKind::PrivateCommit, "including pages outside RAM"),
-            (ProcessMemoryKind::PhysicalFootprint, "including compressed memory"),
-        ] {
-            let metric = memory_view(Some(ProcessMemory { kind, bytes: 10 * 1048576, peak: MemoryPeak::Lifetime(12 * 1048576) }), None, 0);
-            assert_eq!(metric.rows[4].value, "1.0 MiB");
-            assert_eq!(metric.rows[8].value, "10.0 MiB");
-            assert!(metric.rows[8].description.contains(scope));
-            assert_eq!(metric.rows[9].value, "12.0 MiB");
-            assert!(metric.rows[9].description.contains(&metric.rows[8].label));
-            assert!(metric.rows[9].description.contains("Operating-system lifetime peak"));
-        }
-        let sampled = memory_view(Some(ProcessMemory { kind: ProcessMemoryKind::Resident, bytes: 0, peak: MemoryPeak::Sampled(1572864) }), None, 0);
-        assert_eq!(sampled.rows[8].value, "0.0 MiB");
-        assert_eq!(sampled.rows[9].value, "1.5 MiB");
-        assert!(sampled.rows[9].description.contains("sampling can miss earlier peaks"));
-        assert!(!sampled.rows[9].description.contains("lifetime"));
+    fn discrete_gpu_bars_show_actual_use_against_capacity_with_tracked_parts_inside() {
+        let memory = view(telemetry(pool(Some(32_768), 6144, 1430, 880), Some(pool(Some(12_288), 8192, 2350, 1100)), false, "NVIDIA GeForce RTX 4070"), &english()).memory;
+        assert_eq!((memory.chip.as_ref(), memory.note.as_str(), memory.tip.text.as_str()), (None, "", ""));
+        let [ram, gpu] = &memory.rows[..] else { panic!("{memory:?}") };
+        assert_eq!((ram.label.as_str(), ram.value.as_str(), ram.warning, ram.tip.text.as_str()), ("RAM", "2.1 / 32 GB", false, ""));
+        assert_eq!(lines(&ram.tip), [("Drawing", "880 MB"), ("Cache", "550 MB"), ("Rest of app", "720 MB"), ("Allowance", "6 GB"), ("Peak", "2.5 GB")]);
+        assert_eq!(ram.meter, Some(Meter::usage(32_768 * MB, 6144 * MB, 880 * MB, 1430 * MB, 2150 * MB)));
+        assert_eq!((gpu.label.as_str(), gpu.value.as_str(), gpu.chip.as_ref()), ("NVIDIA GeForce RTX 4070", "2.9 / 12 GB", None));
+        assert_eq!(gpu.tip.text, "NVIDIA GeForce RTX 4070 · Vulkan · NVIDIA 580.95.05");
+        assert_eq!(lines(&gpu.tip), [("Drawing", "1.1 GB"), ("Cache", "1.2 GB"), ("Rest of app", "670 MB"), ("Allowance", "8 GB"), ("Available to Capy", "11 GB")]);
+        assert_eq!(gpu.meter, Some(Meter::usage(12_288 * MB, 8192 * MB, 1100 * MB, 2350 * MB, 3020 * MB)));
     }
 
     #[test]
-    fn driver_memory_keeps_raw_budget_scope_and_unified_memory_overlap() {
-        use layer_render::GpuMemory;
-        for (kind, scope) in [
-            (GpuMemoryKind::VulkanHeap, "Vulkan heap with most headroom"),
-            (GpuMemoryKind::DxgiLocal, "local memory segment"),
-            (GpuMemoryKind::MetalAllocated, "recommended working set"),
-        ] {
-            let metric = memory_view(None, Some(GpuMemory { kind, bytes: 3 * 1048576, budget: Some(8 * 1048576) }), 0);
-            assert_eq!(metric.rows[10].value, "3.0 / 8.0 MiB");
-            assert!(metric.rows[10].description.contains(scope));
-            assert!(metric.rows[10].description.contains("may overlap"));
-            assert!(metric.rows[10].description.contains("do not add"));
-            if kind == GpuMemoryKind::MetalAllocated { assert!(metric.rows[10].description.contains("not free memory or a hard limit")); }
-        }
-        let partial = memory_view(None, Some(GpuMemory { kind: GpuMemoryKind::MetalAllocated, bytes: 1048576, budget: None }), 0);
-        assert_eq!(partial.rows[10].value, "1.0 / — MiB");
-        assert!(partial.rows[10].description.contains("— means unavailable"));
+    fn shared_memory_draws_one_bar_that_counts_graphics_once() {
+        let memory = view(telemetry(pool(Some(32_768), 8192, 2600, 1200), Some(pool(None, 8192, 1500, 700)), true, "Intel(R) Iris(R) Xe Graphics"), &english()).memory;
+        let [ram, gpu] = &memory.rows[..] else { panic!("{memory:?}") };
+        assert_eq!((ram.value.as_str(), ram.tip.text.as_str()), ("5 / 32 GB", "Shared with Intel Iris Xe Graphics."));
+        assert_eq!(ram.meter, Some(Meter::usage(32_768 * MB, 8192 * MB, 1200 * MB, 2600 * MB, 5170 * MB)));
+        assert_eq!((gpu.label.as_str(), gpu.value.as_str(), gpu.meter.as_ref()), ("Intel Iris Xe Graphics", "1.5 GB", None));
+        assert_eq!(gpu.chip, Some(Chip { label: "shared".into(), warning: false }));
+        assert_eq!(gpu.tip.text, "Intel(R) Iris(R) Xe Graphics · Vulkan · NVIDIA 580.95.05\nUses RAM, so it’s counted in the RAM bar.");
+        assert_eq!(lines(&gpu.tip), [("Drawing", "700 MB"), ("Cache", "800 MB"), ("Driver", "2.9 GB of 11 GB")]);
+        let mut apple = telemetry(pool(Some(32_768), 8192, 2600, 1200), Some(pool(None, 8192, 1500, 700)), true, "Apple M2 Pro");
+        apple.memory.as_mut().unwrap().process.as_mut().unwrap().kind = ProcessMemoryKind::PhysicalFootprint;
+        let ram = &view(apple, &english()).memory.rows[0];
+        assert_eq!(ram.value, "2.5 / 32 GB", "the footprint already holds graphics, and the bar never shows less than Capy tracks");
     }
 
     #[test]
-    fn budget_rows_use_the_copied_snapshot_and_preserve_per_device_debt() {
-        let budget = layer_core::MemoryBudget::new();
-        budget.update_ram(layer_core::MemoryFacts { total_bytes: Some(16 << 30), available_bytes: Some(12 << 30), override_bytes: Some(384 * 1048576), ..Default::default() }, 0);
-        let device = budget.register_device(layer_core::DeviceMemoryFacts { budget_bytes: Some(10 * 1048576), ..Default::default() });
-        let owner = budget.register_owner(layer_core::MemoryOwnerKind::Authored, layer_core::MemoryClass::Pinned, Some(device));
-        owner.report(layer_core::MemoryReport { ram_bytes: 385 * 1048576, pinned_ram_bytes: 385 * 1048576,
-            gpu_bytes: 9 * 1048576, pinned_gpu_bytes: 9 * 1048576, ..Default::default() });
-        budget.register_device(layer_core::DeviceMemoryFacts { budget_bytes: Some(100 * 1048576), ..Default::default() });
-        let mut summary = layer_render::MemoryBudgetSummary::new(&budget.snapshot());
-        summary.sampled_at -= std::time::Duration::from_secs(42);
-        owner.report(Default::default());
-        let localization = crate::Localizer::shared(crate::UiLanguage::English);
-        let view = view(RendererTelemetry { memory_budget: Some(std::sync::Arc::new(summary)), ..Default::default() }, &localization);
-        assert_eq!(view.rows.len(), 15);
-        assert_eq!(view.rows[11].value, "RAM 384.0 MiB · GPU 88.0 MiB");
-        assert_eq!(view.rows[12].value, "RAM 385.0 MiB · GPU 9.0 MiB");
-        assert_eq!(view.rows[13].value, view.rows[12].value);
-        assert_eq!(view.rows[14].value, "RAM 1.0 MiB · GPU 1.0 MiB");
-        for row in &view.rows[11..] { assert!(row.description.contains("Sample age: 42.")); }
-        assert!(view.rows[11].description.contains("do not add"));
+    fn trouble_shows_one_warning_chip_and_the_key_lists_every_warning() {
+        let mut telemetry = telemetry(pool(Some(6144), 1536, 1720, 1650), Some(pool(None, 1536, 690, 610)), true, "Adreno (TM) 650");
+        let mut budget = *telemetry.memory_budget.take().unwrap();
+        budget.pressure = true;
+        budget.refusals = 2;
+        telemetry.memory_budget = Some(Arc::new(budget));
+        let memory = view(telemetry, &english()).memory;
+        assert_eq!(memory.chip, Some(Chip { label: "Over by 114 MB".into(), warning: true }));
+        assert_eq!(memory.tip.text, "Over by 114 MB · Low memory");
+        assert_eq!(memory.tip.lines.len(), 4);
+        assert!(memory.rows[0].warning);
+        assert_eq!(memory.rows[0].tip.lines.last().map(|line| (line.label.as_str(), line.value.as_str())), Some(("Imports refused", "2")));
+        assert_eq!(memory.rows[1].label, "Adreno 650");
+        let healthy = view(self::telemetry(pool(Some(6144), 1536, 900, 600), None, true, ""), &english()).memory;
+        assert_eq!((healthy.chip, healthy.tip.text.as_str(), healthy.rows.len()), (None, "", 1));
     }
 
+    #[test]
+    fn without_system_figures_bars_fall_back_to_tracked_memory_and_the_allowance() {
+        let mut telemetry = telemetry(pool(None, 2048, 960, 540), Some(pool(None, 2048, 610, 300)), true, " ");
+        telemetry.memory = None;
+        telemetry.adapter = Some(Arc::new(GpuAdapter { name: String::new(), api: "WebGPU", driver: String::new() }));
+        let memory = view(telemetry, &english()).memory;
+        assert_eq!((memory.rows[0].value.as_str(), memory.rows[0].tip.text.as_str()), ("960 MB / 2 GB", "The system total isn’t available, so the bar shows Capy’s own use."));
+        assert_eq!(memory.rows[0].meter, Some(Meter::usage(2048 * MB, 2048 * MB, 540 * MB, 960 * MB, 0)));
+        assert_eq!(lines(&memory.rows[0].tip), [("Drawing", "540 MB"), ("Cache", "420 MB"), ("Allowance", "2 GB")]);
+        assert_eq!((memory.rows[1].label.as_str(), memory.rows[1].tip.text.as_str()), ("GPU", "WebGPU\nUses RAM, so it’s counted in the RAM bar."));
+        let unknown = view(self::telemetry(pool(Some(8192), 2048, 900, 500), Some(pool(None, 0, 300, 100)), false, "GPU"), &english()).memory;
+        assert_eq!((unknown.rows[1].value.as_str(), unknown.rows[1].meter.as_ref()), ("300 MB", None));
+    }
+
+    #[test]
+    fn old_budget_readings_say_how_old_they_are() {
+        let mut telemetry = telemetry(pool(Some(8192), 6144, 1430, 880), None, false, "");
+        let mut budget = *telemetry.memory_budget.take().unwrap();
+        budget.sampled_at -= std::time::Duration::from_secs(42);
+        telemetry.memory_budget = Some(Arc::new(budget));
+        assert_eq!(view(telemetry, &english()).memory.note, "42 s old");
+    }
+
+    #[test]
+    fn gpu_names_drop_marks_and_driver_codenames() {
+        for (reported, shown) in [("Intel(R) Iris(R) Xe Graphics", "Intel Iris Xe Graphics"), ("AMD Radeon RX 7800 XT (RADV NAVI32)", "AMD Radeon RX 7800 XT"),
+            ("Adreno (TM) 650", "Adreno 650"), ("llvmpipe (LLVM 19.1.0, 256 bits)", "llvmpipe"), ("Apple M2 Pro", "Apple M2 Pro")] {
+            assert_eq!(gpu_name(reported), shown);
+        }
+    }
 }

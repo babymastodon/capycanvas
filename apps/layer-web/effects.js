@@ -1,3 +1,4 @@
+import {meterRow,meterSection} from './meter.js';
 import {createScope,scopeGraph,scopeFooter} from './histogram.js';
 import {liveCopy,bindCopy} from './localization.js';
 import {gestureNumberField} from "./numeric.js";
@@ -142,17 +143,26 @@ export function createEffectPanels({app,wake,catalog,state,panels,element,button
   resource.append(resourceChoice,resourceImport);properties.insertBefore(resource,body);
   const stats=element("div","renderer-stats");stats.dataset.control="stats";panels.get("stats").append(stats);
   const recordButton=button("Start stroke recording",()=>{}); stats.append(recordButton);
+  const memory=meterSection(element),divider=element("hr","stats-separator");
   const disposeRecording=strokeRecordingControl(app,recordButton,message,icon);
   let schema,fieldOwner,fields=new Map(),metricLabels=[];
   const svg=(tag,attributes={})=>{const e=document.createElementNS("http://www.w3.org/2000/svg",tag);for(const [k,v] of Object.entries(attributes))e.setAttribute(k,v);return e;};
-  const chart=svg("svg",{viewBox:"0 0 200 46",class:"renderer-chart","aria-hidden":"true"});
+  const chart=svg("svg",{viewBox:"0 0 200 46",class:"renderer-chart",role:"img","data-control":"renderer-stats-chart"});
   const line=svg("path",{fill:"none",stroke:"currentColor","stroke-width":1.5}),budget=svg("path",{stroke:"currentColor","stroke-dasharray":"3 3",opacity:.3});chart.append(budget,line);
   const statsTimer = setInterval(()=>{
     if(!stats.isConnected||!stats.getClientRects().length||document.hidden)return;
     const view=app.renderer_stats();
-    if(!metricLabels.length){for(const [index,metric] of view.rows.entries()){const row=element("div","property-row"),value=element("span","numeric");row.title=metric.description;row.append(element("span","",metric.label),value);stats.insertBefore(row,recordButton);metricLabels.push({row,label:row.firstChild,value});if(index+1===Number(view.chart_after_rows))stats.insertBefore(chart,recordButton);}contentChanged("stats");}
-    view.rows.forEach((r,i)=>{const nodes=metricLabels[i];if(nodes.row.title!==r.description)nodes.row.title=r.description;if(nodes.label.textContent!==r.label)nodes.label.textContent=r.label;if(nodes.value.textContent!==r.value)nodes.value.textContent=r.value;});
-    if(chart.getAttribute("aria-label")!==view.chart_label)chart.setAttribute("aria-label",view.chart_label);
+    if(metricLabels.length!==view.rows.length){
+      metricLabels.forEach(row=>row.node.remove());metricLabels=[];
+      if(!memory.node.isConnected)recordButton.before(divider,memory.node,element("hr","stats-separator"));
+      view.rows.forEach((metric,index)=>{
+        const row=meterRow(element);metricLabels.push(row);divider.before(row.node);
+        if(index+1===Number(view.chart_after_rows))divider.before(chart);
+      });
+      contentChanged("stats");
+    }
+    view.rows.forEach((row,i)=>metricLabels[i].update(row));memory.update(view.memory);
+    if(chart.getAttribute("aria-label")!==view.chart_label){chart.setAttribute("aria-label",view.chart_label);chart.setAttribute("title",view.chart_label);}
     const max=Math.max(view.budget_ms,...view.samples)*1.1,y=ms=>46*(1-ms/max);
     const budgetPath=`M0 ${y(view.budget_ms)}H200`,samplePath=view.samples.map((ms,i)=>`${i?"L":"M"}${i*200/119} ${y(ms)}`).join(" ");
     if(budget.getAttribute("d")!==budgetPath)budget.setAttribute("d",budgetPath);

@@ -4167,6 +4167,7 @@ impl CanvasRenderer for WgpuRasterizer {
         #[cfg(not(target_arch = "wasm32"))]
         { t.memory = self.memory_samples.snapshot(); }
         t.memory_budget = self.factory.budget_snapshot();
+        t.adapter = Some(self.factory.adapter_summary());
         let m = &self.metrics;
         t.submissions = m.submissions;
         t.dabs = m.dabs;
@@ -4193,7 +4194,6 @@ impl CanvasRenderer for WgpuRasterizer {
             + self.layer_masks.pages.values().chain(self.layer_masks.preview_bases.values()).chain(self.layer_masks.command_pages.values()).chain(self.layer_masks.snapshots.values().flat_map(|snapshot| snapshot.pages.values())).map(|p| texture_bytes(&p.texture)).sum::<u64>();
         if let Some(scene) = &self.scene {
             t.effect_passes = scene.effect_passes;
-            t.compiled_effects = scene.effects.compilations;
             t.resident_bytes += scene.scratch_bytes();
         }
         if let Some(native) = &self.native_edit {

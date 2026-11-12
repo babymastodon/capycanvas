@@ -473,7 +473,6 @@ private data class CurveTap(val position: Offset, val time: Long, val epoch: Lon
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun RendererStatsPanel(host: CanvasHost) {
     var stats by remember { mutableStateOf<JSONObject?>(null) }
     LaunchedEffect(host) {
@@ -488,30 +487,30 @@ private data class CurveTap(val position: Offset, val time: Long, val epoch: Lon
         }
     }
     val colors = LocalPalette.current
-    Column(Modifier.fillMaxWidth().testTag("renderer-stats"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(Modifier.fillMaxWidth().testTag("renderer-stats"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         stats?.let { view ->
             view.array("rows").objects().forEachIndexed { index, row ->
-                HoverTip(row.getString("description")) {
-                    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(row.getString("label"), Modifier.weight(1f))
-                        Text(row.getString("value"), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End)
-                    }
-                }
+                MeterRow(row, Modifier.testTag("renderer-stat-row-$index"), "renderer-stat-$index")
                 if (index + 1 == view.getInt("chart_after_rows")) {
-                    Canvas(Modifier.fillMaxWidth().height(46.dp).testTag("renderer-stats-chart")) {
-                        val samples = view.array("samples").values().map { (it as Number).toFloat() }
-                        val budget = view.number("budget_ms"); val max = maxOf(budget,samples.maxOrNull() ?: 0f)*1.1f
-                        drawLine(colors.secondary,Offset(0f,size.height*(1-budget/max)),Offset(size.width,size.height*(1-budget/max)))
-                        val path=Path();samples.forEachIndexed { i,v -> val x=i*size.width/119;val y=size.height*(1-v/max);if(i==0)path.moveTo(x,y) else path.lineTo(x,y) }
-                        drawPath(path,colors.text,style=Stroke(1.dp.toPx()))
+                    HoverTip(view.getString("chart_label")) {
+                        Canvas(Modifier.fillMaxWidth().height(46.dp).testTag("renderer-stats-chart").semantics { contentDescription = view.getString("chart_label") }) {
+                            val samples = view.array("samples").values().map { (it as Number).toFloat() }
+                            val budget = view.number("budget_ms"); val max = maxOf(budget,samples.maxOrNull() ?: 0f)*1.1f
+                            drawLine(colors.secondary,Offset(0f,size.height*(1-budget/max)),Offset(size.width,size.height*(1-budget/max)))
+                            val path=Path();samples.forEachIndexed { i,v -> val x=i*size.width/119;val y=size.height*(1-v/max);if(i==0)path.moveTo(x,y) else path.lineTo(x,y) }
+                            drawPath(path,colors.text,style=Stroke(1.dp.toPx()))
+                        }
                     }
                 }
             }
+            HorizontalDivider(color = colors.menuSeparator)
+            MeterSection(view.getJSONObject("memory"))
+            HorizontalDivider(color = colors.menuSeparator)
         }
         TextButton(onClick = host.strokeRecording::click, enabled = !host.strokeRecording.busy,
             modifier = Modifier.height(panelMetrics().height).testTag("stroke-recording"), shape = ControlShape,
-            colors = ButtonDefaults.textButtonColors(contentColor = colors.text), contentPadding = PaddingValues(horizontal = panelMetrics().padding)) {
-            Text(host.strokeRecording.status?.optString("label") ?: host.catalog.getJSONObject("native_copy").getJSONObject("color").getString("record_tablet"))
+            colors = ButtonDefaults.textButtonColors(containerColor = colors.button, contentColor = colors.text), contentPadding = PaddingValues(horizontal = panelMetrics().padding)) {
+            Text(host.strokeRecording.status?.optString("label") ?: host.catalog.getJSONObject("native_copy").getJSONObject("color").getString("record_tablet"), fontWeight = FontWeight.Bold)
         }
     }
 }

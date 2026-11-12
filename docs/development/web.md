@@ -122,6 +122,8 @@ node --test apps/layer-web/{run,package,frame,phone-audit,bubbles,glass,pointer,
 node --test apps/layer-web/{numeric,histogram,gpu-diagnostics,raster-worker-client,store-worker-client,store-sources,file-handles,pipeline-wait,panel-vector-paths,panel-vector-queue,editor-panels,workspace-manager-copy,toolbar-components-copy,color-controls-copy,document-color-copy,document-recovery,image-import,workflow-stack,color-button-lifecycle}.test.mjs
 ```
 
+`node apps/layer-web/test.mjs --headless --diagnostics` checks Diagnostics layout, memory meters and six tooltips in both themes.
+
 Run both Node batches for every Web gate. Dialog fakes must include the shared
 `dialog` intent and projection APIs. Present modal fixtures through
 `createDialogHost` so input admission sees their declared modality.

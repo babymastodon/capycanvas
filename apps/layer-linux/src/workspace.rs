@@ -3204,6 +3204,8 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn palette(&self) -> Option<ThemePalette> { self.palette.get() }
+
     fn apply_palette(&self, palette: ThemePalette) {
         self.launch.set_palette(&palette);
         if self.palette.replace(Some(palette)) == Some(palette) {
@@ -3223,6 +3225,7 @@ impl Workspace {
             ("text", palette.text),
             ("accent", palette.accent),
             ("accent-foreground", palette.accent_foreground),
+            ("error", palette.error),
             ("relationship", palette.relationship),
             ("selection", palette.selection),
             ("header-selection", palette.header_selection),

@@ -36,7 +36,7 @@ try {
     (Control 'tool-setting-size-slider' -Type ([System.Windows.Automation.ControlType]::Slider)).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).SetValue(0.5)
     Wait-Until {(Model).state.brush.diameter -eq 32} 'Brush value was not applied'
     Invoke 'panel-tab-stats'
-    Wait-Until {$null -ne (Find 'renderer-stat-6') -and (Layout) -ne $before} 'Workspace layout did not change'
+    Wait-Until {$null -ne (Find 'renderer-memory-row-0') -and (Layout) -ne $before} 'Workspace layout did not change'
     $expected=Layout
     Wait-Until {!(Model).windows_workspace.dirty -and !(Model).windows_workspace.saving} 'Workspace autosave did not complete'
     if(!(Test-Path -LiteralPath (Join-Path $profile 'data/workspaces/workspaces.sqlite3'))){throw 'Workspace database was not created'}
@@ -47,8 +47,8 @@ try {
     Launch $profile 'restart'
     Wait-Until {(Model).state.brush.diameter -eq $expectedSize} 'Restart did not restore the final tool value'
     if((Layout) -ne $expected){throw 'Restart did not restore the saved layout'}
-    if(!(Find 'renderer-stat-6') -and (Find 'column-icon-stats')){Invoke 'column-icon-stats'}
-    Wait-Until {$null -ne (Find 'renderer-stat-6')} 'Restored Diagnostics did not appear natively'
+    if(!(Find 'renderer-memory-row-0') -and (Find 'column-icon-stats')){Invoke 'column-icon-stats'}
+    Wait-Until {$null -ne (Find 'renderer-memory-row-0')} 'Restored Diagnostics did not appear natively'
     Close
     $broken=Join-Path $run 'unreadable'
     $database=Join-Path $broken 'data/workspaces/workspaces.sqlite3'
@@ -73,7 +73,7 @@ try {
     Wait-Until {(Model).state.brush.diameter -ne $freshSize} 'Editing was refused with unreadable storage'
     $recoveredSize=(Model).state.brush.diameter;$recoveredBefore=Layout
     Invoke 'panel-tab-stats'
-    Wait-Until {$null -ne (Find 'renderer-stat-6') -and (Layout) -ne $recoveredBefore} 'The fresh workspace layout did not change'
+    Wait-Until {$null -ne (Find 'renderer-memory-row-0') -and (Layout) -ne $recoveredBefore} 'The fresh workspace layout did not change'
     $recoveredLayout=Layout
     Wait-Until {!(Model).windows_workspace.dirty -and !(Model).windows_workspace.saving} 'The fresh workspace autosave did not complete'
     Close $unreadableDiagnostic
@@ -82,8 +82,8 @@ try {
     if((Model).windows_workspace.error){throw 'Unreadable storage did not reopen'}
     Wait-Until {(Model).state.brush.diameter -eq $recoveredSize} 'The fresh workspace did not restore its brush value'
     if((Layout) -ne $recoveredLayout){throw 'The fresh workspace did not restore its saved layout'}
-    if(!(Find 'renderer-stat-6') -and (Find 'column-icon-stats')){Invoke 'column-icon-stats'}
-    Wait-Until {$null -ne (Find 'renderer-stat-6')} 'The fresh workspace did not restore native Diagnostics'
+    if(!(Find 'renderer-memory-row-0') -and (Find 'column-icon-stats')){Invoke 'column-icon-stats'}
+    Wait-Until {$null -ne (Find 'renderer-memory-row-0')} 'The fresh workspace did not restore native Diagnostics'
     if((Model).state.notice){throw 'A fresh workspace restart repeated a startup notice'}
     Close
     if(@(Get-ChildItem -LiteralPath (Split-Path -Parent $database) -Filter 'workspaces.damaged.*.sqlite3' -File).Count -ne 1 -or (Get-FileHash -LiteralPath $damaged[0].FullName -Algorithm SHA256).Hash -ne $unreadableHash){throw 'Restart changed the damaged workspace copy'}
