@@ -613,10 +613,12 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
     val bounds=placement.getJSONObject("bounds")
     val connection=frame.objectOrNull("connection")
     val shape=dock.drawerContainerShape(bounds,joined=connection?.array("square_corners"))
-    val cut=connection?.getJSONObject("bounds")?.rect()?.translate(-bounds.rect().topLeft)
+    val cut=connection?.let { bridgeOutline(it,dock.density).apply {
+        translate((it.getJSONObject("bounds").rect().topLeft-bounds.rect().topLeft)*dock.density)
+    } }
     Box((if(absolute)Modifier.placedAbsolute(bounds,dock.density) else Modifier.placed(bounds,dock.density))
         .zIndex(if(nested)199f else 99f)
-        .panelSurface(12.dp,shape,cut=cut?.let { Rect(it.topLeft*dock.density,it.bottomRight*dock.density) }))
+        .panelSurface(12.dp,shape,cut=cut))
     connection?.let { DrawerBridge(it,dock,z.toFloat(),glass=glass) }
 }
 
@@ -713,18 +715,23 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
     val bounds = connection.getJSONObject("bounds")
     val position = if (dock.phone != null) Modifier.placedAbsolute(bounds,dock.density) else Modifier.placed(bounds,dock.density)
     Canvas(position.then(modifier).zIndex(z).chromeRegion(dock)) {
-        val t = connection.array("transform")
-        fun point(x: Float, y: Float) = Offset((t.getDouble(0).toFloat() * x + t.getDouble(2).toFloat() * y + t.getDouble(4).toFloat()) * dock.density,
-            (t.getDouble(1).toFloat() * x + t.getDouble(3).toFloat() * y + t.getDouble(5).toFloat()) * dock.density)
-        val length = connection.number("length"); val depth = connection.number("depth")
-        val r0 = connection.array("radii").getDouble(0).toFloat(); val r1 = connection.array("radii").getDouble(1).toFloat()
-        val path = Path()
-        fun move(x: Float, y: Float) { val p = point(x,y); path.moveTo(p.x,p.y) }
-        fun line(x: Float, y: Float) { val p = point(x,y); path.lineTo(p.x,p.y) }
-        fun corner(center: Offset, start: Offset, end: Offset) = squircleCorner(center, start, end).forEach { line(it.x, it.y) }
-        move(0f,0f); line(length,0f); line(length,depth-r1)
-        corner(Offset(length+r1,depth-r1), Offset(-r1,0f), Offset(0f,r1))
-        line(-r0,depth); corner(Offset(-r0,depth-r0), Offset(0f,r0), Offset(r0,0f))
-        path.close(); drawPath(path,colors.drawerFill(glass==null || glass.presented))
+        drawPath(bridgeOutline(connection,dock.density),colors.drawerFill(glass==null || glass.presented))
     }
+}
+
+internal fun bridgeOutline(connection: JSONObject, density: Float): Path {
+    val t = connection.array("transform")
+    fun point(x: Float, y: Float) = Offset((t.getDouble(0).toFloat() * x + t.getDouble(2).toFloat() * y + t.getDouble(4).toFloat()) * density,
+        (t.getDouble(1).toFloat() * x + t.getDouble(3).toFloat() * y + t.getDouble(5).toFloat()) * density)
+    val length = connection.number("length"); val depth = connection.number("depth")
+    val r0 = connection.array("radii").getDouble(0).toFloat(); val r1 = connection.array("radii").getDouble(1).toFloat()
+    val path = Path()
+    fun move(x: Float, y: Float) { val p = point(x,y); path.moveTo(p.x,p.y) }
+    fun line(x: Float, y: Float) { val p = point(x,y); path.lineTo(p.x,p.y) }
+    fun corner(center: Offset, start: Offset, end: Offset) = squircleCorner(center, start, end).forEach { line(it.x, it.y) }
+    move(0f,0f); line(length,0f); line(length,depth-r1)
+    corner(Offset(length+r1,depth-r1), Offset(-r1,0f), Offset(0f,r1))
+    line(-r0,depth); corner(Offset(-r0,depth-r0), Offset(0f,r0), Offset(r0,0f))
+    path.close()
+    return path
 }

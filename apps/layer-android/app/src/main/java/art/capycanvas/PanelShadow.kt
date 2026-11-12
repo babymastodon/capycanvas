@@ -93,7 +93,7 @@ internal val LocalPanelOpening = staticCompositionLocalOf<PanelOpening?> { null 
     }
 }
 
-@Composable internal fun Modifier.panelShadow(elevation: Dp, shape: Shape, cut: Rect? = null, isolated: Boolean = false): Modifier {
+@Composable internal fun Modifier.panelShadow(elevation: Dp, shape: Shape, cut: Path? = null, isolated: Boolean = false): Modifier {
     if (elevation <= 0.dp) return this
     val caster = rememberGraphicsLayer()
     val texture = rememberGraphicsLayer()
@@ -110,7 +110,7 @@ internal val LocalPanelOpening = staticCompositionLocalOf<PanelOpening?> { null 
         val cast: DrawScope.() -> Unit = {
             clipRect(bounds.left - reach, bounds.top - reach, bounds.right + reach, bounds.bottom + reach) {
                 if (cut == null) drawLayer(caster)
-                else clipRect(cut.left, cut.top, cut.right, cut.bottom, ClipOp.Difference) { drawLayer(caster) }
+                else clipPath(cut, ClipOp.Difference) { drawLayer(caster) }
             }
             drawPath(interior, Color.Transparent, blendMode = BlendMode.Clear)
         }
@@ -141,6 +141,6 @@ internal fun Modifier.panelOpening(opening: PanelOpening?) = if (opening == null
         opening.bounds?.let { drawRect(Color.Transparent, it.topLeft, it.size, blendMode = BlendMode.Clear) }
 }
 
-@Composable internal fun Modifier.panelSurface(elevation: Dp, shape: Shape, cut: Rect? = null, opening: PanelOpening? = null): Modifier =
+@Composable internal fun Modifier.panelSurface(elevation: Dp, shape: Shape, cut: Path? = null, opening: PanelOpening? = null): Modifier =
     panelOpening(opening).surfaceLayer(elevation * PanelShadowReach)
         .panelShadow(elevation, shape, cut, isolated = true).clip(shape)

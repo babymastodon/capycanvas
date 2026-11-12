@@ -86,6 +86,9 @@ class AndroidDrawerCompositionTest {
                         }
                         val expected=android.graphics.Color.parseColor(host.snapshot!!.getJSONObject("state").getJSONObject("palette").getString("panel"))
                         val suffix=if(opaque)"opaque" else "rest"
+                        val surfaces=compose.runOnIdle { host.glassBoxesForTest.map {
+                            Rect(it[0],it[1],it[0]+it[2],it[1]+it[3]).translate(host.surfaceOrigin-dock.origin)
+                        } }+listOf(Rect(anchor.topLeft*density,anchor.bottomRight*density),Rect(body.topLeft*density,body.bottomRight*density))
                         var inspected=false
                         screenshot("validation/drawer-faces/$orientation-$family-$suffix.png") { image ->
                             inspected=true
@@ -96,6 +99,35 @@ class AndroidDrawerCompositionTest {
                             }
                             val reference=if(opaque)expected else pixel(inside)
                             for((label,at) in listOf("face" to face,"bridge" to joint,"body" to inside))equal(label,reference,pixel(at),if(opaque)0 else 3)
+                            val connection=settled.getJSONObject("connection")
+                            val transform=connection.array("transform")
+                            fun project(u:Float,v:Float)=bridge.topLeft*density+androidx.compose.ui.geometry.Offset(
+                                transform.getDouble(0).toFloat()*u+transform.getDouble(2).toFloat()*v+transform.getDouble(4).toFloat()*density,
+                                transform.getDouble(1).toFloat()*u+transform.getDouble(3).toFloat()*v+transform.getDouble(5).toFloat()*density)
+                            val samples=org.json.JSONArray()
+                            for(index in 0..1) {
+                                val radius=connection.array("radii").getDouble(index).toFloat()*density
+                                if(radius<4f)continue
+                                val length=connection.number("length")*density
+                                val depth=connection.number("depth")*density
+                                val u=if(index==0)-radius+2f else length+radius-2f
+                                val v=depth-radius+2f
+                                val inner=project(u,v)
+                                val outside=(0..image.width).asSequence().map { distance ->
+                                    project(if(index==0)-radius-4f-distance else length+radius+4f+distance,v)
+                                }.firstOrNull { candidate ->
+                                    val screen=candidate+dock.origin
+                                    screen.x in 1f..(image.width-2f) && screen.y in 1f..(image.height-2f) &&
+                                        surfaces.all { it.contains(candidate)==it.contains(inner) }
+                                }
+                                assertNotNull("$family $orientation $suffix corner $index has a reference on the same surfaces",outside)
+                                val outer=checkNotNull(outside)
+                                samples.put(obj("corner" to index,"inside" to org.json.JSONArray(listOf(inner.x,inner.y)),
+                                    "outside" to org.json.JSONArray(listOf(outer.x,outer.y)),"inside_rgb" to pixel(inner),"outside_rgb" to pixel(outer)))
+                                java.io.File(instrumentation.targetContext.getExternalFilesDir(null),"validation/drawer-faces/$orientation-$family-$suffix.json")
+                                    .writeText(samples.toString(2))
+                                equal("concave corner $index at $inner versus $outer",pixel(outer),pixel(inner),2)
+                            }
                             if(opaque) {
                                 for(inset in 1..8)equal("face joint strip $inset",reference,pixel(point(edge*density-sign*inset)),0)
                                 for(corner in corners) {
