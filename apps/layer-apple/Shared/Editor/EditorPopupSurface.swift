@@ -431,15 +431,10 @@ private struct EditorAlertSurface<Alert: View>: ViewModifier {
             .overlay {
                 if presented {
                     GeometryReader { geometry in
-                        let frame = geometry.frame(in: .global), layout = store.snapshot["layout"]
-                        let height = max(0, layout["viewport"][1].number - Double(store.obscuredBottom))
-                        let insets = store.state["phone"]["insets"]
-                        let visible = layout["phone"].isNull
-                            ? CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: min(frame.height, height))
-                            : CGRect(x: insets[0].number, y: insets[1].number,
-                                width: max(0, layout["viewport"][0].number - insets[0].number - insets[2].number),
-                                height: max(0, layout["viewport"][1].number - insets[1].number - insets[3].number))
-                                .intersection(CGRect(x: 0, y: 0, width: layout["viewport"][0].number, height: height))
+                        let frame = geometry.frame(in: .global)
+                        let height = max(0, store.snapshot["layout"]["viewport"][1].number - Double(store.obscuredBottom))
+                        let visible = store.phoneVisibleArea
+                            ?? CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: min(frame.height, height))
                         let area = frame.intersection(visible)
                         ZStack {
                             Color.black.opacity(0.32).ignoresSafeArea().contentShape(Rectangle())

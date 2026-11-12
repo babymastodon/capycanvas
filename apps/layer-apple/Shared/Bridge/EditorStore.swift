@@ -17,6 +17,14 @@ import UIKit
     @Published var keyboardInset: CGFloat = 0
     @Published var navigationInset: CGFloat = 0
     var obscuredBottom: CGFloat { max(keyboardInset, navigationInset) }
+    var phoneVisibleArea: CGRect? {
+        let layout = snapshot["layout"], insets = state["phone"]["insets"], viewport = layout["viewport"]
+        guard !layout["phone"].isNull else { return nil }
+        return CGRect(x: insets[0].number, y: insets[1].number,
+            width: max(0, viewport[0].number - insets[0].number - insets[2].number),
+            height: max(0, viewport[1].number - insets[1].number - insets[3].number))
+            .intersection(CGRect(x: 0, y: 0, width: viewport[0].number, height: max(0, viewport[1].number - Double(obscuredBottom))))
+    }
     @Published var catalog = JSON()
     @Published private(set) var bootstrap = JSON()
     @Published private(set) var interfaceLanguage = ""
