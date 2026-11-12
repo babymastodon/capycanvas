@@ -68,7 +68,8 @@ Every host (GTK, Web, Android, Apple and Windows) starts through
 adoption moves startup to a later stage:
 
 1. **Stored**: start from the store as it is.
-2. **Set aside**: only SQLite corruption or not-a-database errors reach
+2. **Set aside**: only SQLite corruption or not-a-database errors, or a Web
+   store that isn't valid JSON or fails to decode at the current schema, reach
    `StoreRequest::SetAside`. The worker renames the database and its existing
    WAL/SHM sidecars to `workspaces.damaged.<uuid>.sqlite3` and matching sidecar names,
    then opens a fresh store. These files are never pruned as version copies.

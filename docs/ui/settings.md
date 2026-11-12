@@ -417,7 +417,8 @@ and use defaults for fields they cannot read:
   adds missing stores when its version changes and never deletes stored data.
 - Workspaces: unreadable rows are kept. When none can be read, startup creates
   a new workspace from the included layout and raises the shared update notice.
-  Only SQLite corruption or not-a-database errors set the store aside; see
+  Only damaged storage (SQLite corruption, or a Web store that can't be decoded)
+  is set aside; see
   [workspace startup](../internals/workspace-ownership.md#startup-always-adopts-a-workspace).
 - Caches discard data they cannot use.
 - Artwork is never replaced automatically. A recovery copy this build cannot

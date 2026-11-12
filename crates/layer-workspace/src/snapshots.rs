@@ -1,4 +1,4 @@
-use crate::{BrowserDatabase, StoreError, StoreRequest, StoreResponse, content_id, new_id};
+use crate::{BrowserDatabase, ErrorKind, StoreError, StoreRequest, StoreResponse, content_id, new_id};
 use serde::{Deserialize, Serialize};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -78,13 +78,11 @@ pub fn plan(snapshot: Option<&str>, environment: SnapshotEnvironment, adopted: b
         info: SnapshotInfo {id:format!("snapshot:{}",name(version)),bytes:text.len() as u64},
         snapshot:text.into(),
     });
-    if previous.version != VERSION && let Some(text) = snapshot {
-        let value: serde_json::Value = serde_json::from_str(text)?;
-        if value["items"].as_object().is_some_and(|items| !items.is_empty())
+    if previous.version != VERSION && let Some(text) = snapshot
+        && serde_json::from_str::<serde_json::Value>(text).map_or(true, |value| value["items"].as_object().is_some_and(|items| !items.is_empty())
             || value["editing"].is_string()
-            || value["pending"].as_object().is_some_and(|pending| !pending.is_empty()) {
-            copy(&previous.version,text);
-        }
+            || value["pending"].as_object().is_some_and(|pending| !pending.is_empty())) {
+        copy(&previous.version,text);
     }
     let unreadable_identity = environment.unreadable.as_ref().map(|text| content_id(text.as_bytes())).or_else(||previous.unreadable_identity.clone());
     let changed = unreadable_identity != previous.unreadable_identity;
@@ -122,7 +120,7 @@ pub fn protect(snapshot: Option<&str>, mut environment: SnapshotEnvironment, req
         StoreRequest::Reopen => (None, Some(StoreResponse::Reopened(plan.restore.clone()))),
         StoreRequest::Snapshots => (None, Some(StoreResponse::Snapshots(plan.marker.copies.iter().rev().map(|copy| copy.id.clone()).collect()))),
         StoreRequest::CheckSnapshot {id, workspace} => {
-            BrowserDatabase::restorable(retained(&plan, id)?, Some(workspace))?;
+            BrowserDatabase::restorable(retained(&plan, id)?, workspace.as_deref())?;
             (None, Some(StoreResponse::Done))
         }
         StoreRequest::RestoreSnapshot {id} => {
@@ -134,6 +132,12 @@ pub fn protect(snapshot: Option<&str>, mut environment: SnapshotEnvironment, req
         StoreRequest::RestoreIncluded {..} => {
             plan.keep_current(current()?);
             (None, None)
+        }
+        StoreRequest::SetAside => {
+            let damaged = snapshot.filter(|text| BrowserDatabase::decode(text).is_err_and(|error| error.kind == ErrorKind::DamagedStorage))
+                .ok_or_else(|| StoreError::new(ErrorKind::Unavailable, "Only damaged storage can be set aside."))?;
+            plan.copies.push(SnapshotCopy {info: SnapshotInfo {id: format!("damaged:{}", new_id()), bytes: damaged.len() as u64}, snapshot: damaged.into()});
+            (Some(BrowserDatabase::default()), Some(StoreResponse::Done))
         }
         _ => (None, None),
     };
@@ -181,7 +185,7 @@ mod tests {
             let Ok(Protection {response:Some(StoreResponse::Snapshots(retained)),..}) = protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::Snapshots) else {panic!()};
             assert_eq!(retained, vec![copy.clone()]);
             for (id, _) in crate::DEFAULT_WORKSPACES {
-                let checked = protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::CheckSnapshot {id:copy.clone(),workspace:id.into()});
+                let checked = protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::CheckSnapshot {id:copy.clone(),workspace:Some(id.into())});
                 assert_eq!(checked.is_ok(), opens, "{id}");
             }
             match protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::RestoreSnapshot {id:copy.clone()}) {
@@ -199,6 +203,28 @@ mod tests {
                     assert_eq!(error.known, Some(crate::WorkspaceRefusal::UnopenableWorkspaceCopy));
                 }
             }
+        }
+    }
+    #[test]
+    fn damaged_current_stores_are_copied_on_version_change_and_set_aside_unmanaged() {
+        let damaged = &RELEASE_1_0_15[..RELEASE_1_0_15.len()/2];
+        assert_eq!(BrowserDatabase::decode(damaged).err().unwrap().kind, ErrorKind::DamagedStorage);
+        let first = plan(Some(damaged),SnapshotEnvironment::default(),false).unwrap();
+        assert_eq!(first.copies.len(), 1);
+        assert_eq!(first.copies[0].snapshot, damaged);
+        let environment = || SnapshotEnvironment {marker:Some(first.marker.clone()),..Default::default()};
+        let aside = protect(Some(damaged),environment(),&StoreRequest::SetAside).unwrap();
+        assert!(matches!(aside.response, Some(StoreResponse::Done)));
+        assert_eq!(aside.restored.unwrap().encoded().unwrap(), BrowserDatabase::default().encoded().unwrap());
+        let [kept] = &aside.plan.copies[..] else {panic!()};
+        assert!(kept.info.id.starts_with("damaged:"));
+        assert_eq!(kept.snapshot, damaged);
+        assert_eq!(aside.plan.marker.copies, first.marker.copies);
+        let unknown_field = RELEASE_1_0_15.replacen('{', r#"{"future":1,"#, 1);
+        assert_eq!(BrowserDatabase::decode(&unknown_field).err().unwrap().kind, ErrorKind::InvalidData);
+        for current in [None, Some(RELEASE_1_0_15), Some(unknown_field.as_str()), Some(r#"{"schema":99}"#), Some(r#"{"schema":8}"#)] {
+            let Err(error) = protect(current,environment(),&StoreRequest::SetAside) else {panic!()};
+            assert_eq!(error.kind, ErrorKind::Unavailable, "{current:?}");
         }
     }
     #[test]

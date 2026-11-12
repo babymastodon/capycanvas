@@ -38,7 +38,11 @@ read, startup creates a new workspace from the included layout and leaves the
 unreadable rows untouched and shows the shared update notice. SQLite corruption
 or not-a-database errors rename the database and its existing WAL/SHM sidecars to
 `workspaces.damaged.<uuid>.sqlite3` and matching sidecar names, then start a fresh
-store. Damaged copies are kept outside version-copy retention. A failed set-aside
+store. A Web store that isn't valid JSON, or fails to decode at the current
+schema, moves to a `damaged:<uuid>` record in the same transaction that writes a
+fresh store. Damaged copies are kept outside version-copy retention. After a
+set-aside, startup offers **Restore Earlier Workspaces?** for the newest retained
+copy this build can open. A failed set-aside
 continues in memory with the can't-open notice. Unsupported schemas stay in place;
 newer schemas show the newer-version notice. See
 [workspace ownership](workspace-ownership.md#startup-always-adopts-a-workspace).

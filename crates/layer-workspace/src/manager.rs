@@ -13,7 +13,7 @@ struct PendingSave {
 struct State {
     editing_dropped: bool,
     startup_created: bool,
-    restore: Option<String>,
+    restore: Option<ManagerAction>,
     editing: Option<Box<layer_ui::EditingState>>,
     saved_editing: Option<Box<layer_ui::EditingState>>,
     saved: Option<StoredEntity>,
@@ -96,28 +96,39 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
         *self.state.borrow_mut() = State::default();
         self.execute(StoreRequest::SetAside).await.map(|_| ())
     }
-    pub(crate) async fn reopen(&self) -> Result<()> {
-        if let StoreResponse::Reopened(restore) = self.execute(StoreRequest::Reopen).await? {
+    pub(crate) async fn reopen(&self, set_aside: bool) -> Result<()> {
+        if let StoreResponse::Reopened(legacy) = self.execute(StoreRequest::Reopen).await? {
+            let restore = match legacy {
+                Some(id) => Some(ManagerAction::RestoreWorkspaces(id)),
+                None if set_aside => self.openable_copy(None).await.map(ManagerAction::RestoreCopy),
+                None => None,
+            };
             self.state.borrow_mut().restore = restore;
         }
         Ok(())
     }
-    pub(crate) fn take_restore(&self) -> Option<String> { self.state.borrow_mut().restore.take() }
+    pub(crate) fn take_restore(&self) -> Option<ManagerAction> { self.state.borrow_mut().restore.take() }
     pub(crate) async fn restore_snapshot(&self, id: String) -> Result<()> {
         self.flush().await?;
         self.execute(StoreRequest::RestoreSnapshot {id}).await?;
         *self.state.borrow_mut() = State::default();
         Ok(())
     }
-    pub(crate) async fn recovery(&self, workspace: &str) -> ManagerAction {
-        if let Ok(StoreResponse::Snapshots(copies)) = self.execute(StoreRequest::Snapshots).await {
-            for id in copies {
-                if self.execute(StoreRequest::CheckSnapshot {id:id.clone(),workspace:workspace.into()}).await.is_ok() {
-                    return ManagerAction::RestoreCopy(id);
-                }
+    async fn openable_copy(&self, workspace: Option<&str>) -> Option<String> {
+        let Ok(StoreResponse::Snapshots(copies)) = self.execute(StoreRequest::Snapshots).await else { return None };
+        for id in copies {
+            if self.execute(StoreRequest::CheckSnapshot {id:id.clone(),workspace:workspace.map(Into::into)}).await.is_ok() {
+                return Some(id);
             }
         }
-        if is_default_item(workspace) { ManagerAction::RestoreIncluded(workspace.into()) } else { ManagerAction::SaveAsNew }
+        None
+    }
+    pub(crate) async fn recovery(&self, workspace: &str) -> ManagerAction {
+        match self.openable_copy(Some(workspace)).await {
+            Some(id) => ManagerAction::RestoreCopy(id),
+            None if is_default_item(workspace) => ManagerAction::RestoreIncluded(workspace.into()),
+            None => ManagerAction::SaveAsNew,
+        }
     }
     pub(crate) async fn restore_included(&self, id: &str, now: u64) -> Result<StoredEntity> {
         let entity = Entity::included_workspace(id, self.platform, self.tablet.get(), now)

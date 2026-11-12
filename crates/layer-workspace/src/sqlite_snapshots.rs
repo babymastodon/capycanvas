@@ -85,8 +85,8 @@ fn check(path: &Path, workspace: Option<&str>) -> Result<()> {
     checked.map_err(|error| if error.kind==ErrorKind::NotFound || error.known==Some(WorkspaceRefusal::UnopenableWorkspaceCopy) {error} else {unopenable_copy(error)})
 }
 
-pub(super) fn check_snapshot(connection: &Connection, id: &str, workspace: &str) -> Result<()> {
-    check(&source(connection,id)?,Some(workspace))
+pub(super) fn check_snapshot(connection: &Connection, id: &str, workspace: Option<&str>) -> Result<()> {
+    check(&source(connection,id)?,workspace)
 }
 
 pub(super) fn keep_current(path: &Path) -> Result<()> {
@@ -208,7 +208,7 @@ mod tests {
             assert_eq!(offered,opens.then(||copy.clone()));
             let content = |store: &SqliteStore| store.connection.query_row("SELECT content FROM items WHERE id=?1",[crate::DEFAULT_WORKSPACES[0].0],|row|row.get::<_,String>(0)).unwrap();
             let original = content(&store);
-            let checked = store.handle(StoreRequest::CheckSnapshot {id:copy.clone(),workspace:crate::DEFAULT_WORKSPACES[1].0.into()});
+            let checked = store.handle(StoreRequest::CheckSnapshot {id:copy.clone(),workspace:Some(crate::DEFAULT_WORKSPACES[1].0.into())});
             let restored = store.handle(StoreRequest::RestoreSnapshot {id:copy.clone()});
             if opens {
                 checked.unwrap();

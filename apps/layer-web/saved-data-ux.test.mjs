@@ -39,11 +39,12 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
       if(kind==='editing'){const editing=structuredClone(template);editing.preset='unreadable';database.editing=JSON.stringify(editing);}
       if(kind==='workspace')for(const record of Object.values(database.items)){if(record.entity.metadata.kind==='workspace'){record.entity.content={};record.claim=null;}}
       if(kind==='choice'){database.items['builtin:workspace:painter'].entity.content={};database.items['builtin:workspace:painter'].claim=null;}
-      await storage(`store.clear();store.put({id:'database',snapshot:${JSON.stringify(JSON.stringify(database))}});`);
+      const stored=JSON.stringify(database);
+      await storage(`store.clear();store.put({id:'database',snapshot:${JSON.stringify(kind==='damaged'?stored.slice(0,stored.length>>1):stored)}});`);
       await evaluate(`localStorage.setItem('layer.preferences.v1',JSON.stringify({...layerApp.state().settings,language:{Explicit:'en'},theme:${JSON.stringify(theme)}}))`);
       let injected;
-      if(kind==='unavailable'||kind==='damaged') {
-        const source=`(()=>{const Base=Worker;window.Worker=class extends Base{constructor(url,options){super(url,options);this.savedDataStorage=options?.name==='workspace-storage';this.savedDataFailed=false;}postMessage(data,transfer){if(this.savedDataStorage&&data.request){const request=JSON.parse(data.request);if(request.type==='reopen'&&!this.savedDataFailed){this.savedDataFailed=true;queueMicrotask(()=>this.dispatchEvent(new MessageEvent('message',{data:{id:data.id,error:JSON.stringify({kind:${JSON.stringify(kind==='damaged'?'damaged_storage':'unavailable')},message:'PRIVATE reader details'})}})));return;}if(request.type==='set_aside'){queueMicrotask(()=>this.dispatchEvent(new MessageEvent('message',{data:{id:data.id,response:'{"type":"done"}'}})));return;}}super.postMessage(data,transfer);}}})()`;
+      if(kind==='unavailable') {
+        const source=`(()=>{const Base=Worker;window.Worker=class extends Base{constructor(url,options){super(url,options);this.savedDataStorage=options?.name==='workspace-storage';this.savedDataFailed=false;}postMessage(data,transfer){if(this.savedDataStorage&&data.request){const request=JSON.parse(data.request);if(request.type==='reopen'&&!this.savedDataFailed){this.savedDataFailed=true;queueMicrotask(()=>this.dispatchEvent(new MessageEvent('message',{data:{id:data.id,error:JSON.stringify({kind:'unavailable',message:'PRIVATE reader details'})}})));return;}}super.postMessage(data,transfer);}}})()`;
         injected=(await call('Page.addScriptToEvaluateOnNewDocument',{source})).identifier;
       }
       await restart();
@@ -65,7 +66,7 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
       }
       const name=`web-${kind}-${theme}`;
       await shot(name);
-      evidence.push({name,expected,source:kind==='damaged'?'SQLite corruption reply injected at the worker transport':'shared startup or file reader'});
+      evidence.push({name,expected,source:kind==='damaged'?'truncated IndexedDB store set aside':'shared startup or file reader'});
       if(kind.startsWith('drawing-')) {
         await evaluate(`[...document.querySelectorAll('dialog[open].document-dialog footer button')].find(button=>button.textContent==='Close').click()`);
         await evaluate('savedDataOpening');
@@ -138,6 +139,30 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
     assert.equal(JSON.stringify(JSON.parse(added[0].snapshot).items[paint].entity),JSON.stringify(JSON.parse(unopenable).items[paint].entity));
     evidence.push({name,source:'released 1.0.12 store as the current IndexedDB store'+(retained?' with a retained 1.0.15 copy':'')});
   }
+  for(const theme of ['light','dark']) {
+    await wait('!JSON.parse(layerApp.app.workspace_view()).dirty&&!JSON.parse(layerApp.app.workspace_view()).saving');
+    const copy=`snapshot:workspaces.1.0.15.${crypto.randomUUID()}`,truncated=earlier.slice(0,earlier.length>>1);
+    await storage(`store.clear();store.put({id:'database',snapshot:${JSON.stringify(truncated)}});store.put({id:${JSON.stringify(copy)},snapshot:${JSON.stringify(earlier)}});store.put({id:'version',value:{version:'',unreadable_identity:null,copies:[{id:${JSON.stringify(copy)},bytes:${earlier.length}}]}});`);
+    await evaluate(`localStorage.setItem('layer.preferences.v1',JSON.stringify({...layerApp.state().settings,language:{Explicit:'en'},theme:${JSON.stringify(theme)}}))`);
+    await restart();
+    await wait("document.querySelector('dialog.workspace-form[open]')?.textContent.includes('Restore')");
+    await wait(`layerApp.state().notice?.text===${JSON.stringify(messages.damaged)}`);
+    const prompt=await evaluate('JSON.parse(layerApp.app.workspace_view()).prompt');
+    assert.equal(prompt.title,'Restore Earlier Workspaces?');
+    assert.deepEqual(await evaluate('JSON.parse(layerApp.app.workspace_view()).prompt_action'),{type:'restore_copy',value:copy});
+    const name=`web-set-aside-${theme}`;
+    await shot(name);
+    const damaged=await storage('const request=store.getAll();request.onsuccess=()=>{result=request.result.filter(row=>row.id.startsWith("damaged:")).map(row=>row.snapshot);};');
+    assert.deepEqual(damaged,[truncated],'The damaged store is kept aside');
+    await evaluate("[...document.querySelectorAll('dialog.workspace-form[open] footer button')].find(button=>button.textContent==='Restore').click()");
+    await wait("JSON.parse(layerApp.app.workspace_view()).ready&&JSON.parse(layerApp.app.workspace_view()).prompt==null&&!JSON.parse(layerApp.app.workspace_view()).status");
+    await wait('!JSON.parse(layerApp.app.workspace_view()).dirty&&!JSON.parse(layerApp.app.workspace_view()).saving');
+    await restart();await ready();
+    assert.equal(await evaluate('JSON.parse(layerApp.app.workspace_view()).prompt'),null,'A second start does not ask again');
+    assert.equal(await evaluate('layerApp.state().notice?.text??null'),null,'A second start shows no damaged notice');
+    assert.equal(await evaluate("JSON.parse(layerApp.app.workspace_view()).id"),'builtin:workspace:illustrator');
+    evidence.push({name,source:'1.0.15 IndexedDB store cut to half its length, with a retained 1.0.15 copy'});
+  }
   await writeFile(`${output}/web-messages.json`,JSON.stringify(evidence,null,2));
-  console.log('PASS saved-data messages: all approved messages, both restore choices and both workspace recoveries rendered in both themes; damaged SQLite transport fixture; real newer schema, discarded editing, unreadable workspaces and package readers');
+  console.log('PASS saved-data messages: all approved messages, both restore choices, both workspace recoveries and the damaged-store set-aside rendered in both themes; real newer schema, truncated store, discarded editing, unreadable workspaces and package readers');
 }

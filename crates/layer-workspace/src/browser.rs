@@ -93,17 +93,22 @@ fn update_ids(
     }
     Ok(field.clone().and_then(manager::readable_ids))
 }
-fn schema(text: &str) -> Option<u64> {
+fn schema(text: &str) -> serde_json::Result<Option<u64>> {
     #[derive(Deserialize)]
     struct Schema {
-        schema: Option<u64>,
+        #[serde(default)]
+        schema: serde_json::Value,
     }
-    serde_json::from_str::<Schema>(text).ok()?.schema
+    Ok(serde_json::from_str::<Schema>(text)?.schema.as_u64())
 }
 impl BrowserDatabase {
     pub fn decode(text: &str) -> Result<Self> {
-        match schema(text) {
-            Some(schema) if schema == u64::from(SCHEMA_VERSION) => Ok(serde_json::from_str(text)?),
+        let damaged = |error: serde_json::Error| match error.classify() {
+            serde_json::error::Category::Data => StoreError::from(error),
+            _ => StoreError::new(ErrorKind::DamagedStorage, error.to_string()),
+        };
+        match schema(text).map_err(damaged)? {
+            Some(schema) if schema == u64::from(SCHEMA_VERSION) => serde_json::from_str(text).map_err(damaged),
             Some(schema) if schema > u64::from(SCHEMA_VERSION) => Err(newer_schema()),
             _ => Err(other_schema()),
         }
@@ -144,7 +149,7 @@ impl BrowserDatabase {
     /// `StoreRequest::Reset` for a snapshot that may not decode at all.
     pub fn replace(previous: Option<&str>) -> Result<Self> {
         if previous
-            .and_then(schema)
+            .and_then(|text| schema(text).ok().flatten())
             .is_some_and(|schema| schema > u64::from(SCHEMA_VERSION))
         {
             return Err(newer_schema());
@@ -247,7 +252,6 @@ impl BrowserDatabase {
                     .map_or((None,false), |(state,dropped)|(Some(Box::new(state)),dropped));
                 StoreResponse::Editing {state,dropped}
             }
-            SetAside => return Err(StoreError::new(ErrorKind::Unavailable,"Only damaged native storage can be set aside.")),
             Switcher => StoreResponse::Switcher(self.switcher.clone().and_then(manager::readable_ids)),
             WorkspaceOrder => StoreResponse::WorkspaceOrder(self.workspace_order.clone().and_then(manager::readable_ids)),
             UpdateSwitcher { expected, ids } => {
@@ -346,7 +350,7 @@ impl BrowserDatabase {
             Pending => StoreResponse::Pending(self.pending.values().filter_map(|value| serde_json::from_value(value.clone()).ok())
                 .filter(|batch| validate_payload(batch, |_| Err(missing_resource())).is_ok()).collect()),
             Reopen => StoreResponse::Reopened(None),
-            RestoreSnapshot { .. } | CheckSnapshot { .. } => return Err(StoreError::new(ErrorKind::Unavailable,"Snapshots require persistent storage.")),
+            RestoreSnapshot { .. } | CheckSnapshot { .. } | SetAside => return Err(StoreError::new(ErrorKind::Unavailable,"Snapshots require persistent storage.")),
             Snapshots => StoreResponse::Snapshots(Vec::new()),
             RestoreIncluded { entity } => {
                 self.restore_included(*entity)?;

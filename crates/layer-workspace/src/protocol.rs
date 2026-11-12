@@ -414,7 +414,7 @@ pub enum StoreRequest {
     Reopen,
     RestoreSnapshot { id: String },
     Snapshots,
-    CheckSnapshot { id: String, workspace: String },
+    CheckSnapshot { id: String, workspace: Option<String> },
     RestoreIncluded { entity: Box<Entity> },
     SetAside,
     Adopted,
@@ -424,7 +424,7 @@ pub enum StoreRequest {
 }
 impl StoreRequest {
     pub fn needs_snapshots(&self) -> bool {
-        matches!(self, Self::RestoreSnapshot {..} | Self::CheckSnapshot {..} | Self::RestoreIncluded {..})
+        matches!(self, Self::RestoreSnapshot {..} | Self::CheckSnapshot {..} | Self::RestoreIncluded {..} | Self::SetAside)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

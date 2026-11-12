@@ -160,7 +160,7 @@ impl SqliteStore {
             }
             StoreRequest::Snapshots => Ok(StoreResponse::Snapshots(snapshots::retained(&self.connection)?)),
             StoreRequest::CheckSnapshot { id, workspace } => {
-                snapshots::check_snapshot(&self.connection,&id,&workspace)?;
+                snapshots::check_snapshot(&self.connection,&id,workspace.as_deref())?;
                 Ok(StoreResponse::Done)
             }
             StoreRequest::RestoreIncluded { entity } => {

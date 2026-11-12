@@ -544,7 +544,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 Startup::SetAside => m.set_aside_storage().await?,
                 Startup::InMemory => m.use_memory(),
             }
-            m.reopen().await?;
+            m.reopen(stage == Startup::SetAside).await?;
             m.load_editing().await?;
             m.refresh_switcher().await?;
             let mut bound = Vec::new();
@@ -2086,9 +2086,9 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             }
         }
         if self.view.ready && self.task.is_none() && self.incoming.is_none() && !self.terminating && self.view.prompt.is_none()
-            && let Some(id) = self.manager.take_restore()
+            && let Some(action) = self.manager.take_restore()
         {
-            match self.form(session,ManagerAction::RestoreWorkspaces(id)) {
+            match self.form(session,action) {
                 Ok(c) => {merge(&mut change,c);presentation_changed=true;},
                 Err(error) => self.set_error(error),
             }
