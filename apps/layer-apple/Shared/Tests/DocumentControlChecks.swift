@@ -802,7 +802,7 @@ extension XCTestCase {
         XCTAssertTrue(copy.waitForExistence(timeout: 30)); XCTAssertTrue(copy.isEnabled)
         XCTAssertTrue(preview.exists)
         XCTAssertTrue(app.staticTexts["This drawing can be viewed, but cannot be edited."].exists)
-        XCTAssertTrue(app.staticTexts["Pass through requires a stack"].exists)
+        XCTAssertTrue(app.staticTexts["It has layers or settings that this version of Capy Canvas can't edit."].exists)
         XCTAssertFalse(app.buttons["export-package-preview"].exists)
         XCTAssertFalse(canvas.isHittable, "The preserved package must not expose editable canvas input")
         app.typeKey("z", modifierFlags: .command)
