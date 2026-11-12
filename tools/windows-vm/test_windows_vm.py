@@ -311,6 +311,14 @@ class CheckTests(unittest.TestCase):
 
 
 class GuestConnectionTests(unittest.TestCase):
+    def test_powershell_install_is_pinned_and_verified(self):
+        for path in vm.GUEST_FILES.iterdir():
+            if path.is_file():
+                self.assertNotIn(b"releases/" + b"latest", path.read_bytes(), path.name)
+        prepare = (vm.GUEST_FILES / "prepare.ps1").read_text()
+        self.assertLess(prepare.index("Get-FileHash"), prepare.index("msiexec.exe"))
+        self.assertNotIn("msiexec", (vm.GUEST_FILES / "provision-server.ps1").read_text())
+
     def test_unreadable_boot_time_does_not_restart_or_mark_prepared(self):
         with TemporaryDirectory() as directory:
             machine = vm.Machine("owned", Path(directory))

@@ -11,12 +11,6 @@ function Install-Download([string]$Uri, [string]$Name, [string]$Arguments, [int[
     if ($process.ExitCode -notin $Success) { throw "$installer exited with $($process.ExitCode)." }
 }
 
-$release = Invoke-RestMethod 'https://api.github.com/repos/PowerShell/PowerShell/releases/latest' -UseBasicParsing
-$asset = $release.assets | Where-Object name -Like 'PowerShell-*-win-x64.msi' | Select-Object -First 1
-$package = Join-Path $downloads $asset.name
-Invoke-WebRequest $asset.browser_download_url -OutFile $package -UseBasicParsing
-$process = Start-Process msiexec.exe -ArgumentList @('/i', ('"' + $package + '"'), '/quiet', '/norestart', 'ADD_PATH=1') -Wait -PassThru
-if ($process.ExitCode -notin 0, 3010) { throw "PowerShell 7 setup exited with $($process.ExitCode)." }
 Install-Download 'https://aka.ms/vs/17/release/vc_redist.x64.exe' 'vc_redist.x64.exe' '/install /quiet /norestart' @(0, 3010)
 Remove-Item -Recurse -Force $downloads
 
