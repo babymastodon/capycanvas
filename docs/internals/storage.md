@@ -83,11 +83,22 @@ transaction runs once more without copy records or marker changes, so ordinary
 saves can continue; a later start tries protection again. Other failures are
 reported. Retention uses the copy metadata without reading every retained snapshot.
 
-A newly detected legacy reset offers **Restore Workspaces?** once at startup.
-**Restore** retains a version copy of the current store before replacing it under
-the store's write lock, then restarts workspace adoption. **Keep Current** leaves
-the current store in place. A failed restoration retains the current store and
-copies; restoration never falls back to writing without its version copy.
+A copy this build can open decodes, every item in it loads and validates, and its
+editing state restores without dropping a field. A newly detected legacy reset
+offers **Restore Workspaces?** once at startup only when this build can open the
+legacy copy; an unopenable copy is still kept. **Restore** retains a version copy
+of the current store before replacing it under the store's write lock, then
+restarts workspace adoption. **Keep Current** leaves the current store in place.
+Restoring a copy this build can't open is refused before anything is written. A
+failed restoration retains the current store and copies; restoration never falls
+back to writing without its version copy.
+
+When a workspace can't be opened, the status and the manager offer **Restore
+Earlier Workspaces…** for the newest retained copy that this build can open and
+that contains the workspace. Without one, an included workspace offers **Restore
+Starting Layout…**, which keeps a version copy of the whole store and then
+replaces only that item, even when it can't be decoded. Other workspaces offer
+**Save as New Workspace…**.
 
 To restore a native copy, close every Capy Canvas process. Move the current
 database and its `-wal` and `-shm` sidecars into a separate recovery folder.

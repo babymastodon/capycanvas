@@ -91,12 +91,9 @@ impl SqliteStore {
         }
         options.open(path).map_err(unavailable)?;
         let mut connection = Connection::open(std::fs::canonicalize(path).map_err(unavailable)?)?;
-        use rusqlite::{config::DbConfig, limits::Limit};
-        connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
-        connection.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+        use rusqlite::config::DbConfig;
+        harden(&connection)?;
         connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
-        connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_ROW_BYTES as i32)?;
-        connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "synchronous", "FULL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -159,6 +156,15 @@ impl SqliteStore {
             StoreRequest::RestoreSnapshot { id } => {
                 snapshots::restore(&mut self.connection,&id)?;
                 self.ownership.release_all();
+                Ok(StoreResponse::Done)
+            }
+            StoreRequest::Snapshots => Ok(StoreResponse::Snapshots(snapshots::retained(&self.connection)?)),
+            StoreRequest::CheckSnapshot { id, workspace } => {
+                snapshots::check_snapshot(&self.connection,&id,&workspace)?;
+                Ok(StoreResponse::Done)
+            }
+            StoreRequest::RestoreIncluded { entity } => {
+                self.restore_included(*entity)?;
                 Ok(StoreResponse::Done)
             }
             StoreRequest::Adopted => {
@@ -266,6 +272,35 @@ impl SqliteStore {
                 Ok(StoreResponse::Reopened(self.restore.take()))
             }
         }
+    }
+    fn restore_included(&mut self, entity: Entity) -> Result<()> {
+        if !entity.metadata.builtin || !is_default_item(&entity.id) {
+            return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::ChooseAWorkspace));
+        }
+        entity.check_opens()?;
+        let id = entity.id.clone();
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if load(&tx, &id).and_then(|stored| stored.entity.check_opens()).is_ok() {
+            return Ok(());
+        }
+        let counters: [String; 4] = tx
+            .query_row("SELECT metadata_generation,layout_generation,working_generation,fence FROM items WHERE id=?1", [&id], |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?]))
+            .optional()?
+            .ok_or_else(not_found)?;
+        let [metadata_generation, layout_generation, working_generation, fence] = counters.map(|text| advance(parse_counter(&text).unwrap_or_default()));
+        snapshots::keep_current(Path::new(tx.path().unwrap_or_default()))?;
+        let metadata = resolve_name(&tx, entity.metadata.clone(), &id, NamePolicy::Unique)?;
+        let batch = CommitBatch::prepare(Owner::fresh(), vec![Mutation::Create { entity, claim: false, name_policy: NamePolicy::Unique }])?;
+        let write = &batch.writes[0];
+        for (component, json) in &batch.components {
+            tx.execute("INSERT INTO components(id,json) VALUES(?1,?2) ON CONFLICT(id) DO NOTHING", params![component, json])?;
+        }
+        tx.execute("UPDATE items SET kind=?2,name=?3,name_key=?4,metadata=?5,content=?6,working=?7,metadata_generation=?8,layout_generation=?9,working_generation=?10,builtin=1,fence=?11,owner=NULL,epoch=NULL,lease_until=NULL WHERE id=?1", params![
+            id, metadata.kind.key(), metadata.name, name_key(&metadata.name), serde_json::to_string(&metadata)?, write.content_json, write.working_json,
+            metadata_generation?.to_string(), layout_generation?.to_string(), working_generation?.to_string(), fence?.to_string(),
+        ])?;
+        tx.commit()?;
+        Ok(())
     }
     pub fn load(&mut self, id: &str) -> Result<StoredEntity> {
         let tx = self
@@ -609,6 +644,14 @@ fn preserve(path: &Path) -> Result<()> {
             _ => {}
         }
     }
+    Ok(())
+}
+fn harden(connection: &Connection) -> Result<()> {
+    use rusqlite::{config::DbConfig, limits::Limit};
+    connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    connection.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_ROW_BYTES as i32)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024)?;
     Ok(())
 }
 fn table_names(connection: &Connection) -> Result<Vec<String>> {

@@ -131,6 +131,7 @@ pub enum WorkspaceRefusal {
     UnexpectedWorkspaceLoadReply,
     UnexpectedWorkspaceOrderReply,
     UnexpectedWorkspaceSwitcherReply,
+    UnopenableWorkspaceCopy,
     WaitForTheCurrentWorkspaceOperationToFinish,
     WorkspaceGenerationExhausted,
     WorkspaceOwnershipChangedWhileLoadingTheToolbar,
@@ -211,6 +212,7 @@ impl WorkspaceRefusal {
             Self::UnexpectedWorkspaceLoadReply => layer_ui::MessageId::WORKSPACE_REFUSAL_UNEXPECTED_WORKSPACE_LOAD_REPLY,
             Self::UnexpectedWorkspaceOrderReply => layer_ui::MessageId::WORKSPACE_REFUSAL_UNEXPECTED_WORKSPACE_ORDER_REPLY,
             Self::UnexpectedWorkspaceSwitcherReply => layer_ui::MessageId::WORKSPACE_REFUSAL_UNEXPECTED_WORKSPACE_SWITCHER_REPLY,
+            Self::UnopenableWorkspaceCopy => layer_ui::MessageId::WORKSPACE_REFUSAL_UNOPENABLE_WORKSPACE_COPY,
             Self::WaitForTheCurrentWorkspaceOperationToFinish => layer_ui::MessageId::WORKSPACE_REFUSAL_WAIT_FOR_THE_CURRENT_WORKSPACE_OPERATION_TO_FINISH,
             Self::WorkspaceGenerationExhausted => layer_ui::MessageId::WORKSPACE_REFUSAL_WORKSPACE_GENERATION_EXHAUSTED,
             Self::WorkspaceOwnershipChangedWhileLoadingTheToolbar => layer_ui::MessageId::WORKSPACE_REFUSAL_WORKSPACE_OWNERSHIP_CHANGED_WHILE_LOADING_THE_TOOLBAR,
@@ -558,6 +560,15 @@ impl Entity {
             self.capture()?.validate_structure().map_err(StoreError::workspace)?;
         } else if self.working.is_some() {
             return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::SavedToolbarsCannotContainWorkspaceToolSettings));
+        }
+        Ok(())
+    }
+    pub(crate) fn check_opens(&self) -> Result<(), StoreError> {
+        let mut entity = self.clone();
+        entity.validate()?;
+        entity.resolve_phone()?;
+        if entity.metadata.kind == ItemKind::Workspace {
+            layer_ui::PreparedWorkspace::new(entity.capture()?).map_err(StoreError::workspace)?;
         }
         Ok(())
     }

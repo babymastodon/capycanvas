@@ -157,14 +157,14 @@ fn serialize_prompt<S: serde::Serializer>(prompt: &Option<ManagerPrompt>, serial
 #[derive(Clone, Debug, Serialize)]
 pub struct ManagerStatus { pub text: String, pub error: bool, pub retry: bool, pub action: Option<ManagerButton> }
 impl WorkspaceView {
-    fn present_status(&mut self, localization: &layer_ui::Localizer) {
-        let action=if self.error.is_some() { Some(ManagerAction::SaveAsNew) }
+    fn present_status(&mut self, localization: &layer_ui::Localizer, recovery: Option<&ManagerAction>) {
+        let action=if self.error.is_some() { Some(recovery.cloned().unwrap_or(ManagerAction::SaveAsNew)) }
             else if self.interrupted>0 && !self.busy { Some(ManagerAction::RecoverInterrupted) } else { None };
         self.status=if self.error.is_some() || action.is_some() || !self.ready {
             let text=self.error.clone().unwrap_or_else(|| action.as_ref().map_or_else(
                 || localization.text(layer_ui::MessageId::NATIVE_DIALOG_LOADING).to_string(),
                 |action| format!("{} · {}",self.interrupted,action.label(localization))));
-            Some(ManagerStatus {text,error:self.error.is_some(),retry:self.error.is_some(),
+            Some(ManagerStatus {text,error:self.error.is_some(),retry:self.error.is_some() && recovery.is_none(),
                 action:action.map(|action| ManagerButton {label:action.label(localization),action,enabled:true,primary:false})})
         } else { None };
     }
@@ -248,6 +248,20 @@ enum Outcome {
     Focus(FocusTarget),
     Install(Box<Install>),
     Show(ManagerPage, String),
+    Unopenable(Box<Unopenable>),
+}
+struct Unopenable {
+    id: String,
+    error: StoreError,
+    recovery: ManagerAction,
+}
+impl Unopenable {
+    async fn new<S: WorkspaceStore>(manager: &WorkspaceManager<S>, id: String, error: StoreError) -> Self {
+        Self { recovery: manager.recovery(&id).await, id, error }
+    }
+    fn restores(&self) -> bool {
+        self.recovery != ManagerAction::SaveAsNew
+    }
 }
 impl Outcome {
     fn adopt(entity: StoredEntity) -> Self {
@@ -286,7 +300,7 @@ struct WorkspaceNotice {
     generation: u64,
     copy: WorkspaceNoticeCopy,
 }
-type Selection = (Option<StoredEntity>, Option<DockLayout>);
+type Selection = std::result::Result<(Option<StoredEntity>, Option<DockLayout>), Box<Unopenable>>;
 type EditingRefresh = (Box<layer_ui::EditingState>,Box<layer_ui::EditingState>);
 #[derive(Clone, Copy, PartialEq)]
 enum RestoreScope { Desktop, Phone }
@@ -340,6 +354,7 @@ pub struct WorkspaceController<S: WorkspaceStore + 'static> {
     startup: Option<Startup>,
     startup_error: Option<StoreError>,
     notice: Option<WorkspaceNotice>,
+    recovery: Option<Unopenable>,
 }
 impl<S: WorkspaceStore + 'static> Drop for WorkspaceController<S> {
     fn drop(&mut self) { self.stop(); }
@@ -386,7 +401,18 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
     pub fn set_error(&mut self, error: StoreError) {
         self.view.error = Some(error.localized_message(&self.localization));
         self.error = Some(error);
+        self.recovery = None;
         self.publish_flags();
+    }
+    fn set_unopenable(&mut self, unopenable: Unopenable) {
+        self.set_error(unopenable.error.clone());
+        self.recovery = Some(unopenable);
+        self.publish_flags();
+    }
+    fn selected_recovery(&self) -> Option<&ManagerAction> {
+        self.recovery.as_ref()
+            .filter(|recovery| recovery.restores() && self.view.page == Some(ManagerPage::Workspaces) && self.view.selected.as_ref() == Some(&recovery.id))
+            .map(|recovery| &recovery.recovery)
     }
     fn clear_error(&mut self) {
         self.view.error = None;
@@ -461,6 +487,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             startup: None,
             startup_error: None,
             notice: None,
+            recovery: None,
         };
         c.view.owner = c.manager.owner.id.clone();
         c.initialize(now);
@@ -826,6 +853,8 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 };
                 self.view.primary = if page == Some(ManagerPage::History) {
                     self.localization.text(layer_ui::MessageId::WORKSPACE_RESTORE_VERSION).to_string()
+                } else if let Some(recovery) = self.selected_recovery() {
+                    recovery.label(&self.localization)
                 } else if self.selected_elsewhere {
                     ManagerAction::SwitchToWindow(String::new()).label(&self.localization)
                 } else {
@@ -864,6 +893,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         _now: u64,
     ) -> Result<UiChange> {
         let change = self.stop_preview(session);
+        self.recovery = None;
         self.view.selected = id.clone();
         self.view.details = None;
         self.details_source = None;
@@ -892,20 +922,26 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                         .current()
                         .and_then(|e| e.capture().ok())
                         .and_then(|c| c.history.revisions.get(&id).map(|r| r.layout.clone()))
-                        .map(|layout| (None, Some(layout)))
+                        .map(|layout| Ok((None, Some(layout))))
                         .ok_or_else(|| {
                             StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::ThisLayoutVersionIsNoLongerRetained)
                         });
                 }
                 let stored = match m.current_record().filter(|s| s.entity.id == id) {
                     Some(stored) => stored,
-                    None => m.load(&id).await?,
+                    None => match m.load(&id).await {
+                        Ok(stored) => stored,
+                        Err(error) if error.kind == ErrorKind::InvalidData && page == ManagerPage::Workspaces => {
+                            return Ok(Err(Box::new(Unopenable::new(&m, id, error).await)));
+                        }
+                        Err(error) => return Err(error),
+                    },
                 };
                 let layout = match &stored.entity.content {
                     ItemContent::Workspace { history, .. } => Some(history.layout().clone()),
                     ItemContent::Toolbar { .. } => None,
                 };
-                Ok((Some(stored), layout))
+                Ok(Ok((Some(stored), layout)))
             })
             .map(|task| (self.selection_generation, task));
         Ok(change)
@@ -1123,7 +1159,8 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         self.view.saving = self.manager.saving();
         self.view.closing = self.terminating && !self.view.closed;
         self.view.update_switcher_menu_availability();
-        self.view.present_status(&self.localization);
+        let recovery = self.recovery.as_ref().filter(|recovery| self.error.as_ref() == Some(&recovery.error)).map(|recovery| &recovery.recovery);
+        self.view.present_status(&self.localization, recovery);
     }
     fn open<R: CanvasRenderer>(
         &mut self,
@@ -1269,10 +1306,11 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 }))
             };
             Ok(match action {
-                ManagerAction::RestoreWorkspaces(id) => {
+                ManagerAction::RestoreWorkspaces(id) | ManagerAction::RestoreCopy(id) => {
                     m.restore_snapshot(id).await?;
                     Outcome::Restart
                 }
+                ManagerAction::RestoreIncluded(id) => Outcome::adopt(m.restore_included(&id, now).await?),
                 ManagerAction::New => Outcome::adopt(m.create_workspace(&name, now).await?),
                 ManagerAction::Rename(id) => {
                     let metadata = m.load(&id).await?.entity.metadata;
@@ -1419,7 +1457,10 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                     owner: claim.owner.id,
                 }));
             }
-            Ok(Outcome::adopt(m.prepare_switch(&id, now).await?))
+            match m.prepare_switch(&id, now).await {
+                Err(error) if error.kind == ErrorKind::InvalidData => Ok(Outcome::Unopenable(Box::new(Unopenable::new(&m, id, error).await))),
+                result => Ok(Outcome::adopt(result?)),
+            }
         });
         Ok(UiChange::default())
     }
@@ -1471,7 +1512,10 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 });
                 Ok(UiChange::default())
             }
-            Some(ManagerPage::Workspaces) => self.switch(session, id, now),
+            Some(ManagerPage::Workspaces) => match self.selected_recovery().cloned() {
+                Some(action) => self.form(session, action),
+                None => self.switch(session, id, now),
+            },
             _ => {
                 let primary = self
                     .view
@@ -1665,11 +1709,19 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         if let Some(result) = self.task.as_mut().and_then(Task::poll) {
             self.task = None;
             presentation_changed = true;
+            let (result, unopenable) = match result {
+                Ok(Outcome::Unopenable(unopenable)) => (Err(unopenable.error.clone()), Some(*unopenable)),
+                result => (result, None),
+            };
             match result {
                 Ok(outcome) => {
                     let keep_prompt = matches!(outcome, Outcome::Adopt(_) | Outcome::Editing(Some(_)) | Outcome::Install(_));
                     match outcome {
-                        Outcome::Restart => { self.view.ready = false; self.preferences=None; self.refreshed_editing=None; self.renew=None; self.start(Startup::Stored,now); },
+                        Outcome::Restart => {
+                            merge(&mut change, self.dismiss(session));
+                            self.view.ready = false; self.preferences=None; self.refreshed_editing=None; self.renew=None; self.recovery=None;
+                            self.start(Startup::Stored,now);
+                        },
                         Outcome::Adopt(incoming) => {
                             if self
                                 .view
@@ -1710,7 +1762,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                             self.view.query.clear();
                             self.view.selected = Some(id);
                         }
-                        Outcome::Done => {}
+                        Outcome::Done | Outcome::Unopenable(_) => {}
                         Outcome::Deleted(id) => {
                             if self.view.selected.as_ref() == Some(&id) { self.view.selected = None; }
                         }
@@ -1740,7 +1792,10 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                         merge(&mut change, session.cancel_workspace_layout_preview());
                     }
                     if !self.restart(e.clone(), now) {
-                        self.set_error(e);
+                        match unopenable {
+                            Some(unopenable) => self.set_unopenable(unopenable),
+                            None => self.set_error(e),
+                        }
                         if self.view.page.is_none() && self.view.prompt.is_none() {
                             self.end_transition(session);
                         }
@@ -1869,6 +1924,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                     }
                     self.view.ready = true;
                     self.clear_error();
+                    self.recovery = None;
                     self.view.owner_lost = false;
                     self.view.page = keep_manager.then_some(ManagerPage::Workspaces);
                     self.view.details = None;
@@ -1901,14 +1957,21 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             self.preview = None;
             presentation_changed = true;
             if generation == self.selection_generation && self.view.page.is_some() {
-                let shown = result.and_then(|(details, layout)| {
-                    self.details_source = details;
-                    self.refresh_details(now);
-                    match layout.filter(|_| self.preview_open) {
-                        Some(layout) => session
-                            .preview_workspace_layout(&layout)
-                            .map_err(StoreError::invalid),
-                        None => Ok(UiChange::default()),
+                let shown = result.and_then(|selection| match selection {
+                    Ok((details, layout)) => {
+                        self.details_source = details;
+                        self.refresh_details(now);
+                        match layout.filter(|_| self.preview_open) {
+                            Some(layout) => session
+                                .preview_workspace_layout(&layout)
+                                .map_err(StoreError::invalid),
+                            None => Ok(UiChange::default()),
+                        }
+                    }
+                    Err(unopenable) => {
+                        if !unopenable.restores() { self.view.selected = None; }
+                        self.set_unopenable(*unopenable);
+                        Ok(UiChange::default())
                     }
                 });
                 match shown {

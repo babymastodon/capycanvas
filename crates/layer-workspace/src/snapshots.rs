@@ -1,4 +1,4 @@
-use crate::{StoreError, content_id, new_id};
+use crate::{BrowserDatabase, StoreError, StoreRequest, StoreResponse, content_id, new_id};
 use serde::{Deserialize, Serialize};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -91,7 +91,8 @@ pub fn plan(snapshot: Option<&str>, environment: SnapshotEnvironment, adopted: b
     if changed && let Some(text) = &environment.unreadable {
         copy("unreadable",text);
     }
-    let restore = changed.then(||copies.last().map(|copy|copy.info.id.clone())).flatten();
+    let restorable = changed && environment.unreadable.as_deref().is_some_and(|text| BrowserDatabase::restorable(text, None).is_ok());
+    let restore = restorable.then(||copies.last().map(|copy|copy.info.id.clone())).flatten();
     previous.unreadable_identity = unreadable_identity;
     let (marker, remove) = previous.finish(copies.iter().map(|copy|copy.info.clone()).collect(), adopted);
     Ok(SnapshotPlan {marker,copies,remove,restore})
@@ -102,6 +103,41 @@ impl SnapshotPlan {
         self.marker.copies.push(info.clone());
         self.copies.push(SnapshotCopy {info,snapshot:snapshot.into()});
     }
+}
+
+pub struct Protection {
+    pub plan: SnapshotPlan,
+    pub restored: Option<BrowserDatabase>,
+    pub response: Option<StoreResponse>,
+}
+pub fn protect(snapshot: Option<&str>, mut environment: SnapshotEnvironment, request: &StoreRequest) -> Result<Protection, StoreError> {
+    let restoring = environment.restoring.take();
+    let mut plan = plan(snapshot, environment, matches!(request, StoreRequest::Adopted))?;
+    let retained = |plan: &SnapshotPlan, id: &str| {
+        if !plan.marker.copies.iter().any(|copy| copy.id == id) { return Err(StoreError::invalid("Unknown workspace snapshot.")); }
+        restoring.as_deref().ok_or_else(|| StoreError::invalid("Missing workspace snapshot."))
+    };
+    let current = || snapshot.ok_or_else(|| StoreError::invalid("Missing current workspace store."));
+    let (restored, response) = match request {
+        StoreRequest::Reopen => (None, Some(StoreResponse::Reopened(plan.restore.clone()))),
+        StoreRequest::Snapshots => (None, Some(StoreResponse::Snapshots(plan.marker.copies.iter().rev().map(|copy| copy.id.clone()).collect()))),
+        StoreRequest::CheckSnapshot {id, workspace} => {
+            BrowserDatabase::restorable(retained(&plan, id)?, Some(workspace))?;
+            (None, Some(StoreResponse::Done))
+        }
+        StoreRequest::RestoreSnapshot {id} => {
+            let mut database = BrowserDatabase::restorable(retained(&plan, id)?, None)?;
+            database.release_unlocked(&[], u64::MAX);
+            plan.keep_current(current()?);
+            (Some(database), Some(StoreResponse::Done))
+        }
+        StoreRequest::RestoreIncluded {..} => {
+            plan.keep_current(current()?);
+            (None, None)
+        }
+        _ => (None, None),
+    };
+    Ok(Protection {plan, restored, response})
 }
 
 #[cfg(test)]
@@ -127,6 +163,43 @@ mod tests {
         let down = plan(Some(original),SnapshotEnvironment {marker:Some(marker),unreadable:Some(old.into()),..Default::default()},false).unwrap();
         assert_eq!(down.copies.len(),1);
         assert_ne!(first.copies[0].info.id,down.copies[0].info.id);
+    }
+    const RELEASE_1_0_12: &str = include_str!("../tests/fixtures/web-store-1.0.12.json");
+    const RELEASE_1_0_15: &str = include_str!("../tests/fixtures/web-store-1.0.15.json");
+    fn legacy(marker: Option<VersionMarker>, text: &str) -> SnapshotEnvironment {
+        SnapshotEnvironment {marker,unreadable:Some(text.into()),restoring:Some(text.into())}
+    }
+    #[test]
+    fn legacy_copies_are_offered_and_restored_only_when_this_build_opens_them() {
+        let current = BrowserDatabase::default().encoded().unwrap();
+        for (text, opens) in [(RELEASE_1_0_12, false), (RELEASE_1_0_15, true)] {
+            let first = protect(Some(&current),legacy(None,text),&StoreRequest::Reopen).unwrap();
+            let copy = first.plan.copies.iter().find(|copy|copy.snapshot == text).unwrap().info.id.clone();
+            let Some(StoreResponse::Reopened(offered)) = first.response else {panic!()};
+            assert_eq!(offered, opens.then(||copy.clone()));
+            let marker = first.plan.marker;
+            let Ok(Protection {response:Some(StoreResponse::Snapshots(retained)),..}) = protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::Snapshots) else {panic!()};
+            assert_eq!(retained, vec![copy.clone()]);
+            for (id, _) in crate::DEFAULT_WORKSPACES {
+                let checked = protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::CheckSnapshot {id:copy.clone(),workspace:id.into()});
+                assert_eq!(checked.is_ok(), opens, "{id}");
+            }
+            match protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::RestoreSnapshot {id:copy.clone()}) {
+                Ok(restored) => {
+                    assert!(opens);
+                    let mut database = restored.restored.unwrap();
+                    for (id, _) in crate::DEFAULT_WORKSPACES {
+                        database.execute(StoreRequest::Claim {id:id.into(),owner:crate::Owner::fresh()},0).unwrap();
+                    }
+                    assert_eq!(restored.plan.copies.len(), 1);
+                    assert_eq!(restored.plan.copies[0].snapshot, current);
+                }
+                Err(error) => {
+                    assert!(!opens);
+                    assert_eq!(error.known, Some(crate::WorkspaceRefusal::UnopenableWorkspaceCopy));
+                }
+            }
+        }
     }
     #[test]
     fn retention_keeps_the_newest_within_count_and_bytes_and_at_least_three() {

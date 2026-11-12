@@ -989,6 +989,7 @@ workspace-refusal-inconsistent-metadata-payload = Muatan metadata tidak konsiste
 workspace-refusal-invalid-item-identity = Identitas item tidak valid.
 
 workspace-refusal-invalid-workspace = Versi { common-app-name } ini tidak dapat membuka ruang kerja ini.
+workspace-refusal-unopenable-workspace-copy = Versi { common-app-name } ini tidak dapat membuka salinan ruang kerja Anda ini.
 
 workspace-refusal-invalid-workspace-component = Komponen ruang kerja tidak valid.
 
@@ -1231,6 +1232,10 @@ workspace-created-unreadable-notice = Versi { common-app-name } ini tidak dapat 
 workspace-restore-workspaces-title = Pulihkan Ruang Kerja?
 workspace-restore-workspaces-message = Versi lama { common-app-name } mengatur ulang ruang kerja, palet, dan pengaturan kuas Anda. Pemulihan mengganti perubahan yang Anda buat setelah pengaturan ulang.
 workspace-keep-current = Pertahankan Saat Ini
+workspace-action-restore-earlier-workspaces = Pulihkan Ruang Kerja Sebelumnya…
+workspace-restore-earlier-workspaces-title = Pulihkan Ruang Kerja Sebelumnya?
+workspace-restore-earlier-workspaces-message = Ruang kerja, palet, dan pengaturan kuas Anda kembali ke salinan sebelumnya. Yang saat ini disimpan sebagai salinan.
+workspace-restore-included-message = { $name } kembali ke tata letak awalnya. Salinan ruang kerja Anda saat ini tetap disimpan.
 
 diagnostics-memory-title = Memori
 diagnostics-memory-ram-label = RAM

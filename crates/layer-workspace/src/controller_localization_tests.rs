@@ -123,14 +123,14 @@ fn a_pending_preview_adopts_current_language_details_without_another_load() {
     controller.view.selected = Some(id.clone());
     controller.preview = controller.spawn(async move {
         let stored = manager.load(&id).await?;
-        Ok((Some(stored), None))
+        Ok(Ok((Some(stored), None)))
     }).map(|task| (controller.selection_generation, task));
     let signal = controller.preview.as_ref().unwrap().1.signal.clone();
     let requests = controller.manager.store.requests.get();
     controller.set_localization(Localizer::shared(UiLanguage::Korean));
     assert_eq!(controller.manager.store.requests.get(), requests);
     assert!(Arc::ptr_eq(&signal, &controller.preview.as_ref().unwrap().1.signal));
-    let (stored, _) = controller.preview.as_mut().unwrap().1.poll().unwrap().unwrap();
+    let Ok((stored, _)) = controller.preview.as_mut().unwrap().1.poll().unwrap().unwrap() else { panic!() };
     controller.details_source = stored;
     controller.refresh_details(1000);
     assert_eq!(controller.view.details.as_ref().unwrap().title,

@@ -413,16 +413,25 @@ pub enum StoreRequest {
     },
     Reopen,
     RestoreSnapshot { id: String },
+    Snapshots,
+    CheckSnapshot { id: String, workspace: String },
+    RestoreIncluded { entity: Box<Entity> },
     SetAside,
     Adopted,
     /// Replace every stored item and record with an empty current store. A
     /// store written by a newer build is refused and kept.
     Reset,
 }
+impl StoreRequest {
+    pub fn needs_snapshots(&self) -> bool {
+        matches!(self, Self::RestoreSnapshot {..} | Self::CheckSnapshot {..} | Self::RestoreIncluded {..})
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum StoreResponse {
     Reopened(Option<String>),
+    Snapshots(Vec<String>),
     Editing { state: Option<Box<layer_ui::EditingState>>, dropped: bool },
     Switcher(Option<Vec<String>>),
     WorkspaceOrder(Option<Vec<String>>),

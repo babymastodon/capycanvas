@@ -109,6 +109,24 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
         *self.state.borrow_mut() = State::default();
         Ok(())
     }
+    pub(crate) async fn recovery(&self, workspace: &str) -> ManagerAction {
+        if let Ok(StoreResponse::Snapshots(copies)) = self.execute(StoreRequest::Snapshots).await {
+            for id in copies {
+                if self.execute(StoreRequest::CheckSnapshot {id:id.clone(),workspace:workspace.into()}).await.is_ok() {
+                    return ManagerAction::RestoreCopy(id);
+                }
+            }
+        }
+        if is_default_item(workspace) { ManagerAction::RestoreIncluded(workspace.into()) } else { ManagerAction::SaveAsNew }
+    }
+    pub(crate) async fn restore_included(&self, id: &str, now: u64) -> Result<StoredEntity> {
+        let entity = Entity::included_workspace(id, self.platform, self.tablet.get(), now)
+            .ok_or_else(|| StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::ChooseAWorkspace))?;
+        self.flush().await?;
+        self.execute(StoreRequest::RestoreIncluded {entity:Box::new(entity)}).await?;
+        self.refresh().await?;
+        self.prepare_switch(id, now).await
+    }
     /// Continue on a new store that lives only in this manager.
     pub fn use_memory(&self) {
         *self.state.borrow_mut() = State::default();

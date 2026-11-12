@@ -108,6 +108,39 @@ impl BrowserDatabase {
             _ => Err(other_schema()),
         }
     }
+    pub fn restorable(text: &str, workspace: Option<&str>) -> Result<Self> {
+        let database = Self::decode(text).map_err(unopenable_copy)?;
+        check_copy(
+            database.items.values().map(|record| record.stored().map(|stored| stored.entity)),
+            database.editing.as_deref(),
+            workspace,
+        )?;
+        Ok(database)
+    }
+    fn restore_included(&mut self, entity: Entity) -> Result<()> {
+        if !entity.metadata.builtin || !is_default_item(&entity.id) {
+            return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::ChooseAWorkspace));
+        }
+        entity.check_opens()?;
+        let record = self.record(&entity.id)?;
+        if record.stored().and_then(|stored| stored.entity.check_opens()).is_ok() {
+            return Ok(());
+        }
+        let generations = Generations {
+            metadata: advance(record.generations.metadata)?,
+            layout: advance(record.generations.layout)?,
+            working: advance(record.generations.working)?,
+        };
+        let fence = advance(self.fence(&entity.id)?)?;
+        let metadata = self.resolve_name(entity.metadata.clone(), &entity.id, NamePolicy::Unique)?;
+        self.fences.insert(entity.id.clone(), fence.to_string());
+        self.items.insert(entity.id.clone(), BrowserRecord::from_stored(StoredEntity {
+            entity: Entity { metadata, ..entity },
+            generations,
+            claim: None,
+        })?);
+        Ok(())
+    }
     /// `StoreRequest::Reset` for a snapshot that may not decode at all.
     pub fn replace(previous: Option<&str>) -> Result<Self> {
         if previous
@@ -313,7 +346,12 @@ impl BrowserDatabase {
             Pending => StoreResponse::Pending(self.pending.values().filter_map(|value| serde_json::from_value(value.clone()).ok())
                 .filter(|batch| validate_payload(batch, |_| Err(missing_resource())).is_ok()).collect()),
             Reopen => StoreResponse::Reopened(None),
-            RestoreSnapshot { .. } => return Err(StoreError::new(ErrorKind::Unavailable,"Snapshots require persistent storage.")),
+            RestoreSnapshot { .. } | CheckSnapshot { .. } => return Err(StoreError::new(ErrorKind::Unavailable,"Snapshots require persistent storage.")),
+            Snapshots => StoreResponse::Snapshots(Vec::new()),
+            RestoreIncluded { entity } => {
+                self.restore_included(*entity)?;
+                StoreResponse::Done
+            }
             Adopted => StoreResponse::Done,
             Reset => {
                 *self = Self::default();

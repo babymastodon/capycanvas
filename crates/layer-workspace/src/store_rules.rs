@@ -35,6 +35,25 @@ pub(crate) fn other_schema() -> StoreError {
 pub(crate) fn owned_elsewhere() -> StoreError {
     StoreError::known(ErrorKind::OwnedElsewhere, WorkspaceRefusal::ThisWorkspaceIsOpenInAnotherWindow)
 }
+pub(crate) fn unopenable_copy(reason: StoreError) -> StoreError {
+    StoreError { message: reason.message, ..StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::UnopenableWorkspaceCopy) }
+}
+pub(crate) fn check_copy(
+    entities: impl IntoIterator<Item = Result<Entity>>,
+    editing: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<()> {
+    let mut found = workspace.is_none();
+    for entity in entities {
+        let entity = entity.map_err(unopenable_copy)?;
+        entity.check_opens().map_err(unopenable_copy)?;
+        found |= workspace == Some(entity.id.as_str()) && entity.metadata.kind == ItemKind::Workspace;
+    }
+    if editing.is_some_and(|json| layer_ui::EditingState::restore_with_report(json, &layer_ui::Localizer::shared(layer_ui::UiLanguage::English)).1) {
+        return Err(unopenable_copy(StoreError::invalid("Unreadable palettes or brush settings.")));
+    }
+    if found { Ok(()) } else { Err(not_found()) }
+}
 pub(crate) fn claim_fence(
     claim: Option<&Claim>,
     owner: &Owner,
