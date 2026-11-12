@@ -419,8 +419,10 @@ extension EditorLaunchTests {
                 expectation(for: NSPredicate { _, _ in rows.firstMatch.identifier != last }, evaluatedWith: app)
                 waitForExpectations(timeout: 10)
                 XCTAssertEqual(drawer.frame.height, height, accuracy: 1)
-                let scroll = app.descendants(matching: .any)["layer-rows"].firstMatch
-                scroll.swipeUp(); scroll.swipeDown()
+                let scroll = app.descendants(matching: .any)["layer-rows"].firstMatch, top = rows.firstMatch.frame
+                XCTAssertTrue(dragEditorScroll(scroll, snapshot: try scroll.snapshot(), towardEnd: true))
+                XCTAssertNotEqual(rows.firstMatch.frame, top, "The capped layer rows must scroll inside their drawer")
+                XCTAssertTrue(dragEditorScroll(scroll, snapshot: try scroll.snapshot(), towardEnd: false))
             }
             app.terminate()
         }
@@ -472,16 +474,15 @@ extension EditorLaunchTests {
         return target
     }
 
-    @MainActor private func phoneDrawerCanvasPoint(in app: XCUIApplication) -> XCUICoordinate? {
+    @MainActor private func phoneDrawerCanvasOffset(in app: XCUIApplication) -> CGVector? {
         guard let target = phoneDrawerCanvasRegion(in: app) else { return nil }
-        let canvas = app.descendants(matching: .any)["canvas"].firstMatch, bounds = canvas.frame
-        return canvas.coordinate(withNormalizedOffset: CGVector(dx: (target.midX - bounds.minX) / bounds.width,
-            dy: (target.midY - bounds.minY) / bounds.height))
+        let bounds = app.descendants(matching: .any)["canvas"].firstMatch.frame
+        return CGVector(dx: (target.midX - bounds.minX) / bounds.width, dy: (target.midY - bounds.minY) / bounds.height)
     }
 
     @MainActor private func phoneDrawerOutsideContact(in app: XCUIApplication) {
-        guard let point = phoneDrawerCanvasPoint(in: app) else { return }
-        point.tap()
+        guard let offset = phoneDrawerCanvasOffset(in: app) else { return }
+        app.descendants(matching: .any)["canvas"].firstMatch.coordinate(withNormalizedOffset: offset).tap()
         XCTAssertTrue(phoneDrawer(in: app).waitForNonExistence(timeout: 10))
     }
 
@@ -495,10 +496,9 @@ extension EditorLaunchTests {
     }
 
     @MainActor private func phoneDrawerStroke(in app: XCUIApplication) {
-        guard let from = phoneDrawerCanvasPoint(in: app) else { return }
+        guard let offset = phoneDrawerCanvasOffset(in: app) else { return }
         let canvas = app.descendants(matching: .any)["canvas"].firstMatch
-        let sample = CGPoint(x: (from.screenPoint.x - canvas.frame.minX) / canvas.frame.width,
-            y: (from.screenPoint.y - canvas.frame.minY) / canvas.frame.height)
+        let from = canvas.coordinate(withNormalizedOffset: offset), sample = CGPoint(x: offset.dx, y: offset.dy)
         let pixels = editorPixels(in: app, at: sample, size: 96)
         let to = from.withOffset(CGVector(dx: 28, dy: 0))
         let drawer = phoneDrawer(in: app)
