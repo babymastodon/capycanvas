@@ -165,7 +165,9 @@ extension XCTestCase {
         func descendants(_ node: XCUIElementSnapshot) -> [XCUIElementSnapshot] {
             node.children.flatMap { [$0] + descendants($0) }
         }
-        func key(_ node: XCUIElementSnapshot) -> String { "\(node.elementType.rawValue):\(node.identifier)" }
+        func key(_ node: XCUIElementSnapshot) -> String {
+            "\(node.elementType.rawValue):" + (node.identifier.isEmpty ? "label:" + node.label : node.identifier)
+        }
         func positive(_ frame: CGRect) -> Bool {
             frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite
                 && frame.width > 0 && frame.height > 0
@@ -204,10 +206,10 @@ extension XCTestCase {
                 let bounds = positive(frame) ? frame : anchor.frame
                 if positive(bounds) { towardEnd = bounds.maxY > viewport.maxY }
             }
-            let visible = nodes.filter { !$0.identifier.isEmpty && positive($0.frame) && viewport.contains($0.frame) }
+            let visible = nodes.filter { !($0.identifier.isEmpty && $0.label.isEmpty) && positive($0.frame) && viewport.contains($0.frame) }
             let groups = Dictionary(grouping: visible, by: key)
             let anchors = groups.filter { $0.value.count == 1 }.mapValues { $0[0].frame }
-            guard !anchors.isEmpty else { return XCTFail("Native lazy scrolling needs visible identified controls to measure progress") }
+            guard !anchors.isEmpty else { return XCTFail("Native lazy scrolling needs visible identified or labeled elements to measure progress") }
             #if os(macOS)
             let point = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
                 dx: (identifier.isEmpty ? viewport.midX : viewport.minX + 2) - windowBounds.minX, dy: viewport.midY - windowBounds.minY))
