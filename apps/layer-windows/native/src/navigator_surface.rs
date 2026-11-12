@@ -185,6 +185,7 @@ mod windows_surface {
             Ok(())
         }
         pub(crate) fn reset(&mut self) -> Result<(), String> {
+            self.presenters = NavigatorPresenters::default();
             for slot in self.slots.values_mut() { slot.retire()?; }
             Ok(())
         }

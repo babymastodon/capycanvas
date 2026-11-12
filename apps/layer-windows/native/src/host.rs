@@ -2252,22 +2252,42 @@ mod handle_tests {
     }
     impl Drop for Owner { fn drop(&mut self) { unsafe {capy_destroy(self.0);} } }
 
+    fn isolated_process(test: &str) -> bool {
+        const CHILD: &str = "CAPY_HANDLE_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() { return true; }
+        let directory = std::env::temp_dir().join(format!("capy-handle-test-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("host::handle_tests::{test}"), "--test-threads=1", "--nocapture"])
+            .env(CHILD, "1").env("CAPY_STORAGE_DIR", &directory).output();
+        let _ = std::fs::remove_dir_all(directory);
+        let output = output.unwrap();
+        assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        false
+    }
+
+    #[test]
+    fn gpu_recovery_releases_prepared_navigator_presenters() {
+        if !isolated_process("gpu_recovery_releases_prepared_navigator_presenters") { return; }
+        let owner = Owner::new(320, 240);
+        {
+            let mut host = borrow::<CapyHost>(owner.0).unwrap();
+            host.prepare_gpu().unwrap();
+            crate::gpu_recovery_tests::remove_device(host.native.session.engine().backend(), &host.gpu);
+        }
+        assert_eq!(unsafe { capy_reset_surface(owner.0) }, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while let Err(error) = borrow::<CapyHost>(owner.0).unwrap().prepare_gpu() {
+            assert!(std::time::Instant::now() < deadline, "GPU recovery did not create a new device: {error}");
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
     #[test]
     fn navigator_startup_does_not_pin_a_document_allocation_block() {
-        const CHILD: &str = "CAPY_NAVIGATOR_ALLOCATION_TEST_CHILD";
-        if std::env::var_os(CHILD).is_none() {
-            let directory = std::env::temp_dir().join(format!("capy-navigator-allocation-{}-{}",
-                std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-            std::fs::create_dir(&directory).unwrap();
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "host::handle_tests::navigator_startup_does_not_pin_a_document_allocation_block", "--test-threads=1", "--nocapture"])
-                .env(CHILD, "1").env("CAPY_STORAGE_DIR", &directory).output();
-            let _ = std::fs::remove_dir_all(directory);
-            let output = output.unwrap();
-            assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
-            return;
-        }
+        if !isolated_process("navigator_startup_does_not_pin_a_document_allocation_block") { return; }
         let owner = Owner::new(320, 240);
         let mut host = borrow::<CapyHost>(owner.0).unwrap();
         host.prepare_gpu().unwrap();
