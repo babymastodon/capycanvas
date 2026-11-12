@@ -860,9 +860,7 @@ function Test-GpuRecovery {
                 $difference=$Envelope.Difference($frame)
                 $filled=if($Changed){
                     if(!$Witnesses){throw 'Zoom requires registered artwork and work-area edge witnesses'}
-                    $box=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle;$blocked=$false
-                    foreach($tooltip in Capy-Tooltips $review.Id){$b=$tooltip.Current.BoundingRectangle;$rect=[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($b.Left-$box.Left),[int][Math]::Floor($b.Top-$box.Top),[int][Math]::Ceiling($b.Right-$box.Left),[int][Math]::Ceiling($b.Bottom-$box.Top));if($Witnesses.artwork.IntersectsWith($rect) -or $Witnesses.edge.IntersectsWith($rect)){$blocked=$true}}
-                    !$blocked -and (Recovery-NavigatorZoomMatches $frame $Witnesses)
+                    Recovery-NavigatorZoomMatches $frame $Witnesses
                 }else{Recovery-NavigatorPaper $frame}
                 if((($Changed -and $difference -ge 20) -or (!$Changed -and $difference -eq 0)) -and $filled){
                     $frame.Save((Join-Path $run ("gpu-navigator-$Name.png")));$accepted.frame=$frame;$frame=$null;return $true
@@ -936,6 +934,8 @@ function Test-GpuRecovery {
         $pose=(Control 'canvas-camera').Current.Name
         Invoke 'navigator-zoom_in'
         Wait-Until {(Control 'canvas-camera').Current.Name -ne $pose} 'Recovered Navigator Zoom In did not change the camera'
+        (Control 'navigator-overview' -Arranged).SetFocus()
+        Wait-Until {!@(Capy-Tooltips $review.Id).Count} 'The focused Zoom in tooltip stayed over the recovered Navigator'
         $image=Recovery-NavigatorImage $navigatorBefore ([CapyRowPointer]::GetDpiForWindow($drawing.Handle)/96.) $aspect
         $witnesses=Recovery-NavigatorWitnesses $navigatorBefore $image (Model).state.camera $navigatorDocument ([CapyRowPointer]::GetDpiForWindow($drawing.Handle)/96.) $corner
         @{image=$image;camera=(Model).state.camera;artwork=$witnesses.artwork;edge=$witnesses.edge;outline=$witnesses.outline}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run 'gpu-navigator-witnesses.json')
