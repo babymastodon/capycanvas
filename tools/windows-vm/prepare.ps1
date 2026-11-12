@@ -46,16 +46,6 @@ function Enable-FixtureJapaneseInput {
             throw 'Japanese Basic input capability did not install'
         }
     }
-    $tip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
-    $languages = Get-WinUserLanguageList
-    if ($languages | Where-Object { $_.InputMethodTips -contains $tip }) { return }
-    $japanese = @($languages | Where-Object LanguageTag -eq 'ja-JP')[0]
-    if (!$japanese) {
-        $japanese = (New-WinUserLanguageList -Language 'ja-JP')[0]
-        $languages.Add($japanese)
-    }
-    if ($japanese.InputMethodTips -notcontains $tip) { $japanese.InputMethodTips.Add($tip) }
-    Set-WinUserLanguageList -LanguageList $languages -Force
 }
 Enable-FixtureJapaneseInput
 

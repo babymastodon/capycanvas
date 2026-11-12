@@ -1,6 +1,7 @@
 ﻿param([Parameter(Mandatory)][string]$Executable,[ValidateSet('dark','light')][string]$Theme='dark')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'CapyUia.ps1')
+. (Join-Path $PSScriptRoot 'FixtureJapaneseInput.ps1')
 Add-Type -AssemblyName System.Drawing,System.Windows.Forms
 if(!('CapyRowPointer' -as [type])){Add-Type -Path (Join-Path $PSScriptRoot 'RowPointerDriver.cs')}
 Add-Type -TypeDefinition @'
@@ -78,7 +79,7 @@ function Assert-Renaming([string]$Name){
 }
 try{
  Enter-CapyEnvironment
- if(!(Get-WinUserLanguageList | Where-Object {$_.InputMethodTips -match '^0411:'})){throw 'Enable the installed Japanese IME in the private Windows user before running this fixture'}
+ $script:imeLanguage=Add-FixtureJapaneseInput
  $script:imePrediction=Set-ImePrediction @{PredictionUseInputHistory=@{kind='DWord';value=0};PredictionUseSystemDictionary=@{kind='DWord';value=0}}
  $env:CAPY_STORAGE_DIR=Join-Path $run 'profile';$env:CAPY_TRACE_UI='1'
  [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json -Depth 4))
@@ -126,5 +127,6 @@ try{
  [CapyRowPointer]::Dispose()
  if($completed -and $review -and !$review.HasExited){& (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Close -DiscardUnsaved -StateDirectory $run}
  if($script:imePrediction){$null=Set-ImePrediction $script:imePrediction}
+ if($null -ne $script:imeLanguage){Remove-FixtureJapaneseInput -Language:$script:imeLanguage}
  Exit-CapyEnvironment
 }

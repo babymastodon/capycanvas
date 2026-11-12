@@ -573,6 +573,7 @@ try{
         if($script:claims -eq 1){'fixture'}
     }
     function Stop-Review{}
+    function Remove-FixtureJapaneseInput{}
     function Wait-FixtureReviews{}
     function Control-Fixture{}
     function Get-FixtureCompanionArguments{}

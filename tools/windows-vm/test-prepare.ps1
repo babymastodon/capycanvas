@@ -203,29 +203,17 @@ function Set-WinUserLanguageList($LanguageList,[switch]$Force){
     $script:writes++
 }
 $script:installFailure='';$script:inTask=$false;$script:task=$null;$script:taskObservations=$null
-foreach($script:explorerAfter in @(1,2)){foreach($initialCapability in @('Installed','NotPresent')){foreach($script:newTip in @('0411:00000411',$tip)){foreach($existingJapanese in @($false,$true)){
+foreach($script:explorerAfter in @(1,2)){foreach($initialCapability in @('Installed','NotPresent')){
     $script:capabilityState=$initialCapability;$script:installs=0;$script:registered=0;$script:removed=0
     $script:explorerChecks=0;$script:clock=[datetime]'2026-01-01';$script:sleeps=0
     $script:languages=[Collections.Generic.List[object]]::new();$script:writes=0
-    $english=Language 'en-US' @('0409:00000409');$german=Language 'de-DE' @('0407:00000407')
-    $script:languages.Add($english)
-    if($existingJapanese){$script:languages.Add((Language 'ja-JP' @('0411:00000411')))}
-    $script:languages.Add($german)
-    Enable-FixtureJapaneseInput
-    $order=($script:languages|ForEach-Object LanguageTag)-join ','
-    $expected=if($existingJapanese){'en-US,ja-JP,de-DE'}else{'en-US,de-DE,ja-JP'}
-    $japanese=@($script:languages|Where-Object LanguageTag -eq 'ja-JP')[0]
-    $originalTip=if($existingJapanese){'0411:00000411'}else{$script:newTip}
-    if($order -ne $expected -or @($japanese.InputMethodTips|Where-Object {$_ -eq $tip}).Count -ne 1 -or $japanese.InputMethodTips -notcontains $originalTip){throw 'Japanese preparation reordered languages or replaced existing input methods'}
-    if(![object]::ReferenceEquals($script:languages[0],$english) -or ($english.InputMethodTips -join ',') -ne '0409:00000409' -or ($german.InputMethodTips -join ',') -ne '0407:00000407'){throw 'Japanese preparation changed existing user languages'}
-    if($script:writes -ne 1){throw 'Missing Japanese input profile was not persisted once'}
-    Enable-FixtureJapaneseInput
-    if($script:writes -ne 1 -or $script:languages.Count -ne 3){throw 'Japanese preparation was not idempotent'}
+    Enable-FixtureJapaneseInput;Enable-FixtureJapaneseInput
+    if($script:writes){throw 'VM preparation gave every fixture the Japanese input method instead of the ime fixture alone'}
     $expectedInstalls=if($initialCapability -eq 'Installed'){0}else{1}
     if($script:installs -ne $expectedInstalls -or $script:capabilityState -ne 'Installed'){throw 'Basic capability installation was missing, repeated or unconditional'}
     if($script:registered -ne $expectedInstalls -or $script:removed -ne $expectedInstalls -or $script:task){throw 'Capability task was repeated, unconditional or left registered'}
     if($script:sleeps -ne $expectedInstalls*($script:explorerAfter-1)){throw 'Preparation ignored desktop readiness or waited with no missing capability'}
-}}}}
+}}
 foreach($script:installFailure in @('throw','unchanged')){
     $script:capabilityState='NotPresent';$script:installs=0;$script:registered=0;$script:removed=0;$script:writes=0;$failed=$false
     $script:explorerAfter=1;$script:explorerChecks=0;$script:clock=[datetime]'2026-01-01';$script:sleeps=0
@@ -248,7 +236,7 @@ foreach($terminalResult in @(0,1)){
     if($script:observationIndex -ne 4 -or $script:sleeps -ne 3){throw "Preparation accepted an incomplete scheduler observation: $failure"}
     if($terminalResult){
         if(!$failure -or $failure.Exception.Message -notmatch 'failed: 1$' -or $script:writes -ne 0){throw 'Completed installation failure was not preserved'}
-    }elseif($failure -or $script:writes -ne 1){throw "Completed installation did not enable its input profile: $failure"}
+    }elseif($failure -or $script:writes){throw "Completed installation failed or changed user input methods: $failure"}
     if($script:registered -ne 1 -or $script:installs -ne 1 -or $script:removed -ne 1 -or $script:task){throw 'Scheduler observations repeated installation or escaped owned cleanup'}
     $script:taskObservations=$null
 }
@@ -256,4 +244,24 @@ $script:installFailure='';$script:capabilityState='NotPresent';$script:installs=
 $script:explorerAfter=[int]::MaxValue;$script:explorerChecks=0;$script:clock=[datetime]'2026-01-01';$script:sleeps=0;$failed=$false
 try{Enable-FixtureJapaneseInput}catch{$failed=$true}
 if(!$failed -or $script:registered -ne 0 -or $script:installs -ne 0 -or $script:writes -ne 0 -or $script:sleeps -ne 120){throw 'Missing interactive desktop escaped its existing120s deadline or launched work'}
-Write-Output 'VM preparation preserves user language order and existing tips while enabling Microsoft Japanese IME.'
+. (Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/FixtureJapaneseInput.ps1')
+$script:capabilityState='Installed'
+function Languages {($script:languages|ForEach-Object {$_.LanguageTag+'='+($_.InputMethodTips -join '|')})-join ','}
+foreach($script:newTip in @('0411:00000411',$tip)){foreach($existingJapanese in @($false,$true)){
+    $script:languages=[Collections.Generic.List[object]]::new();$script:writes=0
+    $english=Language 'en-US' @('0409:00000409');$script:languages.Add($english)
+    if($existingJapanese){$script:languages.Add((Language 'ja' @('0411:00000411')))}
+    $script:languages.Add((Language 'de-DE' @('0407:00000407')));$before=Languages
+    $created=Add-FixtureJapaneseInput
+    if($created -ne !$existingJapanese -or @($script:languages|Where-Object {$_.InputMethodTips -contains $tip}).Count -ne 1 -or $script:languages.Count -ne 3 -or $script:writes -ne 1){throw 'The ime fixture did not add exactly one Microsoft Japanese IME input method'}
+    if($null -ne (Add-FixtureJapaneseInput) -or $script:writes -ne 1){throw 'The ime fixture added its input method twice'}
+    Remove-FixtureJapaneseInput -Language:$created
+    if((Languages) -ne $before -or $script:writes -ne 2 -or ![object]::ReferenceEquals($script:languages[0],$english)){throw 'The ime fixture did not restore the input methods it found'}
+}}
+foreach($case in @(@{tips=@($tip);writes=1;expected='en-US=0409:00000409,de-DE=0407:00000407'},@{tips=@('0411:00000411',$tip);writes=1;expected='en-US=0409:00000409,ja=0411:00000411,de-DE=0407:00000407'},@{tips=@('0411:00000411');writes=0;expected='en-US=0409:00000409,ja=0411:00000411,de-DE=0407:00000407'})){
+    $script:languages=[Collections.Generic.List[object]]::new();$script:writes=0
+    foreach($language in @((Language 'en-US' @('0409:00000409')),(Language 'ja' $case.tips),(Language 'de-DE' @('0407:00000407')))){$script:languages.Add($language)}
+    Remove-FixtureJapaneseInput
+    if((Languages) -ne $case.expected -or $script:writes -ne $case.writes){throw 'Runner cleanup changed input methods other than a leftover fixture Japanese IME'}
+}
+Write-Output 'VM preparation installs Japanese Basic input; only the ime fixture adds the Microsoft Japanese IME, and runners remove leftovers.'

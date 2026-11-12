@@ -18,6 +18,7 @@ trap {
     exit 1
 }
 . (Join-Path $PSScriptRoot 'session-identity.ps1')
+. (Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/FixtureJapaneseInput.ps1')
 function Write-FixtureResult([string]$Path,[string]$Json){
     $stream=[IO.File]::Open($Path,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::Write,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
     $writer=[IO.StreamWriter]::new($stream,[Text.UTF8Encoding]::new($false))
@@ -507,6 +508,7 @@ while($null -ne ($name=Get-NextFixture $planned $queue $claimed)){
     if($queue){Write-FixturePlan (Join-Path $Output 'plan.json') $claimed.ToArray()}
     $fixture = ($run.Key -split ':')[0]
     Stop-Review
+    Remove-FixtureJapaneseInput
     $log = Join-Path $Output ($run.Key -replace ':', '-')
     $env:CAPY_FIXTURE_CONTEXT = "$log-context.json"
     $started = Get-Date
