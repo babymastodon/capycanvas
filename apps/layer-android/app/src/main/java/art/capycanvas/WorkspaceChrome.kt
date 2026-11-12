@@ -132,8 +132,12 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
 @Composable internal fun rememberDrawerGlass(host: CanvasHost, dock: DockInteraction): DrawerGlass {
     val density=LocalDensity.current
     val view=LocalView.current
-    val opacity=LocalWorkspaceOpacity.current
     val glass=remember(host,dock,density,view) {DrawerGlass(host,dock,density,view)}
+    return rememberDrawerGlass(glass,dock)
+}
+
+@Composable private fun rememberDrawerGlass(glass: DrawerGlass, dock: DockInteraction): DrawerGlass {
+    val opacity=LocalWorkspaceOpacity.current
     LaunchedEffect(glass,opacity) {snapshotFlow {(opacity?.value ?: 1f) to dock.drawerSources.values.toList()}.collect {glass.strength=it.first}}
     DisposableEffect(glass) {onDispose {glass.clear()}}
     return glass
@@ -214,7 +218,8 @@ internal class DrawerGlass(private val host: CanvasHost, private val dock: DockI
     }
 }
 
-private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
+private class DrawerContentState(var model: JSONObject, val retain: Boolean, val glass: DrawerGlass) {
+    val z=if(model.getJSONObject("anchor").optString("kind")=="column")200 else 220
     var active by mutableStateOf(true)
     var keep = retain
     val heights = mutableStateListOf<Pair<Int, Float>?>().apply { repeat(model.array("columns").length()) { add(null) } }
@@ -235,6 +240,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
     val layerSizesContext = mutableStateOf<String?>(null)
     val navigator = NavigatorPanelState()
     fun close() {
+        glass.clear()
         active=false
         geometry.value=null
         visible.value=false
@@ -248,10 +254,12 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
     val models = customization.array("column_drawers").objects().associateBy { it.getJSONObject("anchor").getInt("column").toString() }.toMutableMap()
     customization.objectOrNull("drawer")?.let { models["tool"] = it }
     val phone = snapshot.getJSONObject("layout").objectOrNull("phone") != null
+    val density=LocalDensity.current
+    val view=LocalView.current
     val state = snapshot.getJSONObject("state")
     val workspace = state.getJSONObject("workspace").getJSONObject("layout").let { layout -> layout.keys().asSequence().associateWith { layout.get(it) } }
-    val metrics = listOf(LocalDensity.current,host.languageTag,state.optString("theme"))
-    val retained = remember(phone,workspace,metrics) { mutableStateMapOf<String, DrawerContentState>() }
+    val metrics = listOf(density,host.languageTag,state.optString("theme"))
+    val retained = remember(host,dock,view,phone,workspace,metrics) { mutableStateMapOf<String, DrawerContentState>() }
     val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
     DisposableEffect(retained,context) {
         val callbacks=object : android.content.ComponentCallbacks2 {
@@ -272,7 +280,8 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
         val previous=retained[identity]
         val from=if(phone && id=="tool")retained.values.firstOrNull { it.retain && it.active && it!==previous } else null
         val entry=if(previous==null || listOf("columns","tabs","compact").any { previous.model.opt(it).toString()!=model.opt(it).toString() })
-            DrawerContentState(model,phone && id=="tool" && model.getJSONObject("anchor").optString("kind")=="phone").also { retained[identity]=it } else previous
+            DrawerContentState(model,phone && id=="tool" && model.getJSONObject("anchor").optString("kind")=="phone",DrawerGlass(host,dock,density,view))
+                .also { retained[identity]=it } else previous
         if(!entry.active || entry!==previous) {
             val source=from ?: previous?.takeIf { it.active }
             entry.geometry.value=source?.geometry?.value
@@ -297,8 +306,15 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
             if(!entry.keep)retained.remove(identity)
         }
         key(entry) {
+            val glass=rememberDrawerGlass(entry.glass,dock)
+            val nested=id=="tool" && entry.model.getJSONObject("anchor").optString("panel").let { panel ->
+                customization.array("column_drawers").objects().any { drawer -> drawer.array("columns").values().any { panel in (it as JSONArray).values() } }
+            }
+            CompositionLocalProvider(LocalWorkspaceZ provides entry.z,LocalPalette provides LocalPalette.current.onGlass) {
+                if(entry.visible.value)DrawerChrome(entry.geometry,dock,phone,nested,entry.z,glass)
+            }
             val placeContent=entry.active && entry.prepared.value!=null
-            Layout(content={
+            Layout(modifier=Modifier.zIndex(entry.z.toFloat()),content={
                 ReusableContentHost(entry.active) {
                     ContentDrawer(host,snapshot,current[identity],entry,panels,dock,id) {
                         entry.close()
@@ -321,7 +337,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
 @Composable private fun ContentDrawer(host: CanvasHost, snapshot: JSONObject, current: JSONObject?, entry: DrawerContentState,
     panels: Map<String, JSONObject>, dock: DockInteraction, id: String, closed: () -> Unit) {
     val model = current ?: entry.model
-    val glass=rememberDrawerGlass(host,dock)
+    val glass=entry.glass
     val colors=LocalPalette.current
     val bodies = remember { mutableMapOf<String, JSONObject>() }.apply { putAll(panels) }
     val columns = model.array("columns").values().map { it as JSONArray }
@@ -478,17 +494,11 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean) {
     val placement = { geometry.value?.objectOrNull("placement") ?: closedPlacement ?: contentPlacement }
     val shape = { dock.drawerContainerShape(placement().getJSONObject("bounds"),
         joined = geometry.value?.objectOrNull("connection")?.array("square_corners")) }
-    val z = if (id == "tool") 220 else 200
+    val z = entry.z
     val tabbed = tabs != null && columnId != null
     val together = phone != null && measurement?.optBoolean("scrolls_together") == true
     fun position(bounds: JSONObject) = if (phone != null) Modifier.placedAbsolute(bounds,dock.density) else Modifier.placed(bounds,dock.density)
     CompositionLocalProvider(LocalWorkspaceZ provides z, LocalPalette provides LocalPalette.current.onGlass) {
-        // Shadow below source chrome; a nested toolbar's source lives in a column drawer.
-        val nested = id == "tool" && model.getJSONObject("anchor").optString("panel").let { panel ->
-            snapshot.getJSONObject("state").getJSONObject("customization").array("column_drawers").objects()
-                .any { drawer -> drawer.array("columns").values().any { panel in (it as JSONArray).values() } }
-        }
-        if (visible) DrawerChrome(geometry, dock, phone != null, nested, z, glass)
         val opening = remember { PanelOpening() }
         val outerPosition = (if (phone != null) Modifier.absoluteOffset {
             val bounds=placement().getJSONObject("bounds")

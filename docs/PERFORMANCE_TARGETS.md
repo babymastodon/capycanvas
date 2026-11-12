@@ -175,6 +175,10 @@ measured on low and mid tiers:
   Tool/Color cycles each, AP 42.0 → 39.8°C) pass cadence in 8/12 → 11/12
   transitions: Tool 3/6 → 5/6 and Color 5/6 → 6/6, with complete SF joins. The remaining
   55 fps Tool close shares the parent's cadence miss.
+  Bridge outline, pixel-grid and drawer layering fixes (2026-11-12, APKs
+  `96901c5c` → `80913cd8`, three warm Tool/Color cycles, AP 39.1 → 37.9°C)
+  pass 11/12 → 12/12 transitions: Tool 5/6 → 6/6, Color 6/6 → 6/6;
+  worst present-gap p99 is 33.31 → 16.97 ms, with complete SF joins.
   These inherited settings and short transitions remain diagnostic
   qualification.
 
