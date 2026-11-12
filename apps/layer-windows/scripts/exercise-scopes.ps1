@@ -277,6 +277,7 @@ try{
         $strip=(Control 'tool-gradient-gradient' -Arranged).Current.BoundingRectangle;$dpi=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.
         $at=@([int]($strip.X+6*$dpi+($strip.Width-12*$dpi)*$stop.position),[int]($strip.Y+39*$dpi))
         [CapyRowPointer]::Down('mouse',$at[0],$at[1]);[CapyRowPointer]::Up()
+        Wait-Until {@((Model).state.tool_extra|Where-Object Gradient)[0].Gradient.gradient.selected -eq $stop.position} "The gradient stop at $($stop.position) was not selected"
         Invoke 'tool-gradient-color';Invoke 'edit-color-hex'
         Edit 'edit-color-hex-entry' $stop.color;[CapyRowPointer]::Key([uint32]$review.Id,0x0D)
         Invoke 'edit-color-apply'

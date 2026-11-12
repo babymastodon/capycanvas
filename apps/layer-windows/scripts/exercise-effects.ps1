@@ -250,7 +250,8 @@ function Check-Gradient {Pointer-Session {
     Wait-Until {(Gradient-Json) -ne $before} 'Use current color did not change the selected stop'
     Check-Undo $before 'Use current color'
     Invoke 'Undo' -Name;Wait-Until {(Gradient-Json) -eq $before} 'Use current color did not undo'
-    $at=Strip-Point .4;[CapyRowPointer]::Down('mouse',$at[0],$at[1]);[CapyRowPointer]::Up();Start-Sleep -Milliseconds 150
+    $at=Strip-Point .4;[CapyRowPointer]::Down('mouse',$at[0],$at[1]);[CapyRowPointer]::Up()
+    Wait-Until {(Property 'gradient').gradient.selected -eq 1} 'Tapping the stop at 40% did not select it'
     if((Gradient-Json) -ne $before){throw 'Selecting a stop changed the gradient'}
 }}
 function Check-PropertyScrub {Pointer-Session {
