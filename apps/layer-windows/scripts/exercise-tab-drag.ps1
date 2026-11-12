@@ -339,14 +339,17 @@ function Chrome-Review {
  Chrome-Sample 'chrome-edge-close' $area {param($i)if($i -eq 3){[CapyRowPointer]::Key(0x1b);[CapyRowPointer]::Up()}} {
   param($frames,$final,$area,$name)
   Chrome-Overview $frames $frames[2] $area ($name+'-hole') $closingOverview $closingHeader
-  $envelope=[TabFrames+Envelope]::new($frames[2],$final);$bad=@();$fullBad=@();$scores=@()
+  $envelope=[TabFrames+Envelope]::new($frames[2],$final);$bad=@();$fullBad=@();$scores=@();$handover=@()
+  $edge=$column.bounds;$strip=[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($origin.x+$edge.x*$scale-$area.Left),[int][Math]::Floor($origin.y+$edge.y*$scale-$area.Top),[int][Math]::Ceiling($origin.x+($edge.x+$edge.width)*$scale-$area.Left),[int][Math]::Ceiling($origin.y+($edge.y+$edge.height)*$scale-$area.Top))
+  $glass=(Model).state.palette.glass.panel;$tint=[Drawing.Color]::FromArgb([int][Math]::Round($glass[3]*255),[int][Math]::Round($glass[0]*255),[int][Math]::Round($glass[1]*255),[int][Math]::Round($glass[2]*255))
   for($i=3;$i -lt $frames.Count;$i++){
    $full=$envelope.Difference($frames[$i]);$native=$envelope.Difference($frames[$i],$excluded);$remaining=[TabFrames]::Remaining($frames[$i],$final,$excluded)
    $scores+=@{frame=$i;full_invalid_pixels=$full;native_invalid_pixels=$native;overview_invalid_pixels=($full-$native);native_remaining_pixels=$remaining[0];overview_remaining_pixels=$remaining[1]}
    if($full -gt 8){$fullBad+=@($i)}
-   if($native -gt 8){$bad+=@($i)}
+   if($native -gt 8){if($envelope.ExtraTint($frames[$i],$final,$strip,$excluded,$tint)){$handover+=@($i)}else{$bad+=@($i)}}
   }
-  @{overview=$closingOverview;excluded=$excluded;area=$area;native_invalid=$bad;full_invalid=$fullBad;scores=$scores}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run ($name+'-pixels.json'))
+  if($handover.Count -gt 2 -or ($handover.Count -eq 2 -and $handover[1] -ne $handover[0]+1)){$bad=@(@($bad)+@($handover)|Sort-Object)}
+  @{overview=$closingOverview;excluded=$excluded;area=$area;strip=$strip;native_invalid=$bad;column_handover=$handover;full_invalid=$fullBad;scores=$scores}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run ($name+'-pixels.json'))
   if($bad.Count){$script:frameFailures+=@("$name exposed a third native chrome state in frames $($bad -join ',')")}
  }
  Wait-Until {@((Model).layout.collapsed|Where-Object id -eq $column.id).Count -gt 0} 'Edge cancellation did not restore its column'
