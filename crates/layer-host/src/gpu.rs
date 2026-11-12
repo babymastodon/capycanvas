@@ -113,14 +113,26 @@ impl From<wgpu::PowerPreference> for AdapterChoice<'_> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn surface_adapter(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>, choice: AdapterChoice<'_>) -> Result<wgpu::Adapter, String> {
+pub type SurfaceRefusal<'a> = &'a dyn Fn(&wgpu::SurfaceCapabilities) -> Option<String>;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn surface_refusal(adapter: &wgpu::Adapter, surface: &wgpu::Surface<'_>, refusal: SurfaceRefusal<'_>) -> Option<String> {
+    if !adapter.is_surface_supported(surface) {
+        return Some(format!("{} cannot present this window's surface", adapter.get_info().name));
+    }
+    refusal(&surface.get_capabilities(adapter))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn surface_adapter(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>, choice: AdapterChoice<'_>,
+    refusal: SurfaceRefusal<'_>) -> Result<wgpu::Adapter, String> {
     let power_preference = match choice {
         AdapterChoice::Request(preference) => preference,
         AdapterChoice::Prefer(preferred) | AdapterChoice::Require(preferred) => {
             let required = matches!(choice, AdapterChoice::Require(_));
             if let Some(adapter) = preferred_candidate(instance.enumerate_adapters(wgpu::Backends::all()).await,
-                |adapter| adapter.is_surface_supported(surface)
-                    && unsupported_adapter(adapter, &layer_render_wgpu::rendering_limits(adapter.limits())).is_none(), preferred, required) { return Ok(adapter); }
+                |adapter| unsupported_adapter(adapter, &layer_render_wgpu::rendering_limits(adapter.limits())).is_none()
+                    && surface_refusal(adapter, surface, refusal).is_none(), preferred, required) { return Ok(adapter); }
             if required { return Err("The canvas GPU is still releasing its removed device".into()); }
             wgpu::PowerPreference::None
         }
@@ -131,21 +143,36 @@ pub async fn surface_adapter(instance: &wgpu::Instance, surface: &wgpu::Surface<
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+const LAUNCHER_GPU_REQUESTS: [&str; 4] = ["DRI_PRIME", "MESA_VK_DEVICE_SELECT", "__NV_PRIME_RENDER_OFFLOAD", "VK_LOADER_DEVICE_SELECT"];
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn launcher_chose_gpu(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    LAUNCHER_GPU_REQUESTS.into_iter().any(|name| var(name).is_some_and(|value| !value.is_empty()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn prefers_compositor_adapter(info: &wgpu::AdapterInfo, compositor_bus: Option<&str>, launcher_choice: bool) -> bool {
+    launcher_choice || compositor_bus.is_some_and(|bus| !bus.is_empty() && info.device_pci_bus_id == bus)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn process_gpu<'a>(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>,
-    localization: &layer_ui::Localizer, choice: impl Into<AdapterChoice<'a>>) -> Result<ProcessGpu, String> {
+    localization: &layer_ui::Localizer, choice: impl Into<AdapterChoice<'a>>, refusal: SurfaceRefusal<'_>) -> Result<ProcessGpu, String> {
     let _initializing = INITIALIZING.lock().await;
+    let refused = |adapter: &wgpu::Adapter| surface_refusal(adapter, surface, refusal)
+        .map_or(Ok(()), |cause| Err(layer_ui::gpu_unsupported(localization, &cause)));
     if let Some(gpu) = healthy_cached(&PROCESS_GPU, |gpu| gpu.watch.failure().is_none())? {
-        return if gpu.factory.adapter().is_surface_supported(surface) { Ok(gpu.clone()) }
-            else { Err(layer_ui::gpu_unsupported(localization, "The canvas GPU cannot present this window's surface")) };
+        return refused(gpu.factory.adapter()).map(|()| gpu);
     }
-    let adapter = surface_adapter(instance, surface, choice.into()).await
+    let adapter = surface_adapter(instance, surface, choice.into(), refusal).await
         .map_err(|e| layer_ui::gpu_unsupported(localization, &e))?;
+    let limits = layer_render_wgpu::rendering_limits(adapter.limits());
+    admit_adapter(localization, &adapter, &limits)?;
+    refused(&adapter)?;
     let saved = std::thread::spawn({
         let info = adapter.get_info();
         move || layer_render_wgpu::SavedPipelines::read_file(&info)
     });
-    let limits = layer_render_wgpu::rendering_limits(adapter.limits());
-    admit_adapter(localization, &adapter, &limits)?;
     let (device, queue, watch) = request_device(&adapter, &wgpu::DeviceDescriptor {
         label: Some("Capy Canvas process GPU"),
         required_features: layer_render_wgpu::rendering_features(&adapter) | adapter.features()
@@ -236,6 +263,42 @@ mod tests {
         assert_eq!(preferred_candidate([1, 2, 3], |_| true, |candidate| *candidate > 1, true), Some(2));
         assert_eq!(preferred_candidate([1, 2, 3], |candidate| *candidate != 1, |candidate| *candidate == 1, true), None);
         assert_eq!(preferred_candidate([1, 2, 3], |_| true, |_| false, true), None);
+    }
+
+    #[test]
+    fn adapters_follow_the_launcher_request_then_the_compositor_gpu() {
+        let adapter = |name: &'static str, device_type, bus: &str| wgpu::AdapterInfo {
+            name: name.into(), device_pci_bus_id: bus.into(), ..wgpu::AdapterInfo::new(device_type, wgpu::Backend::Vulkan)
+        };
+        let intel = adapter("Intel", wgpu::DeviceType::IntegratedGpu, "0000:00:02.0");
+        let nvidia = adapter("NVIDIA", wgpu::DeviceType::DiscreteGpu, "0000:3c:00.0");
+        let llvmpipe = adapter("llvmpipe", wgpu::DeviceType::Cpu, "");
+        let choose = |listed: &[&wgpu::AdapterInfo], refused: &[&str], compositor: Option<&str>, launcher: bool| {
+            preferred_candidate(listed.iter().copied(),
+                |info| info.device_type != wgpu::DeviceType::Cpu && !refused.contains(&info.name.as_str()),
+                |info| prefers_compositor_adapter(info, compositor, launcher), false).map(|info| info.name.clone())
+        };
+        let compositor = Some("0000:00:02.0");
+        assert_eq!(choose(&[&intel, &nvidia, &llvmpipe], &[], compositor, false).as_deref(), Some("Intel"));
+        assert_eq!(choose(&[&nvidia, &intel, &llvmpipe], &[], compositor, false).as_deref(), Some("Intel"));
+        assert_eq!(choose(&[&nvidia, &intel, &llvmpipe], &[], compositor, true).as_deref(), Some("NVIDIA"));
+        assert_eq!(choose(&[&nvidia], &[], compositor, true).as_deref(), Some("NVIDIA"));
+        assert_eq!(choose(&[&nvidia, &intel], &["Intel"], compositor, false).as_deref(), Some("NVIDIA"));
+        assert_eq!(choose(&[&nvidia, &intel, &llvmpipe], &[], None, false).as_deref(), Some("NVIDIA"));
+        assert_eq!(choose(&[&nvidia, &intel], &[], Some("0000:01:00.0"), false).as_deref(), Some("NVIDIA"));
+        assert_eq!(choose(&[&llvmpipe, &intel], &[], Some(""), false).as_deref(), Some("Intel"));
+        assert_eq!(choose(&[&llvmpipe], &[], compositor, true), None);
+    }
+
+    #[test]
+    fn launcher_gpu_requests_are_read_from_the_vulkan_and_prime_variables() {
+        let chose = |set: &[(&str, &str)]| launcher_chose_gpu(|name| set.iter()
+            .find(|(key, _)| *key == name).map(|(_, value)| std::ffi::OsString::from(value)));
+        assert!(!chose(&[]));
+        assert!(!chose(&[("DRI_PRIME", ""), ("__VK_LAYER_NV_optimus", "NVIDIA_only"), ("WGPU_POWER_PREF", "high")]));
+        for name in ["DRI_PRIME", "MESA_VK_DEVICE_SELECT", "__NV_PRIME_RENDER_OFFLOAD", "VK_LOADER_DEVICE_SELECT"] {
+            assert!(chose(&[(name, "1")]), "{name}");
+        }
     }
 
     #[test]

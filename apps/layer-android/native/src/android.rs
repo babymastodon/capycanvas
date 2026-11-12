@@ -471,7 +471,7 @@ impl App {
             // whose shared state otherwise defaults to eager rendering.
             self.host.startup = Default::default();
             let gpu = pollster::block_on(layer_host::gpu::process_gpu(
-                &instance, &surface, self.host.session.localization(), wgpu::PowerPreference::None,
+                &instance, &surface, self.host.session.localization(), wgpu::PowerPreference::None, &|_| None,
             ))?;
             // Callbacks record failures without panicking through JNI or owning
             // the device. The render owner suspends input and exposes recovery.

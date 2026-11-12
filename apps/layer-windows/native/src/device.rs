@@ -37,7 +37,7 @@ mod tests {
         descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
         let instance = wgpu::Instance::new(descriptor);
         let (surface, _handle) = crate::host::CapyHost::composition_surface(&instance).unwrap();
-        let request = |choice| pollster::block_on(layer_host::gpu::surface_adapter(&instance, &surface, choice));
+        let request = |choice| pollster::block_on(layer_host::gpu::surface_adapter(&instance, &surface, choice, &|_| None));
         let adapter = request(layer_host::gpu::AdapterChoice::Request(wgpu::PowerPreference::HighPerformance)).unwrap();
         let luid = crate::display::adapter_luid(&adapter).unwrap();
         assert!(crate::display::adapter_present(luid).unwrap());

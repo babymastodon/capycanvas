@@ -72,6 +72,13 @@ The canvas needs a Wayland session and a hardware Vulkan driver with mailbox
 presentation and premultiplied-alpha surfaces. There is no X11, GLES or CPU
 canvas fallback. GTK chooses its own renderer for the controls.
 
+The canvas renders on the GPU the compositor uses. When the launch environment
+sets `DRI_PRIME`, `MESA_VK_DEVICE_SELECT`, `__NV_PRIME_RENDER_OFFLOAD` or
+`VK_LOADER_DEVICE_SELECT`, as the desktop's "Launch using Discrete Graphics
+Card" does, it uses the first GPU Vulkan lists instead. The startup log's
+`Wayland canvas GPU` line names the chosen adapter and the compositor's PCI
+device.
+
 ## Build and run
 
 ```bash

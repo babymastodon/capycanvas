@@ -46,6 +46,27 @@ fn retired_context_capture_resolves_failure_without_changing_sources() {
 use super::*;
 use gtk::prelude::*;
 
+#[test]
+fn canvas_admits_wayland_surfaces_with_mailbox_premultiplied_alpha_and_an_eight_bit_format() {
+    use wgpu::{SurfaceColorSpaces as Spaces, TextureFormat as Format};
+    let caps = |color_spaces: Spaces, formats: &[Format], present_modes: &[wgpu::PresentMode], alpha_modes: &[wgpu::CompositeAlphaMode]| wgpu::SurfaceCapabilities {
+        format_capabilities: formats.iter().map(|&format| wgpu::SurfaceFormatCapabilities { format, color_spaces }).collect(),
+        present_modes: present_modes.to_vec(),
+        alpha_modes: alpha_modes.to_vec(),
+        ..Default::default()
+    };
+    let formats = [Format::Bgra8UnormSrgb, Format::Rgba8UnormSrgb, Format::Rgba16Float, Format::Rgb10a2Unorm, Format::Bgra8Unorm, Format::Rgba8Unorm];
+    let modes = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Fifo];
+    let alphas = [wgpu::CompositeAlphaMode::Opaque, wgpu::CompositeAlphaMode::PreMultiplied];
+    let refusal = |spaces, formats: &[Format], modes: &[wgpu::PresentMode], alphas: &[wgpu::CompositeAlphaMode]| canvas_refusal(&caps(spaces, formats, modes, alphas));
+    let mesa = Spaces::SRGB | Spaces::DISPLAY_P3 | Spaces::BT2100_PQ | Spaces::PASS_THROUGH;
+    assert_eq!(refusal(mesa, &formats, &modes, &alphas), None);
+    assert_eq!(refusal(Spaces::SRGB, &formats, &modes, &alphas), None);
+    assert_eq!(refusal(mesa, &[Format::Rgba16Float, Format::Rgb10a2Unorm], &modes, &alphas).as_deref(), Some(EIGHT_BIT_SURFACE));
+    assert!(refusal(Spaces::SRGB, &formats, &[wgpu::PresentMode::Fifo], &alphas).is_some_and(|cause| cause.contains("mailbox")));
+    assert!(refusal(Spaces::SRGB, &formats, &modes, &[wgpu::CompositeAlphaMode::Opaque]).is_some_and(|cause| cause.contains("premultiplied")));
+}
+
 struct ReadyPreparation {
     remaining: usize,
     steps: usize,

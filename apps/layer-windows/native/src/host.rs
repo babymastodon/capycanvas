@@ -459,7 +459,7 @@ impl CapyHost {
             layer_host::gpu::AdapterChoice::Require(&same_gpu)
         } else { layer_host::gpu::AdapterChoice::Prefer(&drives_display) };
         let gpu = pollster::block_on(layer_host::gpu::process_gpu(
-            &self.instance, &self.surface, self.native.session.localization(), choice,
+            &self.instance, &self.surface, self.native.session.localization(), choice, &|_| None,
         ))?;
         let adapter = gpu.factory.adapter();
         let adapter_luid = crate::display::adapter_luid(adapter);
@@ -1982,7 +1982,7 @@ mod display_adapter_tests {
             .any(|adapter| drives_display(&adapter) && adapter.is_surface_supported(&surface)
                 && layer_host::gpu::unsupported_adapter(&adapter, &layer_render_wgpu::rendering_limits(adapter.limits())).is_none());
         let select = |preferred: &dyn Fn(&wgpu::Adapter) -> bool| {
-            pollster::block_on(layer_host::gpu::surface_adapter(&instance, &surface, layer_host::gpu::AdapterChoice::Prefer(preferred)))
+            pollster::block_on(layer_host::gpu::surface_adapter(&instance, &surface, layer_host::gpu::AdapterChoice::Prefer(preferred), &|_| None))
                 .map(|adapter| (drives_display(&adapter), adapter.get_info()))
         };
         let selected = select(&drives_display);

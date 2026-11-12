@@ -18,7 +18,7 @@ pub(crate) fn renderer(luid: Option<(u32, i32)>) -> (Renderer, DeviceWatch, (u32
     };
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let adapter = match pollster::block_on(layer_host::gpu::surface_adapter(&instance, &surface, choice)) {
+        let adapter = match pollster::block_on(layer_host::gpu::surface_adapter(&instance, &surface, choice, &|_| None)) {
             Ok(adapter) => adapter,
             Err(error) => {
                 assert!(Instant::now() < deadline, "{error}");

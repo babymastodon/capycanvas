@@ -221,7 +221,7 @@ impl MetalHost {
         .map_err(|e| format!("Metal surface creation: {e}"))?;
         if host.session.engine().backend().0.is_none() {
             let gpu = pollster::block_on(layer_host::gpu::process_gpu(
-                instance, &surface, host.session.localization(), wgpu::PowerPreference::None,
+                instance, &surface, host.session.localization(), wgpu::PowerPreference::None, &|_| None,
             ))?;
             let watch = gpu.watch;
             let context = layer_host::GpuContext::from_factory(gpu.factory);

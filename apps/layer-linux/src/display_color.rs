@@ -39,6 +39,13 @@ pub unsafe fn enable_gtk_color_management() {
     unsafe { std::env::set_var("GDK_DEBUG", flags) };
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SdrSurface {
+    pub format: wgpu::TextureFormat,
+    pub color_space: wgpu::SurfaceColorSpace,
+    pub described: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ViewColor {
     #[default]
@@ -69,21 +76,25 @@ impl ViewColor {
             Self::DisplayP3 => layer_render_wgpu::SdrSurfaceColor::DisplayP3,
         }
     }
-    pub fn format(caps: &wgpu::SurfaceCapabilities) -> Result<wgpu::TextureFormat, String> {
-        // Only pass-through lets us own a description with an unambiguous
-        // transfer curve. WSI's legacy sRGB/P3 tags can mean gamma 2.2 instead.
-        [
+    pub fn sdr_surface(caps: &wgpu::SurfaceCapabilities, compositor_describes_wide_color: bool) -> Option<SdrSurface> {
+        let offered = |space| [
             wgpu::TextureFormat::Rgba8Unorm,
             wgpu::TextureFormat::Bgra8Unorm,
             wgpu::TextureFormat::Rgba8UnormSrgb,
             wgpu::TextureFormat::Bgra8UnormSrgb,
         ]
         .into_iter()
-        .find(|&format| {
-            caps.color_spaces(format)
-                .contains(wgpu::SurfaceColorSpaces::PASS_THROUGH)
+        .find(|&format| caps.color_spaces(format).contains(space));
+        if let Some(format) = offered(wgpu::SurfaceColorSpaces::PASS_THROUGH) {
+            return Some(SdrSurface { format, color_space: wgpu::SurfaceColorSpace::PassThrough, described: true });
+        }
+        let driver_ignores_color_management = caps.format_capabilities.iter()
+            .all(|listed| wgpu::SurfaceColorSpaces::SRGB.contains(listed.color_spaces));
+        offered(wgpu::SurfaceColorSpaces::SRGB).map(|format| SdrSurface {
+            format,
+            color_space: wgpu::SurfaceColorSpace::Srgb,
+            described: driver_ignores_color_management && compositor_describes_wide_color,
         })
-        .ok_or_else(|| "The Wayland canvas requires Vulkan color pass-through".into())
     }
     pub fn description(self) -> &'static str {
         match self.base() {
@@ -521,39 +532,29 @@ mod tests {
     }
 
     #[test]
-    fn selection_requires_a_matching_passthrough_format() {
-        let caps = |entries| wgpu::SurfaceCapabilities {
-            format_capabilities: entries,
+    fn sdr_surfaces_describe_color_only_where_the_driver_leaves_the_description_to_the_app() {
+        use wgpu::{SurfaceColorSpace as Space, SurfaceColorSpaces as Spaces, TextureFormat as Format};
+        let caps = |color_spaces: Spaces, formats: &[Format]| wgpu::SurfaceCapabilities {
+            format_capabilities: formats.iter().map(|&format| wgpu::SurfaceFormatCapabilities { format, color_spaces }).collect(),
             ..Default::default()
         };
-        let pair = |format, color_spaces| wgpu::SurfaceFormatCapabilities {
-            format,
-            color_spaces,
-        };
-        let pass = wgpu::SurfaceColorSpaces::PASS_THROUGH;
-        let srgb = wgpu::SurfaceColorSpaces::SRGB;
-        assert!(ViewColor::format(&caps(vec![])).is_err());
-        assert!(
-            ViewColor::format(&caps(vec![pair(wgpu::TextureFormat::Rgba8Unorm, srgb)])).is_err()
-        );
-        assert!(
-            ViewColor::format(&caps(vec![pair(wgpu::TextureFormat::Rgb10a2Unorm, pass)])).is_err()
-        );
-        assert_eq!(
-            ViewColor::format(&caps(vec![
-                pair(wgpu::TextureFormat::Rgba8Unorm, srgb),
-                pair(wgpu::TextureFormat::Bgra8UnormSrgb, pass),
-            ]))
-            .unwrap(),
-            wgpu::TextureFormat::Bgra8UnormSrgb
-        );
-        assert_eq!(
-            ViewColor::format(&caps(vec![
-                pair(wgpu::TextureFormat::Bgra8UnormSrgb, pass),
-                pair(wgpu::TextureFormat::Rgba8Unorm, pass),
-            ]))
-            .unwrap(),
-            wgpu::TextureFormat::Rgba8Unorm
-        );
+        let surface = |format, color_space, described| Some(SdrSurface { format, color_space, described });
+        let offered = [Format::Bgra8UnormSrgb, Format::Rgba8UnormSrgb, Format::Rgba16Float, Format::Rgb10a2Unorm, Format::Bgra8Unorm, Format::Rgba8Unorm];
+        let mesa = caps(Spaces::SRGB | Spaces::DISPLAY_P3 | Spaces::BT2100_PQ | Spaces::PASS_THROUGH, &offered);
+        let nvidia_580 = caps(Spaces::SRGB, &offered);
+        let named_only = caps(Spaces::SRGB | Spaces::DISPLAY_P3 | Spaces::BT2100_PQ, &offered);
+        for wide in [false, true] {
+            assert_eq!(ViewColor::sdr_surface(&mesa, wide), surface(Format::Rgba8Unorm, Space::PassThrough, true));
+            assert_eq!(ViewColor::sdr_surface(&named_only, wide), surface(Format::Rgba8Unorm, Space::Srgb, false));
+            assert_eq!(ViewColor::sdr_surface(&caps(Spaces::all(), &[]), wide), None);
+            assert_eq!(ViewColor::sdr_surface(&caps(Spaces::PASS_THROUGH, &[Format::Rgb10a2Unorm]), wide), None);
+        }
+        assert_eq!(ViewColor::sdr_surface(&nvidia_580, true), surface(Format::Rgba8Unorm, Space::Srgb, true));
+        assert_eq!(ViewColor::sdr_surface(&nvidia_580, false), surface(Format::Rgba8Unorm, Space::Srgb, false));
+        let mut mixed = caps(Spaces::SRGB, &[Format::Rgba8Unorm]);
+        mixed.format_capabilities.push(wgpu::SurfaceFormatCapabilities { format: Format::Bgra8UnormSrgb, color_spaces: Spaces::PASS_THROUGH });
+        assert_eq!(ViewColor::sdr_surface(&mixed, true), surface(Format::Bgra8UnormSrgb, Space::PassThrough, true));
+        mixed.format_capabilities[1].color_spaces = Spaces::EXTENDED_SRGB_LINEAR;
+        assert_eq!(ViewColor::sdr_surface(&mixed, true), surface(Format::Rgba8Unorm, Space::Srgb, false));
     }
 }
