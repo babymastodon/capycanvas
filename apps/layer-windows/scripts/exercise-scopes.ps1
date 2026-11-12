@@ -282,7 +282,9 @@ try{
             $gradient=@((Model).state.tool_extra|Where-Object Gradient)[0].Gradient.value.value
             !(Find 'edit-color-apply') -and [Math]::Abs($gradient.stops[$stop.position].color.rgba[0]-$stop.value) -lt .002
         } 'The limited-range gradient seed did not apply'
-    }}
+        }
+        Invoke 'column-icon-tool_settings';Wait-Until {!((Model).state.customization.column_drawers|Where-Object {$_.tabs.active -eq 'tool_settings'})} 'Tool settings did not close'
+    }
     Drag-Canvas 'mouse' (Canvas-Point .1 .5) (Canvas-Point .9 .5)
     Wait-Until {(Model).state.document_file.modified} 'The gradient did not reach the drawing'
     Wait-Until {$h=View 'histogram';$null -ne $h.data -and $h.status -and (Model).windows_scopes -gt 0} 'Histogram did not publish counts'
