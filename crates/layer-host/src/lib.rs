@@ -66,6 +66,12 @@ use serde::Deserialize;
 #[cfg(not(target_arch="wasm32"))]
 use serde_json::{Value, json};
 
+#[cfg(not(target_arch="wasm32"))]
+pub fn finish_native_process() {
+    layer_render_wgpu::stop_shader_compilers();
+    session_stores::drain_native_work();
+}
+
 #[derive(Clone, PartialEq)]
 #[cfg(not(target_arch="wasm32"))]
 struct SnapshotKey {

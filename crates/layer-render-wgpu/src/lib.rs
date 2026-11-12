@@ -103,7 +103,7 @@ mod startup_pixels_tests;
 mod startup;
 pub use startup::{StartupProgress, ShaderDocument, ShaderBrushKey};
 #[cfg(not(target_arch = "wasm32"))]
-pub use startup::finish_shader_compiler_shutdown;
+pub use startup::{finish_shader_compiler_shutdown, stop_shader_compilers};
 #[cfg(not(target_arch = "wasm32"))]
 pub use startup::ShaderActivity;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]

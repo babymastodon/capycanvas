@@ -1840,14 +1840,15 @@ pub unsafe extern "C" fn capy_write_file(path: *const c_char, bytes: *const u8, 
     }
 }
 
-/// Join retired shader workers after every host is destroyed, before process
-/// runtime teardown. Ordinary surface/document replacement stays asynchronous.
+/// Call after every host is destroyed. Stops shader compilation without
+/// waiting for a running compile and returns once accepted session-store
+/// writes have landed; the caller then terminates the process.
 #[unsafe(no_mangle)]
 pub extern "C" fn capy_finish_process() -> i32 {
-    match catch_unwind(layer_render_wgpu::finish_shader_compiler_shutdown) {
+    match catch_unwind(layer_host::finish_native_process) {
         Ok(()) => 0,
         Err(_) => {
-            fail("Shader compiler shutdown panic");
+            fail("Process finish panic");
             -1
         }
     }

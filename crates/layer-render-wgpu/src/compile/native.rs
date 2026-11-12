@@ -24,14 +24,8 @@ pub fn finish_shader_compiler_shutdown() {
     static FINISHING: Mutex<()> = Mutex::new(());
     let _finishing = FINISHING.lock().unwrap();
     loop {
-        let live: Vec<_> = LIVE
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
         let mut joined = false;
-        for coordinator in live {
+        for coordinator in live() {
             if coordinator.stop(false) {
                 joined |= coordinator.join();
             }
@@ -44,6 +38,14 @@ pub fn finish_shader_compiler_shutdown() {
             let _ = thread.join();
         }
     }
+}
+pub fn stop_shader_compilers() {
+    for coordinator in live() {
+        coordinator.stop(false);
+    }
+}
+fn live() -> Vec<Arc<Coordinator>> {
+    LIVE.lock().unwrap().iter().filter_map(Weak::upgrade).collect()
 }
 pub(super) fn workers(parallelism: usize) -> usize {
     (parallelism * 3).div_ceil(8).clamp(1, 6)

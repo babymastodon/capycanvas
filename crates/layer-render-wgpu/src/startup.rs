@@ -9,7 +9,7 @@ use std::sync::Mutex;
 pub(super) use crate::compile::{Class, Needs};
 pub(super) use Class::{Required as DOCUMENT, Required as BRUSH, Validation as VALIDATION, Visible as OTHER, Anticipated as ANTICIPATED, Background as BACKGROUND};
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::compile::{Activity as ShaderActivity, finish_shader_compiler_shutdown};
+pub use crate::compile::{Activity as ShaderActivity, finish_shader_compiler_shutdown, stop_shader_compilers};
 
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub fn enqueue_compiler_failure(renderer: &WgpuRasterizer, cause: &'static str) -> mpsc::Receiver<()> {

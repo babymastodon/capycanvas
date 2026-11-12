@@ -105,6 +105,77 @@ fn named(capture: &SessionCapture, stamp: &SessionStamp, name: &str) -> (Session
     (capture, stamp)
 }
 
+struct GatedOpener {
+    inner: layer_core::package::session_store::NativeStoreOpener,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    resume: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+impl StoreOpener for GatedOpener {
+    fn storage_facts<'a>(&'a self, path: &'a std::path::Path) -> layer_core::package::store_io::FileFuture<'a, layer_core::package::storage_budget::StorageFacts> {
+        self.inner.storage_facts(path)
+    }
+    fn open<'a>(&'a self, path: &'a std::path::Path, retirement: bool) -> layer_core::package::store_io::FileFuture<'a, Option<layer_core::package::session_store::SessionStore>> {
+        if let Some(entered) = self.entered.lock().unwrap().take() { entered.send(()).unwrap(); }
+        if let Some(resume) = self.resume.lock().unwrap().take() { resume.recv_timeout(std::time::Duration::from_secs(60)).unwrap(); }
+        self.inner.open(path, retirement)
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn process_finish_waits_for_an_accepted_session_store_write_to_land() {
+    let root = std::env::temp_dir().join(format!("capy-store-finish-{}", PortableId::random()));
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let opener = Arc::new(GatedOpener {inner: layer_core::package::session_store::NativeStoreOpener, entered: Mutex::new(Some(entered)), resume: Mutex::new(Some(resume))});
+    let stores = SessionStores::with_opener(root.clone(), opener, Arc::new(native_worker), Arc::new(|| {}), native_now_ms, CompactionActivity::default());
+    let binding = stores.bind(1, None).unwrap();
+    let (saved, stamp, _, _) = capture();
+    let reply = stores.checkpoint(1, saved, stamp, true).unwrap();
+    started.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+    let (finished, done) = std::sync::mpsc::channel();
+    let finishing = std::thread::spawn(move || {
+        crate::finish_native_process();
+        finished.send(()).unwrap();
+    });
+    let early = done.recv_timeout(std::time::Duration::from_millis(500)).is_ok();
+    release.send(()).unwrap();
+    done.recv_timeout(std::time::Duration::from_secs(60)).ok();
+    finishing.join().unwrap();
+    assert!(!early, "process finish returned before an accepted session-store write");
+    assert!(matches!(reply.try_take(), Some(Ok(_))));
+    assert!(heads(binding.path()).iter().any(Option::is_some));
+    drop((binding, stores));
+    let _ = std::fs::remove_dir_all(&root);
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn panicking_session_store_jobs_leave_the_queue_served_and_drainable() {
+    let root = std::env::temp_dir().join(format!("capy-store-panics-{}", PortableId::random()));
+    let stores = |wake: Arc<dyn Fn() + Send + Sync>| SessionStores::with_opener(root.clone(), Arc::new(layer_core::package::session_store::NativeStoreOpener), Arc::new(native_worker), wake, native_now_ms, CompactionActivity::default());
+    let failing = [stores(Arc::new(|| panic!("session-store wake failed"))), stores(Arc::new(|| panic!("session-store wake failed")))];
+    let healthy = stores(Arc::new(|| {}));
+    for (index, store) in failing.iter().enumerate() {
+        let (saved, stamp, _, _) = capture();
+        store.bind(index as u64 + 1, None).unwrap();
+        store.checkpoint(index as u64 + 1, saved, stamp, true).unwrap();
+    }
+    let (saved, stamp, _, _) = capture();
+    let binding = healthy.bind(3, None).unwrap();
+    let reply = healthy.checkpoint(3, saved, stamp, true).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let result = loop {
+        if let Some(result) = reply.try_take() { break Some(result); }
+        if std::time::Instant::now() > deadline { break None; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(matches!(result, Some(Ok(_))), "a job queued after two panicking jobs never ran");
+    assert!(heads(binding.path()).iter().any(Option::is_some));
+    let (drained, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || { drain_native_work(); drained.send(()).unwrap(); });
+    assert!(done.recv_timeout(std::time::Duration::from_secs(20)).is_ok(), "draining never returned after panicking jobs");
+    drop((binding, failing, healthy));
+    let _ = std::fs::remove_dir_all(&root);
+}
 #[test]
 fn failed_adoption_keeps_the_existing_binding() {
     let fixture = Fixture::new();

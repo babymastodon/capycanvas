@@ -13,7 +13,7 @@ pub(crate) use native::Coordinator;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::retire;
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{Activity, finish_shader_compiler_shutdown};
+pub use native::{Activity, finish_shader_compiler_shutdown, stop_shader_compilers};
 #[cfg(target_arch = "wasm32")]
 use web as platform;
 #[cfg(target_arch = "wasm32")]
