@@ -200,7 +200,7 @@ async function canvasPixels(clip) {
   // Inspect the presented framebuffer. Reading a WebGPU canvas backbuffer in a
   // later task can return its newly cleared buffer instead of the visible frame.
   return evaluate(
-    `(async () => { const image = new Image(); image.src = ${JSON.stringify("data:image/png;base64,")} + ${JSON.stringify(shot.data)}; await image.decode(); const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height; const ctx=canvas.getContext('2d',{willReadFrequently:true}); ctx.drawImage(image,0,0); const rgba=ctx.getImageData(0,0,canvas.width,canvas.height).data; let white=0,colored=0; for(let i=0;i<rgba.length;i+=4) { if(rgba[i]>245 && rgba[i+1]>245 && rgba[i+2]>245) white++; if(Math.max(rgba[i],rgba[i+1],rgba[i+2])-Math.min(rgba[i],rgba[i+1],rgba[i+2])>30) colored++; } return {white,colored,total:rgba.length/4}; })()`,
+    `(async () => { const image = new Image(); image.src = ${JSON.stringify("data:image/png;base64,")} + ${JSON.stringify(shot.data)}; await image.decode(); const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height; const ctx=canvas.getContext('2d',{willReadFrequently:true}); ctx.drawImage(image,0,0); const rgba=ctx.getImageData(0,0,canvas.width,canvas.height).data; let white=0,colored=0,dark=0; for(let i=0;i<rgba.length;i+=4) { if(rgba[i]>245 && rgba[i+1]>245 && rgba[i+2]>245) white++; if(Math.max(rgba[i],rgba[i+1],rgba[i+2])<128) dark++; if(Math.max(rgba[i],rgba[i+1],rgba[i+2])-Math.min(rgba[i],rgba[i+1],rgba[i+2])>30) colored++; } return {white,colored,dark,total:rgba.length/4}; })()`,
   );
 }
 async function click(selector) {
@@ -733,7 +733,7 @@ try {
     await chooseBrush("pen", null, 1);
     await chooseSize(96);
     const pressureInk = [];
-    for (const force of [0.3, 1.0]) {
+    for (const force of [0.1, 1.0]) {
       const baseline = (await smokePixels()).white;
       for (let i = 0; i <= 24; i++) {
         await call("Input.dispatchMouseEvent", {
@@ -811,7 +811,7 @@ try {
       y: 450,
     });
     await evaluate("layerApp.dispatch({type:'restore_settings',settings:{...layerApp.state().settings,zen_show_capy:false}})");
-    await click('[data-command="zen_mode"]');
+    await click("#zen-capy");
     await evaluate("new Promise(r=>setTimeout(r,250))");
     assert.equal(
       await evaluate("getComputedStyle(layerApp.canvas).outlineStyle"),

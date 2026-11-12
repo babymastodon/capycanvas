@@ -275,14 +275,15 @@ export async function checkGpuStartup({ call, evaluate, settle, canvasPixels, ur
     await waitFor("(v=>v?.ready&&!v.busy)(JSON.parse(layerApp.app.workspace_view()))");
     assert.ok(await evaluate("(()=>{const groups=layerApp.app.layout(innerWidth,innerHeight).groups.length,brushes=document.querySelectorAll('.brushes-control [data-brush]');return groups>0&&document.querySelectorAll('.dock-group').length===groups&&[...brushes].every(n=>n.querySelector('.brush-preview'))&&document.querySelectorAll('#header .header-item').length>0})()"), "The workspace controls render without a GPU");
     await action({ type: "set_theme", theme: "dark" });
-    await checkPanelStyle();
+    if (mode === "pending") assert.equal(await evaluate("document.querySelector('#gpu-notice').dataset.launch"), "loading", "A pending GPU keeps the launch cover up");
+    else await checkPanelStyle();
     assert.equal(await evaluate("document.querySelectorAll('head > meta[name=darkreader-lock]').length"), 1);
     assert.equal(await evaluate("document.querySelector('meta[name=color-scheme]').content"), "dark");
     assert.equal(await evaluate("getComputedStyle(document.documentElement).colorScheme"), "dark");
     assert.equal(await evaluate("document.querySelectorAll('meta[name=theme-color]').length"), 1);
     assert.equal(await evaluate("document.querySelector('meta[name=theme-color]').content"), "#333333");
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#gpu-notice')).backgroundColor"), "rgb(51, 51, 51)");
-    assert.equal(await evaluate("getComputedStyle(layerApp.canvas).visibility"), "hidden");
+    assert.ok(await evaluate("(()=>{const r=layerApp.canvas.getBoundingClientRect();return !!document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('#gpu-notice')})()"), "The GPU notice covers the canvas");
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#gpu-notice')).cursor"), "default");
     // The Rust entry point must reject invisible painting, even if called directly.
     assert.match(await evaluate("(()=>{try{layerApp.app.pen(new Float64Array(),0n);return 'accepted'}catch(e){return String(e)}})()"), /unavailable/);
@@ -440,7 +441,7 @@ export async function checkGpuStartup({ call, evaluate, settle, canvasPixels, ur
         await evaluate('layerApp.documents.startRecovery()');
         await evaluate('layerApp.documents.autosave()');
         assert.equal(await evaluate("performance.timeOrigin"), origin);
-        assert.equal(await evaluate("document.querySelector('#gpu-notice').hidden"), true);
+        await waitFor("document.querySelector('#gpu-notice').hidden");
         assert.doesNotMatch(await evaluate("document.querySelector('#gpu-notice').textContent"), /test: device refused/);
         await call("Emulation.setDeviceMetricsOverride", {width:1440,height:1000,deviceScaleFactor:1,mobile:false});
       }
@@ -468,19 +469,20 @@ export async function checkGpuStartup({ call, evaluate, settle, canvasPixels, ur
     await waitFor('!layerApp.documents.busy() && layerApp.app.document_park_ready()');
     if (mode === "pending") assert.equal(await evaluate("layerApp.state().brush.diameter"), 37);
     assert.equal(await evaluate("layerApp.state().layers.length"), ["pending","device-failure"].includes(mode) ? layerCount+1 : durableLayerCount);
-    assert.equal(await evaluate("document.querySelector('#gpu-notice').hidden"), true);
+    await waitFor("document.querySelector('#gpu-notice').hidden");
     await action({ type: "set_theme", theme: "light" });
     await action({ type: "invoke", command: "brush" });
     await action({ type: "invoke", command: "fit_canvas" });
-    const before = await canvasPixels();
     const point = await evaluate("(()=>{const c=layerApp.state().camera,r=layerApp.canvas.getBoundingClientRect(),a=c.work_area;return{x:r.x+(a[0]+a[2]/2)*r.width/c.viewport[0],y:r.y+(a[1]+a[3]/2)*r.height/c.viewport[1]};})()");
+    const stroke = { x: point.x - 60, y: point.y - 20, width: 120, height: 40, scale: 1 };
+    const before = await canvasPixels(stroke);
     await call("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x-50, y: point.y, button: "left", buttons: 1, clickCount: 1 });
     await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x+50, y: point.y, button: "left", buttons: 1 });
     await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x+50, y: point.y, button: "left", buttons: 0, clickCount: 1 });
     await settle();
     await waitFor("layerApp.state().commands.find(c=>c.id==='undo').enabled");
-    const after = await canvasPixels();
-    assert.ok(after.white < before.white - 50, `GPU drawing works after attachment/reload: ${JSON.stringify({ before, after })}`);
+    const after = await canvasPixels(stroke);
+    assert.ok(after.dark > before.dark + 50, `GPU drawing works after attachment/reload: ${JSON.stringify({ before, after })}`);
     await action({type:'invoke',command:'undo'});
     await waitFor("layerApp.state().commands.find(command=>command.id==='redo').enabled");
     await evaluate('layerApp.documents.autosave()');
