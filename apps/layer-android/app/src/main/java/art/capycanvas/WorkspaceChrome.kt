@@ -60,6 +60,7 @@ internal fun drawerButtonShape(direction: String?): SquircleShape {
 }
 
 internal fun Palette.drawerFill(presented: Boolean) = if(presented)onGlass.panelFill else panel
+internal fun Palette.joinedPanelFill(presented: Boolean) = if(presented)Color.Transparent else panel
 
 /** Ancestor clipping must preserve the connected source corners, including those its rounding reaches. */
 internal fun DockInteraction.drawerContainerShape(bounds: JSONObject, radius: Float = SurfaceRadius.value, joined: JSONArray? = null,

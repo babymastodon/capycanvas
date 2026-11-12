@@ -65,7 +65,7 @@ import kotlin.math.roundToInt
                 Box(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxSize().clip(shape).alpha(if (enabled) 1f else .4f)
                     .background(when {
-                        source != null -> colors.drawerFill(source.presented)
+                        source != null -> colors.joinedPanelFill(source.presented)
                         tile.optBoolean("selected") -> colors.active
                         else -> Color.Transparent
                     })

@@ -68,7 +68,7 @@ class AndroidTabletBridgeLayeringTest {
                     samples.put(obj("label" to label,"first" to org.json.JSONArray(listOf(a.x,a.y)),"second" to b?.let { org.json.JSONArray(listOf(it.x,it.y)) },"first_argb" to first,"second_argb" to second,"delta" to delta))
                     if(delta>tolerance)failures+="$name $label $a=${Integer.toHexString(first)} $b=${Integer.toHexString(second)} delta=$delta"
                 }
-                if(name.contains("header") || (name.contains("more") && !name.endsWith("rest"))) {
+                if(name.endsWith("rest") || name.contains("header") || name.contains("more")) {
                     val tangent=anchor.left+anchor.width*.25f
                     val facePoint=androidx.compose.ui.geometry.Offset(tangent,anchor.bottom-2f*inset)
                     val bodyPoint=androidx.compose.ui.geometry.Offset(body.left+inset,body.center.y)
