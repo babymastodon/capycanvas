@@ -416,7 +416,7 @@ void WorkspaceBubbles::Impl::intensity(std::shared_ptr<Record> const& r,std::sha
 }
 void WorkspaceBubbles::Impl::refresh(std::shared_ptr<Record> const& r){
     bool overlayChanged=false;
-    for(auto const& [key,p]:r->parts){if(p->retired)continue;overlayChanged=draw(r,p)||overlayChanged;
+    for(auto const& [key,p]:r->parts){overlayChanged=draw(r,p)||overlayChanged;if(p->retired)continue;
         if(p->wheel){auto preview=data->colorPreview;auto model=object(preview,L"view");if(!model.Size())model=object(data->model,L"color_panel");auto colors=object(preview,L"colors");if(!colors.Size())colors=displayColors(data->state);auto side=num(r->view,L"diameter")-14,scale=workspace.XamlRoot()?workspace.XamlRoot().RasterizationScale():1.;auto next=model.Stringify()+colors.Stringify()+to_hstring(side)+L":"+to_hstring(scale);
             if(p->wheelKey!=next&&side>0){try{p->wheel->present(p->wheelImage,model,colors,side,scale);p->wheelKey=next;}catch(hresult_error const& error){OutputDebugStringW(error.message().c_str());}}
         }
