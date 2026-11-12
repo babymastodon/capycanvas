@@ -208,7 +208,7 @@ class AndroidFirstUiTest {
             compose.onNodeWithTag("launch-splash").assertDoesNotExist()
             val phone = host.snapshot!!.getJSONObject("layout").objectOrNull("phone") != null
             val action = if (saveAsNew) {
-                if (phone) "workspace-status-action" else "workspace-error-save"
+                if (phone) "workspace-status-action" else "workspace-error-action"
             } else if (phone) "workspace-status-retry" else "workspace-error-retry"
             compose.onNodeWithTag(action, useUnmergedTree = true).assertIsDisplayed().assertIsEnabled()
             screenshot("startup-workspace-error-$theme-${if(saveAsNew) "save" else "retry"}.png")

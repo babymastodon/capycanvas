@@ -82,7 +82,7 @@ impl ManagerAction {
         matches!(self, Self::Delete(_) | Self::DeleteToolbar(_))
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ManagerButton {
     pub action: ManagerAction,
     pub label: String,

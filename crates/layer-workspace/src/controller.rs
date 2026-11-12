@@ -154,7 +154,7 @@ fn serialize_prompt<S: serde::Serializer>(prompt: &Option<ManagerPrompt>, serial
     struct View<'a> { dialog: layer_ui::DialogIntent, #[serde(flatten)] prompt: &'a ManagerPrompt }
     prompt.as_ref().map(|prompt| View { dialog:prompt.dialog_intent(),prompt }).serialize(serializer)
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ManagerStatus { pub text: String, pub error: bool, pub retry: bool, pub action: Option<ManagerButton> }
 impl WorkspaceView {
     fn present_status(&mut self, localization: &layer_ui::Localizer, recovery: Option<&ManagerAction>) {

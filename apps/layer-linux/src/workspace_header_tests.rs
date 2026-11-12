@@ -4817,6 +4817,149 @@ fn native_saved_data_messages_input() {
 }
 
 #[test]
+#[ignore = "isolated native-input.js --native-test=native_unopenable_workspace_restores_starting_layout --native-storage, with CAPY_NATIVE_TEST_THEME light and dark"]
+fn native_unopenable_workspace_restores_starting_layout() {
+    unopenable_workspace_recovery(false);
+}
+
+#[test]
+#[ignore = "isolated native-input.js --native-test=native_unopenable_workspace_restores_earlier_workspaces --native-storage, with CAPY_NATIVE_TEST_THEME light and dark"]
+fn native_unopenable_workspace_restores_earlier_workspaces() {
+    unopenable_workspace_recovery(true);
+}
+
+#[test]
+#[ignore = "isolated native-input.js --native-test=native_damaged_workspace_store_offers_earlier_workspaces --native-storage, with CAPY_NATIVE_TEST_THEME light and dark"]
+fn native_damaged_workspace_store_offers_earlier_workspaces() {
+    let (database,theme) = released_workspace_store(true);
+    std::fs::write(&database,b"damaged SQLite store").unwrap();
+    let mut d = Driver::managed("art.capycanvas.DamagedWorkspaceStore");
+    let damaged = d.w.localization().text(layer_ui::MessageId::WORKSPACE_STORAGE_DAMAGED_NOTICE).to_string();
+    until(|| d.w.workspaces.view().prompt.is_some() && d.w.window.visible_dialog().is_some(),"the damaged store offers its earlier copy");
+    let prompt = d.w.workspaces.view().prompt.unwrap();
+    assert_eq!(prompt.title,"Restore Earlier Workspaces?");
+    assert_eq!(state(&d.w).notice.map(|notice| notice.text).as_deref(),Some(damaged.as_str()));
+    until(|| mapped_label(d.w.window.upcast_ref(),&damaged).is_some(),"the damaged-store notice is shown");
+    capture_store(&mut d,&format!("gtk-damaged-prompt-{theme}"));
+    d.click_label("Restore");
+    until(|| {let view = d.w.workspaces.view(); view.ready && !view.busy && view.prompt.is_none() && view.error.is_none() && state(&d.w).brush.diameter == 37.},"the earlier workspaces open");
+    capture_store(&mut d,&format!("gtk-damaged-restored-{theme}"));
+    until(|| !d.w.workspaces.view().dirty && !d.w.workspaces.view().saving,"the restored workspaces are saved");
+    d.w.window.close();
+    until(|| !d.w.window.is_visible(),"the window closes");
+    d.w = Workspace::new(&d._app);
+    d.w.window.maximize();
+    d.w.window.present();
+    wait_workspaces(&d.w);
+    pump(500);
+    let view = d.w.workspaces.view();
+    assert!(view.prompt.is_none() && view.error.is_none() && state(&d.w).notice.is_none(),"the restored store reopens without a notice or prompt: {:?} {:?}",view.prompt,state(&d.w).notice);
+    assert_eq!(state(&d.w).brush.diameter,37.);
+    capture_store(&mut d,&format!("gtk-damaged-relaunch-{theme}"));
+    d.finish();
+}
+
+fn capture_store(d: &mut Driver, name: &str) {
+    if std::env::var_os("LAYER_NATIVE_CAPTURE_DIR").is_some() { d.input.perform(serde_json::json!([{"wait_ms":300},{"capture":name}])); }
+}
+
+fn released_workspace_store(retained: bool) -> (std::path::PathBuf,String) {
+    use layer_workspace::snapshots;
+    let theme = std::env::var("CAPY_NATIVE_TEST_THEME").unwrap();
+    let directory = crate::storage::workspaces().unwrap();
+    let database = directory.join("workspaces.sqlite3");
+    std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/layer-workspace/tests/compat/1.0.15/workspaces.sqlite3"),&database).unwrap();
+    let mut marker = snapshots::VersionMarker {version:snapshots::VERSION.into(),..Default::default()};
+    if retained {
+        let id = format!("workspaces.{}.{}.sqlite3",snapshots::VERSION,layer_workspace::new_id());
+        std::fs::copy(&database,directory.join(&id)).unwrap();
+        marker.copies.push(snapshots::SnapshotInfo {bytes:std::fs::metadata(directory.join(&id)).unwrap().len(),id});
+    }
+    std::fs::write(directory.join("last-version"),serde_json::to_vec(&marker).unwrap()).unwrap();
+    let settings = crate::storage::roots().unwrap().settings();
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings,serde_json::json!({"theme":theme,"language":{"Explicit":"en"}}).to_string()).unwrap();
+    (database,theme)
+}
+
+fn unopenable_workspace_recovery(retained: bool) {
+    use layer_workspace::{ManagerPage, WorkspaceInput};
+    const SKETCH: &str = "builtin:workspace:painter";
+    let (database,theme) = released_workspace_store(retained);
+    rusqlite::Connection::open(std::fs::canonicalize(&database).unwrap()).unwrap()
+        .execute("UPDATE items SET content='{not json' WHERE id=?1",[SKETCH]).unwrap();
+    let mut d = Driver::managed("art.capycanvas.UnopenableWorkspace");
+    let label = if retained {"Restore Earlier Workspaces…"} else {"Restore Starting Layout…"};
+    let retry = d.w.localization().text(layer_ui::MessageId::WORKSPACE_ACTION_RETRY_STORAGE).to_string();
+    let check = |w: &Workspace, step: &str| {
+        let shown = w.workspaces.root.is_mapped().then(|| std::iter::once(w.workspaces.label.text().to_string())
+            .chain(descendants::<gtk::Button>(w.workspaces.root.upcast_ref()).into_iter().filter(|button| button.is_mapped()).map(|button| button.label().unwrap_or_default().to_string()))
+            .collect::<Vec<_>>());
+        let expected = w.workspaces.view().status.map(|status| std::iter::once(status.text)
+            .chain(status.retry.then(|| retry.clone())).chain(status.action.map(|action| action.label)).collect::<Vec<_>>());
+        assert_eq!(shown,expected,"{step}: the storage notice shows the shared status");
+    };
+    let capture = |d: &mut Driver, step: &str| capture_store(d,&format!("gtk-recover-{}-{step}-{theme}",if retained {"earlier"} else {"starting"}));
+    let fail = |d: &mut Driver| {
+        d.click_name("workspace-switch-painter");
+        until(|| {let view = d.w.workspaces.view(); !view.busy && view.status.as_ref().is_some_and(|status| status.error)},"switching to Sketch reports that it can't be opened");
+        let status = d.w.workspaces.view().status.unwrap();
+        assert!(!status.retry,"{status:?}");
+        assert_eq!(status.action.map(|action| action.label).as_deref(),Some(label));
+        assert_ne!(d.w.workspaces.view().id.as_deref(),Some(SKETCH));
+        check(&d.w,"switch");
+    };
+    let view = d.w.workspaces.view();
+    assert!(view.error.is_none() && view.id.as_deref() != Some(SKETCH),"startup opens a workspace this build can read: {:?}",view.id);
+    assert!(state(&d.w).workspace.zen_mode,"the released custom workspace was saved in Zen mode");
+    d.w.dispatch(UiAction::Invoke {command:CommandId::ZenMode});
+    check(&d.w,"startup");
+    fail(&mut d);
+    capture(&mut d,"status");
+    d.w.workspaces.ui.show(&d.w,ManagerPage::Workspaces);
+    pump(400);
+    d.click_name(&format!("workspace-row-{SKETCH}"));
+    until(|| {let view = d.w.workspaces.view(); view.selected.as_deref() == Some(SKETCH) && !view.loading && !view.busy && view.status.is_some()},"selecting Sketch reports that it can't be opened");
+    assert_eq!(d.w.workspaces.view().primary,label);
+    let apply = d.named("workspace-manager-apply").downcast::<gtk::Button>().unwrap();
+    assert!(apply.is_mapped() && apply.is_sensitive() && apply.label().as_deref() == Some(label));
+    check(&d.w,"manager");
+    capture(&mut d,"manager");
+    d.w.workspaces.send(&d.w,WorkspaceInput::Search {query:"Paint".into()});
+    until(|| d.w.workspaces.view().selected.is_none(),"the search leaves Sketch unselected");
+    check(&d.w,"search");
+    d.w.workspaces.send(&d.w,WorkspaceInput::Search {query:String::new()});
+    pump(250);
+    d.click(find_button(d.w.workspaces.ui.dialog.upcast_ref(),"Cancel").unwrap().upcast_ref());
+    until(|| d.w.workspaces.view().page.is_none() && !d.w.workspaces.view().busy,"Manage Workspaces closes");
+    check(&d.w,"closed");
+    fail(&mut d);
+    d.click(find_button(d.w.workspaces.root.upcast_ref(),label).unwrap().upcast_ref());
+    until(|| d.w.workspaces.view().prompt.is_some() && d.w.window.visible_dialog().is_some(),"the recovery asks before restoring");
+    let prompt = d.w.workspaces.view().prompt.unwrap();
+    assert_eq!(prompt.title,if retained {"Restore Earlier Workspaces?"} else {"Restore Starting Layout"});
+    assert_eq!(prompt.confirm,"Restore");
+    capture(&mut d,"prompt");
+    d.click_label("Restore");
+    until(|| {let view = d.w.workspaces.view(); view.ready && !view.busy && view.prompt.is_none() && view.status.is_none()},"the recovery restores the workspaces");
+    assert_eq!(d.w.workspaces.view().id.as_deref(),Some(SKETCH),"{label} opens Sketch");
+    check(&d.w,"restored");
+    capture(&mut d,"restored");
+    d.w.window.close();
+    until(|| !d.w.window.is_visible(),"the window closes");
+    d.w = Workspace::new(&d._app);
+    d.w.window.maximize();
+    d.w.window.present();
+    wait_workspaces(&d.w);
+    pump(500);
+    let view = d.w.workspaces.view();
+    assert!(view.error.is_none() && view.status.is_none() && view.id.as_deref() == Some(SKETCH),"Sketch reopens without an error: {:?} {:?}",view.id,view.error);
+    check(&d.w,"relaunch");
+    capture(&mut d,"relaunch");
+    d.finish();
+}
+
+#[test]
 #[ignore = "isolated native-input.js --native-test=native_editing_focus_input --native-storage"]
 fn native_editing_focus_input() {
     let mut d = Driver::managed("art.capycanvas.EditingFocus");

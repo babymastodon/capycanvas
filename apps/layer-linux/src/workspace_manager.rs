@@ -2,7 +2,7 @@
 //! around the shared workspace controller.
 use super::*;
 use layer_workspace::{
-    ManagerPage, StoreWorker, WorkspaceController, WorkspaceInput, WorkspaceView,
+    ManagerPage, ManagerStatus, StoreWorker, WorkspaceController, WorkspaceInput, WorkspaceView,
 };
 use std::{
     sync::{
@@ -13,7 +13,6 @@ use std::{
 };
 
 type Controller = WorkspaceController<StoreWorker>;
-type StatusKey = (bool, bool, usize, String, Option<String>);
 thread_local! {
     static WINDOWS: RefCell<std::collections::BTreeMap<String, std::rc::Weak<Workspace>>> = const { RefCell::new(std::collections::BTreeMap::new()) };
 }
@@ -54,7 +53,7 @@ pub(crate) struct NativeWorkspaces {
     close_prompt: Cell<bool>,
     focused: RefCell<Option<layer_workspace::FocusTarget>>,
     switcher_revision: Cell<u64>,
-    status_key: RefCell<Option<StatusKey>>,
+    shown_status: RefCell<Option<Option<ManagerStatus>>>,
     #[cfg(test)]
     paused: Cell<bool>,
 }
@@ -83,7 +82,7 @@ impl NativeWorkspaces {
         actions.set_halign(gtk::Align::End);
         root.append(&label);
         actions.append(&retry);
-        let recovery = gtk::Button::with_label(&localization.text(layer_ui::MessageId::WORKSPACE_ACTION_SAVE_AS_NEW_WORKSPACE));
+        let recovery = gtk::Button::new();
         recovery.set_visible(false);
         actions.append(&recovery);
         root.append(&actions);
@@ -111,7 +110,7 @@ impl NativeWorkspaces {
             close_prompt: Cell::new(false),
             focused: RefCell::new(None),
             switcher_revision: Cell::new(0),
-            status_key: RefCell::new(None),
+            shown_status: RefCell::new(None),
             #[cfg(test)]
             paused: Cell::new(false),
         }
@@ -243,7 +242,6 @@ impl NativeWorkspaces {
             controller.set_localization(localization);
             *self.view.borrow_mut() = controller.view.clone();
         }
-        self.status_key.borrow_mut().take();
         self.ui.invalidate_localization();
         self.render(w);
     }
@@ -402,8 +400,8 @@ impl NativeWorkspaces {
     }
     fn update_status(&self, view: &WorkspaceView) {
         if self.controller.borrow().is_none() { return; }
-        if self.status_key.borrow().as_ref().is_some_and(|key| key.0 == view.ready && key.1 == view.busy && key.2 == view.interrupted && key.3 == view.name && key.4 == view.error) { return; }
-        *self.status_key.borrow_mut() = Some((view.ready, view.busy, view.interrupted, view.name.clone(), view.error.clone()));
+        if self.shown_status.borrow().as_ref() == Some(&view.status) { return; }
+        *self.shown_status.borrow_mut() = Some(view.status.clone());
         self.root.set_visible(view.status.is_some());
         self.label.set_text(view.status.as_ref().map_or("",|status| status.text.as_str()));
         if view.status.as_ref().is_some_and(|status| status.error) { self.label.add_css_class("error"); }

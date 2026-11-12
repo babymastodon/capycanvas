@@ -42,6 +42,8 @@ import org.json.JSONArray
     val page = view.optString("page").takeUnless { it == "null" || it.isEmpty() }
     val form = view.objectOrNull("prompt")
     val error = view.optString("error").takeUnless { it == "null" || it.isEmpty() }
+    val status = view.objectOrNull("status")
+    val recovery = status?.objectOrNull("action")
     val busy = view.optBoolean("busy")
     val renaming=page=="workspaces"&&view.objectOrNull("prompt_action")?.optString("type")=="rename"
     val toolbarMode = page in listOf("this_workspace", "toolbar_library")
@@ -134,7 +136,7 @@ import org.json.JSONArray
         val nameError = if (!named) null else remember(name, host.languageTag) { JSONObject(Native.workspaceNameError(name, host.languageTag)).let { it.optString("error").takeUnless { _ -> it.isNull("error") } } }
         val title = form.getString("title")
         val submit = { host.workspaceInput(obj("type" to "submit", "name" to name, "description" to description.takeUnless { form.isNull("description") }, "choice" to choice)) }
-        val confirm=if(view.optBoolean("retry")&&action.getString("type")!="save_as_new")copy.getString("retry") else form.getString("confirm")
+        val confirm=if(view.optBoolean("retry")&&status?.optBoolean("retry")==true&&recovery?.getJSONObject("action")?.toString()!=action.toString())copy.getString("retry") else form.getString("confirm")
         val cancelLabel=form.nullableString("cancel") ?: host.bootstrap!!.getJSONObject("common").getString("cancel")
         DialogShell(host,form.getJSONObject("dialog"),title,onCancel=cancel,onPrimary=submit,primaryLabel=confirm,primaryEnabled=!busy&&nameError==null,
             primaryTag="workspace-submit",tag="workspace-form",responses=listOf(
@@ -155,9 +157,9 @@ import org.json.JSONArray
     if(!phone && error!=null && page==null && form==null && error!=dismissedError) {
         val resume={dismissedError=error;send("resume")}
         DialogShell(host,host.bootstrap!!.getJSONObject("file_error_dialog"),copy.getString("workspaces"),onCancel=resume,tag="workspace-error",
-            responses=listOf(DialogResponse(host.bootstrap!!.getJSONObject("common").getString("keep_open"),"workspace-error-open",action=resume),
-                DialogResponse(copy.getString("retry"),"workspace-error-retry",action={send("retry")}),
-                DialogResponse(copy.getString("save_as_new_workspace"),"workspace-error-save",action={host.workspaceInput(obj("type" to "form","action" to obj("type" to "save_as_new")))})),
+            responses=listOfNotNull(DialogResponse(host.bootstrap!!.getJSONObject("common").getString("keep_open"),"workspace-error-open",action=resume),
+                DialogResponse(copy.getString("retry"),"workspace-error-retry",action={send("retry")}).takeIf { status?.optBoolean("retry")==true },
+                recovery?.let { DialogResponse(it.getString("label"),"workspace-error-action",enabled=it.getBoolean("enabled"),action={host.workspaceInput(obj("type" to "form","action" to it.getJSONObject("action")))}) }),
             body={Text(error)})
     }
 }
@@ -213,29 +215,34 @@ internal fun workspaceSwitcherMenu(view: JSONObject?): JSONObject = view?.optJSO
     LaunchedEffect(choices.firstOrNull()?.optString("id"), view.optString("id")) {
         if (choices.firstOrNull()?.optString("id") == view.optString("id")) scroll.scrollTo(0)
     }
-    Row(modifier.height(36.dp).clip(SquircleShape(50)).glass(SquircleShape(50), colors.switcher)
-        .testTag("workspace-switcher").padding(end = 5.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        Row(Modifier.weight(1f).horizontalScroll(scroll).padding(start = 5.dp, top = 5.dp, bottom = 5.dp)
-            .testTag("workspace-switcher-choices"), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            choices.forEach { row ->
-                val id = row.getString("id")
-                val selected = view.optString("id") == id
-                Box(Modifier.widthIn(max = 128.dp).height(26.dp).clip(SquircleShape(50))
-                    .background(if (selected) colors.switcherActive else Color.Transparent)
-                    .selectable(selected, enabled = interactive && view.optBoolean("ready") && !view.optBoolean("busy") && view.isNull("page") && view.isNull("prompt"), role = Role.RadioButton) {
-                        host.workspaceInput(obj("type" to "switch", "id" to id))
-                    }.padding(horizontal = 8.dp).testTag("workspace-switch-$id"), contentAlignment = Alignment.Center) {
-                    Text(row.getString("title"), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.weight(1f).height(36.dp).clip(SquircleShape(50)).glass(SquircleShape(50), colors.switcher)
+            .testTag("workspace-switcher").padding(end = 5.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(Modifier.weight(1f).horizontalScroll(scroll).padding(start = 5.dp, top = 5.dp, bottom = 5.dp)
+                .testTag("workspace-switcher-choices"), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                choices.forEach { row ->
+                    val id = row.getString("id")
+                    val selected = view.optString("id") == id
+                    Box(Modifier.widthIn(max = 128.dp).height(26.dp).clip(SquircleShape(50))
+                        .background(if (selected) colors.switcherActive else Color.Transparent)
+                        .selectable(selected, enabled = interactive && view.optBoolean("ready") && !view.optBoolean("busy") && view.isNull("page") && view.isNull("prompt"), role = Role.RadioButton) {
+                            host.workspaceInput(obj("type" to "switch", "id" to id))
+                        }.padding(horizontal = 8.dp).testTag("workspace-switch-$id"), contentAlignment = Alignment.Center) {
+                        Text(row.getString("title"), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    }
                 }
             }
+            HeaderButton(view.getString("switcher_options_label"), false, true, null,
+                Modifier.size(20.dp, 26.dp).testTag("workspace-switcher-options"), surface = false, shape = SquircleShape(50), onClick = options) {
+                SharedIcon("more-small", view.getString("switcher_options_label"), Modifier.size(16.dp), tint = colors.secondary)
+            }
         }
-        HeaderButton(view.getString("switcher_options_label"), false, true, null,
-            Modifier.size(20.dp, 26.dp).testTag("workspace-switcher-options"), surface = false, shape = SquircleShape(50), onClick = options) {
-            SharedIcon("more-small", view.getString("switcher_options_label"), Modifier.size(16.dp), tint = colors.secondary)
+        view.objectOrNull("status")?.takeIf { it.getBoolean("error") }?.let { status ->
+            if (status.getBoolean("retry")) TextButton({ host.workspaceInput(obj("type" to "retry")) }, enabled = !view.optBoolean("busy")) { Text(host.catalog.getJSONObject("native_copy").getJSONObject("header").getString("retry")) }
+            status.objectOrNull("action")?.let { action -> TextButton({ host.workspaceInput(obj("type" to "form","action" to action.getJSONObject("action"))) }, enabled = !view.optBoolean("busy") && action.getBoolean("enabled"), modifier = Modifier.testTag("workspace-switcher-action")) { Text(action.getString("label")) } }
         }
     }
-    if (!view.isNull("error")) TextButton({ host.workspaceInput(obj("type" to "retry")) }, enabled = !view.optBoolean("busy")) { Text(host.catalog.getJSONObject("native_copy").getJSONObject("header").getString("retry")) }
 }
 
 @Composable private fun PreviewBackdrop() {
