@@ -1075,7 +1075,7 @@ std::vector<CapyPointer> CanvasWindow::PointerSamples(Microsoft::UI::Input::Poin
         p.flags=deviceFlags|(predicted?1:0)|(props.IsPrimary()?2:0);
         if(PrepareCanvasPrediction(p))samples.push_back(p);
     };
-    bool newestFirst=count>1&&points.GetAt(0).Timestamp()>points.GetAt(count-1).Timestamp();
+    bool newestFirst=CanvasPointerHistoryNewestFirst(points,count,current);
     if(!count)capture(current,false);
     for(uint32_t i=0;i<count;++i)capture(points.GetAt(newestFirst?count-1-i:i),false);
     if(predict&&pointerPredictor&&phase==2){

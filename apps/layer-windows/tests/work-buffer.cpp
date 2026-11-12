@@ -495,6 +495,20 @@ int main() {
         assert(CanvasPointerHistoryCount(History{true,3},phase)==((phase==0||phase==2)?3u:0u));
     }
     std::cout<<"Missing native pointer history uses the current point in every event phase\n";
+    struct HistoryPoint {
+        uint32_t frame;uint64_t time;
+        uint32_t FrameId()const{return frame;}
+        uint64_t Timestamp()const{return time;}
+    };
+    struct HistoryPoints {
+        std::vector<HistoryPoint> points;
+        HistoryPoint GetAt(uint32_t i)const{return points.at(i);}
+    };
+    HistoryPoint newest{42,7000};
+    assert(CanvasPointerHistoryNewestFirst(HistoryPoints{{{42,7000},{41,7000},{40,7000}}},3,newest));
+    assert(!CanvasPointerHistoryNewestFirst(HistoryPoints{{{40,7000},{41,7000},{42,7000}}},3,newest));
+    assert(!CanvasPointerHistoryNewestFirst(HistoryPoints{{{42,7000}}},1,newest));
+    std::cout<<"Native pointer history order follows input frames when timestamps tie\n";
     for(uint32_t tool:{0u,2u}) {
         for(bool middle:{false,true})for(bool right:{false,true})
             assert(CanvasPointerButton(tool,middle,right)==0);

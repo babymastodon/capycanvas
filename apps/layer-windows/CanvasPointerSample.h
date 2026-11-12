@@ -12,6 +12,11 @@ uint32_t CanvasPointerHistoryCount(Points const& points,uint32_t phase) {
     return (phase==0||phase==2)&&points?points.Size():0;
 }
 
+template<typename Points,typename Point>
+bool CanvasPointerHistoryNewestFirst(Points const& points,uint32_t count,Point const& current) {
+    return count>1&&points.GetAt(0).FrameId()==current.FrameId()&&points.GetAt(count-1).FrameId()!=current.FrameId();
+}
+
 // Native pen contact/eraser identity owns drawing. Barrel button properties
 // can also report right/middle pressed, but only a mouse uses those for pan.
 inline uint32_t CanvasPointerButton(uint32_t tool, bool middle, bool right, bool extra=false) {
