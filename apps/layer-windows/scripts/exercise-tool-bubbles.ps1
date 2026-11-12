@@ -514,7 +514,7 @@ function Restart-BubbleReview([string]$LogName='restart-stderr.log',$SavedState=
     [CapyRowPointer]::Dispose();$script:stderr=Join-Path $run $LogName
     $script:review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle;$owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window -and (Model).brush_ready -and (Model).canvas_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Owned slider persistence restart did not become ready' 60
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window -and (Review-Ready) -and (Model).canvas_ready -and !(Model).windows_workspace.busy} 'Owned slider persistence restart did not become ready' 60
     $script:root=$owned.window.Root;$script:drawingWindow=$owned.window.Handle
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null;[CapyRowPointer]::SetForegroundWindow($drawingWindow)|Out-Null;[CapyRowPointer]::Initialize([uint32]$review.Id)
     if($SavedState){
@@ -1413,7 +1413,7 @@ try{
     $stderr=Join-Path $run 'stderr.log'
     $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -PassThru -RedirectStandardError $stderr
     $null=$review.Handle;$owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Owned bubble fixture did not become ready' 60
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window -and (Review-Ready)} 'Owned bubble fixture did not become ready' 60
     $root=$owned.window.Root;$drawingWindow=$owned.window.Handle
     $null=[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4));$null=[CapyRowPointer]::SetForegroundWindow($drawingWindow)
     [CapyRowPointer]::Initialize([uint32]$review.Id);$scale=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.

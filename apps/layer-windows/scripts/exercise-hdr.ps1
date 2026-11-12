@@ -423,7 +423,7 @@ try {
  $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $run 'stderr.log')
  $null=$review.Handle;Write-Output "HDR review $($review.Id), $Depth, $run"
  $owned=@{window=$null}
- Wait-Until {$owned.window=Owned-DrawingWindow $review;$m=Model;$owned.window -and $m.brush_ready -and $m.canvas_ready -and $m.windows_tabs.available -and $m.windows_workspace.ready} 'Owned drawing did not start' 75
+ Wait-Until {$owned.window=Owned-DrawingWindow $review;$m=Model;$owned.window -and (Review-Ready $m) -and $m.canvas_ready -and $m.windows_tabs.available} 'Owned drawing did not start' 75
  $root=$owned.window.Root;$drawingWindow=$owned.window.Handle
  [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  [CapyRowPointer]::SetForegroundWindow($drawingWindow)|Out-Null

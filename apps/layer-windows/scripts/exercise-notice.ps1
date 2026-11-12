@@ -40,7 +40,7 @@ try {
  do{$review.Refresh();if($review.HasExited){throw 'Review exited at startup'};$owned=Owned-DrawingWindow $review;if(!$owned){Start-Sleep -Milliseconds 100}}while(!$owned -and $watch.Elapsed.TotalSeconds -lt 45)
  if(!$owned){throw 'Notice drawing window did not open'}
  $root=$owned.Root;$drawingWindow=$owned.Handle
- Wait-Until {(Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Notice review did not start'
+ Wait-Until {(Review-Ready) -and !(Model).windows_workspace.busy} 'Notice review did not start'
  $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
  [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  [CapyRowPointer]::SetForegroundWindow($drawingWindow)|Out-Null

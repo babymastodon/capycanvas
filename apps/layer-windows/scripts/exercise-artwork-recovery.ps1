@@ -29,7 +29,7 @@ function Start-Review([string]$Label,[switch]$AllowFailure){
     $null=$review.Handle;$native=@{window=$null}
     Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window} 'No review window'
     $script:drawingWindow=$native.window.Handle;$script:root=$native.window.Root
-    Wait-Until {$m=Model;$m.canvas_ready -and $m.brush_ready -and $m.windows_workspace.ready -and !$m.windows_recovery.busy -and !$m.windows_recovery.restoring} 'Session did not finish reopening' 120
+    Wait-Until {$m=Model;$m.canvas_ready -and (Review-Ready $m) -and !$m.windows_recovery.busy -and !$m.windows_recovery.restoring} 'Session did not finish reopening' 120
     if(!(Model).windows_isolated_settings){throw 'Session test requires isolated settings'}
     if(!$AllowFailure -and (Model).windows_recovery.error){throw (Model).windows_recovery.error}
     if(Find-Name 'Restore drawing'){throw 'Ordinary restart presented a recovery prompt'}

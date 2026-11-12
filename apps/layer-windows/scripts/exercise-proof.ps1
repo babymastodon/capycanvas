@@ -94,7 +94,7 @@ try {
  $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $run 'stderr.log')
  $null=$review.Handle;Write-Output "Proof review $($review.Id), $run"
  $native=@{window=$null}
- Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Proof app did not start' 60
+ Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready)} 'Proof app did not start' 60
  $root=$native.window.Root;$drawingWindow=$native.window.Handle
  $initial=(Model).state.document_file|ConvertTo-Json -Compress
  Command 'soft_proof'

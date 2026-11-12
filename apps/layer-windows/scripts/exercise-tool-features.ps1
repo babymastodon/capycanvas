@@ -167,7 +167,7 @@ function Check-Preview{
  Check-FeatureEvidence
 }
 try{
- Wait-Until {$v=Model;$v.brush_ready-and$v.windows_workspace.ready-and!$v.windows_workspace.busy} 'Original feature startup did not complete' 45
+ Wait-Until {$v=Model;(Review-Ready $v)-and!$v.windows_workspace.busy} 'Original feature startup did not complete' 45
  if(!(Model).windows_isolated_settings-or(Model).state.theme-ne$Theme){throw 'Feature theme/profile mismatch'}
  [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  if(![CapyRowPointer]::SetForegroundWindow($drawingWindow)){throw 'Feature foreground unavailable'}

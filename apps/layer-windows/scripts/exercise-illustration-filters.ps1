@@ -100,7 +100,7 @@ try{
     $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle
     Write-Output "Owned illustration filter review $($review.Id): $run"
-    Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'The filter review did not start' 90
+    Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Review-Ready) -and !(Model).windows_workspace.busy} 'The filter review did not start' 90
     $root=$registeredWindow.Root
     $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null

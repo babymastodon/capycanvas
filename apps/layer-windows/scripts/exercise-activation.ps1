@@ -16,7 +16,7 @@ $directory=$run
 $CapyTraceDirectory=$run
 $cases=[Collections.Generic.List[object]]::new()
 function Save-Cases {$cases|ConvertTo-Json -Depth 15|Set-Content -LiteralPath (Join-Path $run 'cases.json')}
-function Ready {Wait-Until {(Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Activation target workspace is not ready' 45}
+function Ready {Wait-Until {(Review-Ready) -and !(Model).windows_workspace.busy} 'Activation target workspace is not ready' 45}
 function Target-State([string]$Id,$Element=$null){
     if($Element){try{$bounds=$Element.Current.BoundingRectangle;if($Element.Current.IsOffscreen -or $bounds.IsEmpty -or $bounds.Width -le 0 -or $bounds.Height -le 0){$Element=$null}}catch [System.Windows.Automation.ElementNotAvailableException]{$Element=$null}}
     $target=if($Element){$Element}else{Control $Id}
@@ -179,7 +179,7 @@ try {
     [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json -Compress))
     $review=Start-Process -FilePath $Executable -WorkingDirectory $run -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $run 'stdout.log') -RedirectStandardError (Join-Path $run 'stderr.log')
     $null=$review.Handle;$native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Owned activation window did not become ready' 75
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Review-Ready)} 'Owned activation window did not become ready' 75
     $root=$native.window.Root;$drawingWindow=$native.window.Handle
     $null=[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))
     $null=[CapyWindowApi]::ShowWindow($drawingWindow,3)

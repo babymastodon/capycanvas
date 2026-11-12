@@ -141,7 +141,7 @@ function Start-Review([string]$Phase) {
     @{process_id=$review.Id;run=$run;device=$Device}|ConvertTo-Json|Set-Content (Join-Path $repo 'artifacts/windows/header-review.json')
     Write-Output "Owned header review $($review.Id) ($Device)"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Header review did not start' 45
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready) -and !(Model).windows_workspace.busy} 'Header review did not start' 45
     $script:root=$native.window.Root;$script:drawingWindow=$native.window.Handle
     $null=[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))
     $null=[CapyRowPointer]::SetForegroundWindow($drawingWindow)

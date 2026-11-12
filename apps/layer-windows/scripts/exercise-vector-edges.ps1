@@ -42,7 +42,7 @@ function Start-Review([string]$Language){
  $script:review=Start-Process -FilePath $Executable -WorkingDirectory $run -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $run "stderr-$Language.log")
  $null=$review.Handle
  $native=@{window=$null}
- Wait-Until {$native.window=Owned-DrawingWindow $review;$m=Model;$native.window -and $m.canvas_ready -and $m.brush_ready -and $m.windows_workspace.ready -and !$m.windows_workspace.busy} 'The vector edge review did not start' 90
+ Wait-Until {$native.window=Owned-DrawingWindow $review;$m=Model;$native.window -and $m.canvas_ready -and (Review-Ready $m) -and !$m.windows_workspace.busy} 'The vector edge review did not start' 90
  $script:root=$native.window.Root;$script:drawingWindow=$native.window.Handle;$script:noticeFrame=$null
  $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
  if(![CapyRowPointer]::SetForegroundWindow($drawingWindow)){throw 'The owned drawing did not accept foreground input'}

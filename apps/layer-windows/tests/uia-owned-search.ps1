@@ -125,7 +125,7 @@ namespace CapyOwnedSearchTest {
  public class Review{public int Id=33;public IntPtr MainWindowHandle=new IntPtr(132146);public bool HasExited=false;public int ExitCode=0;public void Refresh(){}public bool CloseMainWindow(){return Driver.PostMessage(MainWindowHandle,0x0010,UIntPtr.Zero,IntPtr.Zero);}}
 }
 '@
-foreach($name in @('Test-CapySearchItem','Find','Control','Wait-Scale','Wait-Until','Invoke')){
+foreach($name in @('Test-CapySearchItem','Find','Control','Wait-Scale','Wait-Until','Invoke','Review-Ready')){
     $fn=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}.GetNewClosure(),$true))
     if($fn.Count -ne 1){throw 'Missing actual UIA helper'}
     . ([scriptblock]::Create($fn[0].Extent.Text.Replace('System.Windows.Automation.','CapyOwnedSearchTest.')))
@@ -1540,6 +1540,13 @@ public static class CapyImageDragPacingTest {
     function Wait-Until($Condition,$Message,$Seconds){for($i=0;$i-lt3;$i++){$seen.polls++;if(& $Condition){return}};throw $Message}
     Ready $window
     if($seen.reads-ne3-or$seen.polls-ne3){throw 'Ready accepted UI state before owned registry readiness'}
+}
+
+& {
+    function Model{[pscustomobject]@{brush_ready=$true;windows_workspace=[pscustomobject]@{ready=$true};launch=[pscustomobject]@{visible=$script:launchVisible}}}
+    $script:launchVisible=$true;if(Review-Ready){throw 'Review readiness admitted input while the launch splash disables the drawing canvas'}
+    $script:launchVisible=$false;if(!(Review-Ready)){throw 'Review readiness rejected a finished launch'}
+    'Review readiness waits for the launch splash that disables the drawing canvas.'
 }
 
 & {

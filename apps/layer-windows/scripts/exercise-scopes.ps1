@@ -251,7 +251,7 @@ try{
     $null=$review.Handle
     Write-Output "Owned scopes review $($review.Id): $run"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Review did not start' 120
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready)} 'Review did not start' 120
     if(!(Model).windows_isolated_settings){throw 'Scopes fixture requires an isolated profile'}
     $root=$native.window.Root;$drawingWindow=$native.window.Handle
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null

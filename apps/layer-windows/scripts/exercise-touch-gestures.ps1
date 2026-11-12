@@ -72,7 +72,7 @@ try{
  [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json -Depth 4))
  $stderr=Join-Path $run 'stderr.log'
  $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr -RedirectStandardOutput (Join-Path $run 'stdout.log');$null=$review.Handle
- $native=@{window=$null};Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Gesture review did not start' 45
+ $native=@{window=$null};Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Review-Ready) -and !(Model).windows_workspace.busy} 'Gesture review did not start' 45
  $root=$native.window.Root;$handle=$native.window.Handle;$drawingWindow=$handle
  [CapyCanvasTouch]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  [CapyCanvasTouch]::SetForegroundWindow($handle)|Out-Null

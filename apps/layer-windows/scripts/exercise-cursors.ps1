@@ -16,7 +16,7 @@ function Start-App {
     $null=$review.Handle
     Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow} 'Cursor review did not open' 60
     $script:root=$registeredWindow.Root
-    Wait-Until {(Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Cursor review did not prepare' 120
+    Wait-Until {(Review-Ready) -and !(Model).windows_workspace.busy} 'Cursor review did not prepare' 120
     if(!(Model).windows_isolated_settings){throw 'Cursor review requires isolated settings'}
     $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
     [CapyRowPointer]::SetForegroundWindow($registeredWindow.Handle)|Out-Null

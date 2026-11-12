@@ -53,7 +53,7 @@ function Use-Window($Window){
     $script:root=$owned.Root
 }
 function Ready($Window){
-    Wait-Until {(Model $Window).brush_ready -and (Model $Window).windows_workspace.ready -and (Owned-DrawingWindow $review -WindowHandle $Window.hwnd -TraceDirectory $directory)} "Window $($Window.id) did not become ready" 45
+    Wait-Until {(Review-Ready (Model $Window)) -and (Owned-DrawingWindow $review -WindowHandle $Window.hwnd -TraceDirectory $directory)} "Window $($Window.id) did not become ready" 45
 }
 function Preferences {Find 'Preferences' -Name -Type ([System.Windows.Automation.ControlType]::Window)}
 function Invoke-Edit([string]$Name) {

@@ -672,6 +672,7 @@ function Model{
     if($model){$script:CapyTrace.model=$model}
     if($script:CapyTrace.process -eq $review.Id){$script:CapyTrace.model}
 }
+function Review-Ready($View=(Model)){$View.brush_ready -and $View.windows_workspace.ready -and !$View.launch.visible}
 function Set-CapyTransparency([ValidateSet('off','low','medium','high')][string]$Value){
     $opened=!(Model).preferences
     if($opened){

@@ -67,7 +67,7 @@ try {
  Write-Output "Owned pen button review $($review.Id): $run"
  Wait-Until {$review.Refresh();if($review.HasExited){throw 'Review exited at startup'};$script:ownedDrawing=Owned-DrawingWindow $review;$null -ne $ownedDrawing} 'Owned pen drawing window did not open'
  $root=$ownedDrawing.Root
- Wait-Until {(Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Pen review did not start'
+ Wait-Until {(Review-Ready) -and !(Model).windows_workspace.busy} 'Pen review did not start'
  [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  [CapyRowPointer]::SetForegroundWindow($ownedDrawing.Handle)|Out-Null
  [CapyRowPointer]::Initialize([uint32]$review.Id)

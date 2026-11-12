@@ -200,7 +200,7 @@ try {
     $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle
     Write-Output "Owned enclose fill review $($review.Id): $run"
-    Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Enclose fill review did not start' 90
+    Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Review-Ready) -and !(Model).windows_workspace.busy} 'Enclose fill review did not start' 90
     $root=$registeredWindow.Root;$drawingWindow=$registeredWindow.Handle
     Maximize-DrawingWindow
     Use-PaintWorkspace

@@ -166,7 +166,7 @@ try{
  @{process_id=$review.Id;executable=$Executable;sha256=(Get-FileHash -LiteralPath $Executable).Hash}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $run 'owner.json')
  Write-Output "Owned touch review $($review.Id): $run"
  $native=@{window=$null}
- Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Isolated canvas did not start' 45
+ Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Review-Ready)} 'Isolated canvas did not start' 45
  $handle=$native.window.Handle;$root=$native.window.Root
  $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
  Wait-Until {$c=Camera;$b=(Control 'drawing-canvas').Current.BoundingRectangle;[Math]::Abs($c.viewport[0]-$b.Width) -lt .1 -and $b.Width -gt 1600} 'Maximized canvas did not settle'

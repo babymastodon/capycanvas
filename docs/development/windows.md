@@ -488,6 +488,8 @@ Follow these rules when writing one:
   desktop and foreground input. Run them sequentially.
 - **Resolve the drawing window.** Use `Owned-DrawingWindow` at startup and after
   reopening, and keep its root and HWND for input, sizing, captures and closing.
+  Wait for `Review-Ready` before the first input: the canvas stays disabled while
+  the launch splash is visible, after the brush and workspace are ready.
   `Process.MainWindowHandle` can select an input-indicator overlay in the same
   process. Pass `-StateDirectory` when the app's working directory differs from
   its executable directory.

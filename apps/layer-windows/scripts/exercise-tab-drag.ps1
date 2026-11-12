@@ -229,7 +229,7 @@ function Cold-Review {
  $script:stderr=Join-Path $run 'cold-stderr.log'
  $script:review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
  $null=$review.Handle;$fresh=@{window=$null}
- Wait-Until {$startup=Model;if($startup.windows_workspace.id -ne 'builtin:workspace:photographer' -or !$startup.brush_ready -or !$startup.windows_workspace.ready -or $startup.windows_workspace.busy){return $false};$fresh.window=Owned-DrawingWindow $review;$null -ne $fresh.window} 'Cold Photo process did not restore its workspace' 75
+ Wait-Until {$startup=Model;if($startup.windows_workspace.id -ne 'builtin:workspace:photographer' -or !(Review-Ready $startup) -or $startup.windows_workspace.busy){return $false};$fresh.window=Owned-DrawingWindow $review;$null -ne $fresh.window} 'Cold Photo process did not restore its workspace' 75
  $script:drawingWindow=$fresh.window.Handle;$script:root=$fresh.window.Root
  [CapyWindowApi]::ShowWindow($drawingWindow,3)|Out-Null
  [CapyCanvasTouch]::SetForegroundWindow($drawingWindow)|Out-Null
@@ -684,7 +684,7 @@ try{
  [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/tab-drag-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
  Write-Output "Owned tab review $($review.Id)"
  $native=@{window=$null}
- Wait-Until {$startup=Model;if(!$startup.brush_ready -or !$startup.windows_workspace.ready -or $startup.windows_workspace.busy){return $false};$native.window=Owned-DrawingWindow $review;$null -ne $native.window} 'Review did not start' 75
+ Wait-Until {$startup=Model;if(!(Review-Ready $startup) -or $startup.windows_workspace.busy){return $false};$native.window=Owned-DrawingWindow $review;$null -ne $native.window} 'Review did not start' 75
  $drawingWindow=$native.window.Handle;$root=$native.window.Root
  [CapyCanvasTouch]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  [CapyWindowApi]::ShowWindow($drawingWindow,3)|Out-Null

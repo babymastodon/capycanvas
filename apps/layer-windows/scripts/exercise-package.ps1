@@ -48,7 +48,7 @@ try {
     $null=$review.Handle
     @{process_id=$review.Id;run=$run;archive=$Archive;payload=$payload}|ConvertTo-Json|Set-Content (Join-Path $repo 'artifacts/windows/package-review.json')
     Write-Output "Owned package review $($review.Id)"
-    Wait-Until {(Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Extracted package did not initialize' 60
+    Wait-Until {(Review-Ready) -and !(Model).windows_workspace.busy} 'Extracted package did not initialize' 60
     (Get-Process -Id $review.Id).Modules|Select-Object ModuleName,FileName|ConvertTo-Json|Set-Content (Join-Path $run 'loaded-modules.json')
     foreach($module in @((Get-Process -Id $review.Id).Modules|Where-Object ModuleName -Match '^(dxcompiler|dxil|D3DCOMPILER_47)\.dll$')){
         $path=[IO.Path]::GetFullPath($module.FileName)

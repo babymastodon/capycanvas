@@ -87,7 +87,7 @@ try {
     $review=Start-Process -FilePath $Executable -WorkingDirectory $run -PassThru -RedirectStandardError (Join-Path $run 'stderr.log')
     $null=$review.Handle
     Write-Output "Owned file activation review $($review.Id): $run"
-    Wait-Until {$m=Model;$m.brush_ready -and $m.state.theme -eq $Theme -and $m.windows_workspace.ready -and !$m.windows_workspace.busy -and @($m.state.commands|Where-Object {$_.id -eq 'open_document' -and $_.enabled}).Count} 'File activation review did not start' 90
+    Wait-Until {$m=Model;(Review-Ready $m) -and $m.state.theme -eq $Theme -and !$m.windows_workspace.busy -and @($m.state.commands|Where-Object {$_.id -eq 'open_document' -and $_.enabled}).Count} 'File activation review did not start' 90
     $before=@(Tabs).Count
     $first=Image 'First 日本語.png' ([Drawing.Color]::FromArgb(255,200,40,40))
     $second=Image 'Second drawing.png' ([Drawing.Color]::FromArgb(255,40,60,200))
@@ -144,7 +144,7 @@ try {
     [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json -Depth 4))
     $review=Start-Process -FilePath $Executable -WorkingDirectory $run -ArgumentList ('"'+$saved+'"') -PassThru -RedirectStandardError (Join-Path $run 'cold-stderr.log')
     $null=$review.Handle
-    Wait-Until {$m=Model;$m.state.document_file.location.uri -eq $saved -and $m.brush_ready -and $m.state.theme -eq $Theme -and $m.windows_workspace.ready} 'Launching the closed app with a saved drawing did not open it' 90
+    Wait-Until {$m=Model;$m.state.document_file.location.uri -eq $saved -and (Review-Ready $m) -and $m.state.theme -eq $Theme} 'Launching the closed app with a saved drawing did not open it' 90
     $opened=Model
     if($opened.error -or $opened.state.host_error -or @($opened.state.requests).Count -or $opened.state.document_file.busy){throw 'The drawing passed at launch left an error or pending file operation'}
     Wait-Until {$drawing.window=Owned-DrawingWindow $review;$null -ne $drawing.window} 'The launched drawing window is unavailable'

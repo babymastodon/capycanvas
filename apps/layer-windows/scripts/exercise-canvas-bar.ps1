@@ -309,7 +309,7 @@ try {
  $root=$native.window.Root;$drawingWindow=$native.window.Handle
  $invokeTrace.Start($root,[int]$review.Id)
  if(!$parityCapture){Use-PaintWorkspace}
- Wait-Until {(Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy -and (Model).state.theme -eq $Theme} 'Canvas bar review did not start in the requested theme'
+ Wait-Until {(Review-Ready) -and !(Model).windows_workspace.busy -and (Model).state.theme -eq $Theme} 'Canvas bar review did not start in the requested theme'
  $checks.initial_theme=$Theme
  $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
  [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null

@@ -696,7 +696,7 @@ function Start-RecoveryReview([string]$label){
     Write-Output "GPU save review process $($review.Id), $label"
     Bind-ReviewWindow 'No GPU save review window'
     # GPU readiness can precede the asynchronous restoration of saved Zen/layout.
-    Wait-Until {$model=Model;$model.brush_ready -and $model.windows_workspace.ready} 'GPU save review did not restore its workspace' 60
+    Wait-Until {Review-Ready} 'GPU save review did not restore its workspace' 60
     if((Model).state.workspace.zen_mode){
         (Find-Id 'zen-capy').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
         Wait-Until {!(Model).state.workspace.zen_mode -and !(Model).chrome_hidden} 'Reopened review could not leave Zen'
