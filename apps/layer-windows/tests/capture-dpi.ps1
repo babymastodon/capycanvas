@@ -156,3 +156,32 @@ $sampleRecords.Add([ordered]@{name='actual-recorded-wrapper-positive';old_grid_n
 $result=[ordered]@{runtime=$PSVersionTable.PSVersion.ToString();helper_sha256=(Get-FileHash -LiteralPath (Join-Path $scripts 'CapyUia.ps1')).Hash;test_sha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash;case_count=$sampleRecords.Count;bounded_bruteforce_cases=2048;records=$sampleRecords;actual_AST_import=$true;independent_oracle='Enumerates integer centres and original containment/intersection predicates; no feasible-range formulas';recorded_case='8a2-tilt-dark-fitted-evidence-full camera/native utility geometry';source_uses_no_live_UIA_provider_app_GPU=$true}
 if($env:CAPY_CLEAR_GEOMETRY_OUTPUT){[IO.File]::WriteAllText($env:CAPY_CLEAR_GEOMETRY_OUTPUT,($result|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))}
 Write-Output "Clear canvas geometry passed $($sampleRecords.Count) cases, including2048 independent bounded brute-force comparisons; recorded old-grid negative included=$([bool]$env:CAPY_CLEAR_GEOMETRY_OLD); no UI/GPU."
+
+Add-Type -TypeDefinition @'
+public static class CapyUtilityParkingTest {
+ public static int X,Y;
+ public static void Hover(int x,int y){X=x;Y=y;}
+}
+'@
+& {
+    $tiltAst=Read-Ast 'exercise-tilt.ps1'
+    foreach($name in @('Canvas-Point','Park-UtilityCapture')){
+        $fn=@($tiltAst.FindAll({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq$name}.GetNewClosure(),$true))
+        if($fn.Count-ne1){throw "Missing actual tilt parking function: $name"}
+        . ([scriptblock]::Create($fn[0].Extent.Text.Replace('[CapyRowPointer]','[CapyUtilityParkingTest]')))
+    }
+    $review=[pscustomobject]@{Id=7};$scale=1.5
+    $root=[pscustomobject]@{Current=[pscustomobject]@{BoundingRectangle=$recordedBounds}}
+    $forceTooltip=$false
+    function Capy-Tooltips([int]$ProcessId){
+        if($ProcessId-ne7){throw 'Tooltip parking queried another process'}
+        if($forceTooltip-or!$paper.Contains([double][CapyUtilityParkingTest]::X,[double][CapyUtilityParkingTest]::Y)-or$recordedPanel.Contains([double][CapyUtilityParkingTest]::X,[double][CapyUtilityParkingTest]::Y)){'Document Title'}
+    }
+    function Wait-Until([scriptblock]$Condition,[string]$Message){if(!(& $Condition)){throw $Message}}
+    Park-UtilityCapture
+    if([CapyUtilityParkingTest]::X-ne$point[0]-or[CapyUtilityParkingTest]::Y-ne$point[1]){throw 'Tilt capture did not park on its model-derived clear paper point'}
+    $forceTooltip=$true;$caught=''
+    try{Park-UtilityCapture}catch{$caught=$_.Exception.Message}
+    if($caught-cne'Utility tooltip did not leave the capture area'){throw 'Tilt capture lost its unchanged zero-tooltip assertion'}
+}
+Write-Output 'Tilt utility capture parks on actual model-derived clear paper, outside the utility and header, and still rejects any tooltip.'

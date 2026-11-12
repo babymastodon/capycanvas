@@ -89,7 +89,7 @@ public static class CapyRowPointer {
  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window,out Rect rect);
  static long lastInjection,contactDown;public static double MaxGapMilliseconds {get;private set;}
  public static double ContactDurationMilliseconds {get;private set;}
- static uint owner,kind,penButtons,mouseRelease;static int tiltX,tiltY;static bool active,hovering,eraserEnd;static Point last;static IntPtr pen;
+ static uint owner,kind,penButtons,mouseRelease;static int tiltX,tiltY;static bool active,hovering,eraserEnd;static Point last,penLast;static IntPtr pen;
  static readonly object gate=new object();static Timer pulse;static Exception failure;
  public static bool Active {get{lock(gate)return active;}}
  public static bool Initialized {get{lock(gate)return pulse!=null;}}
@@ -119,7 +119,7 @@ public static class CapyRowPointer {
  public static void Verify(){lock(gate)Check();}
  static void EndHover() {
   if(!hovering)return;
-  Send(last,0x20000);hovering=false;pulse.Change(Timeout.Infinite,Timeout.Infinite);
+  Send(penLast,0x20000,3);hovering=false;pulse.Change(Timeout.Infinite,Timeout.Infinite);
  }
  static void MouseMove(Point point) {
   EndHover();
@@ -136,12 +136,13 @@ public static class CapyRowPointer {
   if(active)MaxGapMilliseconds=Math.Max(MaxGapMilliseconds,(now-lastInjection)*1000.0/System.Diagnostics.Stopwatch.Frequency);
   lastInjection=now;if(active&&(flags&0x8000)==0)Check();
  }
- static void Send(Point point,uint flags) {
+ static void Send(Point point,uint flags,uint pointerKind=0) {
   if(active&&(flags&0x8000)==0)Check();
-  var info=new PointerInfo{type=kind,id=0,flags=flags,pixel=point};
+  uint type=pointerKind==0?kind:pointerKind;
+  var info=new PointerInfo{type=type,id=0,flags=flags,pixel=point};
   for(int retry=0;retry<20;retry++){
    bool accepted;
-   if(kind==2)accepted=InjectTouchInput(1,new[]{new TouchInfo{pointer=info,mask=7,
+   if(type==2)accepted=InjectTouchInput(1,new[]{new TouchInfo{pointer=info,mask=7,
     contact=new Rect{left=point.x-2,top=point.y-2,right=point.x+2,bottom=point.y+2},orientation=90,pressure=512}});
    else accepted=InjectSyntheticPointerInput(pen,new[]{new TypeInfo{type=3,pen=new PenInfo{pointer=info,flags=penButtons|(eraserEnd?6u:0u),mask=13,pressure=512,tiltX=tiltX,tiltY=tiltY}}},1);
    if(accepted){
@@ -153,8 +154,9 @@ public static class CapyRowPointer {
  }
  static void Pulse(object unused) {
   lock(gate){
-   if((!active&&!hovering)||kind==4)return;
-   try{Check();Guard(last);Send(last,active?0x20006u:0x20002u);}
+   bool contact=active&&kind!=4;if(!contact&&!hovering)return;
+   var point=contact?last:penLast;
+   try{Check();Guard(point);Send(point,contact?0x20006u:0x20002u,contact?kind:3);}
    catch(Exception error){
     if(failure==null)failure=error;try{Cancel();}catch{}
     active=false;pulse.Change(Timeout.Infinite,Timeout.Infinite);
@@ -170,8 +172,9 @@ public static class CapyRowPointer {
  // Keep a pen in hover between taps, as a physical tablet normally does.
  public static void PenHover(int x,int y) {
   lock(gate){
-   Check();if(active)throw new Exception("A review contact is already active.");
-   var point=new Point{x=x,y=y};Guard(point);kind=3;Send(point,0x20002);last=point;hovering=true;pulse.Change(25,25);
+   Check();if(active&&kind!=4)throw new Exception("A review contact is already active.");
+   var point=new Point{x=x,y=y};Guard(point);if(!active){kind=3;last=point;}
+   Send(point,0x20002,3);penLast=point;hovering=true;pulse.Change(25,25);
   }
  }
  public static void EraserEnd(bool on) {lock(gate){eraserEnd=on;}}
@@ -187,8 +190,8 @@ public static class CapyRowPointer {
  }
  public static void PenLeave() {
   lock(gate){
-   Check();if(active||kind!=3)return;
-   penButtons=0;Guard(last);if(hovering)EndHover();else Send(last,0x20000);
+   Check();if((active&&kind!=4)||(!hovering&&kind!=3))return;
+   penButtons=0;Guard(hovering?penLast:last);if(hovering)EndHover();else Send(last,0x20000,3);
   }
  }
  public static void Down(string device,int x,int y) {Down(device,x,y,"left");}
@@ -218,7 +221,7 @@ public static class CapyRowPointer {
    Check();if(!active)return;Guard(last);Thread.Sleep(2);
    if(kind==4)MouseButton(mouseRelease);else Send(last,kind==3&&stayInRange?0x40002u:0x40000u);
    ContactDurationMilliseconds=(System.Diagnostics.Stopwatch.GetTimestamp()-contactDown)*1000.0/System.Diagnostics.Stopwatch.Frequency;
-   active=false;hovering=kind==3&&stayInRange;
+   active=false;if(kind==3){hovering=stayInRange;if(hovering)penLast=last;}
    pulse.Change(hovering?25:Timeout.Infinite,hovering?25:Timeout.Infinite);
   }
  }
@@ -251,7 +254,7 @@ public static class CapyRowPointer {
     DestroySyntheticPointerDevice(pen);pen=CreateSyntheticPointerDevice(3,1,3);
     if(pen==IntPtr.Zero)throw new Win32Exception(Marshal.GetLastWin32Error());
    }else Send(last,0x48000);
-   active=false;pulse.Change(Timeout.Infinite,Timeout.Infinite);
+   active=false;EndHover();pulse.Change(Timeout.Infinite,Timeout.Infinite);
   }
  }
  public static void RightDrag(int x0,int y0,int x1,int y1){ButtonDrag("right",x0,y0,x1,y1);}
