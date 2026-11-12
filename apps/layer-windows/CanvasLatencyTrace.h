@@ -23,11 +23,13 @@ public:
         required=dirty?last+(frame&&presented?0:1):content;
         ++epoch;
     }
-    bool Withheld(Clock::time_point now) const {
-        return enabled&&displayed&&*displayed<content&&repeated!=content&&now-presentedAt>=Patience&&now-displayedAt>=Patience;
-    }
+    bool Withheld(Clock::time_point now) const { return Unacknowledged(now)&&repeated!=content; }
+    bool Stalled(Clock::time_point now) const { return Unacknowledged(now)&&repeated==content; }
     void Repeat() { repeated=content; }
 private:
+    bool Unacknowledged(Clock::time_point now) const {
+        return enabled&&displayed&&*displayed<content&&now-presentedAt>=Patience&&now-displayedAt>=Patience;
+    }
     uint64_t presentations=0,content=0,repeated=0;
     Clock::time_point presentedAt{},displayedAt{};
 };

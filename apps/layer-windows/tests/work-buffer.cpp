@@ -958,9 +958,24 @@ int main() {
         presentation.Observe(false,false,false,7,7,at(9500));assert(!presentation.Withheld(at(20000)));
         presentation.Observe(true,false,false,8,std::nullopt,at(20000));assert(*presentation.displayed==7&&presentation.Withheld(at(21000)));
         PresentationTrace untraced(false);
-        untraced.Observe(true,false,false,2,1,at(0));assert(!untraced.Withheld(at(60000)));
+        untraced.Observe(true,false,false,2,1,at(0));assert(!untraced.Withheld(at(60000))&&!untraced.Stalled(at(60000)));
     }
     std::cout<<"Presentation trace: a withheld final acknowledgement asks for one unchanged repeat that never raises the requirement\n";
+    {
+        auto origin=PresentationTrace::Clock::time_point{}+std::chrono::hours(1);
+        auto at=[&](int ms){return origin+std::chrono::milliseconds(ms);};
+        PresentationTrace presentation(true);
+        presentation.Observe(true,false,false,60,58,at(0));
+        presentation.Observe(false,false,false,60,58,at(250));
+        assert(presentation.Withheld(at(1250))&&!presentation.Stalled(at(1250)));presentation.Repeat();
+        presentation.Observe(true,false,true,61,59,at(1300));assert(!presentation.Stalled(at(2000)));
+        for(int ms=1500;ms<=11500;ms+=250)presentation.Observe(false,false,false,61,59,at(ms));
+        assert(presentation.required==60&&*presentation.displayed==59);
+        assert(presentation.Stalled(at(11500))&&!presentation.Withheld(at(11500)));
+        presentation.Observe(false,false,false,61,61,at(11750));
+        assert(presentation.required==60&&*presentation.displayed==61&&!presentation.Stalled(at(20000))&&!presentation.Withheld(at(20000)));
+    }
+    std::cout<<"Presentation trace: a final present still unacknowledged after its repeat asks for a compositor flush, never a second repeat\n";
     CanvasQuerySlots slots;
     std::vector<std::shared_ptr<void>> held;
     std::deque<std::function<void()>> deferred;

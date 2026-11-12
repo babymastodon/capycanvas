@@ -162,6 +162,7 @@ void CanvasWindow::TraceTextInput(bool pressed) {
 void CanvasWindow::TracePresentation(bool frame,bool dirty,bool repeat) {
     auto& trace=presentationTrace;
     if(!trace.enabled)return;
+    if(!frame&&!dirty&&trace.Stalled(std::chrono::steady_clock::now()))DwmFlush();
     uint64_t stats[6]{};
     auto shown=capy_presentation_stats(host,stats)==0?std::optional<uint64_t>(stats[1]):std::nullopt;
     trace.Observe(frame,dirty,repeat,stats[0],shown,std::chrono::steady_clock::now());
