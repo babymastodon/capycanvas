@@ -366,7 +366,7 @@ try{
     foreach($device in @('mouse','touch','pen')){
         $revision=(Model).state.document_file.revision
         Tap-Id 'property-action-group-calibration' $device
-        Tap-Id 'property-action-calibrate-white' $device
+        Tap (Control 'property-action-calibrate-white' -Arranged) $device
         Wait-Until {(Model).state.color_picker.calibrating} "$device did not arm the white point"
         if(Find 'picker-setting-source' -Visible){throw 'Sampler Source stayed visible while calibrating'}
         $at=Canvas-Point .3 .5;$script:lastDevice=$device;[CapyRowPointer]::Down($device,$at[0],$at[1]);Start-Sleep -Milliseconds $(if($device -eq 'touch'){1500}else{60});[CapyRowPointer]::Up()
