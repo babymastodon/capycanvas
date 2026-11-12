@@ -37,7 +37,8 @@ extension XCTestCase {
         let viewport = frame.intersection(window)
         let keyboard = app.keyboards.firstMatch
         guard keyboard.exists else { return viewport }
-        var keyboardFrame = keyboard.frame
+        let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
+        var keyboardFrame = assistant.exists ? keyboard.frame.union(assistant.frame) : keyboard.frame
         if XCUIDevice.shared.orientation.isLandscape, keyboardFrame.height > keyboardFrame.width,
             !window.contains(keyboardFrame) {
             let screen = UIScreen.main.nativeBounds.size, scale = UIScreen.main.scale
@@ -50,7 +51,7 @@ extension XCTestCase {
             }
         }
         let covered = keyboardFrame.intersection(viewport)
-        guard !covered.isNull, covered.maxY >= viewport.maxY else { return viewport }
+        guard !covered.isNull else { return viewport }
         return CGRect(x: viewport.minX, y: viewport.minY, width: viewport.width,
             height: max(0, covered.minY - viewport.minY))
     }

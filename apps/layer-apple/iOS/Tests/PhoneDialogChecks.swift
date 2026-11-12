@@ -10,7 +10,8 @@ extension EditorLaunchTests {
     @MainActor func testPhoneCanvasDialogsDark() throws { try checkPhoneCanvasDialogs(theme: "dark") }
 
     @MainActor private func phonePageActivate(_ id: String, in app: XCUIApplication) {
-        let item = app.buttons[id].firstMatch
+        let item = app.buttons[id].firstMatch, list = app.collectionViews.firstMatch
+        if !item.waitForExistence(timeout: 2) && list.exists { revealEditorControl(item, identifier: id, type: .button, in: list) }
         XCTAssertTrue(item.waitForExistence(timeout: 15), id)
         let scrolls = app.scrollViews.containing(.button, identifier: id).allElementsBoundByIndex
             + app.collectionViews.containing(.button, identifier: id).allElementsBoundByIndex
@@ -51,9 +52,9 @@ extension EditorLaunchTests {
         }
         settings("shortcuts")
         let search = app.textFields["shortcut-search"]
-        replaceEditorText(search, with: "Redo", in: app)
+        replaceEditorText(search, with: "Redo", in: app); search.typeText(XCUIKeyboardKey.return.rawValue)
         tap("shortcut-command.Redo"); try shot("shortcut-editor"); tap("shortcut-editor-done")
-        replaceEditorText(search, with: "Hand", in: app)
+        replaceEditorText(search, with: "Hand", in: app); search.typeText(XCUIKeyboardKey.return.rawValue)
         tap("shortcut-command.Hand"); tap("shortcut-add")
         XCTAssertTrue(app.staticTexts["shortcut-captured"].waitForExistence(timeout: 10)); recordingFooter(); try shot("shortcut-recording")
         app.typeKey("e", modifierFlags: [])
@@ -61,7 +62,7 @@ extension EditorLaunchTests {
         expectation(for: NSPredicate(format: "label == %@ OR value == %@", "Reassign", "Reassign"), evaluatedWith: confirm)
         waitForExpectations(timeout: 10); recordingFooter(); try shot("shortcut-conflict")
         tap("shortcut-cancel"); tap("shortcut-editor-done")
-        replaceEditorText(search, with: "", in: app)
+        replaceEditorText(search, with: "", in: app); search.typeText(XCUIKeyboardKey.return.rawValue)
         tap("shortcut-category-Modifier keys"); tap("add-modifier-key")
         XCTAssertTrue(app.staticTexts["shortcut-captured"].waitForExistence(timeout: 10)); recordingFooter(); try shot("modifier-key"); tap("shortcut-cancel")
         tap("modifier-Space")
