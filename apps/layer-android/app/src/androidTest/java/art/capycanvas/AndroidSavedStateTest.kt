@@ -225,7 +225,7 @@ class AndroidSavedStateTest {
                 assertTrue(state.getJSONObject("color_library").getJSONArray("palettes").objects().any { palette ->
                     palette.getString("name")=="Release palette" && palette.getJSONArray("swatches").objects().any { it.getString("name")=="Release blue" }
                 })
-                assertEquals(BuildConfig.VERSION_NAME,File(storage.workspaces,"last-version").readText())
+                assertEquals(BuildConfig.VERSION_NAME,org.json.JSONObject(File(storage.workspaces,"last-version").readText()).getString("version"))
                 assertEquals(1,storage.workspaces.listFiles()!!.count { it.name.startsWith("workspaces.earlier.") && it.extension=="sqlite3" })
                 assertTrue(host.workspaceManager!!.isNull("error"))
                 val presets = runBlocking { ColorPreferencesStore.presets(context,obj("space" to "Srgb","depth" to "U8"),obj("type" to "list")) }
