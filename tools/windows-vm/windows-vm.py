@@ -1019,12 +1019,6 @@ Start-ScheduledTask {task}
 """, timeout=180)
 
 
-def desktop_running(machine):
-    state = guest(machine, f"$ErrorActionPreference='Stop'; (Get-ScheduledTask {DESKTOP_TASK}).State",
-                  capture_output=True, text=True, timeout=60)
-    return state.stdout.strip() in ("Running", "Queued")
-
-
 def build_inputs(hashes):
     scripts = {"apps/layer-windows/scripts/build.ps1", "apps/layer-windows/scripts/stage-assets.ps1",
                "apps/layer-windows/scripts/WindowsArchitecture.ps1"}
@@ -1152,22 +1146,66 @@ def validate_results(plan, results):
         sys.exit(f"Incomplete fixture coverage: expected {expected}, received {actual}.")
 
 
+FIXTURE_RUNNER = r"""function Get-FixtureRunner([string]$Output){
+    $identity=[IO.File]::ReadAllText((Join-Path $Output 'runner.json'))|ConvertFrom-Json
+    Get-Process -Id $identity.process_id -ErrorAction SilentlyContinue|Where-Object {$_.StartTime.ToUniversalTime() -eq ([DateTime]$identity.process_start_utc).ToUniversalTime()}
+}
+"""
+
+
 def fixture_status_command(output):
-    return r"""$ErrorActionPreference='Stop'
+    return (r"""$ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 function Read-FixtureText([string]$Path){
     $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
     $reader=[IO.StreamReader]::new($stream)
     try{$reader.ReadToEnd()}finally{$reader.Dispose();$stream.Dispose()}
 }
-@{plan=$(if(Test-Path '{output}\plan.json'){Read-FixtureText '{output}\plan.json'|ConvertFrom-Json});
+""" + FIXTURE_RUNNER + r"""$runner=$null;if(Test-Path '{output}\runner.json'){$runner=[bool](Get-FixtureRunner '{output}')}
+@{runner=$runner;
+plan=$(if(Test-Path '{output}\plan.json'){Read-FixtureText '{output}\plan.json'|ConvertFrom-Json});
 log=$(if(Test-Path '{output}\results.jsonl'){Read-FixtureText '{output}\results.jsonl'});
 error=$(if(Test-Path '{output}\runner-error.txt'){Read-FixtureText '{output}\runner-error.txt'});
 complete=(Test-Path '{output}\complete')}|ConvertTo-Json -Depth 5 -Compress
-""".replace("{output}", output)
+""").replace("{output}", output)
 
 
-def wait_for_fixtures(machine, output):
+def stop_fixture_runner(machine, output):
+    guest(machine, FIXTURE_RUNNER + fr"""$ErrorActionPreference='Stop'
+if(Test-Path '{output}\runner.json'){{
+    $runner=Get-FixtureRunner '{output}'
+    if($runner){{
+        & taskkill.exe /T /F /PID $runner.Id|Out-Null
+        if(!$runner.WaitForExit(30000)){{throw "The fixture runner $($runner.Id) survived its stop."}}
+    }}
+}}
+""", capture_output=True, text=True, timeout=60)
+
+
+def fixture_progress(machine, output):
+    command = fixture_status_command(output)
+    polled = time.monotonic()
+    try:
+        status = guest(machine, command, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired as error:
+        elapsed = time.monotonic() - polled
+        try:
+            guest(machine, "exit 0", stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+            raise RuntimeError(f"{machine.name} stopped responding to SSH (status timeout {error.timeout} s)")
+        evidence = ARTIFACTS / machine.name / output.rsplit("\\", 1)[-1]
+        evidence.mkdir(parents=True, exist_ok=True)
+        with (evidence / "slow-status.jsonl").open("a") as record:
+            record.write(json.dumps({"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                     "command": command, "elapsed": elapsed}) + "\n")
+        return {"runner": None, "plan": None, "log": None, "error": None, "complete": False}
+    try:
+        return json.loads(status.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Invalid fixture progress JSON: {error}; stdout={status.stdout!r}; stderr={status.stderr!r}") from error
+
+
+def wait_for_fixtures(machine, output, drain=None):
     results = []
     deadline = time.monotonic() + 180
     plan = None
@@ -1175,12 +1213,7 @@ def wait_for_fixtures(machine, output):
     try:
         while True:
             time.sleep(5)
-            running = desktop_running(machine)
-            status = guest(machine, fixture_status_command(output), capture_output=True, text=True, timeout=60)
-            try:
-                progress = json.loads(status.stdout)
-            except json.JSONDecodeError as error:
-                raise RuntimeError(f"Invalid fixture progress JSON: {error}; stdout={status.stdout!r}; stderr={status.stderr!r}") from error
+            progress = fixture_progress(machine, output)
             if progress["plan"]:
                 if plan is None:
                     deadline = time.monotonic() + progress["plan"]["timeout_minutes"] * 60 + 120
@@ -1197,13 +1230,18 @@ def wait_for_fixtures(machine, output):
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError("The fixture runner exceeded its startup or fixture deadline.")
-            if not running:
+            if progress["runner"] is False:
                 raise RuntimeError(progress.get("error") or "The desktop task stopped before completing the fixture plan.")
     except (RuntimeError, TimeoutError, ValueError, TypeError, subprocess.SubprocessError) as error:
         failure = str(error)
         if isinstance(error, subprocess.CalledProcessError):
             failure += f"; stdout={error.stdout!r}; stderr={error.stderr!r}"
-        guest(machine, f"Stop-ScheduledTask {DESKTOP_TASK}", check=False, timeout=60)
+        if drain:
+            drain()
+        try:
+            stop_fixture_runner(machine, output)
+        except subprocess.SubprocessError as error:
+            failure += f"; the fixture runner did not confirm its stop: {error}; stderr={getattr(error, 'stderr', None)!r}"
     return results, plan, failure
 
 
@@ -1238,7 +1276,7 @@ if(Test-Path -LiteralPath $backup){Restore-FixtureLocalDumps (Import-Clixml -Lit
             cleanup.append(str(error))
 
 
-def execute_fixtures(machine, args, directory, provenance, names, queue=None):
+def execute_fixtures(machine, args, directory, provenance, names, queue=None, drain=None):
     name = time.strftime("%Y%m%d-%H%M%S")
     output = f"{GUEST_REPO}\\artifacts\\windows\\vm-fixtures\\{name}"
     selection = fixture_selection(names)
@@ -1252,7 +1290,7 @@ def execute_fixtures(machine, args, directory, provenance, names, queue=None):
                              f"-Executable {directory}\\CapyCanvas.exe -Output {output} "
                              f"-TimeoutMinutes {args.timeout_minutes} -RustProfile {args.profile} "
                              f"-BuildRecord {directory}\\fixture-build.json{selection}{mode}")
-            results, plan, failure = wait_for_fixtures(machine, output)
+            results, plan, failure = wait_for_fixtures(machine, output, drain)
     except (Exception, SystemExit) as error:
         failure = str(error)
     local = retrieve(machine, f"{GUEST_REPO}\\artifacts\\windows\\vm-fixtures", name)
@@ -1438,11 +1476,11 @@ def sharded_fixtures(args):
                     raise ValueError("The source tree changed while preparing fixture runners")
                 import_fixture_build(machine, directory, record, archive, synced, args.profile)
             with (fixture_queue_config(machine, queue) if queue else nullcontext(None)) as configuration:
-                result = execute_fixtures(machine, args, directory, mode_provenance(False),
-                                          exact_names(cpu_selectors), queue=configuration)
+                result = execute_fixtures(machine, args, directory, mode_provenance(False), exact_names(cpu_selectors),
+                                          queue=configuration, drain=(lambda: queue.drain(machine.name)) if queue else None)
         except (Exception, SystemExit) as error:
             result["failure"] = "; ".join(filter(None, (result.get("failure"), str(error))))
-        return dict(result, selectors=queue.assignments[machine.name] if queue else cpu_selectors)
+        return dict(result, selectors=list(queue.assignments[machine.name]) if queue else cpu_selectors)
 
     def mode_provenance(hardware):
         return {"revision": provenance["revision"], "source": hashes,

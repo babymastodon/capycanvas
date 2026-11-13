@@ -17,6 +17,12 @@ trap {
     ($_ | Out-String) + $_.ScriptStackTrace | Set-Content (Join-Path $Output 'runner-error.txt')
     exit 1
 }
+if(!$List -and !$env:CAPY_PRIVATE_DESKTOP){
+    New-Item -ItemType Directory -Force $Output|Out-Null
+    $runner=Join-Path $Output 'runner.json'
+    [IO.File]::WriteAllText($runner+'.tmp',(@{process_id=$PID;process_start_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json))
+    [IO.File]::Move($runner+'.tmp',$runner)
+}
 . (Join-Path $PSScriptRoot 'session-identity.ps1')
 . (Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/FixtureJapaneseInput.ps1')
 function Write-FixtureResult([string]$Path,[string]$Json){

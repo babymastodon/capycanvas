@@ -106,6 +106,14 @@ class ShardTests(unittest.TestCase):
         self.assertTrue(any("transport stopped" in error for error in errors))
         self.assertTrue(any("missing shard completion" in error for error in errors))
 
+    def test_missing_rows_name_the_failed_runner_or_report_that_nobody_claimed_them(self):
+        rows, errors = merge(["a", "b", "c"], [{"vm": "r1", "selectors": ["a"], "failure": "runner stopped responding to SSH"},
+                                                 self.shard("r2", ["b"])])
+        self.assertEqual([row["exit"] for row in rows], ["missing", 0, "missing"])
+        self.assertEqual(rows[0]["message"], "r1 stopped before returning this selector: runner stopped responding to SSH")
+        self.assertEqual(rows[2]["message"], "No runner claimed this selector")
+        self.assertIn("c: No runner claimed this selector", errors)
+
     def test_incomplete_shard_and_duplicate_rows_cannot_hide_behind_passing_rows(self):
         shard = self.shard("r1", ["a", "b"])
         shard["results"] = [shard["results"][0]] * 2

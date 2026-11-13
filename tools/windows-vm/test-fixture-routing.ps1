@@ -543,9 +543,11 @@ function Get-Process([int]$Id,[string]$ErrorAction){
 try{
     $resultsFile=Join-Path $Output 'results.jsonl'
     $source=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'windows-vm.py'))
-    $command=[regex]::Match($source,'(?s)def fixture_status_command\(output\):\s+return r"""(?<script>.*?)"""\.replace\("\{output\}", output\)')
-    if(!$command.Success){throw 'Cannot extract the actual fixture progress command'}
-    $status=[scriptblock]::Create($command.Groups['script'].Value.Replace('{output}',$Output))
+    $runner=[regex]::Match($source,'(?s)FIXTURE_RUNNER = r"""(?<script>.*?)"""')
+    $command=[regex]::Match($source,'(?s)def fixture_status_command\(output\):\s+return \(r"""(?<prefix>.*?)""" \+ FIXTURE_RUNNER \+ r"""(?<suffix>.*?)"""\)\.replace\("\{output\}", output\)')
+    if(!$runner.Success -or !$command.Success){throw 'Cannot extract the actual fixture progress command'}
+    $commandText=$command.Groups['prefix'].Value+$runner.Groups['script'].Value+$command.Groups['suffix'].Value
+    $status=[scriptblock]::Create($commandText.Replace('{output}',$Output))
     $writer=[IO.File]::Open($resultsFile,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::Write,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
     try{
         Write-FixtureResult $resultsFile '{"name":"first","exit":0}'
@@ -558,7 +560,7 @@ try{
     }finally{$writer.Dispose()}
     $message='Result '+[char]0xec+[char]0x65e5
     Write-FixtureResult $resultsFile (@{name='unicode';exit=1;message=$message}|ConvertTo-Json -Compress)
-    $script="[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(437);`n"+$command.Groups['script'].Value.Replace('{output}',$Output)
+    $script="[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(437);`n"+$commandText.Replace('{output}',$Output)
     $start=[Diagnostics.ProcessStartInfo]::new()
     $start.FileName=$powershell
     $start.Arguments=ConvertTo-FixtureCommandLine @('-NoProfile','-NonInteractive','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script)))

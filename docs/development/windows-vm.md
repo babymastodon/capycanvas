@@ -198,7 +198,11 @@ belong to their creating worktree; run each concurrent round from its own worktr
 
 The merged output under `<artifacts>/<primary>/shards-<timestamp>` records the
 full plan, each shard's evidence path and provenance, every result and total wall
-time. A missing selector or shard fails the run. Runners stop on success or
+time. A missing selector or shard fails the run. A failed runner is drained from
+the queue, then its recorded runner process is stopped; selectors it never
+claimed go to the other runners. A status probe that times out while SSH still
+answers is logged to the shard's `slow-status.jsonl`, and only the fixture
+deadline fails a slow runner. Runners stop on success or
 failure; `--keep-runners` retains their reservations for another round. Their
 prepared disks persist. Stop retained runners with `--vm <runner> stop`, and use
 `runners --reset` from the owning worktree to delete this primary VM's stopped
@@ -430,7 +434,8 @@ and executable/DLL hashes before reusing a build. Fixture-only changes can reuse
 or build scripts require rebuilding.
 
 Each run writes its expected variants to `plan.json`. Empty selections, missing
-results, a stopped desktop task and startup or fixture deadlines fail the run.
+results, a stopped runner process (recorded in `runner.json`) and startup or
+fixture deadlines fail the run.
 The shared fixture reader uses bounded retries for brief trace-file I/O locks;
 malformed snapshots still fail immediately.
 Restore changed Windows user settings from the runner, with forced-termination
