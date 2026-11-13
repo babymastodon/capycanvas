@@ -1972,6 +1972,50 @@ namespace CapyFitReceiptTest {
  'Actual camera receipt reader retains one packet camera/navigation and validates isolated PID, registered HWND and window identity.'
 }
 & {
+ $tokens=$null;$errors=$null
+ $localization=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-localization.ps1'),[ref]$tokens,[ref]$errors)
+ if(@($errors).Count){throw ($errors|Out-String)}
+ $reader=$ast.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Camera-Receipt'},$true)
+ if(!$reader){throw 'Missing actual camera receipt reader'}
+ . ([scriptblock]::Create($reader.Extent.Text))
+ $definitions=@($localization.FindAll({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Fit-View'},$true))
+ foreach($definition in $definitions){. ([scriptblock]::Create($definition.Extent.Text))}
+ $sites=@($localization.FindAll({param($n)$n-is[Management.Automation.Language.CommandAst]-and($n.GetCommandName()-eq'Fit-View'-or($n.GetCommandName()-eq'Menu-Command'-and@($n.CommandElements.Value)-contains'fit_canvas'))},$true)|Where-Object {$site=$_;!@($definitions|Where-Object {$site.Extent.StartOffset-ge$_.Extent.StartOffset-and$site.Extent.EndOffset-le$_.Extent.EndOffset}).Count})
+ if($sites.Count-ne3){throw "Localization drawing and pixel sampling lost a Fit step: $($sites.Count)"}
+ $review=[pscustomobject]@{Id=33};$script:current=[pscustomobject]@{id=11;hwnd=333}
+ $statePath=Join-Path $PSScriptRoot 'ui-state-33-11.json'
+ function State-File{$statePath}
+ function Model{[pscustomobject]@{state=[pscustomobject]@{camera=[pscustomobject]@{revision=13}}}}
+ function Menu-Command([string]$Menu,[string]$Id){if($Menu-cne'view'-or$Id-cne'fit_canvas'){throw 'Localization Fit invoked another command'};$fit.invoked++;$fit.reads=0}
+ function Wait-Until([scriptblock]$Condition,[string]$Message,[int]$Seconds){for($poll=0;$poll-lt12;$poll++){if(& $Condition){return}};throw $Message}
+ function Read-Snapshot($Path){
+  switch(Split-Path -Leaf $Path){
+   'ui-state-33-11.json'{return [pscustomobject]@{process_id=33;window_id=11;model=[pscustomobject]@{windows_isolated_settings=$true}}}
+   'windows-33.json'{return [pscustomobject]@{process_id=33;windows=@([pscustomobject]@{hwnd=333;id=11})}}
+   'camera-state-33-11.json'{}
+   default{throw 'Localization Fit read an unrelated file'}
+  }
+  $read=$fit.reads++;$landed=$fit.invoked-and$read-ge2-and$case-ne'missing'
+  $revision=if($landed){14}elseif($case-eq'stale'-and!$fit.invoked-and$read-lt2){12}else{13}
+  $navigation=$revision-9;if($landed-and$case-eq'skipped'){$navigation++}
+  $drawing=if($revision-eq12-or($landed-and$case-eq'foreign-drawing')){21}else{22}
+  $fit.observed=$fit.observed-or$landed
+  [pscustomobject]@{process_id=33;window_id=11;camera=[pscustomobject]@{revision=$revision;zoom=.657383918762207;viewport=@(2560,1528);work_area=@(501,135,1558,1384)};navigation=[pscustomobject]@{drawing_id=$drawing;artwork='artwork';epoch=0;revision=$navigation}}
+ }
+ foreach($site in $sites){
+  $case='late';$fit=@{invoked=0;reads=0;observed=$false}
+  . ([scriptblock]::Create($site.Extent.Text))
+  if($fit.invoked-ne1-or!$fit.observed){throw "Localization drawing or pixel sampling continued before Fit acknowledged its camera: $($site.Extent.Text)"}
+ }
+ $expected=@{stale='';skipped='Fit camera acknowledgement skipped the requested navigation';'foreign-drawing'='Fit camera acknowledgement changed its document';missing='View Fit did not acknowledge its camera'}
+ foreach($case in 'stale','skipped','foreign-drawing','missing'){
+  $fit=@{invoked=0;reads=0;observed=$false};$failure=$null
+  try{Fit-View}catch{$failure=$_}
+  if($fit.invoked-ne1-or"$($failure.Exception.Message)"-cne$expected[$case]){throw "Localization Fit mishandled $case`: $failure"}
+ }
+ 'Actual localization Fit steps wait for the next owned navigation receipt after a fresh pre-Fit receipt, and reject skipped, foreign or missing acknowledgements.'
+}
+& {
  $drawerAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-drawer-layout.ps1'),[ref]$null,[ref]$null)
  $open=$drawerAst.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Open-Header'},$true)
  if(!$open){throw 'Missing actual drawer Open-Header path'}

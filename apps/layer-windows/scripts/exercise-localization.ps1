@@ -170,6 +170,19 @@ function Menu-Command([string]$Menu,[string]$Id){
  Application-Menu $Menu
  Invoke-Id $Id
 }
+function Fit-View{
+ $drawingWindow=[IntPtr][long]$script:current.hwnd;$hit=@{before=$null}
+ Wait-Until {$view=Model;$hit.before=Camera-Receipt;$view -and $hit.before -and $hit.before.camera.revision -ge $view.state.camera.revision} 'Fit has no owned camera navigation receipt' 15
+ $before=$hit.before
+ Menu-Command 'view' 'fit_canvas'
+ Wait-Until {
+  $receipt=Camera-Receipt
+  if(!$receipt){return $false}
+  foreach($field in 'drawing_id','artwork','epoch'){if($receipt.navigation.$field -cne $before.navigation.$field){throw 'Fit camera acknowledgement changed its document'}}
+  if($receipt.navigation.revision -gt $before.navigation.revision+1){throw 'Fit camera acknowledgement skipped the requested navigation'}
+  $receipt.navigation.revision -eq $before.navigation.revision+1
+ } 'View Fit did not acknowledge its camera' 15
+}
 function Key([uint16]$Code){[CapyRowPointer]::Key([uint32]$review.Id,$Code)}
 function Idle{Wait-Until {$view=Model;Assert-NoDrawingMemoryRefusal $view;$view -and !$view.state.document_file.busy} 'Document operation did not finish' 90}
 function Choose-Path([string]$Path){
@@ -189,7 +202,7 @@ function Choose-Path([string]$Path){
  Wait-Until {!(Find '1148') -and !(Find '1001')} 'Native picker did not close' 45
 }
 function Draw([int]$Stroke,[string]$Tag){
- Menu-Command 'view' 'fit_canvas'
+ Fit-View
  Focus-Canvas
  $before=(Fresh-Model $script:current $Tag).state.document_file.revision
  $bounds=(Control 'drawing-canvas' -Arranged -NoPopups).Current.BoundingRectangle
@@ -212,7 +225,6 @@ function Prepare-CanvasPixels{
  Focus-Canvas
  $window=$root.Current.BoundingRectangle
  [CapyRowPointer]::Hover([int]($window.X+20),[int]($window.Y+20))
- Start-Sleep -Milliseconds 250
  Canvas-Projection
 }
 function Canvas-Pixels([string]$Name,$Projection){
@@ -357,7 +369,7 @@ function Color-CaptionSurface{
  }
  $null=Control 'color-controls' -Arranged
  Invoke-Id 'color-foreground';Wait-Until {(Model).state.colors.slot -eq 'foreground'} 'Color baseline did not select foreground paint'
- Menu-Command 'view' 'fit_canvas';$empty=Stable-CanvasPixels
+ Fit-View;$empty=Stable-CanvasPixels
  Draw 0 'en';$pixels=Stable-CanvasPixels 'color-artwork-baseline'
  if($pixels -eq $empty){throw 'Color localization requires nonempty presented artwork'}
  $ids=@('color-controls','color-panel','color-wheel','color-edit','color-swap','color-shape-0','color-shape-1','color-readout','color-foreground','color-background','color-transparent')
@@ -587,7 +599,7 @@ function Run-Journey{
   Wait-Until {!(Find 'command-search' -Visible)} 'Search did not close' 15
   Application-Menu 'view'
   Capture-Window $textWindow ($choice.tag+'-view-menu');Key 27
-  Menu-Command 'view' 'fit_canvas'
+  Fit-View
   $pixelsBefore=Stable-CanvasPixels ($choice.tag+'-pixels-before')
   Draw $journeys.Count $choice.tag
   $pixelsDrawn=Stable-CanvasPixels ($choice.tag+'-pixels-drawn')
