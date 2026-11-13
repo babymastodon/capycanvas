@@ -332,8 +332,18 @@ pub(crate) fn session(platform: Platform) -> UiSession<Recorder> {
     )
     .unwrap();
     session.state.workspace = WorkspaceState::default();
+    session = launched(session);
     session.refresh_panel_copy(false);
     session.dispatch(UiAction::SelectBrush { id: DefaultBrushPreset::GPen as u32 }).unwrap();
+    session
+}
+pub(crate) fn launched<R: CanvasRenderer>(mut session: UiSession<R>) -> UiSession<R> {
+    session.launch_finished = true;
+    session
+}
+pub(crate) fn launching_session(platform: Platform) -> UiSession<Recorder> {
+    let mut session = session(platform);
+    session.launch_finished = false;
     session
 }
 #[derive(Clone, Copy)]

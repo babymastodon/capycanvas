@@ -44,9 +44,9 @@ use held_actions::{ERASER_END, merge_change};
 #[path = "canvas_transition.rs"]
 mod canvas_transition;
 use canvas_transition::CanvasTransition;
-pub use renderer_lifecycle::{CanvasNotice, LaunchReadiness, LaunchView, LAUNCH_CAPTION_DELAY_MS, LAUNCH_REVEAL_MS,
+pub use renderer_lifecycle::{CanvasNotice, LaunchMark, LaunchReadiness, LaunchView, LAUNCH_CAPTION_DELAY_MS, LAUNCH_REVEAL_MS,
     LAUNCH_MARK_SIZE, LAUNCH_MARK_MAX_FRACTION, LAUNCH_CAPTION_GAP, LAUNCH_CAPTION_SIZE, LAUNCH_CAPTION_COLOR_ROLE,
-    LAUNCH_MARK_INK_BOTTOM, LAUNCH_SYSTEM_MARK_INK_BOTTOM, launch_mark_size};
+    launch_mark_size};
 #[path = "session_bubbles.rs"]
 mod session_bubbles;
 #[path = "zen_peek.rs"]
@@ -297,6 +297,8 @@ pub struct UiSession<R: CanvasRenderer> {
     storage_activity:layer_core::package::session_store::CompactionActivity,
     drawing_switch_pending: bool,
     launch_finished: bool,
+    workspace_attention: bool,
+    host_attention: bool,
     touch: TouchGesture,
     navigation: navigation::Navigation,
     navigator_drag: Option<[f32; 2]>,
@@ -581,6 +583,8 @@ impl<R: CanvasRenderer> UiSession<R> {
             storage_activity:Default::default(),
             drawing_switch_pending: false,
             launch_finished: false,
+            workspace_attention: false,
+            host_attention: false,
             touch: TouchGesture::default(),
             navigation: Default::default(),
             navigator_drag: None,

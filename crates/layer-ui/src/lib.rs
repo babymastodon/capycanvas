@@ -22,7 +22,7 @@ pub(crate) use variants;
 
 pub mod localization;
 pub use fluent_bundle::FluentArgs;
-pub use localization::{LanguagePreference, LanguageRequest, LanguageTransition, Localizer, LocalizerPreparation, MessageId, UiLanguage, resolve_language, resolve_launch_language, launch_localization, BootstrapView, bootstrap_view, file_open_failure, gpu_unsupported, UnsupportedSessionView, unsupported_session_view};
+pub use localization::{LanguagePreference, LanguageRequest, LanguageTransition, Localizer, LocalizerPreparation, MessageId, UiLanguage, resolve_language, resolve_launch_language, launch_localization, BootstrapView, bootstrap_view, launch_bootstrap_view, file_open_failure, gpu_unsupported, UnsupportedSessionView, unsupported_session_view};
 #[cfg(test)]
 mod localization_catalog_tests;
 #[cfg(test)]
@@ -83,9 +83,9 @@ pub use layer_core::{FigurePaint, FigureShape, RulerKind};
 mod navigator;
 pub use navigator::NavigatorGeometry;
 pub use session::tonal_selection::{TonalAction, TonalOptions};
-pub use session::{CanvasNotice, LaunchReadiness, LaunchView, LAUNCH_CAPTION_DELAY_MS, LAUNCH_REVEAL_MS,
+pub use session::{CanvasNotice, LaunchMark, LaunchReadiness, LaunchView, LAUNCH_CAPTION_DELAY_MS, LAUNCH_REVEAL_MS,
     LAUNCH_MARK_SIZE, LAUNCH_MARK_MAX_FRACTION, LAUNCH_CAPTION_GAP, LAUNCH_CAPTION_SIZE, LAUNCH_CAPTION_COLOR_ROLE,
-    LAUNCH_MARK_INK_BOTTOM, LAUNCH_SYSTEM_MARK_INK_BOTTOM, launch_mark_size, ThumbnailRequests, occurrence_token, occurrence_handle, object_token, object_handle, SourceUse, FilterPreviewCache, FilterPreviewStatus, FilterPreviewUpdate};
+    launch_mark_size, ThumbnailRequests, occurrence_token, occurrence_handle, object_token, object_handle, SourceUse, FilterPreviewCache, FilterPreviewStatus, FilterPreviewUpdate};
 mod curve_editor;
 pub use curve_editor::{CurveEditorView, CurveEditorTarget, CurveEditorAction};
 pub use session::pressure_calibration::{PressureCalibrationAction, PressureCalibrationView};

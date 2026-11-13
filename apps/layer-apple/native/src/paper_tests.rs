@@ -354,11 +354,11 @@ fn apple_failed_initial_material_notifies_once_and_reload_does_not_repeat_the_fa
     std::fs::write(directory.join(format!("{id}.png")),b"invalid PNG").unwrap();
     let configuration=CString::new(remembered_launch(&directory,&id)).unwrap();
     let app=App::from_handle(unsafe {launch_json(1,configuration.as_ptr(),std::ptr::null_mut(),std::ptr::null_mut())});assert!(!(app.0==0));
-    let before=document(&app);let mark=checkpoint(&app);let notice=app.state()["notice"]["id"].clone();assert!(!notice.is_null());
+    let before=document(&app);let mark=checkpoint(&app);let notice=app.borrow().host.session.last_notice_id();assert!(notice>0);
     assert_eq!(before.paper(None).texture,layer_core::paper::built_in_paper("cold_press").unwrap().texture.clone().unwrap());
     for _ in 0..2 {let job=PaperJob::new(&app,0,&directory);job.work(None);job.apply(&app);}
     assert_project_document(&document(&app),&before);assert_eq!(checkpoint(&app),mark);
-    assert_eq!(app.state()["notice"]["id"],notice);
+    assert_eq!(app.borrow().host.session.last_notice_id(),notice);
     assert_eq!(app.borrow().host.session.state().settings.new_document.paper.as_deref(),Some(id.as_str()));
     assert!(!app.borrow().host.session.state().requests.iter().any(|request|matches!(request.kind,
         layer_ui::HostRequestKind::Paper {..}|layer_ui::HostRequestKind::SaveSettings {..})));

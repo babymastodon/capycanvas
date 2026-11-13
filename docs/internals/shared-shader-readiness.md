@@ -151,9 +151,15 @@ published drawing, its canvas/brush dependencies and chrome are ready. Its frame
 ticket identifies the current document, renderer and layout. Hosts acknowledge
 that ready frame through `launch_presented` using their surface-owned completion;
 an earlier or invalidated frame cannot reveal the workspace. Errors and required
-dialogs bypass the cover without completing launch. Hosts supply external
-workspace error and form facts through launch readiness. A finished window never
-restarts its launch cover for a drawing switch or renderer recovery.
+dialogs bypass the cover without completing launch. The workspace controller
+reports its errors, prompts and recovery action to the session; hosts report only
+their own modal surfaces through launch readiness. Notices raised under the cover
+wait for its reveal. A finished window never restarts its launch cover for a
+drawing switch or renderer recovery.
+
+The cover shows only the painter's chosen Zen capy and, after the delay, its
+caption. `BootstrapView.launch_mark` names the capy and its ink placement; hosts
+draw no capy until it is known.
 
 Caption timing uses `layer_ui::LAUNCH_CAPTION_DELAY_MS`, exported as
 `BootstrapView.launch_caption_delay_ms`; hosts own their clocks and fades.

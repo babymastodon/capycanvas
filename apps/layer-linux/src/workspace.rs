@@ -1302,7 +1302,7 @@ impl Workspace {
         restart_canvas.set_halign(gtk::Align::Center);
         restart_canvas.set_visible(false);
         let content = gtk::Overlay::new();
-        let launch = crate::launch::LaunchSplash::new(&localization);
+        let launch = crate::launch::LaunchSplash::new(&localization, crate::launch_capy(app));
         let workspaces = manager::NativeWorkspaces::new();
         workspaces.root.add_css_class("workspace-notice");
         content.set_child(Some(&surface));
@@ -1326,7 +1326,6 @@ impl Workspace {
         notices.append(&status);
         notices.append(&restart_canvas);
         notices.append(&workspaces.root);
-        content.add_overlay(&launch.root);
         content.add_overlay(&notices);
         let notice = crate::notice::NoticeBubble::new();
         content.add_overlay(&notice.root);
@@ -1344,6 +1343,7 @@ impl Workspace {
         content.add_overlay(&color_strip.root);
         let pages = crate::page_dialog::Pages::new();
         content.add_overlay(&pages.root);
+        content.add_overlay(&launch.root);
         window.set_content(Some(&crate::squircle::Squircles::new(&content)));
         let this = Rc::new(Self {
             pages,
@@ -1719,7 +1719,13 @@ impl Workspace {
                 if window.visible_dialog().is_some_and(|d| d != this.preferences.dialog) {
                     this.interact(UiInput::Blur);
                 }
+                this.refresh_launch();
             }
+        ));
+        self.pages.root.connect_visible_child_notify(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| this.refresh_launch()
         ));
     }
 
@@ -2487,14 +2493,15 @@ impl Workspace {
         self.changed(result);
     }
     fn refresh_launch(self: &Rc<Self>) {
-        let view = self.gpu.borrow_mut().as_mut().map(|gpu| (gpu.launch_view(), gpu.needs_present));
+        let interaction = self.visible_dialog().is_some();
+        let view = self.gpu.borrow_mut().as_mut().map(|gpu| (gpu.launch_view(interaction), gpu.needs_present));
         match view {
             Some((Ok(view), wake)) => {
                 self.launch.update(view, &self.localization());
                 if wake { self.wake(); }
             }
             Some((Err(_), _)) => self.launch.bypass(),
-            None if self.status.is_visible() => self.launch.bypass(),
+            None if interaction || self.status.is_visible() => self.launch.bypass(),
             None => (),
         }
     }
@@ -2732,9 +2739,10 @@ impl Workspace {
                         previous + ((now.saturating_sub(previous) / period) + 1) * period
                     };
                     this.frame_deadline.set(next);
+                    let interaction = this.visible_dialog().is_some();
                     let result = this.gpu.borrow_mut().as_mut().map(|g| {
                         this.update_canvas_chrome(g);
-                        g.render(area, now, !expedited)
+                        g.render(area, now, !expedited, interaction)
                     });
                     match result {
                         Some(Ok(change)) => this.changed(Ok(change)),

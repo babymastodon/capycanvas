@@ -458,6 +458,9 @@ impl DocumentService {
             recording_save: None,
         })
     }
+    pub(crate) fn host_dialog_open(&self) -> bool {
+        self.status().is_some() || self.recovery.as_ref().is_some_and(crate::recovery::Service::needs_attention)
+    }
     #[cfg_attr(all(not(target_os = "windows"), not(test)), expect(dead_code, reason = "Used by the Windows host"))]
     pub(crate) fn status(&self) -> Option<serde_json::Value> {
         if let Some(package)=&self.package {return Some(serde_json::json!({"type":if package.writing.is_some() {"package_busy"}else{"package"},"id":package.id,"name":package.name,"serial":package.serial,"summary":package.summary,"title":package.summary[if package.writing==Some(layer_ui::PackageAction::ExportPreview) {"export_preview"}else{"copy_original"}]}));}
@@ -1384,6 +1387,24 @@ mod tests {
             f.act(DocumentAction::Package{id,action:layer_ui::PackageAction::Close,path:None});assert!(f.service.package.is_none());assert_eq!(f.host.session.engine().document(),&before);
             assert_empty_preview(&f.service,id,0);
         }
+    }
+    #[test]
+    fn windows_document_dialogs_drop_the_launch_cover_until_they_close() {
+        use layer_core::package::{ImmutableBacking,codec::OpenOutcome,transport::ChunkedBytes};
+        let mut f=Fixture::new();
+        let covered=|f:&mut Fixture|{f.host.set_launch_interaction(f.service.host_dialog_open());f.host.launch_state().visible};
+        assert!(covered(&mut f));
+        f.invoke(CommandId::OpenDocument);let id=f.request();let epoch=f.host.session.state().document_file.epoch;let revision=f.host.session.engine().document().revision;
+        let source=ImmutableBacking::new(Arc::new(ChunkedBytes::new(vec![Arc::from(b"package".as_slice())]).unwrap())).unwrap();
+        f.service.active=Some(Active{id,epoch,revision,location:None,cancelled:None});
+        f.service.activation_worker.shared.mailbox.lock().unwrap().completed=Some(Ok(Completed::Package(layer_ui::PackageView::new(OpenOutcome::Failure{source,reason:"invalid package".into(),cause:Some(layer_ui::PackageCause::Damaged)}).unwrap())));
+        f.service.poll(&mut f.host).unwrap();
+        assert!(f.host.session.state().requests.is_empty());
+        let package=f.service.status().unwrap();assert_eq!(package["type"],"package");
+        assert!(!covered(&mut f));
+        f.act(DocumentAction::Package{id:package["id"].as_u64().unwrap() as u32,action:layer_ui::PackageAction::Close,path:None});
+        assert!(f.service.status().is_none());
+        assert!(covered(&mut f));
     }
 
     #[test]

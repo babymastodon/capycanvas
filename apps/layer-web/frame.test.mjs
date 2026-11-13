@@ -10,22 +10,22 @@ import {createLaunchCover} from './gpu.js';
 
 function launchCoverHarness() {
   let clock = 0, sequence = 0;
-  const timers = new Map(), caption = {dataset:{},textContent:''};
-  const content = {querySelector:()=>caption};
+  const timers = new Map(), caption = {dataset:{},textContent:''}, mark = {dataset:{},style:{}};
+  const content = {querySelector:selector=>selector==='.launch-capy'?mark:caption};
   const properties = new Map(),listeners=new Map();
   const container = {dataset:{launch:'loading'},hidden:false,firstElementChild:content,style:{setProperty:(name,value)=>properties.set(name,value)},
     addEventListener:(type,callback)=>listeners.set(type,callback),
     querySelector:()=>content,replaceChildren(node){this.firstElementChild=node;},
     removeAttribute(name){if(name==='data-launch')delete this.dataset.launch;}};
   const controls = {inert:false};container.parentElement={children:[controls,container]};
-  const cover = createLaunchCover({container,now:()=>clock,
+  const cover = createLaunchCover({container,asset:path=>`https://assets.test/${path}`,now:()=>clock,
     setTimer:(callback,delay)=>{const id=++sequence;timers.set(id,{callback,at:clock+delay});return id;}});
-  return {cover,container,caption,content,controls,properties,
+  return {cover,container,caption,mark,content,controls,properties,
     transition(event={}){listeners.get('transitionend')?.({target:container,propertyName:'opacity',...event});},
     advance(ms){clock+=ms;for(const [id,timer] of [...timers])if(timer.at<=clock){timers.delete(id);timer.callback();}}};
 }
 
-function launchCopy(values={}) { return {launch_caption_delay_ms:5000,launch_reveal_ms:500,launch_mark_size:252,launch_mark_max_fraction:.4,launch_caption_gap:18,launch_caption:'Compiling GPU shaders…',launch_caption_size:14.666667,launch_caption_color_role:'settings_secondary',launch_mark_ink_bottom:.923271,...values}; }
+function launchCopy(values={}) { return {launch_caption_delay_ms:5000,launch_reveal_ms:500,launch_mark_size:252,launch_mark_max_fraction:.4,launch_caption_gap:18,launch_caption:'Compiling GPU shaders…',launch_caption_size:14.666667,launch_caption_color_role:'settings_secondary',launch_mark:{icon:'zen-bathing',ink_bottom:.851621},...values}; }
 
 test('launch cover delays its existing localized caption and fades only a finished launch',()=>{
   const h=launchCoverHarness(),copy=launchCopy();
@@ -86,7 +86,7 @@ test('launch reveal waits for CSS completion after a delayed first paint',()=>{
   assert.equal(h.properties.get('--launch-reveal'),'1379ms');
   assert.equal(h.properties.get('--launch-caption-size'),`${copy.launch_caption_size}px`);
   assert.equal(h.properties.get('--launch-caption-color'),'var(--settings-secondary)');
-  assert.equal(h.properties.get('--launch-mark-ink-bottom'),copy.launch_mark_ink_bottom);
+  assert.equal(h.properties.get('--launch-mark-ink-bottom'),copy.launch_mark.ink_bottom);
   h.advance(650+Number(copy.launch_reveal_ms));assert.equal(h.container.hidden,false);
   h.transition();assert.equal(h.container.hidden,true);
 });
@@ -119,30 +119,46 @@ test('launch geometry and CSS timing consume the shared Bootstrap values',()=>{
   assert.equal(h.properties.get('--launch-reveal'),'1379ms');
   assert.equal(h.properties.get('--launch-caption-size'),`${copy.launch_caption_size}px`);
   assert.equal(h.properties.get('--launch-caption-color'),'var(--settings-secondary)');
-  assert.equal(h.properties.get('--launch-mark-ink-bottom'),copy.launch_mark_ink_bottom);
+  assert.equal(h.properties.get('--launch-mark-ink-bottom'),copy.launch_mark.ink_bottom);
+});
+
+test('launch cover draws no capy until Bootstrap names the chosen pose, then never swaps it',()=>{
+  const h=launchCoverHarness();
+  h.cover.update({visible:true,finished:false},launchCopy({launch_mark:null}));
+  assert.equal(h.mark.dataset.icon,undefined);assert.equal(h.mark.style.maskImage,undefined);
+  assert.equal(h.properties.has('--launch-mark-ink-bottom'),false);
+  const sleeping=launchCopy({launch_mark:{icon:'zen-sleeping',ink_bottom:.740654}});
+  h.cover.update({visible:false,finished:false},sleeping);
+  assert.equal(h.mark.dataset.icon,'zen-sleeping','A bypassed cover keeps the chosen pose for its return');
+  assert.equal(h.mark.style.maskImage,'url("https://assets.test/icons/layer-zen-sleeping-symbolic.svg")');
+  assert.equal(h.properties.get('--launch-mark-ink-bottom'),.740654);
+  h.cover.update({visible:true,finished:false},launchCopy());
+  assert.equal(h.mark.dataset.icon,'zen-sleeping');
+  assert.equal(h.mark.style.maskImage,'url("https://assets.test/icons/layer-zen-sleeping-symbolic.svg")');
+  assert.equal(h.properties.get('--launch-mark-ink-bottom'),.740654);
 });
 
 function launchFrameHarness(numbers = false) {
-  const waits=[],acknowledgments=[],views=[],frames=[];
-  let owner=numbers?11:11n,finished=false,submitted=true,wakes=0,ready=true;
+  const waits=[],acknowledgments=[],views=[],frames=[],interactions=[];
+  let owner=numbers?11:11n,finished=false,submitted=true,wakes=0,ready=true,modal=false;
   let ticket=numbers?1:1n;
   const context={app:{
-    launch_state:()=>({visible:!finished,finished,frame:finished||!ready?null:ticket}),
+    launch_state:(_chrome,_failed,interaction)=>{interactions.push(['state',interaction]);return {visible:!finished&&!interaction,finished,frame:finished||!ready||interaction?null:ticket};},
     startup_progress:()=>[true,true,false],canvas_presented:()=>true,canvas_notice:()=>null,
-    launch_frame:()=>finished||!ready||!submitted?null:[ticket,owner],
+    launch_frame:()=>finished||!ready||!submitted||modal?null:[ticket,owner],
     wait_for_canvas:()=>new Promise(resolve=>waits.push(resolve)),
-    launch_presented:(frame,surface)=>{assert.equal(typeof frame,'bigint');assert.equal(typeof surface,'bigint');acknowledgments.push([frame,surface]);if(surface===BigInt(owner)&&frame===BigInt(ticket)&&ready)finished=true;},
+    launch_presented:(frame,surface,_chrome,interaction)=>{assert.equal(typeof frame,'bigint');assert.equal(typeof surface,'bigint');interactions.push(['presented',interaction]);acknowledgments.push([frame,surface]);if(surface===BigInt(owner)&&frame===BigInt(ticket)&&ready&&!interaction)finished=true;},
     language_pending:()=>false,dispatch(action){ready=action.type==='close_settings';if(!ready)submitted=false;return{regions:0,canvas_wake:false};},
   },bootstrap:{},layout:{},workspaceLayoutReady:()=>true,workspacePresentation:null,
     compilerFailed:false,compilerEpoch:0,gpuReady:true,launchPresentation:null,
     document:{body:{dataset:{gpu:'ready'}}},launchCover:{blocking:true,pending:true,update:view=>views.push(view)},
     startupTimes:{canvas:null,document:null,brush:null,complete:null},statusError:null,
     $:()=>({textContent:''}),performance:{now:()=>0,mark(){}},requestAnimationFrame:callback=>frames.push(callback),wake(){wakes++;},stopGpu:assert.fail,
-    documents:null,workspaceGesture:null,message:assert.fail};
+    documents:null,workspaceGesture:null,message:assert.fail,hasModalDialog:()=>modal};
   runInNewContext(source.slice(source.indexOf('function launchChromeReady()'),source.indexOf('// Host timing and contacts')),context);
   runInNewContext(source.slice(source.indexOf('function dispatch(action)'),source.indexOf('let languageTimer')),context);
   runInNewContext(source.slice(source.indexOf('function applyChange(change)'),source.indexOf('let canvasCursorActive')),context);
-  return {waits,acknowledgments,views,refresh:()=>context.refreshStartup(),dispatch:action=>context.dispatch(action),bypass(){context.launchCover.blocking=false;},replace(){owner++;},
+  return {waits,acknowledgments,views,interactions,modal(value){modal=value;},refresh:()=>context.refreshStartup(),dispatch:action=>context.dispatch(action),bypass(){context.launchCover.blocking=false;},replace(){owner++;},
     async paint(){for(const callback of frames.splice(0))callback();await Promise.resolve();await Promise.resolve();},get pendingFrames(){return frames.length;},
     unsubmitted(){submitted=false;},submit(){submitted=true;},unready(){ready=false;submitted=false;},ready(){ready=true;},digest(value){ticket=value;submitted=false;},get wakes(){return wakes;},get finished(){return finished;}};
 }
@@ -159,6 +175,20 @@ test('GPU completion leaves a browser paint opportunity before the launch acknow
   await h.paint();
   assert.deepEqual(h.acknowledgments,[[1n,11n]]);
   assert.equal(h.finished,true);
+});
+
+test('host modal dialogs reach shared launch readiness, and the reveal wakes the frame that publishes held notices',async()=>{
+  const h=launchFrameHarness();h.modal(true);h.refresh();
+  assert.deepEqual(h.interactions,[['state',true]]);
+  assert.equal(h.views.at(-1).visible,false,'A host modal drops the launch cover');
+  assert.equal(h.waits.length,0);
+  h.modal(false);h.refresh();
+  assert.deepEqual(h.interactions.at(-1),['state',false]);
+  h.waits[0]();await Promise.resolve();await Promise.resolve();await h.paint();
+  const wakes=h.wakes;await h.paint();
+  assert.deepEqual(h.interactions.filter(([kind])=>kind==='presented'),[['presented',false]]);
+  assert.equal(h.finished,true);
+  assert.ok(h.wakes>wakes,'The reveal schedules a frame, which publishes notices held under the cover');
 });
 
 test('a queued browser-paint acknowledgment retains the exact submission receipt',async()=>{
@@ -524,10 +554,10 @@ test('floating editor measures its natural border box and releases a stale width
 });
 
 test('common dialog host forwards owned keys once and registers actual modal state',async t=>{
-  const {createDialogHost,hasOpenDialog,hasModalDialog}=await import('./dialog-host.js');
+  const {createDialogHost,hasOpenDialog,hasModalDialog,watchModalDialogs}=await import('./dialog-host.js');
   const {doc,element,icon}=colorDialogDom(t),dialog=element('dialog'),header=element('header'),cancel=element('button');
   header.append(cancel);dialog.append(header);doc.body.append(dialog);dialog.show=()=>{dialog.open=true;};
-  const forwarded=[];
+  const forwarded=[],modalChanges=[];watchModalDialogs(()=>modalChanges.push(hasModalDialog()));
   const app={dialog_presentation:()=>({kind:'floating'}),floating_dialog_width:(_window,natural)=>natural,dialog_header:()=>({start:'cancel',end:null}),dialog_escape:()=> 'cancel'};
   const host=createDialogHost({app,dialog,header,cancel,icon,copy:{cancel:'Cancel'},onCancel(){},onKey:event=>forwarded.push(event.key)});
   const key=()=>{let stopped=0;dialog.dispatchEvent({type:'keydown',key:'a',stopPropagation(){stopped++;},preventDefault(){}});return stopped;};
@@ -538,6 +568,7 @@ test('common dialog host forwards owned keys once and registers actual modal sta
   host.present({frame:{kind:'editor'},role:'editor',modal:false,primary:null});
   assert.equal(hasOpenDialog(),true);assert.equal(hasModalDialog(),false);assert.equal(key(),0);assert.deepEqual(forwarded,['a','a']);
   host.dispose();assert.equal(hasOpenDialog(),false);assert.equal(hasModalDialog(),false);
+  assert.deepEqual(modalChanges,[true,false],'Watchers hear only modal presence changes');
 });
 
 test('a consumed child Escape leaves its dialog open until the terminal Escape',async t=>{

@@ -160,13 +160,15 @@ impl WorkspaceView {
     fn present_status(&mut self, localization: &layer_ui::Localizer) {
         let action=if self.error.is_some() { Some(ManagerAction::SaveAsNew) }
             else if self.interrupted>0 && !self.busy { Some(ManagerAction::RecoverInterrupted) } else { None };
-        self.status=if self.error.is_some() || action.is_some() || !self.ready {
-            let text=self.error.clone().unwrap_or_else(|| action.as_ref().map_or_else(
-                || localization.text(layer_ui::MessageId::NATIVE_DIALOG_LOADING).to_string(),
+        self.status=(self.error.is_some() || action.is_some()).then(|| {
+            let text=self.error.clone().unwrap_or_else(|| action.as_ref().map_or_else(String::new,
                 |action| format!("{} · {}",self.interrupted,action.label(localization))));
-            Some(ManagerStatus {text,error:self.error.is_some(),retry:self.error.is_some(),
-                action:action.map(|action| ManagerButton {label:action.label(localization),action,enabled:true,primary:false})})
-        } else { None };
+            ManagerStatus {text,error:self.error.is_some(),retry:self.error.is_some(),
+                action:action.map(|action| ManagerButton {label:action.label(localization),action,enabled:true,primary:false})}
+        });
+    }
+    pub fn needs_attention(&self) -> bool {
+        self.error.is_some() || self.prompt.is_some() || self.status.as_ref().is_some_and(|status| status.action.is_some())
     }
 }
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -580,9 +582,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
     }
     fn notify<R: CanvasRenderer>(&mut self, session: &mut UiSession<R>, copy: WorkspaceNoticeCopy) {
         session.notify_window(copy.text(&self.localization));
-        self.notice = session.state().notice.as_ref().map(|notice| WorkspaceNotice {
-            id: notice.id, generation: self.localization_generation, copy,
-        });
+        self.notice = Some(WorkspaceNotice { id: session.last_notice_id(), generation: self.localization_generation, copy });
     }
     fn refresh_notice<R: CanvasRenderer>(&mut self, session: &mut UiSession<R>) {
         if let Some(notice) = &mut self.notice
@@ -922,6 +922,16 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         input: WorkspaceInput,
         now: u64,
     ) -> Result<UiChange> {
+        let mut change = self.apply_input(session, input, now)?;
+        merge(&mut change, session.set_workspace_attention(self.view.needs_attention()));
+        Ok(change)
+    }
+    fn apply_input<R: CanvasRenderer>(
+        &mut self,
+        session: &mut UiSession<R>,
+        input: WorkspaceInput,
+        now: u64,
+    ) -> Result<UiChange> {
         if self.renaming_workspace() && self.task.is_none()
             && matches!(input, WorkspaceInput::Open { .. } | WorkspaceInput::Form { .. }
                 | WorkspaceInput::Action { .. } | WorkspaceInput::Switch { .. }
@@ -937,7 +947,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 .as_ref()
                 .is_some_and(|action| *action != ManagerAction::SaveAsNew)
         {
-            return self.input(session, WorkspaceInput::Retry, now);
+            return self.apply_input(session, WorkspaceInput::Retry, now);
         }
         if !matches!(
             input,
@@ -2063,6 +2073,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         self.view.retry = self.view.error.is_some()
             && (self.manager.has_failed_operation() || self.manager.dirty());
         self.publish_flags();
+        merge(&mut change, session.set_workspace_attention(self.view.needs_attention()));
         change
     }
 }

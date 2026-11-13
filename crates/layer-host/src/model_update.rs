@@ -545,6 +545,7 @@ mod tests {
         use layer_engine::{PenEvent, PenPhase, SampleFlags, ToolKind};
         use layer_ui::{CommandId, LayerAction, Platform, UiAction, UiInput};
         let mut host = NativeHost::new(Platform::Android).unwrap();
+        host.set_launch_interaction(true);
         host.resize(2200, 1440, 1.75).unwrap();
         host.dispatch(UiAction::Invoke { command: CommandId::Move }).unwrap();
         host.dispatch(UiAction::Layer { action: LayerAction::Lock { id: 1, value: true } }).unwrap();

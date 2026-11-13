@@ -77,8 +77,7 @@ pub struct BootstrapView {
     pub launch_caption: Arc<str>,
     pub launch_caption_size: f32,
     pub launch_caption_color_role: &'static str,
-    pub launch_mark_ink_bottom: f32,
-    pub launch_system_mark_ink_bottom: f32,
+    pub launch_mark: Option<crate::LaunchMark>,
     pub active_tag: &'static str,
     pub app_name: &'static str,
     pub common: crate::CommonCopy,
@@ -117,6 +116,10 @@ pub struct BootstrapView {
     pub copy_failure_details: Arc<str>,
 }
 
+pub fn launch_bootstrap_view(l: &Localizer, icon: crate::ZenIcon) -> BootstrapView {
+    BootstrapView { launch_mark: Some(icon.launch_mark()), ..bootstrap_view(l) }
+}
+
 pub fn bootstrap_view(l: &Localizer) -> BootstrapView {
     BootstrapView {
         launch_caption_delay_ms: crate::LAUNCH_CAPTION_DELAY_MS,
@@ -127,8 +130,7 @@ pub fn bootstrap_view(l: &Localizer) -> BootstrapView {
         launch_caption: l.text(MessageId::COMMON_COMPILING_GPU_SHADERS),
         launch_caption_size: crate::LAUNCH_CAPTION_SIZE,
         launch_caption_color_role: crate::LAUNCH_CAPTION_COLOR_ROLE,
-        launch_mark_ink_bottom: crate::LAUNCH_MARK_INK_BOTTOM,
-        launch_system_mark_ink_bottom: crate::LAUNCH_SYSTEM_MARK_INK_BOTTOM,
+        launch_mark: None,
         active_tag: l.language().tag(),
         app_name: l.language().app_name(),
         common: crate::CommonCopy::new(l),
@@ -551,8 +553,14 @@ mod tests {
         assert_eq!(first.launch_caption_size, crate::UI_TEXT_PT as f32 * 96. / 72.);
         assert_eq!(first.launch_caption_gap, 18.);
         assert_eq!(first.launch_caption_color_role, "settings_secondary");
-        assert!(first.launch_mark_ink_bottom < 1.);
-        assert!(first.launch_system_mark_ink_bottom < first.launch_mark_ink_bottom);
+        assert!(first.launch_mark.is_none());
+        for (icon, _) in crate::ZenIcon::CHOICES {
+            let mark = launch_bootstrap_view(&localization, icon).launch_mark.unwrap();
+            assert_eq!(mark, icon.launch_mark());
+            assert_eq!(mark.icon, icon.icon());
+            assert!(0.5 < mark.ink_bottom && mark.ink_bottom < 1.);
+        }
+        assert_eq!(serde_json::to_value(launch_bootstrap_view(&localization, crate::ZenIcon::Bathing)).unwrap()["launch_mark"]["icon"], "zen-bathing");
         assert_eq!(first.active_tag, "en");
         assert_eq!(first.shipped_tags, SHIPPED_LANGUAGES.iter().map(|language| language.tag()).collect::<Vec<_>>());
         let name = "作品{draft}\"🎨\u{2068}literal\u{2069}";

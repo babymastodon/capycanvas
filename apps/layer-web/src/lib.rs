@@ -430,8 +430,9 @@ impl WebApp {
             self.startup.complete,
         ])
     }
-    pub fn launch_state(&mut self, chrome_ready: bool, failed: bool) -> Result<JsValue, JsValue> {
+    pub fn launch_state(&mut self, chrome_ready: bool, failed: bool, interaction: bool) -> Result<JsValue, JsValue> {
         self.launch_dom_ready = chrome_ready;
+        self.session.set_host_attention(interaction);
         let mut readiness = self.launch_readiness();
         readiness.failed |= failed;
         let view = self.session.launch_state(readiness);
@@ -441,8 +442,9 @@ impl WebApp {
         serialize(&view)
     }
     pub fn launch_frame(&self) -> Result<JsValue, JsValue> { serialize(&self.launch_frame) }
-    pub fn launch_presented(&mut self, frame: u64, surface: u64, chrome_ready: bool) -> bool {
+    pub fn launch_presented(&mut self, frame: u64, surface: u64, chrome_ready: bool, interaction: bool) -> bool {
         self.launch_dom_ready = chrome_ready;
+        self.session.set_host_attention(interaction);
         if self.surface_generation != surface || self.launch_frame != Some((frame, surface)) { return false; }
         self.launch_frame = None;
         let readiness = self.launch_readiness();
@@ -812,7 +814,7 @@ impl WebApp {
         self.session.localization().language().tag().into()
     }
     pub fn bootstrap_view(&self) -> Result<JsValue, JsValue> {
-        serialize(&layer_ui::bootstrap_view(self.session.localization()))
+        serialize(&layer_ui::launch_bootstrap_view(self.session.localization(), self.session.state().settings.zen_icon))
     }
     pub fn document_delivery_copy(&self) -> Result<JsValue, JsValue> {
         serialize(&layer_ui::DocumentDeliveryCopy::new(self.session.localization()))
@@ -1249,7 +1251,6 @@ impl WebApp {
         let backdrop_hold = self.session.hold_canvas_backdrop();
         let scale = self.viewport_scale;
         change.canvas_wake |= self.present_navigators()?;
-        let interaction = self.launch_interaction();
         let (Some(gpu), Some(surface)) = (self.session.engine().backend().0.as_deref(), self.surface.as_mut()) else {
             return serialize(&change);
         };
@@ -1270,7 +1271,6 @@ impl WebApp {
             brush: self.session.paint_ready(),
             chrome: self.launch_dom_ready,
             failed: surface.lost.lock().unwrap().is_some(),
-            interaction,
         };
         let launch = self.session.launch_state(readiness).frame;
         if self.launch_frame.is_some_and(|(frame, surface)| launch != Some(frame) || surface != self.surface_generation) {
@@ -1393,12 +1393,6 @@ async fn request_device(instance: &wgpu::Instance, surface: Option<&wgpu::Surfac
 }
 
 impl WebApp {
-    fn launch_interaction(&self) -> bool {
-        self.workspaces.as_ref().is_some_and(|controller| {
-            let view = &controller.view;
-            view.error.is_some() || view.prompt.is_some() || view.status.as_ref().is_some_and(|status| status.action.is_some())
-        })
-    }
     fn launch_readiness(&self) -> layer_ui::LaunchReadiness {
         let gpu = self.session.engine().backend().0.as_deref();
         layer_ui::LaunchReadiness {
@@ -1407,7 +1401,6 @@ impl WebApp {
             chrome: self.launch_dom_ready && self.surface.as_ref().zip(gpu)
                 .is_some_and(|(surface, gpu)| surface.presenter.pipelines_ready(gpu)),
             failed: self.gpu_failure().is_some(),
-            interaction: self.launch_interaction(),
         }
     }
     fn request_language(&mut self) {

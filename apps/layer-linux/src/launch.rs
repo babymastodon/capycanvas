@@ -7,7 +7,7 @@ pub(crate) struct LaunchSplash {
     paint: Rc<RefCell<Option<gtk::TickCallbackId>>>,
 }
 impl LaunchSplash {
-    pub fn new(localization: &layer_ui::Localizer) -> Self {
+    pub fn new(localization: &layer_ui::Localizer, capy: layer_ui::ZenIcon) -> Self {
         let root = gtk::Revealer::new();
         root.set_widget_name("launch-splash");
         root.set_hexpand(true);
@@ -19,7 +19,8 @@ impl LaunchSplash {
         background.add_css_class("launch-splash");
         let sizing = gtk::DrawingArea::new();
         background.set_child(Some(&sizing));
-        let icon = crate::icons::image("layer-zen-looking-up-symbolic");
+        let mark = capy.launch_mark();
+        let icon = crate::icons::image(&format!("layer-{}-symbolic", mark.icon));
         icon.set_widget_name("launch-mark");
         icon.set_pixel_size(0);
         icon.set_halign(gtk::Align::Center);
@@ -46,15 +47,15 @@ impl LaunchSplash {
         caption.set_margin_start(layer_ui::LAUNCH_CAPTION_GAP as i32);
         caption.set_margin_end(layer_ui::LAUNCH_CAPTION_GAP as i32);
         background.add_overlay(&caption);
-        let mark = icon.downgrade();
+        let image = icon.downgrade();
         let text = caption.downgrade();
         let ink = label.downgrade();
         sizing.connect_resize(move |_, width, height| {
             let size = layer_ui::launch_mark_size([width as f32, height as f32]);
-            if let Some(mark) = mark.upgrade() { mark.set_pixel_size(size.round() as i32); }
+            if let Some(image) = image.upgrade() { image.set_pixel_size(size.round() as i32); }
             if let Some(text) = text.upgrade() {
                 let padding = ink.upgrade().map_or(0, |label| label.layout().pixel_extents().0.y());
-                text.set_margin_top((height as f32 * 0.5 + size * (layer_ui::LAUNCH_MARK_INK_BOTTOM - 0.5)
+                text.set_margin_top((height as f32 * 0.5 + size * (mark.ink_bottom - 0.5)
                     + layer_ui::LAUNCH_CAPTION_GAP).round() as i32 - padding);
             }
         });
@@ -126,6 +127,21 @@ mod tests {
     use crate::workspace::tests::{native_test_app, pump, until};
 
     #[test]
+    fn launch_reads_the_language_and_capy_from_one_saved_text() {
+        let saved = serde_json::to_string(&layer_ui::Settings {
+            language: layer_ui::LanguagePreference::Explicit(layer_ui::UiLanguage::Japanese),
+            zen_icon: layer_ui::ZenIcon::Sleeping,
+            ..layer_ui::Settings::default()
+        }).unwrap();
+        let launch = crate::LaunchPreferences::read(&saved, &["fr_FR"]);
+        assert_eq!(launch.localization.language(), layer_ui::UiLanguage::Japanese);
+        assert_eq!(launch.capy, layer_ui::ZenIcon::Sleeping);
+        let unread = crate::LaunchPreferences::read("{", &["en_US"]);
+        assert_eq!(unread.localization.language(), layer_ui::UiLanguage::English);
+        assert_eq!(unread.capy, layer_ui::ZenIcon::LookingUp);
+    }
+
+    #[test]
     #[ignore = "private Wayland display: splash caption, reveal and error bypass"]
     fn native_launch_splash_timing_and_bypass() {
         let app = native_test_app("art.capycanvas.LaunchSplash");
@@ -134,9 +150,10 @@ mod tests {
         } else { adw::ColorScheme::ForceLight });
         crate::icons::register();
         let localization = layer_ui::Localizer::shared(layer_ui::UiLanguage::English);
-        for (size, prefix) in [([400, 300], "small"), ([1300, 900], "large")] {
+        for (size, prefix, capy) in [([400, 300], "small", layer_ui::ZenIcon::LookingUp), ([1300, 900], "large", layer_ui::ZenIcon::Sleeping)] {
         let started = std::time::Instant::now();
-        let splash = LaunchSplash::new(&localization);
+        let mark = capy.launch_mark();
+        let splash = LaunchSplash::new(&localization, capy);
         let window = gtk::ApplicationWindow::new(&*app);
         window.set_default_size(size[0], size[1]);
         window.set_child(Some(&splash.root));
@@ -153,6 +170,8 @@ mod tests {
         assert!(splash.covering());
         assert!((splash.root.opacity() - 254. / 255.).abs() < 1e-9);
         let icon = caption.prev_sibling().unwrap().downcast::<gtk::Image>().unwrap();
+        assert_eq!(icon.paintable(), crate::icons::paintable(&format!("layer-{}-symbolic", mark.icon), None).map(|svg| svg.upcast()),
+            "the splash draws the chosen capy");
         let geometry = || {
             let bounds = icon.compute_bounds(&window).unwrap();
             let surface = splash.root.compute_bounds(&window).unwrap();
@@ -165,7 +184,7 @@ mod tests {
                 let text = caption.compute_bounds(&window).unwrap();
                 let ink = splash.label.layout().pixel_extents().0;
                 let label = splash.label.compute_bounds(&window).unwrap();
-                assert!((label.y() + ink.y() as f32 - (bounds.y() + bounds.height() * layer_ui::LAUNCH_MARK_INK_BOTTOM)
+                assert!((label.y() + ink.y() as f32 - (bounds.y() + bounds.height() * mark.ink_bottom)
                     - layer_ui::LAUNCH_CAPTION_GAP).abs() <= 1.);
                 assert!(text.y() + text.height() <= surface.y() + surface.height());
             }

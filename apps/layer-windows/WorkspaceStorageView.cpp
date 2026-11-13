@@ -119,7 +119,6 @@ struct WorkspaceStorageView::Impl : std::enable_shared_from_this<Impl> {
         auto error=str(storage,L"error"),notice=str(storage,L"notice");
         hstring status=error;
         if(!notice.empty())status=status.empty()?notice:status+L"\n"+notice;
-        if(status.empty()&&!flag(storage,L"ready"))status=text(L"opening_workspace");
         if(status.empty()&&flag(storage,L"closing"))status=text(L"saving_workspace");
         message.Text(status);root.Visibility(status.empty()?Visibility::Collapsed:Visibility::Visible);
         auto preferences=object(model,L"windows_settings_close");
@@ -134,7 +133,6 @@ struct WorkspaceStorageView::Impl : std::enable_shared_from_this<Impl> {
         auto palette=object(branch(model,L"state"),L"palette");
         root.Background(data->brush(L"bg"));
         message.Foreground(fill(color(str(palette,L"text",L"#fafafb"))));
-        Canvas::SetZIndex(root,error.empty()?0:1300);
         buttons.Visibility(error.empty()?Visibility::Collapsed:Visibility::Visible);
         for(auto button:{retry,recover,backup})button.IsEnabled(!blocked&&!showing&&!flag(storage,L"busy"));
         auto offered=storageStatus(),action=object(offered,L"action");

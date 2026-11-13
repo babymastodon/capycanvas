@@ -276,6 +276,7 @@ mod tests {
     #[test]
     fn refused_widget_results_raise_the_shared_failure_notice() {
         let mut host = NativeHost::new(layer_ui::Platform::Windows).unwrap();
+        host.set_launch_interaction(true);
         let document = host.session.engine().document().clone();
         let failure: Action = serde_json::from_value(serde_json::json!({"windows_failure":"action_failed"})).unwrap();
         assert!(!failure.allowed_while_workspace_blocked());
@@ -297,6 +298,7 @@ mod tests {
     #[test]
     fn stale_notice_timeouts_preserve_the_current_notice() {
         let mut host = NativeHost::new(layer_ui::Platform::Windows).unwrap();
+        host.set_launch_interaction(true);
         host.session.raise_message_notice(layer_ui::MessageId::COMMON_ACTION_FAILED);
         let before = host.session.state().notice.clone();
         notice_answer(false).dispatch(&mut host).unwrap();
@@ -305,6 +307,7 @@ mod tests {
     #[test]
     fn stale_notice_accepts_raise_the_shared_refusal_notice() {
         let mut host = NativeHost::new(layer_ui::Platform::Windows).unwrap();
+        host.set_launch_interaction(true);
         let error = host.dispatch(UiAction::Notice { id: u64::MAX, accept: true, action: None }).unwrap_err();
         notice_answer(true).dispatch(&mut host).unwrap();
         assert_eq!(host.session.state().notice.as_ref().unwrap().text, error);

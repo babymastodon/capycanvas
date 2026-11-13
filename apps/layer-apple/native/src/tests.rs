@@ -1361,6 +1361,15 @@ impl App {
         self.borrow().host.invalidate_snapshot();
         self.request(7, Value::Null).unwrap()
     }
+    fn launched(&self) {
+        let ready = layer_ui::LaunchReadiness { canvas: true, brush: true, chrome: true, failed: false };
+        let mut native = self.borrow();
+        let before = native.host.session.state().revision;
+        let change = native.host.session.finish_workspace_startup();
+        native.host.apply_change(before, change);
+        let frame = native.host.session.launch_state(ready).frame.expect("a drawn workspace is ready to reveal");
+        assert!(native.host.session.launch_presented(frame, ready));
+    }
     fn action(&self, action: Value) {
         self.request(0, action).unwrap();
     }
@@ -2077,6 +2086,29 @@ fn apple_launch_resolves_saved_preference_before_native_session() {
         assert_eq!(bootstrap["preparing_canvas"], localization.text(layer_ui::MessageId::COMMON_PREPARING_CANVAS).as_ref());
         app.action(json!({"type": "restore_saved_settings", "saved": "{\"language\":{\"Explicit\":\"ja\"}}"}));
         assert!(std::sync::Arc::ptr_eq(&localization, &app.with(|native|native.host.session.localization().clone())));
+    }
+}
+
+#[test]
+fn apple_launch_bootstrap_carries_the_saved_capy_before_the_session_publishes() {
+    let cases = std::iter::once((String::new(), layer_ui::ZenIcon::LookingUp))
+        .chain(layer_ui::ZenIcon::CHOICES.map(|(icon, _)| (json!({"zen_icon": icon}).to_string(), icon)));
+    for (saved, icon) in cases {
+        for platform in [0, 1] {
+            let source = CString::new(json!({"saved": saved, "preferred_languages": ["en-US"]}).to_string()).unwrap();
+            let mut bootstrap = 0;
+            let app = App::from_handle(unsafe { launch_json(platform, source.as_ptr(), &mut bootstrap, std::ptr::null_mut()) });
+            assert!(!(app.0==0));
+            let expected = icon.launch_mark();
+            let mark = |view: Value| {
+                let mark = &view["launch_mark"];
+                (mark["icon"].as_str().map(str::to_owned), mark["ink_bottom"].as_f64().map(|value| value as f32))
+            };
+            let published = (Some(expected.icon.to_owned()), Some(expected.ink_bottom));
+            assert_eq!(mark(serde_json::from_slice(handles::take_text(bootstrap).to_bytes()).unwrap()), published, "{saved}");
+            assert_eq!(mark(app.request(7, Value::Null).unwrap()["bootstrap"].clone()), published, "{saved}");
+            assert_eq!(mark(app.request(2, json!({"type": "bootstrap"})).unwrap()), published, "{saved}");
+        }
     }
 }
 

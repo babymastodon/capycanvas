@@ -809,7 +809,7 @@ impl Fixture {
     fn with_wake(platform: Platform, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let backend = Rc::new(Backend::default());
         backend.now.set(1000);
-        let mut host = layer_host::NativeHost::new(platform).unwrap();
+        let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(platform).unwrap());
         let capture = host.session.capture_workspace().unwrap();
         let baseline = capture.history.layout().clone();
         let entity = Entity::workspace("My Workspace", capture, baseline, 1000);
@@ -1944,7 +1944,7 @@ fn constructor_wakes_the_first_pending_startup_reply() {
         Store(backend), Platform::Web, 1000, Localizer::shared(UiLanguage::English),
         Arc::new(move || { counter.fetch_add(1, Ordering::SeqCst); }),
     );
-    let mut host = layer_host::NativeHost::new(Platform::Web).unwrap();
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
     controller.tick(&mut host.session, 1000);
     assert!(!controller.view.ready);
     assert_eq!(wakes.load(Ordering::SeqCst), 0);
@@ -2030,7 +2030,7 @@ fn resume_key_restores_the_scene_workspace_before_last_used() {
     let mut f = Fixture::new();
     let first = f.controller.view.id.clone().unwrap();
     let key = "apple:scene:one".to_string();
-    let mut host = layer_host::NativeHost::new(Platform::Web).unwrap();
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
     let now = f.backend.now.get();
     let mut run = |c: &mut WorkspaceController<Store>, input: Option<serde_json::Value>| {
         if let Some(input) = input {
@@ -2155,7 +2155,7 @@ fn start<S: WorkspaceStore + 'static>(
     store: S,
     platform: Platform,
 ) -> (WorkspaceController<S>, layer_host::NativeHost) {
-    let mut host = layer_host::NativeHost::new(platform).unwrap();
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(platform).unwrap());
     let mut controller = WorkspaceController::new_localized(store, platform, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
     for _ in 0..20 {
         if controller.view.ready {
@@ -2296,7 +2296,7 @@ fn notice(host: &layer_host::NativeHost) -> Option<String> {
 fn startup_notices_survive_initial_drawing_recovery_without_reappearing_after_dismissal() {
     let (mut controller,mut host) = start(FaultyStore::failing(0,false,ErrorKind::Unavailable),Platform::Web);
     let notice = host.session.state().notice.clone().unwrap();
-    let mut restored = layer_host::NativeHost::new(Platform::Web).unwrap();
+    let mut restored = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
     restored.session.inherit_window_state(&host.session).unwrap();
     std::mem::swap(&mut host.session,&mut restored.session);
     controller.tick(&mut host.session,2000);
@@ -2421,7 +2421,7 @@ fn startup_on_every_platform_adopts_from_empty_or_unusable_storage() {
 fn mobile_browsers_start_in_sketch_and_desktop_browsers_start_in_paint() {
     for (mobile, expected) in [(false, "Paint"), (true, "Sketch")] {
         let store = Store(Rc::new(Backend::default()));
-        let mut host = layer_host::NativeHost::new(Platform::Web).unwrap();
+        let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
         let mut controller = WorkspaceController::new_localized(store, Platform::Web, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}))
             .with_mobile_browser(mobile);
         assert!(!host.session.state().workspace_ready);
@@ -2449,7 +2449,7 @@ fn workspace_controls_become_ready_with_the_restored_layout_on_every_platform() 
         pollster::block_on(manager.close()).unwrap();
         let (release, hold) = async_channel::bounded(1);
         *store.0.switcher_gate.borrow_mut() = Some(hold);
-        let mut host = layer_host::NativeHost::new(platform).unwrap();
+        let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(platform).unwrap());
         let mut controller = WorkspaceController::new_localized(store, platform, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
         for _ in 0..20 {
             controller.tick(&mut host.session, 1000);
@@ -2550,7 +2550,7 @@ fn startup_replaces_only_storage_it_cannot_read() {
 pub(crate) fn start_native(
     directory: &std::path::Path,
 ) -> (WorkspaceController<StoreWorker>, layer_host::NativeHost) {
-    let mut host = layer_host::NativeHost::new(Platform::Gtk).unwrap();
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Gtk).unwrap());
     let mut controller =
         WorkspaceController::new_localized(StoreWorker::shared(directory).unwrap(), Platform::Gtk, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);

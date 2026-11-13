@@ -1546,6 +1546,44 @@ fn native_startup_latency() {
     pump(20);
 }
 
+#[test]
+#[ignore = "private Wayland desktop: the launch cover stays on top, shows the chosen capy and yields to host alerts"]
+fn native_launch_cover_yields_to_host_alerts() {
+    let app = native_test_app("art.capycanvas.LaunchCover");
+    crate::application_localization(&app).borrow_mut().settings = Some(Settings { zen_icon: layer_ui::ZenIcon::Bathing, ..Settings::default() });
+    let w = Workspace::new(&app);
+    let mark = named::<gtk::Image>(w.launch.root.upcast_ref(), "launch-mark");
+    assert_eq!(mark.paintable(), crate::icons::paintable("layer-zen-bathing-symbolic", None).map(|svg| svg.upcast()),
+        "the first covered frame already shows the chosen capy");
+    assert!(w.launch.root.next_sibling().is_none(), "nothing in the window content draws over the launch cover");
+    assert!(!w.workspaces.root.get_visible(), "starting shows no workspace status row");
+    let copy = layer_ui::bootstrap_view(&w.localization());
+    let dialog = adw::AlertDialog::builder().heading(copy.cannot_open_file.as_ref()).build();
+    dialog.add_response("ok", &copy.ok);
+    dialog.set_close_response("ok");
+    let (alert, window, intent) = (dialog.clone(), w.window.clone(), copy.file_error_dialog);
+    glib::spawn_future_local(async move { crate::alert::choose_intent(alert, &window, intent, Some("ok"), &[]).await; });
+    w.window.present();
+    until(|| w.visible_dialog().is_some(), "a host alert opens over the starting window");
+    assert!(!w.launch.covering(), "a host alert drops the launch cover");
+    until(|| w.gpu.borrow().is_some() && state(&w).workspace_ready && ui_session(&w).engine().backend().startup.complete,
+        "startup preparation finishes under the host alert");
+    pump(500);
+    assert!(!w.launch.covering(), "the cover stays down while the host alert is open");
+    ui_session_mut(&w).notify_window("Shown beside the host alert");
+    assert!(state(&w).notice.is_some(), "a notice raised while a host alert holds the cover down shows at once");
+    crate::page_dialog::close_dialog(&dialog);
+    until(|| w.visible_dialog().is_none() && w.launch.covering(), "the unfinished launch covers the workspace again");
+    ui_session_mut(&w).notify_window("Restored");
+    assert!(state(&w).notice.is_none(), "a notice raised under the cover waits for its reveal");
+    let notice = named::<gtk::Box>(w.window.upcast_ref(), "canvas-notice");
+    until(|| notice.is_visible(), "the held notice shows with the revealed workspace");
+    assert!(w.launch.covering(), "the held notice is published as the reveal begins, not after a later change");
+    until(|| !w.launch.covering(), "the launch reveals the workspace");
+    w.window.destroy();
+    pump(20);
+}
+
 pub(crate) struct NativeTestApp(pub(crate) adw::Application);
 impl std::ops::Deref for NativeTestApp {
     type Target = adw::Application;

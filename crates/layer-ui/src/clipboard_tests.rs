@@ -10,13 +10,12 @@ mod clipboard_checks {
     use std::sync::Arc;
 
     fn clip_session() -> UiSession<Recorder> {
-        let mut s = UiSession::new(
+        let mut s = launched(UiSession::new(
             Recorder { tiled_sources: true, ..Default::default() },
             Document::new(PortableId::random(), 400, 300, layer_core::DocumentNames { paint: "Current ink".into(), paper: "Paper".into() }),
             [800, 600],
             Platform::Gtk,
-        )
-        .unwrap();
+        ).unwrap());
         s.frame(1, 1).unwrap();
         s
     }
@@ -814,7 +813,7 @@ mod clipboard_checks {
             assert!(Arc::ptr_eq(&converted.source, &copied.source));
             let mut document = Document::new(PortableId::random(), 400, 300, layer_core::DocumentNames { paint: "Destination".into(), paper: "Paper".into() });
             document.artwork.compositions.get_mut(document.artwork.root).unwrap().color = color;
-            let mut destination = UiSession::new(Recorder { color, tiled_sources: true, ..Default::default() }, document, [800, 600], Platform::Gtk).unwrap();
+            let mut destination = launched(UiSession::new(Recorder { color, tiled_sources: true, ..Default::default() }, document, [800, 600], Platform::Gtk).unwrap());
             let before = destination.engine.document().clone();
             destination.paste_clip(&converted, PasteMode::InPlace).unwrap();
             let document = destination.engine.document();
@@ -1692,7 +1691,7 @@ mod clipboard_checks {
     #[test]
     fn the_selection_bar_offers_copy_on_every_host() {
         for platform in Platform::ALL {
-            let mut s = UiSession::new(Recorder::default(), Document::new(PortableId::random(), 400, 300, layer_core::DocumentNames { paint: "Current ink".into(), paper: "Paper".into() }), [800, 600], platform).unwrap();
+            let mut s = launched(UiSession::new(Recorder::default(), Document::new(PortableId::random(), 400, 300, layer_core::DocumentNames { paint: "Current ink".into(), paper: "Paper".into() }), [800, 600], platform).unwrap());
             invoke(&mut s, CommandId::SelectAll);
             invoke(&mut s, CommandId::Move);
             let offered = s.state.canvas_bar.unwrap().items.iter().any(|i| i.menu == Some(CanvasBarMenu::Copy));

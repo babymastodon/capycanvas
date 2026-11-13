@@ -6,7 +6,6 @@ import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.LayerDrawable
 import android.util.TypedValue
 import android.os.Build
 import android.os.SystemClock
@@ -25,6 +24,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -134,8 +134,16 @@ internal class LaunchSplashWindow(private val activity: MainActivity) {
     var background by mutableStateOf(activity.getColor(R.color.canvas_launch_background))
         private set
     val foreground = activity.getColor(R.color.capy_splash_foreground)
-    val legacyMarkSize = if (Build.VERSION.SDK_INT < 31)
-        (activity.getDrawable(R.drawable.capy_launch_background) as? LayerDrawable)?.let { it.getLayerHeight(it.numberOfLayers - 1).takeIf { size -> size > 0 } } else null
+    private val marks = activity.resources.getStringArray(R.array.capy_launch_icons).let { icons ->
+        fun resources(array: Int) = activity.resources.obtainTypedArray(array).let { values ->
+            IntArray(icons.size) { values.getResourceId(it, 0) }.also { values.recycle() }
+        }
+        val drawables = resources(R.array.capy_launch_marks)
+        val themes = resources(R.array.capy_launch_splash_themes)
+        icons.indices.associate { icons[it] to LaunchMarkResources(drawables[it], themes[it]) }
+    }
+    private var persisted: String? = null
+    private var mark: String? = null
     private var view: View? = null
     private var caption: TextView? = null
     private var frameCommit: Pair<ViewTreeObserver, Runnable>? = null
@@ -212,10 +220,21 @@ internal class LaunchSplashWindow(private val activity: MainActivity) {
             if (view === splash && !reveal.closed) { nativeInkBottom = bottom; refresh() }
         }
     }
-    fun update(visible: Boolean, finished: Boolean, text: String?, reveal: Long?, gap: Float, size: Float, color: Int) {
+    fun markDrawable(icon: String?) = marks[icon]?.drawable
+
+    fun choose(icon: String) {
+        if (Build.VERSION.SDK_INT < 31) return
+        val theme = marks[icon]?.theme?.takeIf { icon != persisted } ?: return
+        persisted = icon
+        activity.splashScreen.setSplashScreenTheme(theme)
+        activity.host.recordSystemSplash(icon)
+    }
+
+    fun update(visible: Boolean, finished: Boolean, mark: String?, text: String?, reveal: Long?, gap: Float, size: Float, color: Int) {
         if (this.reveal.closed) return
         this.reveal.update(visible, finished)
         if (visible || !finished) cancelFrame()
+        this.mark = mark
         this.text = text
         this.duration = reveal
         this.gap = gap
@@ -251,8 +270,16 @@ internal class LaunchSplashWindow(private val activity: MainActivity) {
         if (Build.VERSION.SDK_INT < 31) return
         val splash = view as? SplashScreenView ?: return
         if (!nativeCaptured) return
-        if (!nativeActive) {
-            splash.post { if (view === splash) { view = null; splash.remove() } }
+        if (!nativeActive || mark != null && mark != activity.host.systemSplash) {
+            nativeActive = false
+            hadNativeVisual = false
+            caption = null
+            view = null
+            val decor = activity.window.decorView
+            decor.postOnAnimation {
+                decor.viewTreeObserver.registerFrameCommitCallback { decor.post { remove(splash) } }
+                decor.invalidate()
+            }
             return
         }
         caption?.apply {
@@ -277,32 +304,40 @@ internal class LaunchSplashWindow(private val activity: MainActivity) {
             if (!reveal.finished) {
                 splash.animate().cancel()
                 view = null
+                caption = null
                 nativeActive = false
+                hadNativeVisual = false
                 fading = false
-                splash.remove()
+                remove(splash)
             } else if (reveal.started && !fading && duration != null) {
                 fading = true
                 splash.animate().alpha(0f).setDuration(duration!!).withEndAction {
                     if (view === splash) { view = null; nativeActive = false }
                     fading = false
-                    splash.remove()
+                    remove(splash)
                 }.start()
             }
         }
     }
+    @androidx.annotation.RequiresApi(31)
+    private fun remove(splash: SplashScreenView) {
+        val measuring = iconBoundsJob?.takeIf { !it.isCompleted } ?: return splash.remove()
+        measuring.invokeOnCompletion { splash.post { splash.remove() } }
+    }
     fun close() {
         reveal.close()
         iconBoundsJob?.cancel()
-        iconBoundsJob = null
         cancelFrame()
-        if (Build.VERSION.SDK_INT >= 31) (view as? SplashScreenView)?.let { it.animate().cancel(); it.remove() }
+        if (Build.VERSION.SDK_INT >= 31) (view as? SplashScreenView)?.let { it.animate().cancel(); remove(it) }
         view = null
         caption = null
         nativeActive = false
     }
 }
 
-internal fun CanvasHost.launchCovered(): Boolean = failure == null &&
+internal class LaunchMarkResources(val drawable: Int, val theme: Int)
+
+internal fun CanvasHost.launchCovered(): Boolean = failure == null && !dialogOpen &&
     !(snapshot?.objectOrNull("state") == null && notice?.id == null && notice != null) && snapshot?.objectOrNull("launch")?.optBoolean("visible", true) != false
 
 internal fun CanvasHost.launchFinished(): Boolean = snapshot?.objectOrNull("launch")?.optBoolean("finished") == true && failure == null
@@ -318,6 +353,9 @@ internal fun CanvasHost.launchHolding(reveal: LaunchReveal?): Boolean {
     val visible = host.launchCovered()
     val finished = host.launchFinished()
     val bootstrap = host.bootstrap
+    val mark = bootstrap?.objectOrNull("launch_mark")
+    val markIcon = mark?.getString("icon")
+    LaunchedEffect(window, markIcon) { markIcon?.let(window::choose) }
     val density = LocalDensity.current
     val reveal = bootstrap?.getLong("launch_reveal_ms")
     val gap = bootstrap?.getDouble("launch_caption_gap")?.toFloat() ?: 0f
@@ -337,8 +375,7 @@ internal fun CanvasHost.launchHolding(reveal: LaunchReveal?): Boolean {
     val role = bootstrap?.optString("launch_caption_color_role").orEmpty()
     val color = host.snapshot?.objectOrNull("state")?.objectOrNull("palette")?.optString(role)
         ?.takeIf { it.isNotEmpty() }?.let { android.graphics.Color.parseColor(it) } ?: window.foreground
-    val systemInkBottom = bootstrap?.optDouble("launch_system_mark_ink_bottom")?.toFloat() ?: 0f
-    SideEffect { window.update(visible, finished, caption, reveal, gap * density.density, size * density.density, color) }
+    SideEffect { window.update(visible, finished, markIcon, caption, reveal, gap * density.density, size * density.density, color) }
     val holding = host.launchHolding(window.reveal)
     val alpha by animateFloatAsState(if (holding) 1f else 0f,
         tween(if (finished) reveal?.toInt() ?: 0 else 0), label = "launch-reveal")
@@ -347,15 +384,13 @@ internal fun CanvasHost.launchHolding(reveal: LaunchReveal?): Boolean {
         awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
     }) {
         if (!native && alpha > 0f) {
-            val mark = window.legacyMarkSize?.let { with(density) { it.toDp() } }
-                ?: if (bootstrap != null) Native.launchMarkSize(maxWidth.value, maxHeight.value).dp else 0.dp
-            val foreground = Color(window.foreground)
-            val inkBottom = if (window.legacyMarkSize != null) systemInkBottom
-                else bootstrap?.optDouble("launch_mark_ink_bottom")?.toFloat() ?: 0f
+            val drawable = window.markDrawable(markIcon)
+            val inkBottom = mark?.getDouble("ink_bottom")?.toFloat() ?: 0f
             Layout(modifier = Modifier.fillMaxSize().graphicsLayer { this.alpha = alpha }.background(Color(window.background))
                 .testTag("launch-splash"), content = {
-                Image(painterResource(if (window.legacyMarkSize != null) R.drawable.capy_splash_mark else R.drawable.capy_full_mark),
-                    null, Modifier.size(mark), colorFilter = ColorFilter.tint(foreground))
+                if (drawable == null) Spacer(Modifier)
+                else Image(painterResource(drawable), null, Modifier.size(Native.launchMarkSize(maxWidth.value, maxHeight.value).dp)
+                    .testTag("launch-splash-mark"), colorFilter = ColorFilter.tint(Color(window.foreground)))
                 if (!caption.isNullOrEmpty()) AndroidView(factory = { LaunchCaptionTextView(it) }, update = {
                     it.text = caption
                     it.setTextSize(TypedValue.COMPLEX_UNIT_PX, size * density.density)

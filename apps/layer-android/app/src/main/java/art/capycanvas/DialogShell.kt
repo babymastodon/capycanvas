@@ -165,6 +165,11 @@ internal data class DialogResponse(val label: String, val tag: String, val accen
         }
         val mode = presentation?.getString("kind") ?: return@BoxWithConstraints
         if (!shown && mode != "page") return@BoxWithConstraints
+        DisposableEffect(host,shown) {
+            val dialog = Any()
+            if(shown)host.dialogPresented(dialog,true)
+            onDispose { host.dialogPresented(dialog,false) }
+        }
         val hosting = mode to (phone != null)
         val restoreSearch = remember(hosting) { search?.focused == true }
         LaunchedEffect(hosting,shown) { if(shown && (phone == null || host.dialogFocus.lastOrNull() === focus)) { if (restoreSearch) currentSearch?.focus?.requestFocus() else if (!focus.saveFocusedChild()) focus.requestFocus() } }

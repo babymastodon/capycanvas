@@ -29,7 +29,7 @@ struct CanvasNotice:std::enable_shared_from_this<CanvasNotice>{
     Microsoft::UI::Dispatching::DispatcherQueueTimer timeout{nullptr};
     std::optional<double> shown;
     J placement,bar;
-    bool visible=false,covered=true;
+    bool visible=false;
 
     void init(Canvas const& root){
         host=root;auto weak=weak_from_this();
@@ -98,7 +98,7 @@ struct CanvasNotice:std::enable_shared_from_this<CanvasNotice>{
         shown=id;
         surface.Fill(data->glass(L"panel"));
         visible=true;present();
-        if(!covered){timeout.Stop();timeout.Start();}
+        timeout.Stop();timeout.Start();
         if(auto peer=Automation::Peers::FrameworkElementAutomationPeer::FromElement(frame))
             peer.RaiseAutomationEvent(Automation::Peers::AutomationEvents::LiveRegionChanged);
     }
@@ -106,11 +106,6 @@ struct CanvasNotice:std::enable_shared_from_this<CanvasNotice>{
     void Bar(J const& bounds){bar=bounds;present();}
     void AppendGlass(A& regions,UIElement const& reference)const{
         appendGlass(regions,frame,reference,{SurfaceRadius,SurfaceRadius,SurfaceRadius,SurfaceRadius},true);
-    }
-    void Uncover(){
-        if(!covered)return;
-        covered=false;
-        if(visible){timeout.Stop();timeout.Start();}
     }
     void Hide(){
         timeout.Stop();

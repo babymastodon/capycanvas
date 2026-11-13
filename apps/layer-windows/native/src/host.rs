@@ -425,6 +425,9 @@ impl CapyHost {
             }
             service.poll(&mut self.native, crate::workspace_service::now_ms());Ok(())
         })?;}
+        let dialog = self.documents.as_ref().is_some_and(crate::documents::DocumentService::host_dialog_open)
+            || self.services.as_ref().is_some_and(|service| service.close_status().error.is_some());
+        self.native.set_launch_interaction(dialog);
         Ok(())
     }
 

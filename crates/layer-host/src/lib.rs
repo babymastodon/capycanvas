@@ -175,7 +175,6 @@ pub struct NativeHost {
     pub sequence: u64,
     pub startup: layer_render_wgpu::StartupProgress,
     chrome_ready: bool,
-    launch_interaction: bool,
     pub(crate) document_close_prepared: bool,
     poisoned: Option<String>,
     pub proof: layer_ui::proof_workflow::ProofView,
@@ -314,7 +313,7 @@ impl NativeHost {
         Ok(Self::from_session(Box::new(session)))
     }
     pub fn bootstrap_view(&self) -> layer_ui::BootstrapView {
-        layer_ui::bootstrap_view(self.session.localization())
+        layer_ui::launch_bootstrap_view(self.session.localization(), self.session.state().settings.zen_icon)
     }
     pub fn set_device_class(&mut self, device: layer_ui::DeviceClass) {
         self.session.set_device_class(device);
@@ -363,7 +362,6 @@ impl NativeHost {
             // Eager hosts are ready on GPU attachment; staged hosts reset this.
             startup: layer_render_wgpu::StartupProgress::COMPLETE,
             chrome_ready: false,
-            launch_interaction: false,
             document_close_prepared: false,
             poisoned: None,
             last_pen: None,
@@ -1280,6 +1278,7 @@ mod tests {
     #[test]
     fn action_refusals_keep_the_native_host_usable() {
         let mut host=NativeHost::new(layer_ui::Platform::Windows).unwrap();
+        host.set_launch_interaction(true);
         host.set_localization(layer_ui::Localizer::shared(layer_ui::UiLanguage::Italian));
         let before=host.session.engine().document().clone();let checkpoint=host.session.engine().checkpoint();
         assert!(host.dispatch(UiAction::Invoke {command:layer_ui::CommandId::PlacementOriginalSize}).is_err());

@@ -10,6 +10,7 @@ import SwiftUI
     @Published private(set) var nameError: String?
     @Published private(set) var validatingName = false
     private var nameValidation = UUID()
+    private let transportFailure = UUID()
     @Published var formDescription = ""
     @Published var formChoice = ""
     @Published private var dismissedError: String?
@@ -149,10 +150,14 @@ import SwiftUI
     }
     private func receive(_ number: Int, _ reply: JSON?, _ failure: String?) {
         guard let reply, !reply["view"].isNull else {
-            if let failure, view["error"].isNull { view = view.replacing("error", with: JSON(failure)) }
+            if let failure, view["error"].isNull {
+                view = view.replacing("error", with: JSON(failure))
+                store?.hostSurface(transportFailure, shown: true)
+            }
             settle(number, transportFailed: failure != nil)
             return
         }
+        store?.hostSurface(transportFailure, shown: false)
         if reply["wake"].bool { store?.wake?() }
         if !SnapshotProjection.equal(view.raw, reply["view"].raw) { present(reply["view"]) }
         settle(number)

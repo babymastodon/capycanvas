@@ -86,7 +86,7 @@ impl NativeWorkspaces {
         recovery.set_visible(false);
         actions.append(&recovery);
         root.append(&actions);
-        root.set_visible(store.is_some());
+        root.set_visible(false);
         let (switcher, switch_body, switch_options) = switcher::build();
         switcher.set_sensitive(false);
         Self {

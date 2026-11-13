@@ -220,18 +220,21 @@ private struct LaunchCover: View {
     var body: some View {
         GeometryReader { geometry in
             let size = CGFloat(capy_apple_launch_mark_size(Float(geometry.size.width), Float(geometry.size.height)))
+            let mark = store.bootstrap["launch_mark"]
             ZStack(alignment: .topLeading) {
-                SharedIcon(name: "layer-zen-looking-up-symbolic", size: size)
-                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
-                Text(store.bootstrap["launch_caption"].string)
-                    .font(.system(size: captionSize)).opacity(captionVisible ? 1 : 0)
-                    .foregroundStyle(palette[store.bootstrap["launch_caption_color_role"].string])
-                    .accessibilityHidden(!captionVisible)
-                    .multilineTextAlignment(.center).padding(.horizontal, 24)
-                    .frame(width: geometry.size.width).fixedSize(horizontal: false, vertical: true)
-                    .alignmentGuide(.top) { $0[.firstTextBaseline] - captionInkAscent }
-                    .offset(y: geometry.size.height / 2 + size * (CGFloat(store.bootstrap["launch_mark_ink_bottom"].number) - 0.5)
-                        + CGFloat(store.bootstrap["launch_caption_gap"].number))
+                if !mark.isNull {
+                    SharedIcon(name: mark["icon"].string, size: size)
+                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                    Text(store.bootstrap["launch_caption"].string)
+                        .font(.system(size: captionSize)).opacity(captionVisible ? 1 : 0)
+                        .foregroundStyle(palette[store.bootstrap["launch_caption_color_role"].string])
+                        .accessibilityHidden(!captionVisible)
+                        .multilineTextAlignment(.center).padding(.horizontal, 24)
+                        .frame(width: geometry.size.width).fixedSize(horizontal: false, vertical: true)
+                        .alignmentGuide(.top) { $0[.firstTextBaseline] - captionInkAscent }
+                        .offset(y: geometry.size.height / 2 + size * (CGFloat(mark["ink_bottom"].number) - 0.5)
+                            + CGFloat(store.bootstrap["launch_caption_gap"].number))
+                }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
         }

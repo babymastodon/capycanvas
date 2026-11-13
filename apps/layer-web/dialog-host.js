@@ -1,9 +1,15 @@
 import {composingKey} from './text-input.js';
 import {bindCopy} from './localization.js';
 
-const presentedDialogs=new Map();
+const presentedDialogs=new Map(),modalWatchers=new Set();
 export const hasOpenDialog=()=>presentedDialogs.size>0;
 export function hasModalDialog(){for(const intent of presentedDialogs.values())if(intent.modal)return true;return false;}
+export function watchModalDialogs(watcher){modalWatchers.add(watcher);}
+function track(dialog,intent){
+  const modal=hasModalDialog();
+  if(intent)presentedDialogs.set(dialog,intent);else presentedDialogs.delete(dialog);
+  if(modal!==hasModalDialog())for(const watcher of modalWatchers)watcher();
+}
 
 function measureAlert(dialog,header,responses,buttons) {
   const title=header.querySelector('h2'),rootStyle=dialog.style.cssText,titleStyle=title?.style.cssText,stacked=responses.classList.contains('alert-responses-stacked'),buttonStyles=buttons.map(node=>node.style.cssText);
@@ -117,18 +123,18 @@ export function createDialogHost({app,dialog,header,headerStyle='raised',cancel,
   const resize=new ResizeObserver(queueLayout);resize.observe(cancel);if(primary)resize.observe(primary);
   return {
     present(next) {
-      intent=next;presentedDialogs.set(dialog,intent);dialog.setAttribute('role',intent.role==='alert'?'alertdialog':'dialog');dialog.setAttribute('aria-modal',String(intent.modal));
+      intent=next;track(dialog,intent);dialog.setAttribute('role',intent.role==='alert'?'alertdialog':'dialog');dialog.setAttribute('aria-modal',String(intent.modal));
       const opening=!dialog.open;
       if(opening){previousFocus=document.activeElement;if(intent.modal)dialog.showModal();else dialog.show();}
       layout();return opening;
     },
     hide() {
-      intent=null;outsideDown=false;presentedDialogs.delete(dialog);if(!dialog.open)return;expectedCloses++;dialog.close();
+      intent=null;outsideDown=false;track(dialog,null);if(!dialog.open)return;expectedCloses++;dialog.close();
       if(!hasOpenDialog()&&previousFocus?.isConnected)previousFocus.focus({preventScroll:true});
     },
     layout,
     dismiss(){if(intent){if(onDismiss){onDismiss();return;}if(app.dialog_header(intent,subpage()).start==='back')onBack();else onCancel();}},
-    dispose(){presentedDialogs.delete(dialog);if(resizeFrame)cancelAnimationFrame(resizeFrame);resize.disconnect();contentChanges?.disconnect();restoreHeader();window.removeEventListener('resize',layout);window.visualViewport?.removeEventListener('resize',layout);window.visualViewport?.removeEventListener('scroll',layout);dialog.removeEventListener('cancel',cancelled);dialog.removeEventListener('keydown',key);dialog.removeEventListener('close',closed);dialog.removeEventListener('click',outside);dialog.removeEventListener('pointerdown',down);dialog.removeEventListener('pointercancel',cancelContact);done?.remove();back?.remove();close?.remove();},
+    dispose(){track(dialog,null);if(resizeFrame)cancelAnimationFrame(resizeFrame);resize.disconnect();contentChanges?.disconnect();restoreHeader();window.removeEventListener('resize',layout);window.visualViewport?.removeEventListener('resize',layout);window.visualViewport?.removeEventListener('scroll',layout);dialog.removeEventListener('cancel',cancelled);dialog.removeEventListener('keydown',key);dialog.removeEventListener('close',closed);dialog.removeEventListener('click',outside);dialog.removeEventListener('pointerdown',down);dialog.removeEventListener('pointercancel',cancelContact);done?.remove();back?.remove();close?.remove();},
   };
 }
 

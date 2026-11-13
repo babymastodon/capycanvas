@@ -2,4 +2,5 @@
 <full-backup-content>
     <exclude domain="file" path="workspaces/workspaces.sqlite3-shm" />
     <exclude domain="file" path="workspaces/workspaces.sqlite3-locks" />
+    <exclude domain="sharedpref" path="capy-launch-splash.xml" />
 </full-backup-content>

@@ -144,20 +144,36 @@ pub fn run() -> gtk::glib::ExitCode {
     result
 }
 
-fn launch_localization() -> &'static std::sync::Arc<layer_ui::Localizer> {
-    static ACTIVE: std::sync::OnceLock<std::sync::Arc<layer_ui::Localizer>> = std::sync::OnceLock::new();
+struct LaunchPreferences {
+    localization: std::sync::Arc<layer_ui::Localizer>,
+    capy: layer_ui::ZenIcon,
+}
+
+impl LaunchPreferences {
+    fn read(saved: &str, tags: &[&str]) -> Self {
+        Self { localization: layer_ui::launch_localization(saved, tags), capy: layer_ui::Settings::launch_icon(saved) }
+    }
+}
+
+fn launch_preferences() -> &'static LaunchPreferences {
+    static ACTIVE: std::sync::OnceLock<LaunchPreferences> = std::sync::OnceLock::new();
     ACTIVE.get_or_init(|| {
-        let preference = match preferences::load_language_preference() {
-            Ok(preference) => preference,
-            Err(error) => {
-                eprintln!("{error}; using system language");
-                layer_ui::LanguagePreference::System
-            }
-        };
+        let saved = preferences::load_saved().unwrap_or_else(|error| {
+            eprintln!("{error}; using default preferences");
+            None
+        });
         let languages = glib::language_names_with_category("LC_MESSAGES");
         let tags = languages.iter().map(|tag| tag.as_str()).collect::<Vec<_>>();
-        layer_ui::Localizer::shared(layer_ui::resolve_launch_language(preference, &tags))
+        LaunchPreferences::read(saved.as_deref().unwrap_or_default(), &tags)
     })
+}
+
+fn launch_localization() -> &'static std::sync::Arc<layer_ui::Localizer> {
+    &launch_preferences().localization
+}
+
+pub(crate) fn launch_capy(app: &adw::Application) -> layer_ui::ZenIcon {
+    application_localization(app).borrow().settings.as_ref().map_or(launch_preferences().capy, |settings| settings.zen_icon)
 }
 
 struct ApplicationLocalization {

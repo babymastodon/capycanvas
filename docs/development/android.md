@@ -43,7 +43,8 @@ when their job ends. The latest copied image keeps its name in `temp/clipboard`
 so other apps can paste it until Capy Canvas starts again.
 
 Auto Backup and device transfer copy the settings and `filesDir`, except the
-workspace database's `-shm` index and `-locks` folder. Android never backs up
+workspace database's `-shm` index and `-locks` folder and the
+`capy-launch-splash` record of which capy the system splash shows. Android never backs up
 `noBackupFilesDir` or `cacheDir`, so sessions, caches and temporary files stay on
 the device. `hasFragileUserData` lets the user keep the data when uninstalling.
 

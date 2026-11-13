@@ -60,8 +60,7 @@ impl<'a> SnapshotFields<'a> {
 
 impl NativeHost {
     pub fn set_launch_interaction(&mut self, interaction: bool) {
-        if self.launch_interaction != interaction {
-            self.launch_interaction = interaction;
+        if self.session.set_host_attention(interaction).regions != 0 {
             self.invalidate_snapshot();
             self.dirty = true;
         }
@@ -74,7 +73,6 @@ impl NativeHost {
             brush: progress.brush_ready,
             chrome: self.chrome_ready,
             failed: self.error.is_some(),
-            interaction: self.launch_interaction,
         }
     }
 

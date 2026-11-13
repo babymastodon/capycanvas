@@ -1,10 +1,10 @@
 use super::*;
-use crate::session::test_support::{Recorder, invoke, layer as layer_action, select, rectangle};
+use crate::session::test_support::{Recorder, invoke, launched, layer as layer_action, select, rectangle};
 use layer_core::{Document, DocumentNames, ImageObject, PortableId, SceneScope, authored::{Affine64, OccurrenceContent}, color::source::rgba8_source};
 
 fn session() -> UiSession<Recorder> {
-    UiSession::new(Recorder { tiled_sources: true, ..Default::default() },
-        Document::new(PortableId::random(), 600, 400, DocumentNames { paint: "Ink".into(), paper: "Paper".into() }), [600, 400], Platform::Gtk).unwrap()
+    launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() },
+        Document::new(PortableId::random(), 600, 400, DocumentNames { paint: "Ink".into(), paper: "Paper".into() }), [600, 400], Platform::Gtk).unwrap())
 }
 fn picture() -> Image { rgba8_source([80, 60], |x, y| [x as u8, y as u8, 7, 255]).into() }
 fn images(s: &mut UiSession<Recorder>, x: f64) -> OccurrenceHandle {

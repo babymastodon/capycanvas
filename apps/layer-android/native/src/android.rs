@@ -925,7 +925,7 @@ pub extern "system" fn Java_art_capycanvas_Native_bootstrap(
         let locales = locale_tags(&mut env, &locales)?;
         let tags = locales.iter().map(String::as_str).collect::<Vec<_>>();
         let localization = crate::launch::localization(&saved, &tags);
-        serde_json::to_string(&layer_ui::bootstrap_view(&localization)).map_err(error)
+        serde_json::to_string(&crate::launch::bootstrap_view(&saved, &localization)).map_err(error)
     })();
     string(&mut env, result)
     })
@@ -1364,15 +1364,10 @@ pub extern "system" fn Java_art_capycanvas_Native_modelUpdate(
     let result = (|| {
         let a = &mut *capy_app;
         let Some(bytes) = a.host.take_model_update_bytes().map_err(error)? else { return Ok(None); };
-        if a.published_language == a.host.localization_generation() {
+        let Some(extension) = a.published_bootstrap.update(&mut a.host)? else {
             return String::from_utf8(bytes).map(Some).map_err(error);
-        }
-        let extension = serde_json::to_vec(&serde_json::json!({
-            "bootstrap": serde_json::to_value(a.host.bootstrap_view()).map_err(error)?,
-            "catalog": a.host.query(serde_json::json!({"type": "catalog"}))?,
-            "localization_generation": a.host.localization_generation(),
-        })).map_err(error)?;
-        a.published_language = a.host.localization_generation();
+        };
+        let extension = serde_json::to_vec(&extension).map_err(error)?;
         String::from_utf8(layer_host::extend_update(bytes, &extension)).map(Some).map_err(error)
     })();
     match result {
@@ -1674,6 +1669,13 @@ pub extern "system" fn Java_art_capycanvas_Native_dialogUi(mut env: JNIEnv, _: J
         let result = read(&mut env, &request).and_then(|source| layer_ui::dialog_ui(&source))
             .and_then(|value| serde_json::to_string(&value).map_err(error));
         string(&mut env, result)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_art_capycanvas_Native_launchInteraction(mut env: JNIEnv, _: JClass, handle: jlong, open: jboolean) {
+    crate::jni_entry!(env, handle, capy_app, {
+        capy_app.host.set_launch_interaction(open != 0);
     })
 }
 

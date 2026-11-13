@@ -26,6 +26,7 @@ fn edit(app: &App, bar: &Value, command: &str) -> Result<Option<Value>, String> 
 fn canvas_bar_places_edits_and_hides_during_contacts_through_the_apple_abi() {
     for platform in [0, 1] {
         let app = selection_app(platform);
+        app.launched();
         app.invoke("move");
         app.invoke("select_all");
         let selection = app.state()["canvas_bar"].clone();

@@ -221,19 +221,20 @@ void CanvasWindow::CreateLaunchCover() {
 }
 void CanvasWindow::LayoutLaunchCover() {
     auto width=launchCover.ActualWidth(),height=launchCover.ActualHeight();
-    if(width<=0||height<=0)return;
+    auto mark=CapyUi::object(bootstrap,L"launch_mark");
+    if(width<=0||height<=0||!mark.Size())return;
     CanvasLaunchPlacement placement(width,height,capy_launch_mark_size(float(width),float(height)));
     auto dark=uiSettings.GetColorValue(Windows::UI::ViewManagement::UIColorType::Foreground).R>128;
     auto theme=CapyUi::str(CapyUi::object(lastModel,L"state"),L"theme",dark?L"dark":L"light");
-    CapyUi::setIcon(launchMark,L"zen-looking-up",theme,placement.size);
+    auto icon=CapyUi::str(mark,L"icon");
+    CapyUi::setIcon(launchMark,icon,theme,placement.size);
+    AutomationProperties::SetAutomationId(launchMark,L"launch-mark-"+icon);
     launchMark.Margin({placement.left,placement.top,0,0});
-    if(bootstrap.Size()){
-        launchCaption.FontSize(bootstrap.GetNamedNumber(L"launch_caption_size"));
-        auto source=launchMark.Source().try_as<Imaging::SvgImageSource>();
-        auto scale=launchCover.XamlRoot()?launchCover.XamlRoot().RasterizationScale():1.;
-        launchCaption.Margin({20,placement.CaptionTop(bootstrap.GetNamedNumber(L"launch_caption_gap"),
-            bootstrap.GetNamedNumber(L"launch_mark_ink_bottom"),source?source.RasterizePixelHeight():0.,scale),20,0});
-    }
+    launchCaption.FontSize(bootstrap.GetNamedNumber(L"launch_caption_size"));
+    auto source=launchMark.Source().try_as<Imaging::SvgImageSource>();
+    auto scale=launchCover.XamlRoot()?launchCover.XamlRoot().RasterizationScale():1.;
+    launchCaption.Margin({20,placement.CaptionTop(bootstrap.GetNamedNumber(L"launch_caption_gap"),
+        CapyUi::num(mark,L"ink_bottom"),source?source.RasterizePixelHeight():0.,scale),20,0});
 }
 void CanvasWindow::ArmLaunchCaption() {
     if(!launchLoaded||!bootstrap.Size()||launchCover.Visibility()!=Visibility::Visible)return;
@@ -243,7 +244,6 @@ void CanvasWindow::ArmLaunchCaption() {
     else{launchCaptionTimer.Interval(remaining);launchCaptionTimer.Start();}
 }
 void CanvasWindow::HideLaunchCover(bool animate) {
-    if(workspace)workspace->LaunchRevealed();
     CancelLaunchReveal();
     if(launchCaptionTimer)launchCaptionTimer.Stop();
     if(launchCaptionFade)launchCaptionFade.Stop();
@@ -657,7 +657,7 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
     window.AppWindow().TitleBar().ButtonForegroundColor(dark?
         Windows::UI::Color{255,225,225,229}:Windows::UI::Color{255,32,32,36});
     auto catalog=capy_query(host,R"({"type":"catalog"})");
-    if(!catalog){OutputDebugStringA(NativeString(capy_error()).get());status.Text(CapyUi::str(bootstrap,L"canvas_init_failed"));return false;}
+    if(!catalog){OutputDebugStringA(NativeString(capy_error()).get());status.Text(CapyUi::str(bootstrap,L"canvas_init_failed"));HideLaunchCover(false);return false;}
     NativeString ownedCatalog(catalog,capy_string_free);
     auto catalogView=Windows::Data::Json::JsonObject::Parse(to_hstring(ownedCatalog.get()));
     catalogView.Insert(L"bootstrap",bootstrap);
@@ -777,7 +777,6 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
         QueueSnapshots();
     }
     {std::lock_guard lock(mutex);capy_view(host,&inputView);inputScale=desired.scale;}
-    status.Text(CapyUi::str(bootstrap,L"preparing_brush"));
     inputController=Microsoft::UI::Dispatching::DispatcherQueueController::CreateOnDedicatedThread();
     inputDispatcher=inputController.DispatcherQueue();
     return true;
@@ -2050,8 +2049,9 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
         if(message.empty())message=str(object(model,L"windows_proof"),L"text");
         if(message.empty()){
             auto notice=str(model,L"canvas_notice");
-            if(!notice.empty()&&!flag(object(model,L"launch"),L"visible"))message=str(bootstrap,(L"preparing_"+notice).c_str());
+            if(!notice.empty())message=str(bootstrap,(L"preparing_"+notice).c_str());
         }
+        if(flag(object(model,L"launch"),L"visible"))message=L"";
         status.Text(message);status.Visibility(message.empty()?Visibility::Collapsed:Visibility::Visible);
     }
     if((sections&CanvasWindowState)&&(windowInputs.Changed(changes)||!launchFiles.empty()||!surfaceState.Attached())){

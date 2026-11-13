@@ -1222,13 +1222,10 @@ pub(crate) async fn persist(w: &Workspace, settings: Box<Settings>) -> Result<()
 fn path() -> Option<std::path::PathBuf> {
     crate::storage::roots().map(layer_host::StorageRoots::settings)
 }
-pub fn load_language_preference() -> Result<layer_ui::LanguagePreference, String> {
-    Ok(load_saved()?.as_deref().map(Settings::language_preference).unwrap_or_default())
-}
 pub fn load() -> Result<Option<Settings>, String> {
     Ok(load_saved()?.as_deref().map(Settings::restore))
 }
-fn load_saved() -> Result<Option<String>, String> {
+pub(crate) fn load_saved() -> Result<Option<String>, String> {
     let Some(path) = path() else {
         return Ok(None);
     };

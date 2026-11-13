@@ -138,6 +138,12 @@ final class NativeOwner: @unchecked Sendable {
     func touchPolicy(milliseconds: UInt32, slop: Float) {
         perform { [self] in _ = try request(2, JSON(["type": "touch_policy", "tap_ms": Int(milliseconds), "slop": Double(slop)])) }
     }
+    func launchInteraction(_ active: Bool) {
+        perform { [self] in
+            _ = try request(2, JSON(["type": "launch_interaction", "active": active]))
+            try publish()
+        }
+    }
     func screenReport(_ report: ScreenReport) {
         perform { [self] in
             _ = try request(2, JSON(["type": "screen_report", "name": report.name, "wide": report.wide, "headroom": report.headroom]))

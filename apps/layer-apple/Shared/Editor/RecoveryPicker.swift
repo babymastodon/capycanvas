@@ -38,46 +38,49 @@ struct RecoveryPresentation: ViewModifier {
             }
             #endif
             .overlay(alignment: .bottom) {
-                GeometryReader { geometry in
-                    let notices = VStack(spacing: 8) {
-                        if store.failure != nil || !store.snapshot["error"].isNull {
-                            EditorNotice(message: store.canvasDiagnostic,
-                                title: store.bootstrap[store.snapshot["gpu_ready"].bool ? "action_failed" : "canvas_init_failed"].string,
-                                titleIdentifier: "Canvas error", working: store.restartingCanvas, detailIdentifier: "canvas-error-detail") {
-                                if !store.snapshot["gpu_ready"].bool {
-                                    Button(store.bootstrap["restart_canvas"].string) { store.restartCanvas() }.disabled(store.restartingCanvas).accessibilityIdentifier("Restart Canvas")
-                                    Button(store.command("save_document_as")["label"].string) { store.invoke("save_document_as") }
-                                        .disabled(!store.command("save_document_as")["enabled"].bool)
-                                } else {
-                                    Button(store.bootstrap["ok"].string) { store.failure = nil }
-                                }
-                            }
-                        }
-                        if let workspaces = store.workspaces { WorkspaceStartupNotice(workspaces: workspaces) }
-                        ProjectProgressNotice(files: store.projectFiles, copy: recovery.copy)
-                        if !phone, let error = recovery.visibleError {
-                            if recovery.error == nil && !recovery.failedDrawings.isEmpty {
-                                ForEach(recovery.failedDrawings, id: \.failedDrawingID) { drawing in
-                                    EditorNotice(message: drawing["error"].string, working: recovery.restoring || recovery.saving) {
-                                        recoveryActions
-                                        Button(recovery.copy["discard"].string, role: .destructive) { recovery.discard(drawing["id"].uint) }
-                                            .disabled(recovery.restoring || recovery.saving)
-                                            .accessibilityIdentifier("recovery-discard-\(drawing["id"].uint)")
+                if !store.launchVisible {
+                    GeometryReader { geometry in
+                        let notices = VStack(spacing: 8) {
+                            if store.failure != nil || !store.snapshot["error"].isNull {
+                                EditorNotice(message: store.canvasDiagnostic,
+                                    title: store.bootstrap[store.snapshot["gpu_ready"].bool ? "action_failed" : "canvas_init_failed"].string,
+                                    titleIdentifier: "Canvas error", working: store.restartingCanvas, detailIdentifier: "canvas-error-detail") {
+                                    if !store.snapshot["gpu_ready"].bool {
+                                        Button(store.bootstrap["restart_canvas"].string) { store.restartCanvas() }.disabled(store.restartingCanvas).accessibilityIdentifier("Restart Canvas")
+                                        Button(store.command("save_document_as")["label"].string) { store.invoke("save_document_as") }
+                                            .disabled(!store.command("save_document_as")["enabled"].bool)
+                                    } else {
+                                        Button(store.bootstrap["ok"].string) { store.failure = nil }
                                     }
                                 }
-                            } else {
-                                EditorNotice(message: error, working: recovery.restoring || recovery.saving) { recoveryActions }
+                            }
+                            if let workspaces = store.workspaces { WorkspaceStartupNotice(workspaces: workspaces) }
+                            ProjectProgressNotice(files: store.projectFiles, copy: recovery.copy)
+                            if !phone, let error = recovery.visibleError {
+                                if recovery.error == nil && !recovery.failedDrawings.isEmpty {
+                                    ForEach(recovery.failedDrawings, id: \.failedDrawingID) { drawing in
+                                        EditorNotice(message: drawing["error"].string, working: recovery.restoring || recovery.saving) {
+                                            recoveryActions
+                                            Button(recovery.copy["discard"].string, role: .destructive) { recovery.discard(drawing["id"].uint) }
+                                                .disabled(recovery.restoring || recovery.saving)
+                                                .accessibilityIdentifier("recovery-discard-\(drawing["id"].uint)")
+                                        }
+                                    }
+                                } else {
+                                    EditorNotice(message: error, working: recovery.restoring || recovery.saving) { recoveryActions }
+                                }
                             }
                         }
+                        ViewThatFits(in: .vertical) {
+                            notices.fixedSize(horizontal: false, vertical: true)
+                            EditorScrollView { notices }
+                        }.padding(12).frame(maxWidth: .infinity, maxHeight: geometry.size.height, alignment: .bottom)
                     }
-                    ViewThatFits(in: .vertical) {
-                        notices.fixedSize(horizontal: false, vertical: true)
-                        EditorScrollView { notices }
-                    }.padding(12).frame(maxWidth: .infinity, maxHeight: geometry.size.height, alignment: .bottom)
                 }
             }.editorAlert(store: store, intent: recovery.copy["dialog"], title: recovery.copy["title"].string,
                 isPresented: Binding(get: { phone && recovery.visibleError != nil }, set: { if !$0 { recovery.later() } }),
                 responses: responses, bodyContent: AnyView(recoveryBody))
+            .modifier(HostSurfacePresence(store: store, shown: recovery.visibleError != nil))
     }
     private var recoveryActions: some View {
         ForEach(responses) { response in

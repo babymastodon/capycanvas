@@ -426,6 +426,10 @@ class CanvasHost @JvmOverloads constructor(application: Application, screen: JSO
     internal val documents = DocumentController(this, application)
     internal val recovery = RecoveryController(this)
     private val saved = application.getSharedPreferences(preferencesName, 0)
+    private val systemSplashRecord = application.getSharedPreferences("capy-launch-splash", 0)
+    internal var systemSplash: String? = null
+        private set
+    internal fun recordSystemSplash(icon: String) = systemSplashRecord.edit().putString("icon", icon).apply()
     private var handle = 0L
     internal val filterPreviewCache = FilterPreviewCache(this)
     internal val layerThumbnails = LayerThumbnails(this)
@@ -496,9 +500,10 @@ class CanvasHost @JvmOverloads constructor(application: Application, screen: JSO
                     Array(languages.size()) { languages[it].toLanguageTag() }
                 }
                 preferredLocales = locales
+                val shownSplash = runCatching { systemSplashRecord.getString("icon", null) }.getOrNull()
                 val launch = JSONObject(Native.bootstrap(savedSettings, locales))
                 bootstrapForOwner = launch
-                main.post { bootstrap = launch }
+                main.post { systemSplash = shownSplash; bootstrap = launch }
                 handle = Native.create(savedSettings, locales, screen?.toString().orEmpty(), BuildConfig.DEBUG || BuildConfig.WORKSPACE_BENCHMARK)
                 Native.setWake(handle, this@CanvasHost)
                 choreographer = Choreographer.getInstance()
@@ -587,6 +592,16 @@ class CanvasHost @JvmOverloads constructor(application: Application, screen: JSO
     internal val dialogFocus = mutableListOf<androidx.compose.ui.focus.FocusRequester>()
     internal val dialogKeys = mutableListOf<(android.view.KeyEvent) -> Boolean>()
     internal val dialogKeyHandler get() = dialogKeys.lastOrNull()
+    private val presentedDialogs = mutableSetOf<Any>()
+    internal var dialogOpen by mutableStateOf(false)
+        private set
+    internal fun dialogPresented(dialog: Any, presented: Boolean) {
+        if (presented) presentedDialogs.add(dialog) else presentedDialogs.remove(dialog)
+        val open = presentedDialogs.isNotEmpty()
+        if (open == dialogOpen) return
+        dialogOpen = open
+        post { Native.launchInteraction(handle, open); publish(true); wake() }
+    }
     internal fun commandFocus() = if (editingText || dialogKeyHandler != null) "text" else if (palettes.focus != null) "palette" else "canvas"
     fun dispatch(action: JSONObject, moving: Boolean = false, published: (() -> Unit)? = null) {
         // Capture the editor owner before a menu action opens a native dialog.

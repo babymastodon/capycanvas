@@ -55,6 +55,11 @@ private final class StartupErrors: @unchecked Sendable {
         return (attribute(root, "accessibilityChildren") as? [NSObject] ?? []).lazy.compactMap { button($0, label: label) }.first
     }
 
+    @MainActor static func shows(_ root: NSObject, text: String) -> Bool {
+        [attribute(root, "accessibilityLabel"), attribute(root, "accessibilityValue")].contains { $0 as? String == text }
+            || (attribute(root, "accessibilityChildren") as? [NSObject] ?? []).contains { shows($0, text: text) }
+    }
+
     @MainActor static func hierarchy(_ root: NSObject, depth: Int = 0) -> String {
         let frame = bounds(root)
         let row = "\(String(repeating: " ", count: depth))\(type(of: root)) \(attribute(root, "accessibilityRole") ?? "nil") \(attribute(root, "accessibilityIdentifier") ?? "nil") \(attribute(root, "accessibilityLabel") ?? "nil") frame=\(frame)"
@@ -416,10 +421,70 @@ private final class StartupErrors: @unchecked Sendable {
         }
     }
 
+    @MainActor static func holdingOwner(_ store: EditorStore, _ work: @MainActor () async throws -> Void) async throws {
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        store.native!.submit(2, JSON(["type": "bootstrap"])) { _ in
+            entered.signal()
+            precondition(release.wait(timeout: .now() + 20) == .success, "The test must release its held owner")
+        }
+        defer { release.signal() }
+        let held = await Task.detached { entered.wait(timeout: .now() + 10) == .success }.value
+        try require(held, "The owner must be held right after its launch")
+        try await work()
+    }
+
+    @MainActor static func launchCoverChecks() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("capy-launch-cover-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for (theme, saved) in [("light", #"{"theme":"light","zen_icon":"sleeping"}"#), ("dark", #"{"theme":"dark","zen_icon":"sleeping"}"#), ("unreadable", "{")] {
+            let root = directory.appendingPathComponent(theme)
+            let settings = StorageLocations.within(root)!.settings
+            try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(saved.utf8).write(to: settings)
+            let store = EditorStore(platform: 1, persistence: EditorPersistence(root: root), managedWorkspaces: true)
+            let window = NSWindow(contentRect: CGRect(x: 80, y: 80, width: 1000, height: 750),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: EditorView(store: store) { MacMetalCanvas(store: store) })
+            window.contentView = host
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            defer { window.contentView = nil; window.close() }
+            try await holdingOwner(store) {
+                try await wait("Covered startup with its background paper reload", seconds: 10, failure: { store.failure }) {
+                    !store.bootstrap.isNull && !store.state.isNull && store.papers.busy && (theme != "unreadable" || store.storageFailure != nil)
+                }
+                try await drain(0.2)
+                try capture(host, "launch-cover-\(theme)")
+                try require(store.launchVisible && !store.workspaces!.ready, "The held owner must keep the cover over an unopened workspace")
+                let icon = theme == "unreadable" ? "zen-looking-up" : "zen-sleeping"
+                try require(store.bootstrap["launch_mark"]["icon"].string == icon,
+                    "The cover must draw the saved capy: \(store.bootstrap["launch_mark"].stableKey)")
+                try require(element(host, "paper-library-progress") == nil, "The startup paper reload must not draw a progress bar")
+                try require(!shows(host, text: store.bootstrap["recovery"]["opening_workspace"].string),
+                    "The cover must not show workspace startup progress")
+            }
+            if theme == "unreadable" {
+                try await wait("Storage alert lifts the cover", failure: { store.failure }) { !store.launchVisible }
+                try require(store.storageFailure != nil && !store.snapshot["launch"]["finished"].bool,
+                    "A host alert must lift the unfinished cover instead of sitting on it")
+                store.storageFailure = nil
+                try await wait("Dismissed storage alert returns the cover", failure: { store.failure }) {
+                    store.launchVisible || store.snapshot["launch"]["finished"].bool
+                }
+                note("PASS: a host storage alert lifts the unfinished launch cover until it closes")
+            } else {
+                try await wait("Revealed editor", seconds: 120, failure: { store.failure }) {
+                    store.snapshot["launch"]["finished"].bool && !store.launchVisible
+                }
+                note("PASS \(theme): the cover draws only the saved capy until the editor is revealed")
+            }
+        }
+    }
+
     @MainActor static func main() {
         _ = NSApplication.shared; NSApp.setActivationPolicy(.accessory)
         Task { @MainActor in
-            do { try await ownerChecks(); try await interruptedWorkspaceRecovery(); try await viewChecks(); exit(0) }
+            do { try await ownerChecks(); try await interruptedWorkspaceRecovery(); try await viewChecks(); try await launchCoverChecks(); exit(0) }
             catch { note("FAIL: \(error.localizedDescription)"); exit(1) }
         }
         NSApp.run()

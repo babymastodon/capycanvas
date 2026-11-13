@@ -13,7 +13,7 @@ fn content_session(size: [u32; 2]) -> UiSession<Recorder> {
     let working = doc.working.clone();
     let mut doc = Document::from_artwork(doc.artwork).unwrap();
     doc.working = working;
-    let mut s = UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap());
     s.set_viewport([1600., 1000.], [1600, 1000]).unwrap();
     invoke(&mut s, CommandId::FitCanvas);
     s.frame(1, 1).unwrap();
@@ -368,7 +368,7 @@ fn snapping_document() -> Document {
 fn held_transform_nudge_defers_background_snapping_preparation_until_release() {
     let doc = snapping_document();
     let target = doc.scene().order()[1];
-    let mut s = UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap());
     s.frame(1, 1).unwrap();
     s.begin_transform().unwrap();
     if s.content_bounds.busy() { reply_bounds(&mut s, [0., 0., 100., 80.]); }
@@ -388,7 +388,7 @@ fn held_transform_nudge_defers_background_snapping_preparation_until_release() {
 #[test]
 fn failed_background_query_does_not_refuse_snapping_toggle() {
     let doc = snapping_document();
-    let mut s = UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap());
     s.frame(1, 1).unwrap();
     s.begin_transform().unwrap();
     if s.content_bounds.busy() { reply_bounds(&mut s, [0., 0., 100., 80.]); }
@@ -408,7 +408,7 @@ fn failed_background_query_does_not_refuse_snapping_toggle() {
 fn releasing_held_transform_nudge_publishes_document_and_command_changes() {
     for input in [UiInput::Blur, UiInput::ReleaseKeys] {
         let doc = snapping_document();
-        let mut s = UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap();
+        let mut s = launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap());
         s.frame(1, 1).unwrap();
         s.begin_transform().unwrap();
         if s.content_bounds.busy() { reply_bounds(&mut s, [0., 0., 100., 80.]); }
@@ -426,7 +426,7 @@ fn releasing_held_transform_nudge_publishes_document_and_command_changes() {
 #[test]
 fn enabled_snapping_prepares_after_pending_input_drains_without_idle_resubmission() {
     let doc = snapping_document();
-    let mut s = UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap());
     s.frame(1, 1).unwrap();
     s.begin_transform().unwrap();
     if s.content_bounds.busy() { reply_bounds(&mut s, [0., 0., 100., 80.]); }
@@ -482,7 +482,7 @@ fn snapping_excludes_moved_nested_ancestors_but_keeps_siblings_and_cousins() {
     doc.artwork.occurrences.get_mut(hidden_group).unwrap().visible=false;
     let mut doc = Document::from_artwork(doc.artwork).unwrap();
     doc.apply(doc.select_occurrence_edit(moved).unwrap()).unwrap();
-    let mut s=UiSession::new(Recorder::default(),doc,[1600,1000],Platform::Gtk).unwrap();
+    let mut s=launched(UiSession::new(Recorder::default(),doc,[1600,1000],Platform::Gtk).unwrap());
     s.layer_interaction.tool=LayerCanvasTool::Move;
     s.operation.snapping=true;
     s.frame(1,1).unwrap();

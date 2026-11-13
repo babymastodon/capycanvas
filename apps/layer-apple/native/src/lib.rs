@@ -154,7 +154,7 @@ pub unsafe extern "C" fn capy_apple_launch(platform: u32, prepared: u64, bootstr
     let result = catch_unwind(AssertUnwindSafe(|| {
         let prepared = handles::shared::<CapyAppleLaunch>(prepared).ok_or("Missing launch configuration")?;
         if !bootstrap.is_null() {
-            let view = serde_json::to_string(&layer_ui::bootstrap_view(&prepared.localization)).map_err(|e| e.to_string())?;
+            let view = serde_json::to_string(&layer_ui::launch_bootstrap_view(&prepared.localization, prepared.settings.zen_icon)).map_err(|e| e.to_string())?;
             let view = CString::new(view).map_err(|e| e.to_string())?;
             unsafe { *bootstrap = handles::text(view) };
         }
@@ -619,6 +619,10 @@ pub unsafe extern "C" fn capy_apple_request(
                     serde_json::Value::Null
                 },
                 Some("bootstrap") => serde_json::to_value(a.host.bootstrap_view()).map_err(|e| e.to_string())?,
+                Some("launch_interaction") => {
+                    a.host.set_launch_interaction(value["active"].as_bool().ok_or("Missing launch interaction")?);
+                    serde_json::Value::Null
+                }
                 Some("document_tabs") => a.tabs_request(value)?,
                 Some("workspace_dialog_layout") => {
                     let page = a.host.session.state().dialog_presentation(layer_ui::DialogRole::Editor, a.host.logical).single_pane();

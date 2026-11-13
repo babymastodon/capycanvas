@@ -344,8 +344,10 @@ mod tests {
             assert_eq!(prepared.warning.as_deref(),Some(expected.as_str()));assert_eq!(prepared.texture,settings.new_document.paper());
             let mut host=crate::NativeHost::launch_prepared(layer_ui::Platform::Mac,settings.clone(),localization,prepared,None).unwrap();
             let document=host.session.engine().document().clone();let mark=host.session.engine().checkpoint();
-            let notice=host.session.state().notice.as_ref().unwrap().id;
+            let notice=host.session.last_notice_id();
+            assert!(host.session.state().notice.is_none(),"the launch cover holds the paper warning");
             for _ in 0..2 {host.session.set_paper_library(entries.clone()).unwrap();}
+            host.set_launch_interaction(true);
             assert_eq!(host.session.engine().document(),&document);assert_eq!(host.session.engine().checkpoint(),mark);
             assert_eq!(host.session.state().notice.as_ref().unwrap().id,notice);
             assert_eq!(host.session.state().notice.as_ref().unwrap().text,expected);

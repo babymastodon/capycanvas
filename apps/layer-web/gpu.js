@@ -132,8 +132,9 @@ export function showGpuNotice({ container, error, restart, restartLabel }) {
   container.hidden = false;
 }
 
-export function createLaunchCover({ container, now = () => performance.now(), setTimer = setTimeout }) {
+export function createLaunchCover({ container, asset, now = () => performance.now(), setTimer = setTimeout }) {
   const content = container.querySelector('.launch-splash');
+  const mark = content.querySelector('.launch-capy');
   const caption = content.querySelector('.launch-caption');
   const controls = blocked => {
     for (const node of container.parentElement.children)
@@ -165,7 +166,11 @@ export function createLaunchCover({ container, now = () => performance.now(), se
       container.style.setProperty('--launch-caption-gap', `${copy.launch_caption_gap}px`);
       container.style.setProperty('--launch-caption-size', `${copy.launch_caption_size}px`);
       container.style.setProperty('--launch-caption-color', `var(--${copy.launch_caption_color_role.replaceAll('_', '-')})`);
-      container.style.setProperty('--launch-mark-ink-bottom', copy.launch_mark_ink_bottom);
+      if (copy.launch_mark && mark.dataset.icon === undefined) {
+        mark.style.maskImage = `url(${JSON.stringify(asset(`icons/layer-${copy.launch_mark.icon}-symbolic.svg`))})`;
+        mark.dataset.icon = copy.launch_mark.icon;
+        container.style.setProperty('--launch-mark-ink-bottom', copy.launch_mark.ink_bottom);
+      }
       captionTimer ??= setTimer(() => { caption.dataset.visible = ''; }, Math.max(0, Number(copy.launch_caption_delay_ms) - now()));
       controls(view.visible);
       if (view.visible) {

@@ -1,4 +1,4 @@
-import {hasModalDialog} from './dialog-host.js';
+import {hasModalDialog,watchModalDialogs} from './dialog-host.js';
 import { addScrollbar } from "./scrollbars.js";
 import { observeButtonFeedback } from "./button-feedback.js";
 import { edgeContactClass, edgeResetClass } from "./edge-reach.js";
@@ -124,10 +124,11 @@ let compilerResumeTimer;
 const startupTimes = { canvas: null, document: null, brush: null, complete: null };
 installTooltips();
 installPenScrolling();
-const launchCover = createLaunchCover({ container: $("gpu-notice") });
+const launchCover = createLaunchCover({ container: $("gpu-notice"), asset });
 let launchPresentation;
+watchModalDialogs(() => { if (launchCover.pending) { refreshStartup(); wake(); } });
 for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
-  if (launchCover.blocking && !hasModalDialog()) event.stopImmediatePropagation();
+  if (launchCover.blocking) event.stopImmediatePropagation();
 }, {capture: true});
 const gpuDiagnostics=createGpuDiagnostics();
 let wasmMemory;
@@ -469,7 +470,7 @@ function frame(frameTime) {
 function launchChromeReady() { return !!layout && workspaceLayoutReady() && !workspacePresentation; }
 function refreshStartup() {
   if (!app || !bootstrap) return;
-  const launch = app.launch_state(launchChromeReady(), compilerFailed || document.body.dataset.gpu === 'unavailable');
+  const launch = app.launch_state(launchChromeReady(), compilerFailed || document.body.dataset.gpu === 'unavailable', hasModalDialog());
   if (launch.frame === null || launchPresentation && launchPresentation[0] !== launch.frame) launchPresentation = null;
   launchCover.update(launch, bootstrap);
   if (!gpuReady || compilerFailed) return;
@@ -492,7 +493,7 @@ function refreshStartup() {
     launchPresentation = frame;
     app.wait_for_canvas().then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))).then(() => {
       if (epoch !== compilerEpoch || launchPresentation !== frame) return;
-      app.launch_presented(BigInt(frame[0]), BigInt(frame[1]), launchChromeReady());
+      app.launch_presented(BigInt(frame[0]), BigInt(frame[1]), launchChromeReady(), hasModalDialog());
       if (launchPresentation === frame) launchPresentation = null;
       refreshStartup();
       wake();
@@ -2048,7 +2049,7 @@ try {
       launches=launches.then(async()=>{
         if(!files.length)return;
         const deadline=performance.now()+240000;
-        while(documents.busy()||!app.document_park_ready()||hasModalDialog()) {
+        while(launchCover.blocking||documents.busy()||!app.document_park_ready()||hasModalDialog()) {
           if(performance.now()>deadline)throw Error(delivery.open_drawings_operation);
           await new Promise(resolve=>setTimeout(resolve,50));
         }

@@ -60,6 +60,12 @@ import UIKit
     @Published var storageFailure: String?
     @Published var storagePending = true
     @Published var canRetryStorage = false
+    private var hostSurfaces = Set<UUID>()
+    func hostSurface(_ id: UUID, shown: Bool) {
+        let wasOpen = !hostSurfaces.isEmpty
+        if shown { hostSurfaces.insert(id) } else { hostSurfaces.remove(id) }
+        if wasOpen != !hostSurfaces.isEmpty { native?.launchInteraction(!hostSurfaces.isEmpty) }
+    }
     private static let instances = NSHashTable<EditorStore>.weakObjects()
     func paperLibraryChanged() {
         guard let paperDirectory else { return }

@@ -203,6 +203,7 @@ internal object Native {
     @JvmStatic external fun phoneUi(request: String): String
     @JvmStatic external fun dialogUi(request: String): String
     @JvmStatic external fun deviceClass(handle: Long, phone: Boolean)
+    @JvmStatic external fun launchInteraction(handle: Long, open: Boolean)
     /** Pure shared color-wheel hit geometry, independent of the render thread. */
     @JvmStatic external fun bubbleUi(request: String): String
     @JvmStatic external fun colorWheelHit(request: String): String

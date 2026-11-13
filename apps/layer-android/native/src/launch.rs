@@ -57,6 +57,32 @@ pub(crate) fn active_localization() -> Result<Arc<Localizer>, &'static str> {
 }
 
 #[cfg(any(target_os = "android", test))]
+pub(crate) fn bootstrap_view(saved: &str, localization: &Localizer) -> layer_ui::BootstrapView {
+    layer_ui::launch_bootstrap_view(localization, layer_ui::Settings::launch_icon(saved))
+}
+
+#[cfg(any(target_os = "android", test))]
+#[derive(Default)]
+pub(crate) struct PublishedBootstrap(Option<(u64, layer_ui::ZenIcon)>);
+
+#[cfg(any(target_os = "android", test))]
+impl PublishedBootstrap {
+    pub(crate) fn update(&mut self, host: &mut layer_host::NativeHost) -> Result<Option<serde_json::Value>, String> {
+        let current = (host.localization_generation(), host.session.state().settings.zen_icon);
+        if self.0 == Some(current) { return Ok(None); }
+        let mut update = serde_json::json!({
+            "bootstrap": serde_json::to_value(host.bootstrap_view()).map_err(|e| e.to_string())?,
+            "localization_generation": current.0,
+        });
+        if self.0.is_none_or(|(generation, _)| generation != current.0) {
+            update["catalog"] = host.query(serde_json::json!({"type": "catalog"}))?;
+        }
+        self.0 = Some(current);
+        Ok(Some(update))
+    }
+}
+
+#[cfg(any(target_os = "android", test))]
 pub(crate) fn start_workspaces(host: &mut layer_host::NativeHost, directory: &std::path::Path, now: u64,
     wake: Arc<dyn Fn() + Send + Sync>) -> Result<layer_workspace::WorkspaceController<layer_workspace::StoreWorker>, String> {
     let store = layer_workspace::StoreWorker::shared(directory).map_err(|e| e.to_string())?;
@@ -93,6 +119,45 @@ mod tests {
         assert_eq!(host.bootstrap_view().active_tag, "ko");
         assert!(host.session.engine().backend().0.is_none());
         assert!(!host.set_localization(next));
+    }
+
+    #[test]
+    fn launch_mark_reads_saved_settings_and_matches_the_started_session() {
+        let localization = Localizer::shared(layer_ui::UiLanguage::English);
+        for (icon, _) in layer_ui::ZenIcon::CHOICES {
+            let saved = serde_json::json!({"zen_icon": icon, "pan_speed": "broken"}).to_string();
+            let early = bootstrap_view(&saved, &localization).launch_mark;
+            assert_eq!(early, Some(icon.launch_mark()));
+            let host = layer_host::NativeHost::launch_localized(layer_ui::Platform::Android, &saved, localization.clone()).unwrap();
+            assert_eq!(host.bootstrap_view().launch_mark, early);
+        }
+        for saved in ["", "broken", r#"{"zen_icon":"dancing"}"#] {
+            assert_eq!(bootstrap_view(saved, &localization).launch_mark, Some(layer_ui::ZenIcon::LookingUp.launch_mark()));
+        }
+    }
+
+    #[test]
+    fn published_bootstrap_follows_the_chosen_capy_and_resends_the_catalog_only_for_a_language() {
+        let mut host = layer_host::NativeHost::launch_localized(layer_ui::Platform::Android, "",
+            Localizer::shared(layer_ui::UiLanguage::English)).unwrap();
+        let mut published = PublishedBootstrap::default();
+        let first = published.update(&mut host).unwrap().unwrap();
+        assert_eq!(first["bootstrap"]["launch_mark"]["icon"], "zen-looking-up");
+        assert!(first.get("catalog").is_some());
+        assert!(published.update(&mut host).unwrap().is_none());
+        for (index, (icon, _)) in layer_ui::ZenIcon::CHOICES.into_iter().enumerate().rev() {
+            host.dispatch(layer_ui::UiAction::Preferences { action: layer_ui::PreferenceAction::Edit {
+                id: layer_ui::PreferenceId::ZenIcon, value: layer_ui::PreferenceValue::Choice(index as u32),
+            } }).unwrap();
+            let changed = published.update(&mut host).unwrap().unwrap();
+            assert_eq!(changed["bootstrap"]["launch_mark"], serde_json::to_value(icon.launch_mark()).unwrap());
+            assert!(changed.get("catalog").is_none());
+            assert!(published.update(&mut host).unwrap().is_none());
+        }
+        assert!(host.set_localization(Localizer::shared(layer_ui::UiLanguage::Japanese)));
+        let language = published.update(&mut host).unwrap().unwrap();
+        assert_eq!(language["bootstrap"]["active_tag"], "ja");
+        assert!(language.get("catalog").is_some());
     }
 }
 

@@ -15,11 +15,12 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
     throw Error(`Workspace startup timed out: ${condition}; ${await evaluate(`JSON.stringify({body:document.body.dataset,ready:window.layerApp?.state().workspace_ready,view:window.layerApp&&JSON.parse(layerApp.app.workspace_view()),probe:window.workspaceStartup,styles:[...document.querySelectorAll('#workspace > .chrome')].map(node=>({visibility:getComputedStyle(node).visibility,opacity:getComputedStyle(node).opacity,rect:node.getBoundingClientRect().toJSON()}))},(_,value)=>typeof value==='bigint'?String(value):value)`)}`);
   };
   for (const theme of ['light', 'dark']) for (const device of [
-    {id:'desktop',mobile:false,width:1300,height:900},
-    {id:'mobile',mobile:true,width:390,height:844},
-    {id:'mobile-landscape',mobile:true,width:844,height:390},
+    {id:'desktop',mobile:false,width:1300,height:900,mark:'zen-looking-up'},
+    {id:'mobile',mobile:true,width:390,height:844,zen:'bathing',mark:'zen-bathing'},
+    {id:'mobile-landscape',mobile:true,width:844,height:390,zen:'sleeping',mark:'zen-sleeping'},
   ]) {
     const {mobile}=device;
+    const preferences=JSON.stringify({version:1,theme,...device.zen&&{zen_icon:device.zen}});
     const scenarioUrl = new URL(baseUrl);
     scenarioUrl.hostname = `${theme}-${device.id}.localhost`;
     const url = scenarioUrl.href;
@@ -33,14 +34,17 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
     };
     const geometry=()=>evaluate("(()=>{const mark=document.querySelector('.launch-capy').getBoundingClientRect(),caption=document.querySelector('.launch-caption').getBoundingClientRect();const node=document.querySelector('.launch-caption'),style=getComputedStyle(node),context=document.createElement('canvas').getContext('2d');context.font=`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;const ink=context.measureText(node.textContent),baseline=(parseFloat(style.lineHeight)-ink.fontBoundingBoxAscent-ink.fontBoundingBoxDescent)/2+ink.fontBoundingBoxAscent;return{mark:mark.toJSON(),caption:caption.toJSON(),inkTop:caption.y+baseline-ink.actualBoundingBoxAscent,width:innerWidth,height:innerHeight};})()");
     const checkGeometry=async early=>{
-      const actual=await geometry(),copy=await evaluate('(()=>{const v=layerApp.app.bootstrap_view();return {size:v.launch_mark_size,fit:v.launch_mark_max_fraction,gap:v.launch_caption_gap,inkBottom:v.launch_mark_ink_bottom};})()');
+      const actual=await geometry(),copy=await evaluate('(()=>{const v=layerApp.app.bootstrap_view();return {size:v.launch_mark_size,fit:v.launch_mark_max_fraction,gap:v.launch_caption_gap,inkBottom:v.launch_mark.ink_bottom,icon:v.launch_mark.icon};})()');
+      assert.equal(copy.icon,device.mark,'Bootstrap names the saved Zen capy');
+      assert.deepEqual(await evaluate("(()=>{const mark=document.querySelector('.launch-capy');return {icon:mark.dataset.icon,visible:mark.checkVisibility({checkVisibilityCSS:true}),mask:getComputedStyle(mark).maskImage.includes(`/icons/layer-${mark.dataset.icon}-symbolic.svg`)};})()"),
+        {icon:device.mark,visible:true,mask:true},'The cover shows the chosen capy');
       const size=Math.min(copy.size,copy.fit*Math.min(actual.width,actual.height));
       for(const value of [actual.mark.width,actual.mark.height])assert.ok(Math.abs(value-size)<.5,'The mark uses the shared fitted size');
       assert.ok(Math.abs(actual.mark.x+actual.mark.width/2-actual.width/2)<.5);
       assert.ok(Math.abs(actual.mark.y+actual.mark.height/2-actual.height/2)<.5);
-      assert.ok(Math.abs(actual.inkTop-actual.mark.y-actual.mark.height*copy.inkBottom-copy.gap)<.5,'The caption ink follows the visible mark with the shared gap');
+      assert.ok(Math.abs(actual.inkTop-actual.mark.y-actual.mark.height*copy.inkBottom-copy.gap)<.5,'The caption ink follows the chosen mark with the shared gap');
       assert.ok(actual.caption.bottom<=actual.height,'The caption fits inside the window');
-      for(const key of ['x','y','width','height'])assert.ok(Math.abs(actual.mark[key]-early.mark[key])<.5,'Bootstrap must not move or resize the pre-Wasm mark');
+      for(const key of ['x','y','width','height'])assert.ok(Math.abs(actual.mark[key]-early.mark[key])<.5,'Bootstrap must not move or resize the pre-Wasm mark box');
     };
     const reveal=async phase=>{
       const duration=await evaluate('Number(layerApp.app.bootstrap_view().launch_reveal_ms)');
@@ -53,7 +57,21 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
       await writeFile(`${directory}/${theme}-${device.id}-${phase}-mid-reveal.json`,JSON.stringify(observation,null,2));
     };
     const onlyLaunch = async () => {
-      const exposed = await evaluate(`(()=>{const cover=document.querySelector('#gpu-notice'),walker=document.createTreeWalker(document.querySelector('#workspace'),NodeFilter.SHOW_TEXT),exposed=[];let text;while(text=walker.nextNode()){if(!text.textContent.trim()||cover.contains(text))continue;const range=document.createRange();range.selectNodeContents(text);for(const r of range.getClientRects()){const x=r.x+r.width/2,y=r.y+r.height/2,owner=text.parentElement;if(r.width&&r.height&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight&&owner.contains(document.elementFromPoint(x,y)))exposed.push({text:text.textContent.trim(),owner:owner.className,z:getComputedStyle(owner).zIndex});}}return exposed;})()`);
+      const exposed = await evaluate(`(()=>{
+        const cover=document.querySelector('#gpu-notice'),inert=[...document.querySelectorAll('[inert]')],probe=document.createElement('style'),exposed=[];
+        const shown=node=>node.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+        probe.textContent='*{pointer-events:auto!important}';document.head.append(probe);for(const node of inert)node.inert=false;
+        try{
+          for(const node of document.querySelectorAll('dialog:modal,:popover-open,.document-transition'))if(shown(node))exposed.push({surface:node.id||node.className});
+          const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let text;
+          while(text=walker.nextNode()){
+            const owner=text.parentElement;
+            if(!text.textContent.trim()||cover.contains(text)||!shown(owner))continue;
+            const range=document.createRange();range.selectNodeContents(text);
+            for(const r of range.getClientRects()){const x=r.x+r.width/2,y=r.y+r.height/2;if(r.width&&r.height&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight&&owner.contains(document.elementFromPoint(x,y)))exposed.push({text:text.textContent.trim(),owner:owner.id||owner.className,z:getComputedStyle(owner).zIndex});}
+          }
+        }finally{for(const node of inert)node.inert=true;probe.remove();}
+        return exposed;})()`);
       assert.deepEqual(exposed,[],'Only the capy and its delayed caption may appear over a healthy launch cover');
     };
     const awaitCaption = async phase => {
@@ -67,10 +85,12 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
     const releaseCode = async phase => {
       await wait("window.workspaceStartup?.releaseCode && window.layerApp == null && document.querySelector('.launch-capy')?.getBoundingClientRect().width > 0");
       await wait(`document.body.dataset.theme === ${JSON.stringify(theme)}`);
-      assert.equal(await evaluate("window.layerApp == null"),true,'The HTML capy appears before Wasm can initialize');
+      assert.equal(await evaluate("window.layerApp == null"),true,'The HTML cover appears before Wasm can initialize');
+      assert.deepEqual(await evaluate("(()=>{const mark=document.querySelector('.launch-capy');return {icon:mark.dataset.icon??null,visible:mark.checkVisibility({checkVisibilityCSS:true}),mask:getComputedStyle(mark).maskImage};})()"),
+        {icon:null,visible:false,mask:'none'},'No capy appears before Bootstrap names the chosen one');
       assert.equal(await evaluate("[...document.querySelectorAll('#workspace button,#workspace input,#workspace select,#workspace textarea,#workspace [tabindex],#workspace a[href]')].every(node=>node.closest('[inert]')!==null)"),true,'Raw HTML workspace controls are inert before Wasm initializes');
       assert.equal(await evaluate("document.querySelector('#gpu-notice').textContent.trim()"),'');
-      assert.ok(await evaluate("(()=>{const b=document.querySelector('.launch-capy').getBoundingClientRect();return Math.abs(b.x+b.width/2-innerWidth/2)<2&&Math.abs(b.y+b.height/2-innerHeight/2)<2})()"),'The early capy is centered in the full window');
+      assert.ok(await evaluate("(()=>{const b=document.querySelector('.launch-capy').getBoundingClientRect();return Math.abs(b.x+b.width/2-innerWidth/2)<2&&Math.abs(b.y+b.height/2-innerHeight/2)<2})()"),'The early mark box is centered in the full window');
       await capture(`${phase}-before-wasm`);
       await onlyLaunch();
       const early=await geometry();
@@ -79,7 +99,7 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
     };
     await activateForReload(call);
     const {identifier} = await call('Page.addScriptToEvaluateOnNewDocument', {source:`
-      localStorage.setItem('layer.preferences.v1',JSON.stringify({version:1,theme:${JSON.stringify(theme)}}));
+      localStorage.setItem('layer.preferences.v1',${JSON.stringify(preferences)});
       Object.defineProperty(navigator,'userAgentData',{value:{mobile:${mobile}},configurable:true});
       Object.defineProperty(navigator,'userAgent',{value:${JSON.stringify(mobile ? 'Android' : 'Desktop')},configurable:true});
       Object.defineProperty(navigator,'platform',{value:'Linux',configurable:true});
@@ -153,7 +173,7 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
     }
   }
   await checkWorkspaceStartupFailure({call,evaluate,wait,settle},baseUrl);
-  console.log('Workspace startup: desktop/mobile defaults and saved Photo/Zen first frames, slow storage, light/dark');
+  console.log('Workspace startup: desktop/mobile defaults and saved Photo/Zen first frames, saved capy poses, slow storage, light/dark');
 }
 
 async function checkWorkspaceStartupFailure({call,evaluate,wait,settle},baseUrl) {

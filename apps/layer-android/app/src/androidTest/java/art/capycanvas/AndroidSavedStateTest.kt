@@ -24,6 +24,7 @@ class AndroidSavedStateTest {
             host.awaitMain("damaged store adopted",120_000) {host.workspaceManager?.optBoolean("ready")==true && host.snapshot?.getJSONObject("state")?.isNull("notice")==false}
             val notice = host.snapshot!!.getJSONObject("state").getJSONObject("notice")
             assertEquals("Your saved workspaces were damaged. Capy Canvas started new ones.",notice.getString("text"))
+            assertTrue("The notice waits for the launch reveal",host.snapshot!!.getJSONObject("launch").getBoolean("finished"))
             host.awaitMain("damaged notice rendered") {findNode(hasLabel(notice.getString("text")))!=null}
             val committed = CountDownLatch(1)
             instrumentation.runOnMainSync {

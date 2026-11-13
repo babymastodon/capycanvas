@@ -170,6 +170,17 @@ struct EditorPresentationAppearance: ViewModifier {
     }
 }
 
+struct HostSurfacePresence: ViewModifier {
+    let store: EditorStore
+    let shown: Bool
+    @State private var id = UUID()
+    func body(content: Content) -> some View {
+        content.onAppear { store.hostSurface(id, shown: shown) }
+            .onChange(of: shown) { _, shown in store.hostSurface(id, shown: shown) }
+            .onDisappear { store.hostSurface(id, shown: false) }
+    }
+}
+
 extension View {
     func editorSheet<Sheet: View>(intent: JSON, isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil,
         @ViewBuilder content: @escaping () -> Sheet) -> some View {
@@ -244,8 +255,10 @@ private struct EditorSheet<Sheet: View>: ViewModifier {
         }.modifier(EditorAlertSurface(store: store, presented: presented && alert, onDismiss: dismissed) { size in
             sheet().environment(\.editorDialogPage, false).environment(\.editorDialogAvailableHeight, size.height)
         }).onChange(of: presented) { _, shown in if !shown { closing = false } }
+            .modifier(HostSurfacePresence(store: store, shown: presented))
         #else
         content.sheet(isPresented: $presented, onDismiss: onDismiss, content: sheet)
+            .modifier(HostSurfacePresence(store: store, shown: presented))
         #endif
     }
 }
@@ -415,6 +428,7 @@ private struct EditorAlertPresentation: ViewModifier {
                     }
                 }
             })
+            .modifier(HostSurfacePresence(store: store, shown: presented))
     }
 }
 

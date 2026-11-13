@@ -19,6 +19,7 @@ import org.junit.Test
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 /** Hold the real renderer before device creation, with the real Compose UI running. */
 class AndroidFirstUiTest {
@@ -104,45 +105,80 @@ class AndroidFirstUiTest {
         assertTrue(reveal.started)
     }
 
-    @Test fun splashMarkFitsSystemSafeCircle() {
-        val size = 288
+    private fun launchMarks(): List<Pair<String, Int>> {
+        val resources = instrumentation.targetContext.resources
+        val icons = resources.getStringArray(R.array.capy_launch_icons)
+        val marks = resources.obtainTypedArray(R.array.capy_launch_marks)
+        return try { icons.mapIndexed { index, icon -> icon to marks.getResourceId(index, 0) } } finally { marks.recycle() }
+    }
+
+    private fun ink(size: Int, saved: File? = null, alpha: Int = 127, draw: (android.graphics.Canvas) -> Unit): BooleanArray {
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        try {
-            val mark = instrumentation.targetContext.getDrawable(R.drawable.capy_splash_mark)!!
-            mark.setBounds(0, 0, size, size)
-            mark.draw(android.graphics.Canvas(bitmap))
-            instrumentation.targetContext.getExternalFilesDir(null)!!.resolve("splash-safe-circle.png").outputStream().use {
-                assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
-            }
+        return try {
+            draw(android.graphics.Canvas(bitmap))
+            saved?.outputStream()?.use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
             val pixels = IntArray(size * size)
             bitmap.getPixels(pixels, 0, size, 0, 0, size, size)
-            val ink = BooleanArray(pixels.size) { android.graphics.Color.alpha(pixels[it]) > 0 }
-            val radius = pixels.indices.filter { ink[it] }.maxOf {
-                kotlin.math.hypot(it % size + .5 - size / 2, it / size + .5 - size / 2)
-            }
-            assertTrue("The whole mark fits the 192px safe circle: radius=$radius", radius <= 96)
-            assertTrue("The mark uses the safe circle: radius=$radius", radius >= 94)
-            val visited = BooleanArray(ink.size)
-            val queue = java.util.ArrayDeque<Int>()
-            var components = 0
-            for (start in ink.indices) {
-                if (!ink[start] || visited[start]) continue
-                components++
-                visited[start] = true
-                queue.add(start)
-                while (queue.isNotEmpty()) {
-                    val point = queue.removeFirst()
-                    for (dy in -1..1) for (dx in -1..1) {
-                        val x = point % size + dx
-                        val y = point / size + dy
-                        if (x !in 0 until size || y !in 0 until size) continue
-                        val next = y * size + x
-                        if (ink[next] && !visited[next]) { visited[next] = true; queue.add(next) }
-                    }
-                }
-            }
-            assertEquals("The full capy and both sparkles survive the mask", 3, components)
+            BooleanArray(pixels.size) { android.graphics.Color.alpha(pixels[it]) > alpha }
         } finally { bitmap.recycle() }
+    }
+
+    private fun ink(drawable: android.graphics.drawable.Drawable, size: Int, saved: File? = null, alpha: Int = 127) = ink(size, saved, alpha) {
+        drawable.setBounds(0, 0, size, size)
+        drawable.draw(it)
+    }
+
+    @Test fun launchMarksDrawTheSharedPoses() {
+        val context = instrumentation.targetContext
+        val marks = launchMarks()
+        assertEquals(listOf("zen-looking-up", "zen-facing-forward", "zen-bathing", "zen-sleeping"), marks.map { it.first })
+        val size = 256
+        for ((icon, mark) in marks) {
+            val source = context.assets.open("layer-$icon-symbolic.svg").bufferedReader().use { it.readText() }
+            val picture = com.caverock.androidsvg.SVG.getFromString(source.replace("currentColor", "#000000")).renderToPicture()
+            val expected = ink(size) { it.drawPicture(picture, android.graphics.RectF(0f, 0f, size.toFloat(), size.toFloat())) }
+            val actual = ink(context.getDrawable(mark)!!, size)
+            val union = expected.indices.count { expected[it] || actual[it] }
+            val differing = expected.indices.count { expected[it] != actual[it] }
+            assertTrue("$icon launch mark draws the shared artwork: $differing of $union", differing <= union / 50)
+        }
+    }
+
+    @Test fun splashMarkFitsSystemSafeCircle() {
+        val context = instrumentation.targetContext
+        val size = 288
+        val themes = context.resources.obtainTypedArray(R.array.capy_launch_splash_themes)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                val empty = context.obtainStyledAttributes(R.style.Theme_CapyCanvas, intArrayOf(android.R.attr.windowSplashScreenAnimatedIcon))
+                try { assertTrue("The default system splash shows no capy", ink(empty.getDrawable(0)!!, size).none { it }) } finally { empty.recycle() }
+            }
+            for ((index, pose) in launchMarks().withIndex()) {
+                val (icon, mark) = pose
+                val splash = context.resources.getIdentifier("capy_splash_mark_${icon.replace('-', '_')}", "drawable", context.packageName)
+                if (android.os.Build.VERSION.SDK_INT >= 31) {
+                    val theme = context.obtainStyledAttributes(themes.getResourceId(index, 0), intArrayOf(android.R.attr.windowSplashScreenAnimatedIcon))
+                    try { assertEquals("$icon theme uses its splash mark", splash, theme.getResourceId(0, 0)) } finally { theme.recycle() }
+                }
+                val ink = ink(context.getDrawable(splash)!!, size, context.getExternalFilesDir(null)!!.resolve("splash-safe-circle-$icon.png"))
+                val radius = ink.indices.filter { ink[it] }.maxOf {
+                    kotlin.math.hypot(it % size + .5 - size / 2, it / size + .5 - size / 2)
+                }
+                assertTrue("The whole $icon mark fits the 192px safe circle: radius=$radius", radius <= 96)
+                assertTrue("The $icon mark uses the safe circle: radius=$radius", radius >= 94)
+                fun extent(ink: BooleanArray, width: Int): android.graphics.Rect {
+                    val inked = ink.indices.filter { ink[it] }
+                    return android.graphics.Rect(inked.minOf { it % width }, inked.minOf { it / width }, inked.maxOf { it % width } + 1, inked.maxOf { it / width } + 1)
+                }
+                val full = context.getDrawable(mark)!!
+                val shown = extent(ink, size)
+                val whole = extent(ink(full, size), size)
+                val scale = shown.width().toDouble() / whole.width()
+                assertEquals("The $icon splash mark keeps the capy's proportions", shown.height().toDouble(), whole.height() * scale, 2.0)
+                assertEquals("The $icon splash mark keeps the whole capy", 1.0,
+                    ink.count { it }.toDouble() / ink(full, (size * scale).roundToInt()).count { it }, .03)
+            }
+        } finally { themes.recycle() }
     }
 
     @OptIn(androidx.compose.ui.InternalComposeUiApi::class)
@@ -234,6 +270,84 @@ class AndroidFirstUiTest {
         }
     }
 
+    @Test fun splashShowsOnlyTheSavedCapyAndYieldsToHostDialogs() {
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        CanvasHost.beforeGpuAttachForTest = {
+            entered.countDown()
+            check(resume.await(30, TimeUnit.SECONDS)) { "Test did not release GPU initialization" }
+        }
+        val context = instrumentation.targetContext
+        var scenario: ActivityScenario<MainActivity>? = null
+        try {
+            val theme = startupTheme()
+            val saved = context.getSharedPreferences(CanvasHost.preferencesName, 0)
+            assertTrue(saved.edit().putString("settings", JSONObject(saved.getString("settings", null)!!).put("zen_icon", "sleeping").toString()).commit())
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            val activity = scenario.activity()
+            val host = activity.host
+            compose.waitUntil(20_000) { entered.count == 0L }
+            compose.waitUntil(5_000) {
+                host.bootstrap != null && (activity.launchSplash.nativeActive ||
+                    compose.onAllNodesWithTag("launch-splash-mark").fetchSemanticsNodes().isNotEmpty())
+            }
+            compose.runOnIdle { assertEquals("zen-sleeping", host.bootstrap!!.getJSONObject("launch_mark").getString("icon")) }
+            if (activity.launchSplash.nativeActive) compose.runOnIdle {
+                assertEquals("The platform splash shows the saved capy", "zen-sleeping", host.systemSplash)
+            } else {
+                compose.waitForIdle()
+                SystemClock.sleep(250)
+                val bounds = compose.onNodeWithTag("launch-splash-mark").fetchSemanticsNode().boundsInWindow
+                val origin = IntArray(2)
+                scenario.onActivity { it.window.decorView.getLocationOnScreen(origin) }
+                val size = bounds.width.roundToInt()
+                val left = origin[0] + bounds.left.roundToInt()
+                val top = origin[1] + bounds.top.roundToInt()
+                var shown = BooleanArray(0)
+                screenshot("validation/launch/saved-capy-$theme.png") { screen ->
+                    shown = BooleanArray(size * size) { index ->
+                        val pixel = screen.getPixel(left + index % size, top + index / size)
+                        fun distance(color: Int) = listOf(16, 8, 0).sumOf { kotlin.math.abs((pixel shr it and 255) - (color shr it and 255)) }
+                        distance(activity.launchSplash.foreground) < distance(activity.launchSplash.background)
+                    }
+                }
+                assertEquals("The splash was captured", size * size, shown.size)
+                val mark = launchMarks().single { it.first == "zen-sleeping" }.second
+                val expected = ink(context.getDrawable(mark)!!, size, alpha = 127)
+                val union = shown.indices.count { shown[it] || expected[it] }
+                val matched = shown.indices.count { shown[it] && expected[it] }
+                assertTrue("The splash draws the saved sleeping capy: $matched of $union", matched >= union * 9 / 10)
+            }
+            if (android.os.Build.VERSION.SDK_INT >= 31) compose.waitUntil(5_000) {
+                context.getSharedPreferences("capy-launch-splash", 0).getString("icon", null) == "zen-sleeping"
+            }
+            pressKey(android.view.KeyEvent.KEYCODE_K, android.view.KeyEvent.META_CTRL_ON or android.view.KeyEvent.META_CTRL_LEFT_ON)
+            compose.runOnIdle {
+                assertNull("Shortcuts wait for the reveal", host.commandSearch)
+                assertTrue(host.launchCovered())
+            }
+            compose.runOnIdle { host.reportActionError("Recovery needs attention") }
+            compose.runOnIdle {
+                assertTrue("An error without a workspace to show it keeps the splash", host.launchCovered())
+            }
+            assertTrue(compose.onAllNodesWithTag("action-error", useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
+            resume.countDown()
+            compose.waitUntil(30_000) {
+                host.snapshot?.getJSONObject("launch")?.let { !it.optBoolean("visible") && !it.optBoolean("finished") } == true &&
+                    !activity.launchSplash.nativeActive && compose.onAllNodesWithTag("launch-splash").fetchSemanticsNodes().isEmpty() &&
+                    compose.onAllNodesWithTag("action-error", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+            }
+            screenshot("validation/launch/host-dialog-$theme.png")
+            compose.runOnIdle { host.clearActionError() }
+            compose.waitUntil(60_000) { host.snapshot?.objectOrNull("launch")?.optBoolean("finished") == true }
+            awaitLaunchReveal(activity)
+        } finally {
+            resume.countDown()
+            CanvasHost.beforeGpuAttachForTest = null
+            scenario?.close()
+        }
+    }
+
     @Test fun splashCoversTheWorkspaceWithoutBlockingCanvasAttachment() {
         val entered = CountDownLatch(1)
         val resume = CountDownLatch(1)
@@ -267,7 +381,8 @@ class AndroidFirstUiTest {
                 LaunchSplashWindow::class.java.getDeclaredField("view").apply { isAccessible = true }
                     .get(activity.launchSplash) as? android.window.SplashScreenView else null
             compose.waitUntil(5_000) {
-                activity.launchSplash.nativeActive || compose.onAllNodesWithTag("launch-splash").fetchSemanticsNodes().isNotEmpty()
+                host.bootstrap != null && (activity.launchSplash.nativeActive ||
+                    compose.onAllNodesWithTag("launch-splash-mark").fetchSemanticsNodes().isNotEmpty())
             }
             compose.runOnIdle {
                 assertFalse(host.snapshot!!.getBoolean("gpu_ready"))
@@ -286,8 +401,7 @@ class AndroidFirstUiTest {
                 } else {
                     it.window.decorView.getGlobalVisibleRect(cover)
                     val density = it.resources.displayMetrics.density
-                    val size = it.launchSplash.legacyMarkSize?.toFloat()
-                        ?: Native.launchMarkSize(cover.width() / density, cover.height() / density) * density
+                    val size = Native.launchMarkSize(cover.width() / density, cover.height() / density) * density
                     mark.set((cover.exactCenterX() - size / 2).toInt(), (cover.exactCenterY() - size / 2).toInt(),
                         (cover.exactCenterX() + size / 2).toInt(), (cover.exactCenterY() + size / 2).toInt())
                 }

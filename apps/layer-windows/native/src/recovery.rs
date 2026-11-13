@@ -679,12 +679,16 @@ impl Service {
         self.closed && !self.busy
     }
     pub fn failed(&self)->bool{self.error.is_some()&&!self.closed}
+    pub fn needs_attention(&self)->bool{self.error.is_some()||!self.busy&&self.asking_drawing().is_some()}
+    fn asking_drawing(&self)->Option<u64>{
+        self.asking.front().and_then(|key|self.manifest.drawings.iter().find(|drawing|drawing.key==*key)).map(|drawing|drawing.id)
+    }
     #[cfg_attr(
         all(not(target_os = "windows"), not(test)),
         expect(dead_code, reason = "Used by the Windows host")
     )]
     pub fn status(&self, localization: &layer_ui::Localizer, selected: u64, stamp: &SessionStamp) -> serde_json::Value {
-        let drawing=self.asking.front().and_then(|key|self.manifest.drawings.iter().find(|drawing|drawing.key==*key)).map(|drawing|drawing.id);
+        let drawing=self.asking_drawing();
         serde_json::json!({"busy":self.busy,"restoring":self.restoring(),"closing":self.closing,"ready":self.close_ready(),
             "current":self.stores.as_ref().is_some_and(|stores|stores.is_current(selected,stamp)),
             "camera":self.stamps.get(&selected).map(|stamp|&stamp.state.camera),
@@ -848,6 +852,24 @@ mod tests {
         assert_eq!(service.status(&localization,7,&committed)["camera"],serde_json::json!(committed.state.camera));
         assert!(service.status(&localization,8,&committed)["camera"].is_null());
         service.stop().unwrap();
+    }
+    #[test]
+    fn recovery_failures_and_drawing_choices_drop_the_launch_cover() {
+        let mut host=NativeHost::new(Platform::Windows).unwrap();
+        let mut documents=crate::documents::DocumentService::open(||{}).unwrap();
+        let mut service=Service::open(||{}).unwrap();
+        service.busy=false;
+        service.manifest=SessionManifest::default().reconcile(vec![SessionDrawing{id:5,key:"unreadable".into()}],5,false).unwrap();
+        documents.recovery=Some(service);
+        let covered=|documents:&crate::documents::DocumentService,host:&mut NativeHost|{host.set_launch_interaction(documents.host_dialog_open());host.launch_state().visible};
+        assert!(covered(&documents,&mut host));
+        documents.recovery.as_mut().unwrap().asking.push_back("unreadable".into());
+        assert!(!covered(&documents,&mut host));
+        documents.recovery.as_mut().unwrap().busy=true;
+        assert!(covered(&documents,&mut host));
+        documents.recovery.as_mut().unwrap().error=Some("Recovery storage is unavailable".into());
+        assert!(!covered(&documents,&mut host));
+        documents.stop_worker().unwrap();
     }
     #[test]
     fn recovery_status_requires_the_live_undo_checkpoint_even_when_no_write_is_running() {

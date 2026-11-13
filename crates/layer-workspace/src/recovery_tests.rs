@@ -87,7 +87,7 @@ fn reload(records: &Records) {
     }
 }
 fn start_web(records: &Rc<Records>) -> (WorkspaceController<WebStore>, layer_host::NativeHost) {
-    let mut host = layer_host::NativeHost::new(Platform::Web).unwrap();
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
     let mut controller = WorkspaceController::new_localized(WebStore(records.clone()), Platform::Web, WEB_NOW, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
     settle(&mut controller, &mut host, WEB_NOW, |c| c.view.ready && !c.view.busy);
     (controller, host)

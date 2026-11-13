@@ -240,6 +240,12 @@ impl Settings {
             _ => preference,
         }
     }
+    pub fn launch_icon(saved: &str) -> ZenIcon {
+        if saved.len() > Self::MAX_FILE_BYTES { return ZenIcon::default(); }
+        serde_json::from_str::<serde_json::Value>(saved).ok()
+            .and_then(|value| value.get("zen_icon").and_then(|icon| ZenIcon::deserialize(icon).ok()))
+            .unwrap_or_default()
+    }
     /// Read settings saved by any build. Each field this build cannot read or
     /// validate keeps its default; the next save replaces the saved copy.
     pub fn restore(saved: &str) -> Self {
@@ -3074,6 +3080,18 @@ mod localization_tests {
         let view = state.view(&settings, Platform::Gtk, true, None, &japanese);
         assert_eq!(view.capture_icon, Some(crate::ShortcutCaptureIcon::Information));
         assert_eq!(view.capture.unwrap().notice, japanese.text(MessageId::SETTINGS_ALREADY_A_MODIFIER_KEY).to_string());
+    }
+
+    #[test]
+    fn launch_icon_reads_only_a_saved_zen_icon() {
+        for (icon, _) in ZenIcon::CHOICES {
+            let saved = serde_json::to_string(&Settings { zen_icon: icon, ..Settings::default() }).unwrap();
+            assert_eq!(Settings::launch_icon(&saved), icon);
+        }
+        for saved in ["", "{", "[]", r#"{"zen_icon":"dancing"}"#, r#"{"zen_icon":3}"#] {
+            assert_eq!(Settings::launch_icon(saved), ZenIcon::LookingUp);
+        }
+        assert_eq!(Settings::launch_icon(&format!(r#"{{"zen_icon":"sleeping","pad":"{}"}}"#, "x".repeat(Settings::MAX_FILE_BYTES))), ZenIcon::LookingUp);
     }
 
     #[test]
