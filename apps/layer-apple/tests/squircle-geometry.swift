@@ -24,9 +24,13 @@ import SwiftUI
         let anchor = CGRect(x: 100, y: 20, width: 36, height: 36)
         let bridge = CGRect(x: 92, y: 48, width: 52, height: 8)
         let placement = JSON(["anchor": ["x": anchor.minX, "y": anchor.minY, "width": anchor.width, "height": anchor.height]])
-        let connection = JSON(["bounds": ["x": bridge.minX, "y": bridge.minY, "width": bridge.width, "height": bridge.height]])
-        precondition(DrawerShadow.cuts(placement: placement, connection: connection) == [bridge, anchor],
-            "Attached drawer shadows must exclude the bridge and its opening tile on every Apple host")
+        let connection = JSON(["bounds": ["x": bridge.minX, "y": bridge.minY, "width": bridge.width, "height": bridge.height],
+            "length": anchor.width, "depth": bridge.height, "radii": [8, 8], "transform": [1, 0, 0, 1, 8, 0]])
+        let cuts = DrawerShadow.cuts(placement: placement, connection: connection)
+        func near(_ a: CGRect, _ b: CGRect) -> Bool { [a.minX - b.minX, a.minY - b.minY, a.width - b.width, a.height - b.height].allSatisfy { abs($0) < 0.01 } }
+        precondition(cuts.count == 2 && near(cuts[0].boundingRect, bridge) && near(cuts[1].boundingRect, anchor)
+            && cuts[0].contains(CGPoint(x: bridge.midX, y: bridge.midY)) && !cuts[0].contains(CGPoint(x: bridge.minX + 1, y: bridge.minY + 1)),
+            "Attached drawer shadows must exclude the bridge outline, keep its concave corners, and exclude the opening tile on every Apple host")
         precondition(DrawerShadow.cuts(placement: placement, connection: JSON()).isEmpty,
             "Disconnected drawers retain their complete outside shadow")
         for sweep in [-90.0, 90.0] {
