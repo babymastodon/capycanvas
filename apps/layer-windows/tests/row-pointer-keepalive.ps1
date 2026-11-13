@@ -134,9 +134,11 @@ try{
  $tokens=$null;$errors=$null
  $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-edge-reach.ps1'),[ref]$tokens,[ref]$errors)
  if($errors.Count){throw($errors|Out-String)}
- $function=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Contact'},$true)
- if(!$function){throw 'Missing actual edge contact helper'}
- . ([scriptblock]::Create($function.Extent.Text.Replace('[CapyRowPointer]','[CapyEdgeContactTest.Pointer]')))
+ foreach($name in 'Contact','Contact-Receipt'){
+  $function=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name}.GetNewClosure(),$true)
+  if(!$function){throw "Missing actual edge contact helper $name"}
+  . ([scriptblock]::Create($function.Extent.Text.Replace('[CapyRowPointer]','[CapyEdgeContactTest.Pointer]')))
+ }
  function Screen([double]$X,[double]$Y){@{x=[int]$X;y=[int]$Y}}
  function Gesture{
   if([CapyEdgeContactTest.Pointer]::Cancels){return [pscustomobject]@{edge=$null}}

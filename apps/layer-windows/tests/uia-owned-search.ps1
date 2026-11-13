@@ -1662,7 +1662,7 @@ public static class CapyEdgeSweepTest {
  }
  $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-edge-reach.ps1'),[ref]$tokens,[ref]$errors)
  if($errors.Count){throw($errors|Out-String)}
- foreach($name in 'Escape-Edge','Settled'){
+ foreach($name in 'Escape-Edge','Settled','Contact-Receipt','Within'){
   $fn=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq$name}.GetNewClosure(),$true)
   if(!$fn){throw "Missing actual sweep function $name"}
   . ([scriptblock]::Create($fn.Extent.Text.Replace('[CapyRowPointer]','[CapyEdgeSweepTest]')))
@@ -1682,7 +1682,8 @@ public static class CapyEdgeSweepTest {
   if($phase-eq1-and$moved){$script:sweepMotionReads++}
   $settled=$phase-eq1-and(($moved-and$script:sweepMode-in'settled','settled-error')-or(!$moved-and$script:sweepMode-eq'settled-ineligible'-and$script:sweepDownReads-ge1))
   if($phase-eq1-and!$moved){$script:sweepDownReads++}
-  $edge=if($phase-eq1-and!$settled-and$script:sweepMode-ne'denied'){
+  $late=$phase-eq1-and!$moved-and$script:sweepMode-eq'late-down'-and$script:sweepDownReads-le2
+  $edge=if($phase-eq1-and!$settled-and!$late-and$script:sweepMode-notin'denied','canvas'){
    @{serial=21;claimed=($moved-and$script:sweepMotionReads-ge4-and$script:sweepMode-ne'unclaimed');contact=$(if($script:sweepMode-like'*ineligible*'){'pickup'}else{'free'});vertical=$false;position=@((510+([CapyEdgeSweepTest]::X-[CapyEdgeSweepTest]::StartX)/1.5),(720+([CapyEdgeSweepTest]::Y-200)/1.5))}
   }
   if($edge-and$script:sweepMode-eq'wrong-edge-serial'){$edge.serial=22}
@@ -1697,12 +1698,12 @@ public static class CapyEdgeSweepTest {
   if($script:sweepMode-eq'wrong-serial'){$reply.serial=20}
   if($script:sweepMode-eq'ineligible-wrong-down'){$reply.time=99}
   if($ended){$reply=@{serial=$(if($script:sweepAcknowledged){21}else{20});phase=$(if([CapyEdgeSweepTest]::Escapes){'cancel'}else{'up'});time=111;bits=0}}
-  $contact=@{pointer=1;time=$(if($phase-eq0-or$script:sweepMode-eq'stale-down'){99}else{100});primary=$true;position=@(510,720)}
+  $contact=@{pointer=1;time=$(if($phase-eq0-or$late-or$script:sweepMode-in'stale-down','canvas'){99}else{100});primary=$true;position=@(510,720)}
   @{edge=$edge;pointer_id=$null;edge_reply=$reply;edge_contact=$contact;edge_input=@{pointer=$(if($script:sweepMode-eq'wrong-pointer'){2}else{1});time=$(if($script:sweepMode-eq'stale-move-input'){100}else{110});position=@(210,320)};last_edge=@{phase=$(if([CapyEdgeSweepTest]::Escapes){'cancel'}else{'up'});claimed=([CapyEdgeSweepTest]::Escapes-gt0)};last_release=@{generation=1};last_cancel=@{generation=2}}
  }
  function Model{
-  if($script:sweepMode-in'denied','settled','settled-error','settled-ineligible'-and[CapyEdgeSweepTest]::Phase-eq2){$script:sweepAcknowledged=$true}
-  if($script:sweepMode-in'ineligible','settled-ineligible','ineligible-wrong-down','denied'-and[CapyEdgeSweepTest]::Phase-eq2){$script:sweepAcknowledged=$true;$script:sweepPublished=101}
+  if($script:sweepMode-in'denied','canvas','settled','settled-error','settled-ineligible'-and[CapyEdgeSweepTest]::Phase-eq2){$script:sweepAcknowledged=$true}
+  if($script:sweepMode-in'ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas'-and[CapyEdgeSweepTest]::Phase-eq2){$script:sweepAcknowledged=$true;$script:sweepPublished=101}
   if(!$script:sweepAcknowledged){$script:sweepEarlyModelReads++}else{$script:sweepModelReads++}
   if($script:sweepAcknowledged-and$script:sweepModelReads-ge6-and$script:sweepMode-ne'missing-layout'-and![CapyEdgeSweepTest]::Committed){$script:sweepPublished=101}
   @{state=@{workspace=@{layout=$(if($script:sweepPublished-eq101){'restored'}else{'preview'})}}}
@@ -1724,23 +1725,24 @@ public static class CapyEdgeSweepTest {
  }
  $review=@{Id=7};$window=8;$at=@{x=100;y=200};$sample=@{axis='horizontal';x=509.9;y=720.1;dx=-6;dy=0};$baseline='"restored"';$geometry='restored-divider';$active=@{}
  foreach($Device in 'mouse','touch'){
- $modes=if($Device-eq'mouse'){@('delayed','wrong-serial','wrong-edge-serial','wrong-position','stale-move-input','old-down','earlier-move','wrong-pointer','stale-down','unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','stale-terminal','missing-layout','missing-presentation','wrong-geometry')}else{@('delayed','stale-terminal','missing-layout','missing-presentation','wrong-geometry')}
+ $modes=if($Device-eq'mouse'){@('delayed','late-down','wrong-serial','wrong-edge-serial','wrong-position','stale-move-input','old-down','earlier-move','wrong-pointer','stale-down','unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas','stale-terminal','missing-layout','missing-presentation','wrong-geometry')}else{@('delayed','late-down','stale-terminal','missing-layout','missing-presentation','wrong-geometry')}
  foreach($mode in $modes){
+  $surfaces=if($mode-eq'canvas'){@(@{x=0;y=0;width=500;height=700})}else{@(@{x=500;y=700;width=20;height=40})}
   $script:sweepMode=$mode;$script:sweepTerminalReads=0;$script:sweepMotionReads=0;$script:sweepDownReads=0;$script:sweepAcknowledged=$false;$script:sweepEarlyModelReads=0;$script:sweepModelReads=0;$script:sweepPresentationReads=0;$script:sweepGeometryReads=0;$script:sweepPublished=100;$script:sweepDisplayed=100
   $rows=[Collections.Generic.List[object]]::new();$script:sweepRows=[Collections.Generic.List[object]]::new()
-  [CapyEdgeSweepTest]::Phase=0;[CapyEdgeSweepTest]::Downs=0;[CapyEdgeSweepTest]::Cancels=0;[CapyEdgeSweepTest]::Escapes=0;[CapyEdgeSweepTest]::Moves=0;[CapyEdgeSweepTest]::Active=$false;[CapyEdgeSweepTest]::Committed=$false;[CapyEdgeSweepTest]::SharedClaimed=$mode-notin'unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied'
+  [CapyEdgeSweepTest]::Phase=0;[CapyEdgeSweepTest]::Downs=0;[CapyEdgeSweepTest]::Cancels=0;[CapyEdgeSweepTest]::Escapes=0;[CapyEdgeSweepTest]::Moves=0;[CapyEdgeSweepTest]::Active=$false;[CapyEdgeSweepTest]::Committed=$false;[CapyEdgeSweepTest]::SharedClaimed=$mode-notin'unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas'
   $failure=$null;try{. ([scriptblock]::Create($sequence))}catch{$failure=$_}
   if([CapyEdgeSweepTest]::Committed){throw 'Actual mouse sweep skipped cancellation and committed the delayed shared claim with ordinary Up'}
-  $expected=switch($mode){{$_-in'wrong-serial','wrong-edge-serial','wrong-position','stale-move-input','old-down','earlier-move','wrong-pointer'}{'Native edge sweep request was not acknowledged'}'stale-terminal'{'Native gesture release was not acknowledged'}'missing-layout'{'Canceled edge sweep did not acknowledge its exact workspace layout'}'missing-presentation'{'The display did not show the latest canvas frame'}'wrong-geometry'{'Canceled edge sweep changed the arranged divider geometry'}{$_-in'unclaimed','settled','settled-error'}{'Edge sweep lost or retained a contact:'}}
-  $early=$expected-eq'Native edge sweep request was not acknowledged'
-  $escapes=if($early-or$mode-in'unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied'){0}else{1}
+  $expected=switch($mode){{$_-in'wrong-serial','wrong-edge-serial','wrong-position','stale-move-input','old-down','earlier-move','wrong-pointer'}{'Native edge sweep request was not acknowledged'}'stale-terminal'{'Native gesture release was not acknowledged'}'missing-layout'{'Canceled edge sweep did not acknowledge its exact workspace layout'}'missing-presentation'{'The display did not show the latest canvas frame'}'wrong-geometry'{'Canceled edge sweep changed the arranged divider geometry'}{$_-in'unclaimed','settled','settled-error'}{'Edge sweep lost or retained a contact:'}'stale-down'{'Native contact Down was not acknowledged at the requested point'}}
+  $early=$expected-in'Native edge sweep request was not acknowledged','Native contact Down was not acknowledged at the requested point'
+  $escapes=if($early-or$mode-in'unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas'){0}else{1}
   if([CapyEdgeSweepTest]::Downs-ne1-or[CapyEdgeSweepTest]::Cancels-ne[int](!$early)-or[CapyEdgeSweepTest]::Escapes-ne$escapes){throw "Sweep repeated or skipped native contact cancellation: $mode; $failure"}
   if(!$expected){
    if($failure-or$script:sweepEarlyModelReads-ne0-or$script:sweepGeometryReads-ne2-or$script:sweepDisplayed-ne101-or$script:sweepRows.Count-ne1){throw "Actual edge sweep checked geometry before acknowledged rollback presentation: $mode; $failure"}
   }elseif(!$failure-or!$failure.Exception.Message.StartsWith($expected)-or($mode-notin'wrong-geometry','unclaimed','settled','settled-error'-and$script:sweepGeometryReads-ne0)){throw "Actual edge sweep accepted an unacknowledged or incorrect cancellation: $mode; $failure"}
  }
  }
- 'Actual edge sweep: 20 mouse cases and the original five touch rollback cases retain original Down and ineligible handling, acknowledged eligible claims and exact geometry.'
+ 'Actual edge sweep: 22 mouse and six touch cases await the Down receipt on edge surfaces only, then acknowledged eligible claims and exact geometry.'
 }
 
 & {
@@ -2384,6 +2386,7 @@ public static class CapyCaptionOriginTest {
  }
  'Actual column Drag: advanced generation waits for delayed capture; missing capture, optional guard and device policy preserved.'
 }
+
 
 & {
     $tokens=$null;$errors=$null

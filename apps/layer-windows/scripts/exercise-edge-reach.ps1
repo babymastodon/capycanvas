@@ -48,20 +48,23 @@ function Swipe($From,$To,[int]$Steps=10,[scriptblock]$During){
     if($During){& $During}
     [CapyRowPointer]::Up();Wait-NativeGestureRelease $release $terminalGeneration;Settled
 }
+function Contact-Receipt($Point,[double]$Previous){
+    $receipt=@{gesture=$null}
+    Wait-Until {
+        $g=Gesture;$receipt.gesture=$g;$contact=$g.edge_contact
+        $fresh=$contact -and $contact.primary -and $contact.time -gt $Previous
+        $fresh -and [Math]::Abs($contact.position[0]-$Point.x) -le 1 -and [Math]::Abs($contact.position[1]-$Point.y) -le 1
+    } 'Native contact Down was not acknowledged at the requested point'
+    $receipt.gesture
+}
 function Contact($Point){
     $at=Screen $Point.x $Point.y
     if($Device -eq 'mouse'){[CapyRowPointer]::Hover($at.x,$at.y)}
-    $before=Gesture;$previous=[double]$before.edge_contact.time;$ack=@{edge=$null}
+    $previous=[double](Gesture).edge_contact.time
     [CapyRowPointer]::Down($Device,$at.x,$at.y)
-    try{
-        Wait-Until {
-            $g=Gesture;$ack.edge=$g.edge;$contact=$g.edge_contact
-            $fresh=$contact -and $contact.primary -and $contact.time -gt $previous
-            $fresh -and [Math]::Abs($contact.position[0]-$Point.x) -le 1 -and [Math]::Abs($contact.position[1]-$Point.y) -le 1
-        } 'Native contact Down was not acknowledged at the requested point'
-        $ack.edge
-    }finally{[CapyRowPointer]::Cancel();Wait-Until {!(Gesture).edge} 'Native contact Cancel did not settle'}
+    try{(Contact-Receipt $Point $previous).edge}finally{[CapyRowPointer]::Cancel();Wait-Until {!(Gesture).edge} 'Native contact Cancel did not settle'}
 }
+function Within($Point,[object[]]$Bounds){@($Bounds|Where-Object {$_ -and $Point.x -ge $_.x -and $Point.x -le $_.x+$_.width -and $Point.y -ge $_.y -and $Point.y -le $_.y+$_.height}).Count -gt 0}
 function Reach-Point([object[]]$Candidates,[scriptblock]$Accept){
     foreach($point in $Candidates){$edge=Contact $point;Settled;if($edge -and (& $Accept $edge)){return $point}}
     throw 'No candidate contact lies within the edge reach'
@@ -178,16 +181,17 @@ function Check-ReachSweep([string]$Theme){
         $active=@{};foreach($group in (Layout).groups){$active[$group.id]=$group.active}
         $null=Gesture
         (Layout)|ConvertTo-Json -Depth 40|Set-Content (Join-Path $run ("sweep-$Theme-$scenario-layout.json"))
-        $strips=@((Layout).collapsed.bounds)
-        $samples=@(Reach-Samples|Sort-Object { $sample=$_;$inside=@($strips|Where-Object {$sample.x -ge $_.x -and $sample.x -le $_.x+$_.width -and $sample.y -ge $_.y -and $sample.y -le $_.y+$_.height});if($inside.Count){0}else{1} })
+        $strips=@((Layout).collapsed.bounds);$surfaces=@((Layout).groups.bounds)+$strips
+        $samples=@(Reach-Samples|Sort-Object {if(Within $_ $strips){0}else{1}})
         foreach($sample in $samples){
             $script:sweepProbe=@{theme=$Theme;device=$Device;scenario=$scenario;sample=$sample;baseline=($baseline|ConvertFrom-Json);geometry=$geometry}
             @{theme=$Theme;device=$Device;scenario=$scenario;sample=$sample}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run 'sweep-current.json')
             $at=Screen $sample.x $sample.y
             if($Device -eq 'mouse'){[CapyRowPointer]::Hover($at.x,$at.y)}
             try{
-                [CapyRowPointer]::Down($Device,$at.x,$at.y);Start-Sleep -Milliseconds 60
-                $down=Gesture
+                $previous=[double](Gesture).edge_contact.time
+                [CapyRowPointer]::Down($Device,$at.x,$at.y)
+                $down=if(Within $sample $surfaces){Contact-Receipt $sample $previous}else{Gesture}
                 $eligible=$null -ne $down.edge -and $(if($sample.axis -eq 'horizontal'){$down.edge.contact -eq 'free'}else{[bool]$down.edge.vertical})
                 $claimed=$false
                 if($eligible){
