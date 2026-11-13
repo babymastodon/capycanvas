@@ -121,7 +121,11 @@ class RowSwipePresenter {
             frame.Children().Append(viewport);frame.Children().Append(body);viewport.Visibility(Visibility::Collapsed);
             frame.SizeChanged([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->layout();});
             frame.Loaded([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->layout();});
-            frame.Unloaded([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock()){self->set(0,false);self->actionsVisible(false,false);self->stopExpressions();if(self->grip)self->grip.Opacity(self->opacity);}});
+            frame.Unloaded([weak=weak_from_this()](auto&&,auto&&){
+                if(auto self=weak.lock())self->frame.DispatcherQueue().TryEnqueue([weak]{
+                    if(auto self=weak.lock();self&&!self->frame.IsLoaded()){self->set(0,false);self->actionsVisible(false,false);self->stopExpressions();if(self->grip)self->grip.Opacity(self->opacity);}
+                });
+            });
         }
     };
     std::shared_ptr<State> state=std::make_shared<State>();

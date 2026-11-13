@@ -1093,6 +1093,41 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         co_await apartment;
         auto value=J::Parse(to_hstring(catalog));value.Insert(L"bootstrap",object(data->catalog,L"bootstrap"));co_return value.Stringify();
     }
+    winrt::Windows::Foundation::IAsyncAction workspaceSwipeAdmission(){
+        phase=L"workspace-swipe-admission";
+        auto list=selectableRows(data);auto item=selectableRow();Grid surface,body;Button grip,remove;MenuFlyout menu;
+        surface.Width(320);surface.Height(56);body.Width(320);body.Height(56);body.Background(clear());
+        grip.Width(16);grip.HorizontalAlignment(HorizontalAlignment::Right);body.Children().Append(grip);
+        auto presenter=std::make_shared<RowSwipePresenter>();presenter->Attach(body,grip);presenter->Actions().Children().Append(remove);presenter->Configure(0,64,64);
+        auto selected=std::make_shared<unsigned>(0),deleted=std::make_shared<unsigned>(0),contactId=std::make_shared<unsigned>(0),releasedId=std::make_shared<unsigned>(0);
+        surface.AddHandler(UIElement::PointerPressedEvent(),box_value(Input::PointerEventHandler([contactId](auto&&,Input::PointerRoutedEventArgs const& e){*contactId=e.Pointer().PointerId();})),true);
+        surface.AddHandler(UIElement::PointerReleasedEvent(),box_value(Input::PointerEventHandler([releasedId](auto&&,Input::PointerRoutedEventArgs const& e){*releasedId=e.Pointer().PointerId();})),true);
+        remove.Content(box_value(L"Delete"));remove.Click([deleted](auto&&,auto&&){++*deleted;});
+        item.Child(presenter->Frame());rowItems(list).Append(item);surface.Children().Append(list);root.Children().InsertAt(0,surface);
+        auto controller=std::make_shared<WorkspaceRowDrag>(list,surface,data,[]{return true;},[](hstring,std::optional<hstring>,std::function<void()>){},[]{});
+        controller->Attach(item,grip,remove,nullptr,menu,L"fixture-swipe",nullptr,WorkspaceRowDrag::Swipe{presenter,remove,64,.5});controller->Refresh({L"fixture-swipe"});
+        rowTap(item,[owner=std::weak_ptr(controller),selected]{if(auto current=owner.lock();current&&!current->SuppressClick())++*selected;});
+        auto cleanup=[&]{controller->Cancel();uint32_t index=0;if(root.Children().IndexOf(surface,index))root.Children().RemoveAt(index);};
+        try{
+            co_await wait([&]{return body.IsLoaded()&&body.ActualWidth()==320&&list.ScrollView();},L"Workspace swipe admission fixture did not arrange its real native row");
+            presenter->SetOffset(64,false);co_await wait([&]{return presenter->Offset()==64;},L"Workspace tap-to-close fixture did not reveal its real presenter");
+            nativePress(body,false,Point{160,28});co_await wait([&]{return presenter->AtRest();},L"Native workspace body tap did not close its revealed swipe");
+            require(*selected==0,L"Closing a workspace swipe selected its row");
+            NativeContact contact(PT_TOUCH,[trace=imeTrace](hresult_error const& error){wchar_t hex[11]{};swprintf_s(hex,L"0x%08X",uint32_t(error.code().value));trace->push_back(O({{L"case",S(L"workspace-swipe-admission")},{L"cleanup_error",S(error.message())},{L"hresult",S(hex)}}));});
+            auto point=nativePoint(body,{240,28});contact.down(point);
+            co_await wait([&]{auto value=AutomationProperties::GetItemStatus(list);return !value.empty()&&str(J::Parse(value),L"phase")==L"pressed";},L"Workspace swipe admission did not receive its native body Down");
+            auto scale=body.XamlRoot().RasterizationScale();
+            for(int step=1;step<=6;++step){co_await resume_after(std::chrono::milliseconds(10));co_await apartment;auto moved=point;moved.x-=LONG(step*16*scale);contact.move(moved);}
+            co_await wait([&]{return presenter->Offset()==64;},L"Workspace preview/reorder availability blocked an enabled native body swipe");contact.up();
+            co_await wait([&]{return *releasedId==*contactId&&J::Parse(AutomationProperties::GetItemStatus(list)).GetNamedString(L"phase")==L"idle";},L"Workspace body swipe did not finish its native contact");
+            require(presenter->Offset()==64&&!*selected,L"Workspace body swipe did not retain its revealed strip and preview");
+            nativePress(remove);co_await wait([deleted]{return *deleted==1;},L"Revealed native Delete did not invoke its shared action");
+            presenter->SetOffset(32,false);body.Width(360);surface.Width(360);surface.Height(64);
+            co_await wait([&]{return surface.ActualWidth()==360&&surface.ActualHeight()==64;},L"Workspace row resize did not arrange");
+            require(presenter->Offset()==32,L"Unchanged reveal width lost its presentation during native resize");++checks;
+        }catch(...){imeTrace->push_back(O({{L"case",S(L"workspace-swipe-admission")},{L"status",S(AutomationProperties::GetItemStatus(list))},{L"down_id",N(*contactId)},{L"released_id",N(*releasedId)},{L"offset",N(presenter->Offset())},{L"at_rest",B(presenter->AtRest())},{L"selected",N(*selected)},{L"deleted",N(*deleted)}}));cleanup();throw;}
+        cleanup();co_await wait([&]{return !list.IsLoaded();},L"Workspace swipe admission did not unload its real row");
+    }
     winrt::Windows::Foundation::IAsyncAction selectableRowsContract(){
         phase=L"selectable-rows-contract";
         auto list=selectableRows(data);list.Width(280);list.Height(112);std::vector<ItemContainer> rows;
@@ -1725,7 +1760,7 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         require(data->dismissTransients(),L"Visible popup ignored cancellation registry");co_await wait([this,beforeClosed]{return closedCount==beforeClosed+1&&!visiblePopup();},L"Native popup Closed acknowledgement or visible-popup retirement timed out");
         require(!shown.Current()&&!shown.Show(anchor,{}),L"Reply reopened closed popup");empty();++checks;
         phase=L"header-context-ordering";co_await headerContextOrdering();
-        phase=L"row-swipe-presentation";co_await rowSwipePresentation();
+        phase=L"row-swipe-presentation";co_await rowSwipePresentation();co_await workspaceSwipeAdmission();
         require(nativeSetupFailures.empty(),nativeSetupFailures.c_str());
         phase=L"foreground-return";auto beforeActive=opened;auto beforeHidden=closedCount;auto activated=menu();auto active=owner.Begin(data,anchor,activated);pending();
         require(active.Show(anchor,{}),L"Foreground-return popup did not show");co_await wait([this,beforeActive]{return opened==beforeActive+1&&owner.Open();},L"Foreground-return popup Opened timed out");
