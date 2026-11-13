@@ -1,6 +1,6 @@
 use layer_core::{PortableId,package::session_store::check_store_key};
 use serde::{Deserialize,Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap,BTreeSet};
 
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct SourceVersion {pub key:String,pub generation:u64,pub sha256:String}
@@ -21,10 +21,11 @@ pub struct ImportRecord {
     pub source:SourceVersion,pub drawing:String,pub window:String,pub baseline:Option<PortableId>,pub complete:bool,
 }
 #[derive(Default,Serialize,Deserialize)]
-pub struct ImportLedger {pub records:BTreeMap<String,ImportRecord>,pub windows:BTreeMap<String,String>}
+pub struct ImportLedger {pub records:BTreeMap<String,ImportRecord>,pub windows:BTreeMap<String,String>,#[serde(default)] pub unreadable:BTreeSet<String>}
 impl ImportLedger {
     pub fn validate(&self)->Result<(),String> {
         for (source,window) in &self.windows {check_store_key(source)?;check_store_key(window)?;}
+        for source in &self.unreadable {check_store_key(source)?;}
         for (key,record) in &self.records {
             record.source.validate()?;check_store_key(&record.drawing)?;check_store_key(&record.window)?;
             if *key!=record.source.key || record.complete&&record.baseline.is_none() {return Err("Invalid imported session index".into());}
@@ -113,6 +114,14 @@ mod tests {
         let mut value=serde_json::to_value(&ledger).unwrap();value["future_option"]=serde_json::json!({"enabled":true});
         value["records"]["released"]["source"]["future_option"]=serde_json::json!(1);
         serde_json::from_value::<ImportLedger>(value).unwrap().validate().unwrap();
+    }
+    #[test]
+    fn unreadable_sources_stay_recorded_across_saves_and_older_ledgers_still_load() {
+        let mut ledger:ImportLedger=serde_json::from_value(serde_json::json!({"records":{},"windows":{}})).unwrap();
+        assert!(ledger.unreadable.is_empty());ledger.unreadable.insert("released".into());
+        for _ in 0..3 {ledger=serde_json::from_slice(&serde_json::to_vec(&ledger).unwrap()).unwrap();ledger.validate().unwrap();}
+        assert!(ledger.unreadable.contains("released"));
+        ledger.unreadable.insert("not a key".into());assert!(ledger.validate().is_err());
     }
     #[test]
     fn importing_one_drawing_preserves_other_branches_and_blocks_only_the_failed_copy() {

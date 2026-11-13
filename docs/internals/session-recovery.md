@@ -255,8 +255,11 @@ Web uses the same store over one OPFS worker's sync access handles. Required rea
 precede writes, each bounded to 8 MiB. The main Wasm instance owns the coordinator
 and metadata; the worker verifies range checksums. Released IndexedDB recovery is
 read only: import copies resources and heads into OPFS, retaining source identities
-and verified generation baselines. Independent edits in both stores remain separate
-recovered drawings. Original project files remain separate and recovery never
+and verified generation baselines. A released list or drawing that can't be imported,
+because it is missing, damaged or unsupported, is recorded in the import index and
+reported once; later loads skip it and the record stays in IndexedDB. If the import
+index itself can't be read, import is skipped. Independent edits in both stores
+remain separate recovered drawings. Original project files remain separate and recovery never
 overwrites them.
 
 Cleanup retains current and previous generations plus resources pinned by readers
