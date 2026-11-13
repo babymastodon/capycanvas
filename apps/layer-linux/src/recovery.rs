@@ -508,20 +508,4 @@ mod tests {
         assert!(recovery.coordinator().is_err());
         glib::MainContext::new().block_on(recovery.prepare_retirement()).unwrap();
     }
-    #[test]
-    fn refused_legacy_namespace_cannot_be_reopened_for_fresh_publication_or_cleanup() {
-        struct Fixture(PathBuf);
-        impl Drop for Fixture { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-        let fixture = Fixture(std::env::temp_dir().join(format!("capy-gtk-namespace-{}", key())));
-        let packed = fixture.0.join("packed");
-        std::fs::create_dir_all(&packed).unwrap();
-        std::fs::write(packed.join("head.json"), b"released drawing head").unwrap();
-        let owner = OwnerLock::claim(&packed.join(".lock")).unwrap().unwrap();
-        assert!(layer_core::package::session_store::import_session_directories(&fixture.0, ".json", ".lock").unwrap_err().contains("conflicts"));
-        assert!(storage_gate(&packed).err().unwrap().contains("conflicts"));
-        assert!(!packed.join(".gc.lock").exists());
-        assert_eq!(std::fs::read(packed.join("head.json")).unwrap(), b"released drawing head");
-        assert!(OwnerLock::claim(&packed.join(".lock")).unwrap().is_none());
-        drop(owner);
-    }
 }

@@ -6,19 +6,23 @@ use std::{collections::{BTreeMap, BTreeSet}, path::Path};
 #[derive(Clone, Copy, Debug)]
 enum Layout { Flat, Window }
 #[derive(Clone, Copy, Debug)]
-enum Saved { TornIntentUnused, ForeignRetired, TornIntentListed, UnreadableDrawing, BrokenDrawing, UnparsableList, InvalidList }
+enum Saved { TornIntentUnused, ForeignRetired, TornIntentListed, UnreadableDrawing, BrokenDrawing, UnparsableList, InvalidList, LegacyConflict, LegacyUnparsable, StrayRootLock }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Store { Retired, Unchanged }
-struct Expected { notice: bool, prompt: bool, listed: bool, target: &'static str, store: Store }
-const STARTS: [(Saved, Expected); 7] = [
-    (Saved::TornIntentUnused, Expected { notice: false, prompt: false, listed: true, target: "unused", store: Store::Retired }),
-    (Saved::ForeignRetired, Expected { notice: false, prompt: false, listed: true, target: "unused", store: Store::Unchanged }),
-    (Saved::TornIntentListed, Expected { notice: false, prompt: false, listed: true, target: "listed", store: Store::Unchanged }),
-    (Saved::UnreadableDrawing, Expected { notice: false, prompt: true, listed: false, target: "listed", store: Store::Retired }),
-    (Saved::BrokenDrawing, Expected { notice: false, prompt: true, listed: false, target: "listed", store: Store::Unchanged }),
-    (Saved::UnparsableList, Expected { notice: true, prompt: false, listed: false, target: "listed", store: Store::Unchanged }),
-    (Saved::InvalidList, Expected { notice: true, prompt: false, listed: false, target: "listed", store: Store::Unchanged }),
+struct Expected { notice: bool, prompt: bool, listed: &'static [&'static str], target: &'static str, store: Store }
+const STARTS: [(Saved, Expected); 10] = [
+    (Saved::TornIntentUnused, Expected { notice: false, prompt: false, listed: &["listed"], target: "unused", store: Store::Retired }),
+    (Saved::ForeignRetired, Expected { notice: false, prompt: false, listed: &["listed"], target: "unused", store: Store::Unchanged }),
+    (Saved::TornIntentListed, Expected { notice: false, prompt: false, listed: &["listed"], target: "listed", store: Store::Unchanged }),
+    (Saved::UnreadableDrawing, Expected { notice: false, prompt: true, listed: &[], target: "listed", store: Store::Retired }),
+    (Saved::BrokenDrawing, Expected { notice: false, prompt: true, listed: &[], target: "listed", store: Store::Unchanged }),
+    (Saved::UnparsableList, Expected { notice: true, prompt: false, listed: &[], target: "listed", store: Store::Unchanged }),
+    (Saved::InvalidList, Expected { notice: true, prompt: false, listed: &[], target: "listed", store: Store::Unchanged }),
+    (Saved::LegacyConflict, Expected { notice: false, prompt: false, listed: &["legacy", "listed"], target: "listed", store: Store::Unchanged }),
+    (Saved::LegacyUnparsable, Expected { notice: true, prompt: false, listed: &["listed"], target: "listed", store: Store::Unchanged }),
+    (Saved::StrayRootLock, Expected { notice: false, prompt: false, listed: &["listed"], target: "listed", store: Store::Unchanged }),
 ];
+const ROOT_LOCKS: [&str; 2] = [".lock", "owner.lock"];
 const UNPARSABLE: &[u8] = b"{not json";
 const INVALID: &[u8] = br#"{"generation":1,"drawings":[{"id":1,"key":"listed"},{"id":1,"key":"other"}],"active":1,"clean_exit":false,"restoring":[],"blocked":[]}"#;
 
@@ -66,7 +70,7 @@ fn checkpoint(path: &Path) {
     let mut store = pollster::block_on(SessionStore::open(path)).unwrap();
     pollster::block_on(super::tests::capture().0.checkpoint(&mut store, &AtomicBool::new(false))).unwrap();
 }
-fn seed(root: &Path, layout: Layout, saved: Saved) {
+fn seed(root: &Path, layout: Layout, saved: Saved) -> Option<&'static [u8]> {
     let packed = packed_sessions(root).unwrap();
     let stores = layout.stores(&packed);
     SessionManifest::default().stage(vec![SessionDrawing { id: 1, key: "listed".into() }], 1).unwrap().publish(&layout.manifest(&packed)).unwrap();
@@ -81,9 +85,19 @@ fn seed(root: &Path, layout: Layout, saved: Saved) {
         Saved::TornIntentListed => std::fs::write(stores.join("listed/.retiring"), b"").unwrap(),
         Saved::UnreadableDrawing => for name in ["head.0", "head.1"] { std::fs::write(stores.join("listed").join(name), b"invalid head").unwrap(); },
         Saved::BrokenDrawing => { std::fs::remove_dir_all(stores.join("listed/generations")).unwrap(); std::fs::write(stores.join("listed/generations"), b"not a directory").unwrap(); }
-        Saved::UnparsableList => std::fs::write(layout.manifest(&packed), UNPARSABLE).unwrap(),
-        Saved::InvalidList => std::fs::write(layout.manifest(&packed), INVALID).unwrap(),
+        Saved::UnparsableList => { std::fs::write(layout.manifest(&packed), UNPARSABLE).unwrap(); return Some(UNPARSABLE); }
+        Saved::InvalidList => { std::fs::write(layout.manifest(&packed), INVALID).unwrap(); return Some(INVALID); }
+        Saved::LegacyConflict => {
+            SessionManifest::default().stage(vec![SessionDrawing { id: 1, key: "legacy".into() }], 1).unwrap().publish(&layout.manifest(root)).unwrap();
+            checkpoint(&layout.stores(root).join("legacy"));
+        }
+        Saved::LegacyUnparsable => {
+            let list = match layout { Layout::Flat => root.join("older.json"), Layout::Window => root.join("older/session.json") };
+            std::fs::create_dir_all(list.parent().unwrap()).unwrap(); std::fs::write(list, UNPARSABLE).unwrap(); return Some(UNPARSABLE);
+        }
+        Saved::StrayRootLock => for name in ROOT_LOCKS { std::fs::write(packed.join(name), b"").unwrap(); },
     }
+    None
 }
 fn blocked(manifest: &SessionManifest, blocked: bool) -> Vec<SessionDrawing> {
     manifest.drawings.iter().filter(|drawing| manifest.blocked.contains(&drawing.id) == blocked).cloned().collect()
@@ -132,8 +146,9 @@ fn start(root: &Path, layout: Layout) -> Start {
     }
     start
 }
-fn listed(packed: &Path, layout: Layout) -> bool {
-    SessionManifest::read(&layout.manifest(packed)).ok().flatten().is_some_and(|manifest| manifest.drawings.iter().any(|drawing| drawing.key == "listed"))
+fn listed(packed: &Path, layout: Layout) -> Vec<String> {
+    let lists = layout.windows(packed).into_iter().filter_map(|(path, ..)| SessionManifest::read(&path).ok().flatten());
+    lists.flat_map(|list| list.drawings).map(|drawing| drawing.key).collect::<BTreeSet<_>>().into_iter().collect()
 }
 fn store(root: &Path, path: &Path, seeded: &Files) -> Store {
     if files(root, path) == *seeded { return Store::Unchanged; }
@@ -146,22 +161,22 @@ fn starting_three_times_shows_no_repeating_notice() {
     for (saved, expected) in STARTS {
         for layout in [Layout::Flat, Layout::Window] {
             let root = std::env::temp_dir().join(format!("capy-recovery-starts-{}", PortableId::random()));
-            seed(&root, layout, saved);
+            let damaged = seed(&root, layout, saved);
             let target = layout.stores(&root.join("packed")).join(expected.target);
             let seeded = files(&root, &target);
-            let list = std::fs::read(layout.manifest(&root.join("packed"))).unwrap();
             let starts: Vec<_> = (0..3).map(|_| (start(&root, layout), files(&root, &root))).collect();
             let case = format!("{saved:?} {layout:?}");
             assert_eq!(starts[0].0.prompts.len(), usize::from(expected.prompt), "{case}: first start {:?}", starts[0].0);
             assert!(starts[0].0.errors.is_empty(), "{case}: first start {:?}", starts[0].0);
-            let notices: Vec<_> = SessionManifest::parse(&list).err().map(|detail| document_recovery_unavailable(&Localizer::shared(UiLanguage::English), &detail)).into_iter().collect();
+            let notices: Vec<_> = damaged.map(|list| document_recovery_unavailable(&Localizer::shared(UiLanguage::English), &SessionManifest::parse(list).unwrap_err())).into_iter().collect();
             assert_eq!(starts[0].0.notices, notices, "{case}: first start");
             assert_eq!(notices.len(), usize::from(expected.notice), "{case}");
-            assert!(!expected.notice || starts[2].1.iter().any(|(name, bytes)| name.rsplit('/').next().unwrap().starts_with("preserved-") && bytes.as_deref() == Some(&list[..])), "{case}: list bytes kept");
+            assert!(damaged.is_none_or(|list| starts[2].1.iter().any(|(name, bytes)| name.rsplit('/').next().unwrap().starts_with("preserved-") && bytes.as_deref() == Some(list))), "{case}: list bytes kept");
             for (later, _) in &starts[1..] { assert_eq!(*later, Start::default(), "{case}: later start"); }
             let changed: Vec<_> = starts[1].1.keys().chain(starts[2].1.keys()).filter(|name| starts[1].1.get(*name) != starts[2].1.get(*name)).collect();
             assert!(changed.is_empty(), "{case}: later starts change {changed:?}");
             assert_eq!(listed(&root.join("packed"), layout), expected.listed, "{case}: membership");
+            assert!(!matches!(saved, Saved::StrayRootLock) || ROOT_LOCKS.iter().all(|name| root.join("packed").join(name).is_file()), "{case}: root locks kept");
             assert_eq!(store(&root, &target, &seeded), expected.store, "{case}: {}", expected.target);
             std::fs::remove_dir_all(&root).unwrap();
         }

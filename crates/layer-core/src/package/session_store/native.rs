@@ -60,9 +60,6 @@ impl Drop for OwnerLock {
 pub struct SessionLease { _owner: OwnerLock }
 pub fn packed_sessions(root: &Path) -> Result<PathBuf, String> {
     let packed = root.join("packed");
-    if metadata_optional(&packed.join(".lock"))?.is_some() || metadata_optional(&packed.join("owner.lock"))?.is_some() {
-        return Err("The packed session directory conflicts with an existing session; its files were kept".into());
-    }
     create_directory(&packed)?;
     Ok(packed)
 }
@@ -76,9 +73,8 @@ pub(super) fn relocate_session<Owner>(source: &Path, destination: &Path, _owner:
         let entry = entry.map_err(|e| e.to_string())?;
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
         let lock = entry.path().join(".lock");
-        let Some(metadata) = metadata_optional(&lock)? else { continue; };
-        if !metadata.is_file() { return Err("Invalid recovery drawing lock".into()); }
-        let owner = OwnerLock::claim(&lock)?.ok_or("Recovery drawing is already open")?;
+        if !metadata_optional(&lock)?.is_some_and(|metadata| metadata.is_file()) { continue; }
+        let Some(owner) = OwnerLock::claim(&lock)? else { return Ok(()) };
         stores.push(owner);
     }
     #[cfg(windows)] drop((stores, _owner));
@@ -113,8 +109,7 @@ pub(super) fn import_with_owner_using<Owner>(root: &Path, manifest: &str, lock: 
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir()
             || !metadata_optional(&source.join(manifest))?.is_some_and(|metadata| metadata.is_file()) { continue; }
         let Some(owner) = claim(&source.join(lock))? else { continue; };
-        let destination = packed.join(entry.file_name());
-        relocate_session(&source, &destination, owner)?;
+        relocate_session(&source, &unused(packed.join(entry.file_name()), "")?, owner)?;
     }
     Ok(packed)
 }
@@ -123,24 +118,16 @@ pub(super) fn relocate_flat_sessions(root: &Path, packed: &Path, boundary: &mut 
         let entry = entry.map_err(|e| e.to_string())?; let source = entry.path();
         if source.extension().is_none_or(|extension| extension != "json") || !entry.file_type().map_err(|e| e.to_string())?.is_file() { continue; }
         let Some(_owner) = OwnerLock::claim(&source.with_extension("lock"))? else { continue; };
-        let destination = packed.join(entry.file_name());
-        if metadata_optional(&destination)?.is_some() { return Err("The saved session exists in both versions; both copies were kept".into()); }
-        let bytes = read_bounded(&source, 1024 * 1024)?;
-        let value = super::super::parse_json(&bytes, 1024 * 1024)?;
-        let drawings = value["drawings"].as_array().ok_or("Invalid saved drawing list")?;
-        if drawings.len() > 1024 { return Err("Too many saved drawings".into()); }
-        let mut keys = BTreeSet::new(); let mut moves = Vec::new(); let mut owners = Vec::new(); let mut busy = false;
-        for drawing in drawings {
-            let key = drawing["key"].as_str().ok_or("Invalid saved drawing key")?;
-            if key.is_empty() || key.len() > 128 || !key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') || !keys.insert(key) {
-                return Err("Invalid saved drawing key".into());
-            }
+        let destination = unused(packed.join(entry.file_name()), ".json")?;
+        let value = super::super::parse_json(&read_bounded(&source, 1024 * 1024)?, 1024 * 1024).unwrap_or_default();
+        let drawings = value["drawings"].as_array().filter(|drawings| drawings.len() <= 1024).cloned().unwrap_or_default();
+        let mut keys = BTreeSet::new(); let mut moves = Vec::new(); let mut kept = Vec::new(); let mut owners = Vec::new(); let mut busy = false;
+        for key in drawings.iter().filter_map(|drawing| drawing["key"].as_str()).filter(|key| check_store_key(key).is_ok()) {
+            if !keys.insert(key) { continue; }
             let from = root.join(key); let to = packed.join(key);
             let original = metadata_optional(&from)?; let moved = metadata_optional(&to)?;
-            if original.as_ref().is_some_and(|metadata| !metadata.is_dir()) || moved.as_ref().is_some_and(|metadata| !metadata.is_dir()) { return Err("Invalid saved drawing directory".into()); }
-            if original.is_some() && moved.is_some() && metadata_optional(&from.join("head.json"))?.is_some() {
-                return Err("The saved drawing exists in both versions; both copies were kept".into());
-            }
+            if original.as_ref().is_some_and(|metadata| !metadata.is_dir()) || moved.as_ref().is_some_and(|metadata| !metadata.is_dir()) { continue; }
+            if original.is_some() && moved.is_some() && metadata_optional(&from.join("head.json"))?.is_some() { kept.push(from.clone()); }
             for path in [original.as_ref().map(|_| &from), moved.as_ref().map(|_| &to)].into_iter().flatten() {
                 let Some(owner) = OwnerLock::claim(&path.join(".lock"))? else { busy = true; break; };
                 owners.push(owner);
@@ -150,6 +137,7 @@ pub(super) fn relocate_flat_sessions(root: &Path, packed: &Path, boundary: &mut 
         }
         if busy { continue; }
         #[cfg(windows)] drop(owners);
+        for from in kept { preserve(&from)?; }
         for (from, to) in moves { relocate_session(&from, &to, ())?; boundary("store")?; }
         relocate_entry(&source, &destination)?; boundary("manifest")?;
         relocate_entry(&source.with_extension("lock"), &destination.with_extension("lock"))?; boundary("lock")?;
@@ -166,6 +154,10 @@ pub(super) fn relocate_flat_sessions(root: &Path, packed: &Path, boundary: &mut 
         relocate_entry(&lock, &target)?; boundary("lock")?;
     }
     Ok(())
+}
+fn unused(path: PathBuf, extension: &str) -> Result<PathBuf, String> {
+    if metadata_optional(&path)?.is_none() { return Ok(path); }
+    Ok(path.with_file_name(format!("{}{extension}", PortableId::random())))
 }
 pub(super) fn relocate_entry(source: &Path, destination: &Path) -> Result<(), String> {
     fs::rename(source, destination).map_err(|e| e.to_string())?;

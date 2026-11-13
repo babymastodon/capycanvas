@@ -195,7 +195,12 @@ Native packed recovery keeps membership and stores under
 holds its window and drawing locks. Flat layouts move stores first, preserving
 their keys, then membership and its lock. Both namespace GC gates protect the move;
 restart completes partial moves without copying or rewriting released data.
-Conflicting paths are preserved and refused.
+A legacy window whose name is already taken in `packed/`, for example after a
+downgrade reused an Apple scene's name, moves under a new name and can be
+adopted. A legacy drawing whose key already holds a moved copy is renamed to
+`preserved-<id>` where it was. A window or drawing still in use by another
+process stays where it is until a later start. An unreadable flat list moves
+without its drawings and is set aside as any other unreadable list.
 
 [`SessionManifest`](../../crates/layer-ui/src/session_recovery.rs) owns tab order,
 selection, membership and unfinished restore attempts. The native window holds an
