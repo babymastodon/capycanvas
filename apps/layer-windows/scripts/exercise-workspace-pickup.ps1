@@ -19,6 +19,11 @@ function Gesture {
     $workspace=Workspace-Root
     if($workspace){try{$workspace.Current.HelpText|ConvertFrom-Json}catch{}}
 }
+function Wait-Gesture([scriptblock]$Accept,[string]$Message,[int]$Seconds=$script:CapyWaitSeconds) {
+    $seen=@{}
+    Wait-Until {$seen.gesture=Gesture;& $Accept $seen.gesture} $Message $Seconds
+    $seen.gesture
+}
 function Presentation {
     $workspace=Workspace-Root
     if($workspace){try{$workspace.Current.ItemStatus|ConvertFrom-Json}catch{}}
@@ -116,16 +121,14 @@ function Press([string]$Id,[switch]$Immediate) {
     $at=Point $Id
     $prior=(Gesture).generation
     [CapyRowPointer]::Down($Device,$at.x,$at.y)
-    Wait-Until {$g=Gesture;$g.generation -gt $prior -and $g.phase -in @('pressed','held')} 'Native source did not receive pointer down'
-    $hit=Gesture
+    $hit=Wait-Gesture {param($g)$g.generation -gt $prior -and $g.phase -in @('pressed','held')} 'Native source did not receive pointer down'
     if(!(Source-Matches $hit.source $Id)){throw "Pointer hit another workspace source instead of $Id"}
     if($hit.device -ne $Device -or $hit.requires_hold -eq [bool]$Immediate){throw 'Native source misclassified the device or pickup surface'}
     $at
 }
 function Hold([string]$Id) {
     $null=Press $Id
-    Wait-Until {(Gesture).phase -eq 'held'} "$Device did not reach a native stationary hold" 4
-    $held=Gesture
+    $held=Wait-Gesture {param($g)$g.phase -eq 'held'} "$Device did not reach a native stationary hold" 4
     if(!$held.captured){throw 'Held contact did not transfer to stable workspace capture'}
     if($Device -eq 'mouse'){
         if($held.menu_open){throw 'Mouse hold opened a menu'}
@@ -168,8 +171,7 @@ function Early-Motion([string]$Id,$To) {
     Start-Sleep -Milliseconds 35
     Move-To $To
     [CapyRowPointer]::Up()
-    Wait-Until {$g=Gesture;$g.phase -eq 'idle' -and $g.last_cancel.generation -gt $prior} 'Early motion did not retire the pending hold'
-    $terminal=Gesture
+    $terminal=Wait-Gesture {param($g)$g.phase -eq 'idle' -and $g.last_cancel.generation -gt $prior} 'Early motion did not retire the pending hold'
     if(!(Source-Matches $terminal.last_cancel.source $Id)){throw "Early motion hit another workspace source instead of $Id"}
     if($terminal.last_cancel.reason -notin @('motion_before_hold','capture_lost','pointer_canceled','native_scroll')){throw 'Early motion ended for an unrelated reason'}
     if($terminal.menu_open){throw 'Early motion left a menu'}
@@ -211,15 +213,14 @@ function Held-Drag([string]$Id,$To,[switch]$Cancel) {
     $before=Settled-Layout
     Hold $Id
     Move-To $To
-    Wait-Until {
-        $g=Gesture
+    $moving=Wait-Gesture {
+        param($g)
         if($g.phase -ne 'dragging' -or $g.menu_open){return $false}
         if($g.source.kind -eq 'tile'){return $g.can_drop}
         # Empty canvas accepts floating panels without a docking indicator.
         # Require the shared live floating placement, not just native capture.
         $null -ne (Presentation).workspace_update.drag.group
     } 'Same-contact movement did not close the menu and reach a shared drop or floating placement'
-    $moving=Gesture
     if($Cancel){
         if($Device -eq 'mouse'){[CapyRowPointer]::Key(0x1b);[CapyRowPointer]::Up()}
         else{[CapyRowPointer]::Cancel()}

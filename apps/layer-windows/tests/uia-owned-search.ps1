@@ -777,6 +777,29 @@ $heldMenuCheck=[scriptblock]::Create(($switcherHold[0].Clauses[0].Item2.Statemen
 }
 Write-Output 'Workspace held-menu assertion observes delayed native publication and rejects hidden or missing menus without input.'
 
+$pickupAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-workspace-pickup.ps1'),[ref]$tokens,[ref]$errors)
+if(@($errors).Count){throw ($errors|Out-String)}
+& {
+    foreach($definition in @($pickupAst.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.FunctionDefinitionAst]})){
+        . ([scriptblock]::Create($definition.Extent.Text.Replace('System.Windows.Automation.','CapyOwnedSearchTest.').Replace('[CapyRowPointer]','[CapyOwnedSearchTest.Driver]')))
+    }
+    $Device='touch';$review=$null;$script:case='column-release';$down=[CapyOwnedSearchTest.Driver]::Injected;$native=@{ticks=0;heldReads=0;unavailable=0}
+    $run=Join-Path ([IO.Path]::GetTempPath()) ('capy-workspace-pickup-'+[guid]::NewGuid().ToString('N'));$null=New-Item -ItemType Directory -Path $run
+    function Point([string]$Id){@{x=40;y=60}}
+    function Start-Sleep{param($Milliseconds)$native.ticks++}
+    function Gesture{
+        if([CapyOwnedSearchTest.Driver]::Injected -eq $down){return [pscustomobject]@{phase='idle';generation=69}}
+        if($native.ticks -eq 1){$native.heldReads++;if($native.heldReads -gt 1){$native.unavailable++;throw [CapyOwnedSearchTest.ElementNotAvailableException]::new()}}
+        [pscustomobject]@{phase=$(if($native.ticks){'held'}else{'pressed'});generation=70;source=[pscustomobject]@{kind='panel';panel='sizes'};device='touch';requires_hold=$true;captured=$true;menu_open=$native.ticks -gt 1}
+    }
+    try{
+        Hold 'column-icon-sizes'
+        $held=Get-Content -Raw (Join-Path $run 'column-release-held.json')|ConvertFrom-Json
+        if([CapyOwnedSearchTest.Driver]::Injected -ne $down+1 -or $native.unavailable -ne 1 -or $held.phase -ne 'held' -or !$held.captured){throw 'Workspace hold did not record the native gesture its wait accepted'}
+    }finally{Remove-Item -LiteralPath $run -Recurse -Force}
+}
+Write-Output 'Workspace pickup hold asserts on the gesture its wait accepted while the opening menu retires a UIA element.'
+
 $layoutAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-workspace-layout.ps1'),[ref]$tokens,[ref]$errors)
 if(@($errors).Count){throw ($errors|Out-String)}
 $idleFps=@($layoutAst.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Idle-Fps'},$true))
