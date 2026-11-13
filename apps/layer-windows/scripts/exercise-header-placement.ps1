@@ -67,8 +67,9 @@ function Capy-Check([string]$phase){
     $model=Model;$p=Presentation;$button=Control 'zen-capy' -Arranged;$spec=$model.header.sizes|Where-Object id -eq $p.geometry.size|Select-Object -First 1
     $image=$button.FindFirst([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Image))
     $scale=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.;$bounds=$button.Current.BoundingRectangle
-    $glyphWidth=[math]::Min($spec.capy_icon,$spec.tile-12)*$scale;$glyphHeight=[math]::Min($spec.capy_icon,$spec.tile)*$scale
-    Check ($button.Current.Name-eq$model.header.capy.label-and$button.Current.IsEnabled-eq[bool]$model.header.capy.enabled-and[math]::Abs($bounds.Width-$spec.tile*$scale)-le1-and$image-and[math]::Abs($image.Current.BoundingRectangle.Width-$glyphWidth)-le1-and[math]::Abs($image.Current.BoundingRectangle.Height-$glyphHeight)-le1) ($phase+' Capy command, name, button and icon size') @{button=$bounds;image=if($image){$image.Current.BoundingRectangle}else{$null};spec=$spec;name=$button.Current.Name;enabled=$button.Current.IsEnabled;expected_glyph=@($glyphWidth,$glyphHeight)}
+    $glyph=$spec.capy_icon*$scale;$box=if($image){$image.Current.BoundingRectangle}else{$null}
+    $centered=$box-and[math]::Abs($box.Left+$box.Width/2-$bounds.Left-$bounds.Width/2)-le1-and[math]::Abs($box.Top+$box.Height/2-$bounds.Top-$bounds.Height/2)-le1
+    Check ($button.Current.Name-eq$model.header.capy.label-and$button.Current.IsEnabled-eq[bool]$model.header.capy.enabled-and[math]::Abs($bounds.Width-$spec.tile*$scale)-le1-and$centered-and[math]::Abs($box.Width-$glyph)-le1-and[math]::Abs($box.Height-$glyph)-le1) ($phase+' Capy command, name, button and centered icon size') @{button=$bounds;image=$box;spec=$spec;name=$button.Current.Name;enabled=$button.Current.IsEnabled;expected_glyph=$glyph}
 }
 function Get-HeaderCaptionOracle {
     param($ActualItems,$Entries,$Overflow,$Recovery,$Zen,[bool]$SingleDocument,[bool]$Editing,[double]$LeftInset,[double]$RightInset,[double]$CaptionHeight,[double]$Height,[double]$Scale,[int]$Width)

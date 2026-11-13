@@ -483,7 +483,7 @@ struct HeaderView::Impl:std::enable_shared_from_this<Impl>{
         auto size=find(array(view,L"sizes"),L"id",str(geometry,L"size",str(object(view,L"model"),L"size")));
         tile=num(size,L"tile",36);iconSize=num(size,L"icon",20);itemGap=num(size,L"item_gap");height=num(size,L"height",48);
         auto capyCommand=object(view,L"capy");
-        style(capy,data,false);capy.Width(tile);capy.Height(tile);
+        style(capy,data,false);capy.Padding({0,0,0,0});capy.Width(tile);capy.Height(tile);
         capySurface.Background(headerSurface(data));capySurface.CornerRadius({corner(),corner(),corner(),corner()});capy.CornerRadius(capySurface.CornerRadius());
         setIcon(capy.Content().as<Image>(),str(capyCommand,L"icon",L"capy"),data->theme(),num(size,L"capy_icon"));
         AutomationProperties::SetName(capy,str(capyCommand,L"label"));tooltip(capy,str(capyCommand,L"tooltip"));
