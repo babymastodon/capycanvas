@@ -2362,7 +2362,9 @@ public static class CapyCaptionOriginTest {
  function Wait-Until([scriptblock]$Condition,[string]$Message){for($poll=0;$poll-lt8;$poll++){if(& $Condition){return}};throw $Message}
  function Gesture{
   $phase=[CapyEdgeReleaseTest]::Phase
-  $value=[pscustomobject]@{generation=$phase;requires_hold=$false;device=$(if($script:columnCapture.mode-eq'wrong-device'){'pen'}else{'touch'});phase=$(if($phase-eq2){'idle'}else{'dragging'});menu_open=$false}
+  if($phase-eq1-and$script:columnCapture.mode-eq'stale-clear'){$script:columnCapture.clears++}
+  $clear=$phase-eq1-and$script:columnCapture.mode-eq'stale-clear'-and$script:columnCapture.clears-le2
+  $value=[pscustomobject]@{generation=$(if($phase-eq1-and!$clear){2}else{$phase});requires_hold=$clear;device=$(if($script:columnCapture.mode-eq'wrong-device'){'pen'}else{'touch'});phase=$(if($phase-eq2-or$clear){'idle'}else{'dragging'});pointer_id=$(if($phase-eq1-and!$clear){7}else{$null});menu_open=$false}
   $value|Add-Member ScriptProperty captured {
    if([CapyEdgeReleaseTest]::Phase-ne1){throw 'Capture was queried outside the admitted contact'}
    $script:columnCapture.reads++
@@ -2370,11 +2372,11 @@ public static class CapyCaptionOriginTest {
   }
   $value
  }
- foreach($mode in 'delayed','lost','unguarded','wrong-device'){
-  $script:columnCapture=@{mode=$mode;reads=0}
+ foreach($mode in 'delayed','stale-clear','lost','unguarded','wrong-device'){
+  $script:columnCapture=@{mode=$mode;reads=0;clears=0}
   [CapyEdgeReleaseTest]::Phase=0;[CapyEdgeReleaseTest]::Downs=0;[CapyEdgeReleaseTest]::Ups=0
   $failure=$null;try{Drag 'group-grip-7' @{x=30;y=40} -Captured:($mode-ne'unguarded')}catch{$failure=$_}
-  if($mode-eq'delayed'-and$failure){throw $failure}
+  if($mode-in'delayed','stale-clear'-and$failure){throw $failure}
   if($mode-eq'lost'){
    if(!$failure-or$failure.Exception.Message-cne'Immediate custom handle did not capture its contact on press'-or$script:columnCapture.reads-ne8-or[CapyEdgeReleaseTest]::Ups-ne0){throw 'Missing column capture did not retain its original failure'}
   }elseif($mode-eq'wrong-device'){
@@ -2384,7 +2386,7 @@ public static class CapyCaptionOriginTest {
    if($failure-or$script:columnCapture.reads-ne$expectedReads-or[CapyEdgeReleaseTest]::Downs-ne1-or[CapyEdgeReleaseTest]::Ups-ne1){throw "Actual column Drag did not preserve delayed capture or its optional guard: $failure"}
   }
  }
- 'Actual column Drag: advanced generation waits for delayed capture; missing capture, optional guard and device policy preserved.'
+ 'Actual column Drag: the new contact record, not an earlier clear, acknowledges Down; delayed capture waits; missing capture, optional guard and device policy preserved.'
 }
 
 
