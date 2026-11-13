@@ -714,10 +714,10 @@ impl<R: layer_render::CanvasRenderer> UiSession<R> {
         match item { HeaderItem::Tool { control } => self.header_tool_label(control), item => item.localized_label(self.localization()) }
     }
     pub fn header_view(&self) -> HeaderView {
-        self.header_view_with(true)
+        self.header_view_with(Some(self.application_menu(ApplicationMenu::Primary)))
     }
 
-    pub fn header_view_with(&self, primary_menu: bool) -> HeaderView {
+    pub fn header_view_with(&self, primary_menu: Option<ContextMenu>) -> HeaderView {
         let state = self.state();
         let model = state.workspace.layout.header.projected_for(state.platform);
         self.retain_header_tool_labels(&model);
@@ -782,7 +782,7 @@ impl<R: layer_render::CanvasRenderer> UiSession<R> {
                     singleton: item.singleton(),
                 })
                 .collect(),
-            primary_menu: primary_menu.then(|| self.application_menu(ApplicationMenu::Primary)),
+            primary_menu,
         }
     }
 }

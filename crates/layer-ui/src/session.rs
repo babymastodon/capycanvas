@@ -7270,7 +7270,7 @@ mod tests {
         for control in [ToolbarControl::Brush { id: s.state.brush.preset }, ToolbarControl::Size { tenths: 80 }, ToolbarControl::Panel { panel: Panel::Brushes }] {
             s.dispatch(HeaderAction::Add { zone: HeaderZone::Right, before: None, item: HeaderItem::Tool { control } }.action()).unwrap();
         }
-        let view = s.header_view_with(false);
+        let view = s.header_view_with(None);
         let settings = view.model.entries().find(|entry| entry.item == HeaderItem::Settings).unwrap().id;
         assert_eq!(view.items.iter().find(|item| item.id == settings).unwrap().label, "設定");
         assert_eq!(view.sizes[0].label.as_ref(), "小");
@@ -7281,7 +7281,7 @@ mod tests {
             s.dispatch(UiAction::SetBrushSize { value: size }).unwrap();
             s.dispatch(UiAction::SetZoom { zoom: size / 8. }).unwrap();
             s.set_viewport([640. + size, 480.], [640 + size as u32, 480]).unwrap();
-            let next = s.header_view_with(false);
+            let next = s.header_view_with(None);
             assert!(std::sync::Arc::ptr_eq(&view.sizes[0].label, &next.sizes[0].label));
             assert!(std::sync::Arc::ptr_eq(&picker_caption, &s.color_picker_button_label(picker_control)));
             assert_eq!(s.customization_copy.borrow().header_tools.iter().map(|(control, label)| (*control, label.as_ptr())).collect::<Vec<_>>(), retained);

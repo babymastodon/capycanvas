@@ -165,6 +165,9 @@ impl<R: CanvasRenderer> UiSession<R> {
         vec![self.filter_category_items(), vec![self.menu_command(CommandId::FrequencySeparation)]]
     }
     pub fn application_menu(&self, menu: ApplicationMenu) -> ContextMenu {
+        self.application_menu_from(menu, |id| self.application_menu(id).sections)
+    }
+    pub fn application_menu_from(&self, menu: ApplicationMenu, sections: impl Fn(ApplicationMenu) -> Vec<Vec<ContextMenuItem>>) -> ContextMenu {
         use ApplicationMenu as M;
         let command = |id: CommandId| self.menu_command(id);
         let mut model = match menu {
@@ -176,7 +179,7 @@ impl<R: CanvasRenderer> UiSession<R> {
                         .map(|id| {
                             let mut item = ContextMenuItem::submenu(&id.localized_label(self.localization()), if id == M::Layer && self.selection_masks.quick() { self.quick_mask_menu().sections } else if id == M::Layer {
                                 self.application_layer_sections()
-                            } else { self.application_menu(id).sections });
+                            } else { sections(id) });
                             item.page = Some(MenuPageId::Application(id));
                             item
                         })
