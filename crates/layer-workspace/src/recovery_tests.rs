@@ -361,13 +361,14 @@ fn a_damaged_native_store_installs_its_newest_readable_copy_once() {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Saved { Released1012, UnreadableEditingEntries, UnreadableEditing, UnreadableContent, UnreadableMetadata, Truncated { copy: bool }, Newer, Unavailable }
-const STARTS: [(Saved, Option<StartupNotice>); 9] = [
+enum Saved { Released1012, UnreadableEditingEntries, UnreadableEditing, UnreadableContent, UnreadableMetadata, InterruptedMissingItem, Truncated { copy: bool }, Newer, Unavailable }
+const STARTS: [(Saved, Option<StartupNotice>); 10] = [
     (Saved::Released1012, None),
     (Saved::UnreadableEditingEntries, None),
     (Saved::UnreadableEditing, None),
     (Saved::UnreadableContent, None),
     (Saved::UnreadableMetadata, None),
+    (Saved::InterruptedMissingItem, None),
     (Saved::Truncated { copy: true }, Some(StartupNotice::Restored)),
     (Saved::Truncated { copy: false }, Some(StartupNotice::Damaged)),
     (Saved::Newer, Some(StartupNotice::Newer)),
@@ -385,6 +386,15 @@ fn with_unreadable_entries(editing: &str) -> String {
     editing["tool_slots"]["choices"]["future_slot"] = serde_json::json!({"kind": "future"});
     editing.to_string()
 }
+const INTERRUPTED: &str = "interrupted-change";
+fn interrupted() -> CommitBatch {
+    let metadata = Entity::included_workspace(SKETCH, Platform::Gtk, false, 0).unwrap().metadata;
+    let mut batch = CommitBatch::prepare(Owner { id: "closed-window".into(), epoch: "1".into() }, vec![Mutation::Update {
+        id: "deleted-workspace".into(), generations: Default::default(), fence: 0, metadata: Some(metadata), content: None, working: None, name_policy: NamePolicy::Unique,
+    }]).unwrap();
+    batch.operation_id = INTERRUPTED.into();
+    batch
+}
 fn web_records(saved: Saved) -> Rc<Records> {
     let mut database: serde_json::Value = serde_json::from_str(RELEASE_1_0_15).unwrap();
     let workspaces = |database: &mut serde_json::Value, field: &str| for record in database["items"].as_object_mut().unwrap().values_mut() {
@@ -398,6 +408,7 @@ fn web_records(saved: Saved) -> Rc<Records> {
         Saved::UnreadableEditing => database["editing"] = "{not json".into(),
         Saved::UnreadableContent => workspaces(&mut database, "content"),
         Saved::UnreadableMetadata => workspaces(&mut database, "metadata"),
+        Saved::InterruptedMissingItem => database["pending"][INTERRUPTED] = serde_json::to_value(interrupted()).unwrap(),
         Saved::Newer => database["schema"] = (database["schema"].as_u64().unwrap() + 1).into(),
         Saved::Unavailable => {},
     };
@@ -425,6 +436,10 @@ fn native_directory(saved: Saved) -> std::path::PathBuf {
         Saved::UnreadableEditing => { sql.execute("UPDATE editing SET json='{not json'", []).unwrap(); },
         Saved::UnreadableContent => { sql.execute("UPDATE items SET content='{not json' WHERE kind='workspace'", []).unwrap(); },
         Saved::UnreadableMetadata => { sql.execute("UPDATE items SET metadata='{not json' WHERE kind='workspace'", []).unwrap(); },
+        Saved::InterruptedMissingItem => {
+            let encoded = interrupted().encoded().unwrap();
+            sql.execute("INSERT INTO pending(id,hash,payload) VALUES(?1,?2,?3)", (INTERRUPTED, content_id(encoded.as_bytes()), &encoded)).unwrap();
+        },
         Saved::Newer => sql.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap(),
         Saved::Truncated { .. } => { drop(sql); std::fs::write(&path, b"damaged SQLite store").unwrap(); },
         Saved::Unavailable => unreachable!(),
@@ -432,7 +447,7 @@ fn native_directory(saved: Saved) -> std::path::PathBuf {
     directory
 }
 #[derive(Debug, PartialEq)]
-struct Start { notice: Option<String>, items: Vec<String>, stored: Vec<String> }
+struct Start { notice: Option<String>, items: Vec<String>, stored: Vec<String>, offered: Vec<String> }
 fn three_starts<S: WorkspaceStore + 'static>(now: u64, start: impl Fn() -> (WorkspaceController<S>, layer_host::NativeHost),
     close: impl Fn(WorkspaceController<S>, &mut layer_host::NativeHost), stored: impl Fn() -> Vec<String>) -> Vec<Start> {
     (0..3).map(|_| {
@@ -442,8 +457,9 @@ fn three_starts<S: WorkspaceStore + 'static>(now: u64, start: impl Fn() -> (Work
         let mut items: Vec<_> = controller.manager.items().into_iter().map(|item| item.id).collect();
         items.sort();
         let notice = notice(&host);
+        let offered = pollster::block_on(controller.manager.interrupted_changes(now)).unwrap().into_iter().map(|(id, _)| id).collect();
         close(controller, &mut host);
-        Start { notice, items, stored: stored() }
+        Start { notice, items, stored: stored(), offered }
     }).collect()
 }
 
@@ -468,10 +484,16 @@ fn starting_three_times_shows_no_repeating_notice() {
         let later = if expected.is_some_and(repeats) { first.clone() } else { None };
         for (store, starts) in [("web", web), ("native", native)] {
             assert_eq!(starts[0].notice, first, "{store} {saved:?}: first start");
+            assert!(starts.iter().all(|start| start.offered.is_empty()), "{store} {saved:?}: offered {:?}", starts.iter().map(|start| &start.offered).collect::<Vec<_>>());
             for start in &starts[1..] {
                 assert_eq!(start.notice, later, "{store} {saved:?}: later start");
                 assert_eq!((&start.items, &start.stored), (&starts[0].items, &starts[0].stored), "{store} {saved:?}: later starts change nothing");
             }
+        }
+        if let Saved::InterruptedMissingItem = saved {
+            assert!(records.json("database")["pending"].get(INTERRUPTED).is_some(), "web interrupted change stays stored");
+            let stored: i64 = rusqlite::Connection::open(directory.join("workspaces.sqlite3")).unwrap().query_row("SELECT COUNT(*) FROM pending WHERE id=?1", [INTERRUPTED], |row| row.get(0)).unwrap();
+            assert_eq!(stored, 1, "native interrupted change stays stored");
         }
         if directory.is_dir() { std::fs::remove_dir_all(&directory).unwrap(); } else { std::fs::remove_file(&directory).unwrap(); }
     }
