@@ -79,6 +79,12 @@ function Document-Point([double]$X,[double]$Y,[long]$IgnoreBubble=-1){
     foreach($packet in Packets){if($packet.view.id -ne $IgnoreBubble){$center=Center $packet.view.id $packet;$reach=($packet.reach+5)*$scale;if([Math]::Abs($point.x-$center.x) -lt $reach -and [Math]::Abs($point.y-$center.y) -lt $reach){throw 'Artwork sample overlaps another bubble reach'}}}
     return $point
 }
+function Placed([long]$Id){
+    $m=Model;$item=@($m.state.workspace.layout.bubbles.bubbles|Where-Object id -eq $Id)[0];$basis=@(0,0)
+    if($item.corner -match 'right'){$basis[0]=$m.layout.viewport[0]};if($item.corner -match 'bottom'){$basis[1]=$m.layout.viewport[1]}
+    $authored=Screen ($basis[0]+$item.offset[0]) ($basis[1]+$item.offset[1]);$visible=Center $Id
+    [Math]::Abs($authored.x-$visible.x) -lt 2 -and [Math]::Abs($authored.y-$visible.y) -lt 2
+}
 function Card-Bounds([long]$Id,$Element=$null,$CardView=$null){
     if(!$Element){$Element=Control "bubble-card-$Id" -Arranged}
     $outer=$Element.Current.BoundingRectangle;$footer=(Control "bubble-properties-$Id" -Within $Element -Arranged).Current.BoundingRectangle
@@ -1189,7 +1195,7 @@ function Native-CurveContacts([long]$Id){
     }finally{[CapyCanvasTouch]::Dispose()}
     Wait-Until {$m=Model;(Curve-Points) -eq $before -and @($m.windows_tabs.session_stamps|Where-Object id -eq $m.windows_tabs.selected)[0].stamp.checkpoint -eq $checkpoint} 'Second native curve finger did not roll back exact curve and checkpoint'
     @{before=$before;after=(Curve-Points);checkpoint=$checkpoint;before_center=$center;after_center=(Center $Id)}|ConvertTo-Json -Depth 10|Set-Content (Join-Path $run 'curve-pair-rollback.json')
-    Settle-Bubbles
+    Wait-Until {Placed $Id} 'Paired native card did not reach its authored position'
     Invoke "bubble-properties-$Id";Wait-Until {!(View $Id).card.properties} 'All layers page did not open after curve rollback'
     Invoke "layer-$ownerLayer-name" -Within (Card $Id);Wait-Until {(Model).state.layer_properties.layer -eq $ownerLayer} 'Original native owner row did not become active'
     Invoke "bubble-properties-$Id";Wait-Until {(View $Id).card.properties} 'Native owner Properties page did not reopen'
@@ -1377,12 +1383,7 @@ function Rapid-Reopen([long]$Id){
         $bounds=Card-Bounds $Id;$current=Center $Id;$area=(Model).layout.work_area;$desired=Screen ($area.x+$area.width*.5) ($area.y+$area.height*.5)
         $from=@{x=[int]($bounds.X+3*$scale);y=[int]($bounds.Y+$bounds.Height*.5)};$to=@{x=($from.x+$desired.x-$current.x);y=($from.y+$desired.y-$current.y)}
         Drag $from $to;Start-Sleep -Milliseconds 500
-        Wait-Until {
-            $m=Model;$item=@($m.state.workspace.layout.bubbles.bubbles|Where-Object id -eq $Id)[0];$basis=@(0,0)
-            if($item.corner -match 'right'){$basis[0]=$m.layout.viewport[0]};if($item.corner -match 'bottom'){$basis[1]=$m.layout.viewport[1]}
-            $authored=Screen ($basis[0]+$item.offset[0]) ($basis[1]+$item.offset[1]);$visible=Center $Id
-            [Math]::Abs($authored.x-$visible.x) -lt 2 -and [Math]::Abs($authored.y-$visible.y) -lt 2
-        } 'Rapid card visible center does not match its authored position'
+        Wait-Until {Placed $Id} 'Rapid card visible center does not match its authored position'
     }
     $center=Center $Id;$outside=Screen ($width*.90) ($height*.78)
     if($RapidOnly){

@@ -2389,6 +2389,24 @@ public static class CapyCaptionOriginTest {
  'Actual column Drag: the new contact record, not an earlier clear, acknowledges Down; delayed capture waits; missing capture, optional guard and device policy preserved.'
 }
 
+& {
+ $tokens=$null;$errors=$null
+ $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-tool-bubbles.ps1'),[ref]$tokens,[ref]$errors)
+ if($errors.Count){throw($errors|Out-String)}
+ $placed=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Placed'},$true)
+ if(!$placed){throw 'Missing actual bubble placement acknowledgement'}
+ . ([scriptblock]::Create($placed.Extent.Text))
+ function Screen([double]$X,[double]$Y){@{x=[int][Math]::Round($X*1.5);y=[int][Math]::Round($Y*1.5)}}
+ function Center([long]$Id){$script:placedNative}
+ function Model{[pscustomobject]@{layout=[pscustomobject]@{viewport=@(1706.6666259765625,1018.6666870117188)};state=[pscustomobject]@{workspace=[pscustomobject]@{layout=[pscustomobject]@{bubbles=[pscustomobject]@{bubbles=@([pscustomobject]@{id=23;corner=$script:placedCorner;offset=$script:placedOffset})}}}}}}
+ $script:placedCorner='bottom_right';$script:placedOffset=@(-819.6358642578125,-367.50531005859375);$script:placedNative=@{x=1292;y=960}
+ if(Placed 23){throw 'A card short of its paired authored placement acknowledged placement'}
+ $script:placedNative=@{x=1331;y=977}
+ if(!(Placed 23)){throw 'A card at its authored bottom-right placement was rejected'}
+ $script:placedCorner='top_left';$script:placedOffset=@(200,100);$script:placedNative=@{x=300;y=150}
+ if(!(Placed 23)){throw 'A card at its authored top-left placement was rejected'}
+ 'Actual bubble placement: a native card short of its paired authored placement is unplaced; both corner bases resolve.'
+}
 
 & {
     $tokens=$null;$errors=$null
