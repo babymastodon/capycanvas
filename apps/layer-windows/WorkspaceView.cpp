@@ -78,7 +78,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
     Canvas measureHost;
     Border measureGate;
     hstring lastMeasurements;
-    bool measurementsPending=false,measuring=false;
+    bool measurementsPending=false,measuring=false,hoverPending=false;
     CompositionTarget::Rendered_revoker resizeTintFrame;
     CompositionTarget::Rendering_revoker resizeTraceFrame;
     std::array<float,3> titlebar{};
@@ -1022,6 +1022,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         if(root.IsLoaded()&&glassChanged)glassChanged();
     }
     void layoutUpdated(){
+        if(hoverPending&&!presenting&&!data->updating&&root.IsLoaded()){hoverPending=false;presentHoverTabs(gestures->HoverTab());}
         if((!measurementsPending&&!trace)||measuring||presenting||data->updating||!root.IsLoaded())return;
         measuring=true;
         struct Reset{bool& value;~Reset(){value=false;}} reset{measuring};
@@ -1185,7 +1186,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         return surfaces;
     }
     void presentBackgrounds(){
-        presentHoverTabs(gestures->HoverTab());
+        hoverPending=true;
         measurePanelBridges();presentPanelBridges();
         for(auto const& [id,view]:*data->navigatorViews)view.first();
         for(auto& [id,group]:groups){
