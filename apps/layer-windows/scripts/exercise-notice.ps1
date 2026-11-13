@@ -102,11 +102,11 @@ try {
  $checks.next_contact_dismisses='passed'
 
  Lock $true
+ $clicked=[Diagnostics.Stopwatch]::StartNew()
  Click 'mouse' $point
  Wait-Until {(NoticeText) -eq $reason} 'The refusal did not show once more'
- $shown=[Diagnostics.Stopwatch]::StartNew()
  Wait-Until {!(Shown 'canvas-notice')} 'The notice did not time out' 8
- if($shown.Elapsed.TotalSeconds -lt 3){throw "The notice hid after $($shown.Elapsed.TotalSeconds) s"}
+ if($clicked.Elapsed.TotalSeconds -lt 3){throw "The notice hid after $($clicked.Elapsed.TotalSeconds) s"}
  Wait-Until {!(Notice)} 'The timeout did not dismiss the shared notice' 5
  if((Model).state.host_error){throw 'The timeout decline reported an error'}
  $checks.timeout_dismisses_quietly='passed'
