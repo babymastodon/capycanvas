@@ -326,7 +326,8 @@ does not qualify this measurement.
   drag-and-drop; use mouse and touch for those journeys. The proxy also drops its
   connection when Quick Mask or Selection Layer rows change, so journeys through
   those modes run without `--tablet`. A pen contact with `"tool":"eraser"` uses
-  the pen's eraser end.
+  the pen's eraser end; `"tool":"rotating"` uses a pen that reports barrel
+  rotation, set in degrees with `"twist"`.
 
 ### Run a journey without the runner
 

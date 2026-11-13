@@ -905,6 +905,7 @@ impl Input {
             .map(|g| g.session.state().camera.revision);
         let view_revision=revision?;
         let tool = native.and_then(|event|event.device_tool());
+        let barrel_twist = tool.as_ref().is_some_and(|t| t.axes().contains(gdk::AxisFlags::ROTATION));
         let tool_kind = if tool
             .as_ref()
             .is_some_and(|t| t.tool_type() == gdk::DeviceToolType::Eraser)
@@ -938,16 +939,17 @@ impl Input {
             } else {
                 axis(gdk::AxisUse::Pressure)
             },
-            // GDK tilt is normalized [-1,1], rotation is in degrees.
+            // GDK normalizes tilt to [-1, 1] and rotation to [0, 1].
             tilt_radians: [
                 axis(gdk::AxisUse::Xtilt) * std::f32::consts::FRAC_PI_2,
                 axis(gdk::AxisUse::Ytilt) * std::f32::consts::FRAC_PI_2,
             ],
-            twist_radians: axis(gdk::AxisUse::Rotation).to_radians(),
+            twist_radians: axis(gdk::AxisUse::Rotation) * std::f32::consts::TAU,
             distance: axis(gdk::AxisUse::Distance),
             phase,
             tool: tool_kind,
-            flags: SampleFlags(SampleFlags::PRIMARY.0 | tablet_flags.0),
+            flags: SampleFlags(SampleFlags::PRIMARY.0 | tablet_flags.0
+                | if barrel_twist { SampleFlags::BARREL_TWIST.0 } else { 0 }),
         })
     }
     fn stylus(&self,workspace:&Rc<Workspace>,gesture:&gtk::GestureStylus,phase:PenPhase,x:f64,y:f64) {
@@ -988,7 +990,11 @@ impl Input {
                             defaults.tilt_radians[1]
                         },
                     ],
-                    twist_radians:defaults.twist_radians,
+                    twist_radians: if flags.contains(gdk::AxisFlags::ROTATION) {
+                        get(gdk::AxisUse::Rotation) * std::f32::consts::TAU
+                    } else {
+                        defaults.twist_radians
+                    },
                     distance:defaults.distance,
                     ..event
                 };
