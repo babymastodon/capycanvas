@@ -516,9 +516,15 @@ Follow these rules when writing one:
 - **Measure timed input.** Use the native test drivers for double presses,
   holds and prediction strokes and record their actual timing; PowerShell sleeps
   can exceed a gesture's interval under load.
+- **Keep mixed-device holds on the mouse.** Windows cancels held touch when a pen
+  comes into range; use the mouse to hold a gesture across pen input.
+- **Open mouse submenus by hovering.** Clicking leaves WinUI's delay-open timer
+  running, which can reopen the submenu after Escape.
 - **Wait for the operation you started.** Compare the document revision or the
   requested state before and after input. An already enabled Undo does not prove
   a new stroke committed, and `WaitForInputIdle` does not acknowledge an operation.
+  Equal pixel or state signatures across a sleep do not prove a commit; wait for
+  the published document revision.
   For native overlays, acknowledge the applied fill before composed pixel
   sampling; bubble checks use `Wait-BubbleOverlayPhase`.
   After zooming, steady-motion checks also wait for the committed
@@ -531,8 +537,9 @@ Follow these rules when writing one:
   SwapChainPanel image. Before `Wait-StablePixels` samples, the `presentation-state`
   acknowledgement must show the required present as displayed, because the
   desktop compositor can show frames more than a second late. Compare restoration
-  with the original pixels, not a theme-specific threshold, and move the pointer
-  and tooltips out of the capture first.
+  with the original pixels, not a theme-specific threshold. Before pixel or
+  tooltip-free captures, park on clear canvas paper (`Canvas-Point`), away from
+  chrome that owns a tooltip.
 - **Use current identifiers.** Menu items use the shared command ID, other layer
   actions `layer-menu-<op>`. Resolve a toolbar tile once and keep its ID:
   `resolved_control` changes when its variant does.

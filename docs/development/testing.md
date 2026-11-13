@@ -60,7 +60,7 @@ never move a row to hardware to avoid a check that passes on WARP.
 | Change | Windows fixtures before pushing |
 | --- | --- |
 | Shared UI state, layout, Windows host Rust or shared native controls, input and presentation | `smoke` plus every affected selector family and dependent journey. |
-| Startup, window registry, automation discovery, shared fixture helpers or runner | Full default matrix. |
+| Startup, process exit, close, window registry, automation discovery, shared fixture helpers or runner | Full default matrix. |
 | Local controls and individual fixture scripts | Complete affected selector families and dependent journeys. |
 
 `smoke` is the single named selector list in `run-fixtures.ps1`; use the alias
@@ -74,6 +74,12 @@ the windowless checks above. Fixture routing changes also run
 Changes to scripts that fixtures or tests dot-source, AST-import or mock (for example,
 `CapyUia.ps1`, `CapyEnvironment.ps1` or `run-fixtures.ps1`) run the full normal
 suite with `tools/windows-vm/windows-vm.py check`, not only the edited scripts.
+
+Changes to model fields or helpers read by shared fixture helpers (such as
+Diagnostics statistics read by `Idle-Fps`) also run that suite, whose owned-search tests mock the helpers.
+
+Changes to headers or types included by `apps/layer-windows/tests/*Fixture.cpp` run at least one row per affected fixture app (for example `popup:controls`); `check` does not build every control fixture.
+Search tests for native includes as well as AST imports when choosing affected fixtures.
 
 Record first-attempt failures with the selector, exact error and evidence path;
 a retry is diagnostic evidence, not a passing result. Fix or report failures

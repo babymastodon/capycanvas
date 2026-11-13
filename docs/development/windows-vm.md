@@ -193,14 +193,16 @@ Slot locks are host-wide, including across VM state directories. QEMU inherits
 each reservation descriptor and holds it until shutdown or a crash, even if the
 launcher disconnects. A full pool supplies fewer runners when possible; zero
 available runners fails clearly. Existing ordinary or foreign VMs are never
-adopted as runners. Concurrent commands cannot use the same runner.
+adopted as runners. Concurrent commands cannot use the same runner. CPU runners
+belong to their creating worktree; run each concurrent round from its own worktree.
 
 The merged output under `<artifacts>/<primary>/shards-<timestamp>` records the
 full plan, each shard's evidence path and provenance, every result and total wall
 time. A missing selector or shard fails the run. Runners stop on success or
 failure; `--keep-runners` retains their reservations for another round. Their
 prepared disks persist. Stop retained runners with `--vm <runner> stop`, and use
-`runners --reset` to delete this primary VM's stopped runner disks.
+`runners --reset` from the owning worktree to delete this primary VM's stopped
+runner disks once that worktree no longer runs rounds.
 
 Crash dumps land in each fixture run's `wer/dumps` evidence directory; the runner restores the per-app LocalDumps key's original values and registry types before retrieval.
 
