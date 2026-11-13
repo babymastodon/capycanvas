@@ -18,6 +18,10 @@ common-canvas-init-failed = Tidak dapat menginisialisasi kanvas
 common-gpu-unsupported = Prosesor grafis (GPU) perangkat ini tidak dapat menjalankan { common-app-name }. Memperbarui sistem atau driver grafis mungkin membantu.
 
 common-restart-canvas = Mulai ulang kanvas
+common-x11-unsupported-title = { common-app-name } belum bisa berjalan di X11
+common-x11-unsupported-body = Keluar dari sesi, pilih sesi Wayland di layar masuk, lalu buka { common-app-name } lagi.
+common-learn-more = Pelajari Lebih Lanjut
+common-quit = Keluar
 
 common-action-failed = Tidak dapat menyelesaikan tindakan ini
 

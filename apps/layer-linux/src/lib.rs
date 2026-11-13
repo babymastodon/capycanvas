@@ -65,6 +65,7 @@ mod tool_extra;
 mod tooltips;
 mod text_language;
 mod transparency_choice;
+mod unsupported_session;
 mod wayland;
 mod window;
 mod workspace;
@@ -128,6 +129,13 @@ pub fn check_saved_data_cli() -> Option<gtk::glib::ExitCode> {
 
 pub fn run() -> gtk::glib::ExitCode {
     glib::set_application_name(launch_localization().language().app_name());
+    if let Err(error) = gtk::init() {
+        eprintln!("{error}");
+        return gtk::glib::ExitCode::FAILURE;
+    }
+    if !gtk::gdk::Display::default().is_some_and(|display| unsupported_session::supported(&display)) {
+        return unsupported_session::run(storage::APP_ID, launch_localization());
+    }
     let (app, active) = application(storage::APP_ID);
     let result = app.run();
     let windows = std::mem::take(&mut *active.borrow_mut());

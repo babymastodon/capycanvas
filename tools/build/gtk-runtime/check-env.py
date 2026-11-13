@@ -28,7 +28,9 @@ packages = ['gtk4 >= 4.22', 'libadwaita-1 >= 1.9', 'vulkan >= 1.3',
             'gdk-pixbuf-2.0 >= 2.30.0', 'graphene-gobject-1.0 >= 1.10.0',
             'epoxy >= 1.4', 'xkbcommon >= 0.2.0', 'libpng', 'zlib',
             'wayland-client >= 1.24.0', 'wayland-scanner >= 1.24.0',
-            'wayland-egl', 'wayland-protocols >= 1.48', 'libdrm']
+            'wayland-egl', 'wayland-protocols >= 1.48', 'libdrm',
+            'cairo-xlib >= 1.18.2', 'x11', 'xext', 'xi', 'xrandr >= 1.2.99', 'xrender',
+            'xcursor', 'xdamage', 'xfixes', 'xinerama']
 missing = [package for package in packages
            if subprocess.run(['pkg-config', '--exists', package]).returncode]
 if missing:

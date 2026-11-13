@@ -168,6 +168,27 @@ pub fn bootstrap_view(l: &Localizer) -> BootstrapView {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct UnsupportedSessionView {
+    pub app_name: &'static str,
+    pub title: Arc<str>,
+    pub body: Arc<str>,
+    pub learn_more: Arc<str>,
+    pub quit: Arc<str>,
+    pub link: &'static str,
+}
+
+pub fn unsupported_session_view(l: &Localizer) -> UnsupportedSessionView {
+    UnsupportedSessionView {
+        app_name: l.language().app_name(),
+        title: l.text(MessageId::COMMON_X11_UNSUPPORTED_TITLE),
+        body: l.text(MessageId::COMMON_X11_UNSUPPORTED_BODY),
+        learn_more: l.text(MessageId::COMMON_LEARN_MORE),
+        quit: l.text(MessageId::COMMON_QUIT),
+        link: crate::session::X11_SUPPORT_LINK,
+    }
+}
+
 pub fn file_open_failure(l: &Localizer, name: &str) -> String {
     let mut args = FluentArgs::new();
     args.set("name", name);

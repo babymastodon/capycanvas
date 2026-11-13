@@ -14,6 +14,10 @@ common-canvas-init-failed = 無法初始化畫布
 common-gpu-unsupported = 此裝置的圖形處理器（GPU）無法執行 { common-app-name }。更新系統或顯示卡驅動程式可能會有幫助。
 
 common-restart-canvas = 重新啟動畫布
+common-x11-unsupported-title = { common-app-name } 暫時無法在 X11 上執行
+common-x11-unsupported-body = 若要使用 { common-app-name }，請登出，在登入畫面選擇 Wayland 工作階段，然後重新開啟。
+common-learn-more = 瞭解詳情
+common-quit = 結束
 
 common-action-failed = 無法完成此操作
 

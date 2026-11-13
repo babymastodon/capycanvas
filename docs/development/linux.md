@@ -18,9 +18,10 @@ GTK 4.22+, libadwaita 1.9 and Wayland development packages. Enabled API features
 are declared in [`apps/layer-linux/Cargo.toml`](../../apps/layer-linux/Cargo.toml).
 The launcher builds its own [GTK 4.24.1, GLib 2.90.1 and Pango 1.58.2 runtime](../../tools/build/gtk-runtime/README.md),
 which needs Meson 1.8+, Ninja, `patchelf`, `glslc`, `xz`, Wayland's scanner and protocol files,
-DRM headers and GTK's development dependencies. The first build downloads
-checksum-pinned sources, including TIFF and JPEG libraries that link statically,
-so their system development packages are unnecessary; later builds use the cache.
+the X11 client libraries, DRM headers and GTK's development dependencies. The
+first build downloads checksum-pinned sources, including TIFF and JPEG libraries
+that link statically, so their system development packages are unnecessary;
+later builds use the cache.
 The main SDK minimums are:
 
 | Dependency | Minimum version |
@@ -46,7 +47,9 @@ sudo dnf install gcc gcc-c++ pkgconf-pkg-config python3 curl patch tar \
   gtk4-devel libadwaita-devel wayland-devel libpng-devel zlib-devel \
   libffi-devel libmount-devel pcre2-devel cairo-devel fontconfig-devel freetype-devel \
   harfbuzz-devel fribidi-devel libthai-devel \
-  meson ninja-build patchelf glslc xz wayland-protocols-devel libdrm-devel vulkan-headers
+  meson ninja-build patchelf glslc xz wayland-protocols-devel libdrm-devel vulkan-headers \
+  libX11-devel libXext-devel libXi-devel libXrandr-devel libXrender-devel libXcursor-devel \
+  libXdamage-devel libXfixes-devel libXinerama-devel
 ```
 
 On Arch Linux or Omarchy:
@@ -70,7 +73,10 @@ pkg-config --modversion gtk4 libadwaita-1 wayland-client
 
 The canvas needs a Wayland session and a hardware Vulkan driver with mailbox
 presentation and premultiplied-alpha surfaces. There is no X11, GLES or CPU
-canvas fallback. GTK chooses its own renderer for the controls.
+canvas fallback. GTK chooses its own renderer for the controls. In an X11
+session the app opens only a window (`unsupported_session.rs`) that explains
+this and links to the X11 support issue; it reads the language preference and
+loads no drawings, workspaces or GPU.
 
 The canvas renders on the GPU the compositor uses. When the launch environment
 sets `DRI_PRIME`, `MESA_VK_DEVICE_SELECT`, `__NV_PRIME_RENDER_OFFLOAD` or
@@ -234,6 +240,8 @@ instructions live with the feature's guide under [`docs/ui/`](../ui/README.md).
 [`tools/performance/gtk-raster.sh`](../../tools/performance/gtk-raster.sh) runs an
 already built test executable on the same kind of private display, for tests
 that need no injected input, such as `native_application_file_launch`.
+`LAYER_TEST_X11=1` runs the test as an X11 client of the compositor's Xwayland;
+`native_x11_session_refusal` needs it.
 
 After changing the tablet proxy, run its tests with
 `python3 -m unittest discover -s apps/layer-linux/bench -p 'test_*.py'`.
@@ -428,8 +436,9 @@ the [Arch recipe](../../packaging/arch/README.md).
 
 Users need Flatpak, a Wayland session and hardware Vulkan; the runtime
 supplies toolkit dependencies, not the [canvas requirements](#prerequisites).
-The sandbox grants the Wayland socket for windows, clipboard and input, and GPU
-devices for rendering. The battery indicator reads the kernel's
+The sandbox grants the Wayland socket for windows, clipboard and input, the X11
+socket only when no Wayland session is running, and GPU devices for rendering.
+The battery indicator reads the kernel's
 `/sys/class/power_supply` files, which Flatpak exposes read-only. To test it in
 the sandbox, mount private power-supply fixtures read-only over the kernel paths
 in an isolated namespace; do not add Flatpak permissions or change the real

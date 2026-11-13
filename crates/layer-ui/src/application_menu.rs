@@ -12,6 +12,8 @@ pub struct ZoomMenu {
     pub buttons: Vec<CommandState>,
 }
 
+pub const X11_SUPPORT_LINK: &str = "https://github.com/babymastodon/capycanvas/issues/24#issuecomment-6842681386";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationLink {

@@ -168,7 +168,7 @@ pub mod session_recovery;
 pub mod session_destination;
 #[path = "workspace_session.rs"]
 mod workspace_session;
-pub use application_menu::{ApplicationLink, ApplicationMenu, MenuPageId, ZoomMenu, NAVIGATOR_COMMANDS};
+pub use application_menu::{ApplicationLink, ApplicationMenu, MenuPageId, ZoomMenu, NAVIGATOR_COMMANDS, X11_SUPPORT_LINK};
 pub use workspace_session::PreparedWorkspace;
 #[path = "effects.rs"]
 pub(crate) mod effects;

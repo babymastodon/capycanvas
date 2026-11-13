@@ -84,7 +84,7 @@ python3 "$gtk_recipe/configure.py" "$gtk_build/build" "$gtk_build/gtk-4.24.1" \
     -Dlibjpeg-turbo:jpeg-turbo=disabled -Dlibjpeg-turbo:tests=disabled \
     -Dbuild-demos=false -Dbuild-tests=false \
     -Dbuild-testsuite=false -Dbuild-examples=false -Dintrospection=disabled \
-    -Dmedia-gstreamer=disabled -Ddocumentation=false -Dman-pages=false -Dx11-backend=false
+    -Dmedia-gstreamer=disabled -Ddocumentation=false -Dman-pages=false -Dx11-backend=true
 ninja -C "$gtk_build/build" -j "${CAPY_BUILD_JOBS:-8}" gtk/libgtk-4.so.1.2400.1
 for gtk_family in glib gobject gio gmodule gthread; do
     gtk_library="lib$gtk_family-2.0.so.0"

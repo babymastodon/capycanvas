@@ -1,7 +1,7 @@
 pkgbase = capycanvas-git
 	pkgdesc = GPU-accelerated drawing and painting application (development version)
 	pkgver = r2268.g4d5a4ab2
-	pkgrel = 4
+	pkgrel = 5
 	url = https://github.com/babymastodon/capycanvas
 	arch = x86_64
 	license = MIT OR Apache-2.0
@@ -50,6 +50,15 @@ pkgbase = capycanvas-git
 	depends = vulkan-driver
 	depends = wayland>=1.24.0
 	depends = zlib
+	depends = libx11
+	depends = libxcursor
+	depends = libxdamage
+	depends = libxext
+	depends = libxfixes
+	depends = libxi
+	depends = libxinerama
+	depends = libxrandr
+	depends = libxrender
 	optdepends = python: rebuild the bundled GTK runtime
 	provides = capycanvas
 	conflicts = capycanvas

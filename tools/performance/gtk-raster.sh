@@ -31,7 +31,9 @@ export CAPY_STORAGE_DIR="$raster_run_dir/storage"
 mkdir -p "$CAPY_STORAGE_DIR/data/workspaces" "$CAPY_STORAGE_DIR/state/sessions"
 export LAYER_PACING_REPORT="$raster_report.json"
 unset DISPLAY
-env -u G_DEBUG mutter --headless --wayland --no-x11 \
+raster_xwayland=(--no-x11)
+[[ ${LAYER_TEST_X11:-} == 1 ]] && raster_xwayland=()
+env -u G_DEBUG mutter --headless --wayland "${raster_xwayland[@]}" \
     --virtual-monitor="${LAYER_TEST_MONITOR:-1600x1000@120}" --wayland-display="$WAYLAND_DISPLAY" \
     >"$raster_report-mutter.log" 2>&1 &
 raster_compositor_pid=$!
@@ -45,6 +47,18 @@ done
 if [[ ${LAYER_TEST_SCALE:-1} != 1 ]]; then
     gdbus wait --session --timeout 10 org.gnome.Mutter.DisplayConfig
     gjs "$(dirname "$raster_script")/display-scale.js" "$LAYER_TEST_SCALE"
+fi
+if [[ ${LAYER_TEST_X11:-} == 1 ]]; then
+    for ((attempt=0; attempt<100; attempt++)); do
+        LAYER_TEST_X11_DISPLAY=$(sed -n 's/.*Using public X11 display \(:[0-9]*\).*/\1/p' "$raster_report-mutter.log")
+        [[ -n $LAYER_TEST_X11_DISPLAY ]] && break
+        sleep .1
+    done
+    [[ -n $LAYER_TEST_X11_DISPLAY ]]
+    raster_xauthority=("$XDG_RUNTIME_DIR"/.mutter-Xwaylandauth.*)
+    [[ -f ${raster_xauthority[0]} ]]
+    export LAYER_TEST_X11_DISPLAY DISPLAY=$LAYER_TEST_X11_DISPLAY XAUTHORITY=${raster_xauthority[0]}
+    unset WAYLAND_DISPLAY GDK_BACKEND GSK_RENDERER
 fi
 cd "$(dirname "$raster_script")/../../apps/layer-linux"
 G_DEBUG=fatal-criticals "$raster_binary" "$raster_filter" --ignored --test-threads=1 \

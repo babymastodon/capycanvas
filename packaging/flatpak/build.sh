@@ -38,4 +38,4 @@ test -s "$state/app/files/share/app-info/xmls/art.capycanvas.CapyCanvas.xml.gz"
 test "$(zcat "$state/app/files/share/app-info/xmls/art.capycanvas.CapyCanvas.xml.gz" | grep -o '<icon type="cached"[^>]*>' | sort | tr -d '\n')" \
     = '<icon type="cached" width="128" height="128"><icon type="cached" width="64" height="64">'
 python3 tools/build/app_names.py catalog "$state/app/files/share/app-info/xmls/art.capycanvas.CapyCanvas.xml.gz"
-flatpak build-finish --command=capycanvas --socket=wayland --device=dri "$state/app"
+flatpak build-finish --command=capycanvas --socket=wayland --socket=fallback-x11 --device=dri "$state/app"

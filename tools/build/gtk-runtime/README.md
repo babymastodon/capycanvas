@@ -110,8 +110,9 @@ library using an executable-relative path that survives relocation and symlinks.
 Applications can replace the local library with a compatible rebuilt version.
 GLib and Pango are bundled so GTK 4.24 runs with the documented older system SDK,
 including Omarchy. Pango includes its Cairo and FreeType libraries and Thai
-dictionary support; the fonts, shaping, rasterization and Wayland SDK remain
-system dependencies with version requirements checked before the build.
+dictionary support; the fonts, shaping, rasterization, Wayland SDK and X11 client
+libraries remain system dependencies with version requirements checked before
+the build. The X11 backend only shows that the app needs a Wayland session.
 Each private library resolves its siblings through `$ORIGIN`; system GTK, GLib and Pango
 remain untouched. Libadwaita and GTK's remaining shared dependencies stay system
 requirements.
