@@ -1327,24 +1327,37 @@ pub struct CapySnapshotInfo {
     glass: CapySnapshotRange,
 }
 impl CapySnapshotInfo {
+    #[cfg(test)]
     fn read(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        let fields = layer_host::SnapshotFields::parse(bytes)?;
-        let full = fields.contains("state");
+        Self::from_parts(&[(&layer_host::SnapshotFields::parse(bytes)?, 0)])
+    }
+    fn from_parts(parts: &[(&layer_host::SnapshotFields<'_>, usize)]) -> Result<Self, serde_json::Error> {
+        let part = |key: &str| parts.iter().rev().find(|(fields, _)| fields.contains(key));
+        let range = |key: &str| part(key).and_then(|(fields, offset)| fields.range(key).map(|range| range.start + offset..range.end + offset));
+        let full = part("state").is_some();
+        let localization = match part("localization") {
+            Some((fields, offset)) => fields.nonempty_object_range("localization")?.map(|range| range.start + offset..range.end + offset),
+            None => None,
+        };
         Ok(Self {
             full: u32::from(full),
-            workspace: u32::from(fields.contains("workspace_update")),
-            search: u32::from(fields.contains("command_search")),
-            layout: u32::from(!full && fields.contains("layout")),
-            camera: (!full).then(|| fields.range("camera")).flatten().into(),
-            localization: fields.nonempty_object_range("localization")?.into(),
-            navigation_cursor: fields.range("navigation_cursor").into(),
-            brush_ready: fields.range("brush_ready").into(),
-            glass: fields.range("windows_glass").into(),
+            workspace: u32::from(part("workspace_update").is_some()),
+            search: u32::from(part("command_search").is_some()),
+            layout: u32::from(!full && part("layout").is_some()),
+            camera: (!full).then(|| range("camera")).flatten().into(),
+            localization: localization.into(),
+            navigation_cursor: range("navigation_cursor").into(),
+            brush_ready: range("brush_ready").into(),
+            glass: range("windows_glass").into(),
         })
     }
 }
-fn snapshot_layout_input<'a>(bytes:&[u8],host:&'a NativeHost)->Result<Option<layer_ui::LayoutResolveInput<'a>>,String> {
-    Ok(layer_host::SnapshotFields::parse(bytes).map_err(err)?.contains("layout").then(||host.session.layout_resolve_input()))
+fn snapshot_layout_input<'a>(fields:&layer_host::SnapshotFields<'_>,host:&'a NativeHost)->Option<layer_ui::LayoutResolveInput<'a>> {
+    fields.contains("layout").then(||host.session.layout_resolve_input())
+}
+fn glass_status(host:&CapyHost)->serde_json::Value {
+    serde_json::json!({"regions":host.chrome.glass.count(),"chrome_revision":host.chrome.presented_revision,
+        "document":host.chrome.presented_document,"frames":host.presenter.as_ref().map_or([0;2],|p|p.backdrop_frames())})
 }
 #[derive(serde::Serialize)]
 struct WindowsMetadata<'a> {
@@ -1393,66 +1406,70 @@ pub unsafe extern "C" fn capy_snapshot(host: u64, info: *mut CapySnapshotInfo) -
                 let localization = if host.localization_generation != Some(generation) {
                     Some(crate::settings::localization_presentation(&mut host.native)?)
                 } else { None };
-                let mut metadata = WindowsMetadata {
-                    localization,
-                    layout_input: None,
-                    windows_gpu_generation: host.gpu_generation,
-                    windows_active_tag: host.native.session.localization().language().tag(),
-                    windows_display: serde_json::json!({"output": host.display, "format": host.config.as_ref().map(|c| format!("{:?}", c.format)), "headroom": host.config.as_ref().map_or(1., |c| host.display.available_headroom(c.format)), "analysis": host.documents.as_ref().map(|s| s.tone.status())}),
-                    windows_rendering_suspended: host.native.session.rendering_suspended(),
-                    windows_surface_ready: host.surface_ready.ready(),
-                    windows_recovery: host.documents.as_ref().and_then(|service|service.recovery_status(&host.native)),
-                    windows_tabs: host.documents.as_ref().map(|d| d.tabs_view(&host.native)),
-                    windows_palettes: host.documents.as_ref().map(|d| d.palettes.status()),
-                    windows_papers: host.documents.as_ref().map(|d| d.papers.status()),
-                    windows_glass: serde_json::json!({
-                        "regions": host.chrome.glass.count(),
-                        "chrome_revision": host.chrome.presented_revision,
-                        "document": host.chrome.presented_document,
-                        "frames": host.presenter.as_ref().map_or([0; 2], |p| p.backdrop_frames()),
-                    }),
-                    windows_document: host.documents.as_ref().and_then(|service| service.status()),
-                    windows_proof_form: host.documents.as_ref().map(|service|service.proof.form(&host.native)).unwrap_or_else(||serde_json::json!(layer_ui::proof_workflow::proof_copy(&host.native.session))),
-                    windows_proof: host
-                        .documents
-                        .is_some()
-                        .then(|| host.native.proof.observe(&host.native.session)),
-                    windows_workspace: host.workspaces.as_ref().map(|owner|owner.with(|service|serde_json::to_value(service.status(&host.native)).map_err(err))).transpose()?,
-                    windows_settings_close: host.services.as_ref().map(|s| s.close_status().clone()),
-                    windows_scopes: host.scopes.revision(host.native.session.state()),
-                    windows_request_copy: {
-                        let localization = host.native.session.localization();
-                        host.native.session.state().requests.iter().filter_map(|request| match &request.kind {
-                            layer_ui::HostRequestKind::Document { request: document } => Some((request.id.to_string(), serde_json::json!({
-                                "title": document.title(localization), "accept_label": document.accept_label(localization), "filter": document.filter(localization),
-                            }))),
-                            _ => None,
-                        }).collect()
-                    },
-                    windows_filter_load: host.filters.as_ref().map(|s| s.status().clone()),
-                    windows_isolated_settings: crate::storage::isolated(),
-                    windows_adapter: host.native.session.engine().backend().0.as_ref().map(|gpu| {
-                        let info = gpu.adapter().get_info();
-                        format!("{} ({:?})", info.name, info.device_type)
-                    }),
+                let base=layer_host::SnapshotFields::parse(&bytes).map_err(err)?;
+                let extension=if ["state","workspace_update","layout","command_search"].into_iter().any(|key|base.contains(key)) {
+                    let mut metadata = WindowsMetadata {
+                        localization,
+                        layout_input: None,
+                        windows_gpu_generation: host.gpu_generation,
+                        windows_active_tag: host.native.session.localization().language().tag(),
+                        windows_display: serde_json::json!({"output": host.display, "format": host.config.as_ref().map(|c| format!("{:?}", c.format)), "headroom": host.config.as_ref().map_or(1., |c| host.display.available_headroom(c.format)), "analysis": host.documents.as_ref().map(|s| s.tone.status())}),
+                        windows_rendering_suspended: host.native.session.rendering_suspended(),
+                        windows_surface_ready: host.surface_ready.ready(),
+                        windows_recovery: host.documents.as_ref().and_then(|service|service.recovery_status(&host.native)),
+                        windows_tabs: host.documents.as_ref().map(|d| d.tabs_view(&host.native)),
+                        windows_palettes: host.documents.as_ref().map(|d| d.palettes.status()),
+                        windows_papers: host.documents.as_ref().map(|d| d.papers.status()),
+                        windows_glass: glass_status(host),
+                        windows_document: host.documents.as_ref().and_then(|service| service.status()),
+                        windows_proof_form: host.documents.as_ref().map(|service|service.proof.form(&host.native)).unwrap_or_else(||serde_json::json!(layer_ui::proof_workflow::proof_copy(&host.native.session))),
+                        windows_proof: host
+                            .documents
+                            .is_some()
+                            .then(|| host.native.proof.observe(&host.native.session)),
+                        windows_workspace: host.workspaces.as_ref().map(|owner|owner.with(|service|serde_json::to_value(service.status(&host.native)).map_err(err))).transpose()?,
+                        windows_settings_close: host.services.as_ref().map(|s| s.close_status().clone()),
+                        windows_scopes: host.scopes.revision(host.native.session.state()),
+                        windows_request_copy: {
+                            let localization = host.native.session.localization();
+                            host.native.session.state().requests.iter().filter_map(|request| match &request.kind {
+                                layer_ui::HostRequestKind::Document { request: document } => Some((request.id.to_string(), serde_json::json!({
+                                    "title": document.title(localization), "accept_label": document.accept_label(localization), "filter": document.filter(localization),
+                                }))),
+                                _ => None,
+                            }).collect()
+                        },
+                        windows_filter_load: host.filters.as_ref().map(|s| s.status().clone()),
+                        windows_isolated_settings: crate::storage::isolated(),
+                        windows_adapter: host.native.session.engine().backend().0.as_ref().map(|gpu| {
+                            let info = gpu.adapter().get_info();
+                            format!("{} ({:?})", info.name, info.device_type)
+                        }),
+                    };
+                    metadata.layout_input=snapshot_layout_input(&base,&host.native);
+                    serde_json::to_vec(&metadata).map_err(err)?
+                } else {
+                    let mut presentation=serde_json::json!({"windows_glass":glass_status(host)});
+                    if let Some(value)=localization {presentation["localization"]=value;}
+                    serde_json::to_vec(&presentation).map_err(err)?
                 };
-                metadata.layout_input=snapshot_layout_input(&bytes,&host.native)?;
-                let extension=serde_json::to_vec(&metadata).map_err(err)?;
-                Some(layer_host::extend_update(bytes,&extension))
+                let routing=CapySnapshotInfo::from_parts(&[(&base,0),(&layer_host::SnapshotFields::parse(&extension).map_err(err)?,bytes.len()-1)]).map_err(err)?;
+                drop(base);
+                Some((layer_host::extend_update(bytes,&extension),routing))
             },
-            None if glass_changed=>Some(serde_json::to_vec(&serde_json::json!({
-                "windows_glass":{"regions":host.chrome.glass.count(),"frames":host.presenter.as_ref().map_or([0;2],|p|p.backdrop_frames()),
-                    "chrome_revision":host.chrome.presented_revision,"document":host.chrome.presented_document},
-            })).map_err(err)?),
+            None if glass_changed=>{
+                let bytes=serde_json::to_vec(&serde_json::json!({"windows_glass":glass_status(host)})).map_err(err)?;
+                let routing=CapySnapshotInfo::from_parts(&[(&layer_host::SnapshotFields::parse(&bytes).map_err(err)?,0)]).map_err(err)?;
+                Some((bytes,routing))
+            },
             None=>None,
         };
-        if let Some(bytes) = bytes {
+        if let Some((bytes,routing)) = bytes {
             host.localization_generation = Some(generation);
             host.published_chrome_revision=host.chrome.presented_revision;
             host.published_glass_count=host.chrome.glass.count();
-            let routing = if info.is_null() { None } else { Some(CapySnapshotInfo::read(&bytes).map_err(err)?) };
             let snapshot = CString::new(bytes).map_err(err)?;
-            if let Some(routing) = routing { unsafe { *info = routing; } }
+            if let Some(info) = unsafe { info.as_mut() } { *info = routing; }
             result = text(snapshot);
         }
         Ok(0)
@@ -2161,11 +2178,29 @@ mod snapshot_routing_tests {
     fn snapshot_layout_input_is_windows_geometry_only() {
         let host=NativeHost::new(layer_ui::Platform::Windows).unwrap();
         for bytes in [br#"{"state":{},"layout":{}}"#.as_slice(),br#"{"workspace_update":{},"layout":{}}"#] {
-            let input=snapshot_layout_input(bytes,&host).unwrap().unwrap();
+            let input=snapshot_layout_input(&layer_host::SnapshotFields::parse(bytes).unwrap(),&host).unwrap();
             assert_eq!(serde_json::json!(input.resolve([1400.,900.])),serde_json::json!(host.session.layout([1400.,900.])));
         }
         for bytes in [br#"{"workspace_update":{}}"#.as_slice(),br#"{"camera":{}}"#,br#"{"command_search":null}"#,br#"{"windows_glass":{}}"#] {
-            assert!(snapshot_layout_input(bytes,&host).unwrap().is_none());
+            assert!(snapshot_layout_input(&layer_host::SnapshotFields::parse(bytes).unwrap(),&host).is_none());
+        }
+    }
+    #[test]
+    fn routing_from_parts_matches_the_extended_packet() {
+        for (base,extension) in [
+            (br#"{"camera":{"zoom":2},"brush_ready":true,"localization":{}}"#.as_slice(),br#"{"localization":{"text":"x"},"windows_glass":{"chrome_revision":3}}"#.as_slice()),
+            (br#"{"state":{},"layout":{},"navigation_cursor":"pan"}"#,br#"{"windows_glass":{"regions":1},"layout_input":{}}"#),
+            (br#"{"workspace_update":{},"layout":{},"camera":{"zoom":1}}"#,br#"{"windows_glass":{}}"#),
+        ] {
+            let parts=CapySnapshotInfo::from_parts(&[(&layer_host::SnapshotFields::parse(base).unwrap(),0),
+                (&layer_host::SnapshotFields::parse(extension).unwrap(),base.len()-1)]).unwrap();
+            let extended=layer_host::extend_update(base.to_vec(),extension);
+            let whole=CapySnapshotInfo::read(&extended).unwrap();
+            assert_eq!((parts.full,parts.workspace,parts.search,parts.layout),(whole.full,whole.workspace,whole.search,whole.layout));
+            for (a,b) in [(parts.camera,whole.camera),(parts.localization,whole.localization),(parts.navigation_cursor,whole.navigation_cursor),
+                (parts.brush_ready,whole.brush_ready),(parts.glass,whole.glass)] {
+                assert_eq!((a.offset,a.length),(b.offset,b.length));
+            }
         }
     }
     #[test]
