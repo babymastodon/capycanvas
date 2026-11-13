@@ -357,7 +357,7 @@ foreach($case in @(@{option='CanvasResetOnly';journey='Check-CanvasReset'},@{opt
     $validation=@($driver[0].Body.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -like '*$result.exit_code*'})
     if($validation.Count -ne 1){throw 'Popup child lost its native result validation'}
     $probe=[scriptblock]::Create($popup.ParamBlock.Extent.Text+"`n"+$expected[0].Extent.Text+"`n"+'[pscustomobject]@{group=$Group;theme=$Theme;counts=$expected}')
-    $counts=@{controls=@(17,0);'text-layout'=@(7,16)};$popupTotal=0;$imeTotal=0
+    $counts=@{controls=@(18,0);'text-layout'=@(7,16)};$popupTotal=0;$imeTotal=0
     foreach($group in $groups){
         $bound=& $probe -Executable 'C:\owned\Popup.exe' -Group $group
         if(($bound.counts -join ',') -cne ($counts[$group] -join ',')){throw 'Popup group no longer requires its exact original assertion counts'}
@@ -369,7 +369,7 @@ foreach($case in @(@{option='CanvasResetOnly';journey='Check-CanvasReset'},@{opt
             if($failed -ne ($fault -ne 'none')){throw 'Popup native result accepted another group or incomplete counts, or rejected its exact result'}
         }
     }
-    if($popupTotal -ne 24 -or $imeTotal -ne 16){throw 'Popup split lost the 24 popup and 16 IME assertion union'}
+    if($popupTotal -ne 25 -or $imeTotal -ne 16){throw 'Popup split lost the 25 popup and 16 IME assertion union'}
     $manual=Join-Path ([IO.Path]::GetTempPath()) ('capy-popup-groups-'+[guid]::NewGuid().ToString('N')+'.ps1')
     try{
         'param([string]$Executable,[string]$Theme,[string]$Group);[pscustomobject]@{executable=$Executable;theme=$Theme;group=$Group}'|Set-Content -LiteralPath $manual

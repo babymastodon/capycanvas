@@ -4,7 +4,7 @@ if(!$Group){
  foreach($part in 'controls','text-layout'){& $PSCommandPath -Executable $Executable -Theme $Theme -Group $part}
  return
 }
-$expected=@{controls=@(17,0);'text-layout'=@(7,16)}[$Group]
+$expected=@{controls=@(18,0);'text-layout'=@(7,16)}[$Group]
 . (Join-Path $PSScriptRoot 'CapyUia.ps1')
 Add-Type -Path (Join-Path $PSScriptRoot 'RowPointerDriver.cs')
 if(!$env:CAPY_PRIVATE_DESKTOP){throw 'Run popup fixture through test-desktop.ps1'}

@@ -215,6 +215,15 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
     }
     MenuFlyout menu(){MenuFlyout popup;MenuFlyoutItem item;item.Text(L"Fixture action");popup.Items().Append(item);popup.Opened([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())++self->opened;});popup.Closed([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())++self->closedCount;});popups.push_back(popup);return popup;}
     bool visiblePopup(){for(auto const& popup:VisualTreeHelper::GetOpenPopupsForXamlRoot(root.XamlRoot()))if(popup.IsOpen())return true;return false;}
+    HWND popupWindow(){
+        struct Search{HWND owner,found;}search{hwnd,nullptr};
+        EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM value)->BOOL{
+            auto search=reinterpret_cast<Search*>(value);wchar_t name[64]{};GetClassNameW(window,name,64);
+            if(IsWindowVisible(window)&&!wcscmp(name,L"Microsoft.UI.Content.PopupWindowSiteBridge")&&GetAncestor(window,GA_ROOTOWNER)==search->owner){search->found=window;return FALSE;}
+            return TRUE;
+        },reinterpret_cast<LPARAM>(&search));
+        return search.found;
+    }
     void pending(){require(owner.Pending()&&!owner.Open()&&data->transients.size()==1,L"Pending popup lacks immediate unique cancellation registration");}
     void empty(){require(!owner.Active()&&!owner.Pending()&&!owner.Open()&&data->transients.empty()&&data->popupCount==0,L"Popup cancellation left retained state or registrations");}
     winrt::Windows::Foundation::IAsyncAction colorStripPresentation(){
@@ -1718,6 +1727,11 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         phase=L"header-context-ordering";co_await headerContextOrdering();
         phase=L"row-swipe-presentation";co_await rowSwipePresentation();
         require(nativeSetupFailures.empty(),nativeSetupFailures.c_str());
+        phase=L"foreground-return";auto beforeActive=opened;auto beforeHidden=closedCount;auto activated=menu();auto active=owner.Begin(data,anchor,activated);pending();
+        require(active.Show(anchor,{}),L"Foreground-return popup did not show");co_await wait([this,beforeActive]{return opened==beforeActive+1&&owner.Open();},L"Foreground-return popup Opened timed out");
+        auto popupHandle=popupWindow();require(popupHandle&&SetForegroundWindow(popupHandle)&&GetForegroundWindow()==popupHandle,L"Fixture could not activate the native popup window");
+        activated.Hide();co_await wait([this,beforeHidden]{return closedCount==beforeHidden+1&&!visiblePopup();},L"Foreground-return popup Closed timed out");
+        require(GetForegroundWindow()==hwnd,L"Closing an activated native popup left foreground on its hidden window");empty();++checks;
         phase=L"window-close";auto closed=owner.Begin(data,anchor,menu());window.Close();co_await settle();
         require(!closed.Current()&&!closed.Show(anchor,{}),L"Reply reopened canceled owner");empty();++checks;
     }
