@@ -1162,11 +1162,11 @@ function Read-FixtureText([string]$Path){
     try{$reader.ReadToEnd()}finally{$reader.Dispose();$stream.Dispose()}
 }
 """ + FIXTURE_RUNNER + r"""$runner=$null;if(Test-Path '{output}\runner.json'){$runner=[bool](Get-FixtureRunner '{output}')}
-@{runner=$runner;
+$complete=Test-Path '{output}\complete'
+@{runner=$runner;complete=$complete;
 plan=$(if(Test-Path '{output}\plan.json'){Read-FixtureText '{output}\plan.json'|ConvertFrom-Json});
 log=$(if(Test-Path '{output}\results.jsonl'){Read-FixtureText '{output}\results.jsonl'});
-error=$(if(Test-Path '{output}\runner-error.txt'){Read-FixtureText '{output}\runner-error.txt'});
-complete=(Test-Path '{output}\complete')}|ConvertTo-Json -Depth 5 -Compress
+error=$(if(Test-Path '{output}\runner-error.txt'){Read-FixtureText '{output}\runner-error.txt'})}|ConvertTo-Json -Depth 5 -Compress
 """).replace("{output}", output)
 
 

@@ -1101,6 +1101,27 @@ class FixtureRunnerTests(unittest.TestCase):
         self.assertLess(command.index("Get-Process -Id"), command.index("\\complete"))
         self.assertLess(command.index("\\runner.json"), command.index("\\complete"))
 
+    def test_last_row_written_between_status_reads_is_kept(self):
+        plan = {"runs": ["layers", "palettes"], "timeout_minutes": 20}
+        rows = [{"name": name, "exit": 0, "seconds": 1} for name in plan["runs"]]
+        runner = {"log": rows[:1], "complete": False, "polls": 0}
+        def guest(machine, command, **kwargs):
+            if "results.jsonl" not in command:
+                return subprocess.CompletedProcess([], 0, "", "")
+            runner["polls"] += 1
+            reads = sorted(("complete", "log"), key=lambda key: command.index({"complete": "\\complete'", "log": "\\results.jsonl"}[key]))
+            observed = {"plan": plan, "error": None, "runner": runner["polls"] == 1}
+            for read in reads:
+                observed[read] = runner[read]
+                if runner["polls"] == 1:
+                    runner.update(log=rows, complete=True)
+            observed["log"] = "\n".join(map(json.dumps, observed["log"]))
+            return subprocess.CompletedProcess([], 0, json.dumps(observed), "")
+        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", side_effect=guest):
+            results, _, failure = vm.wait_for_fixtures(None, "review")
+        self.assertIsNone(failure)
+        self.assertEqual(results, rows)
+
     def test_unrecorded_runner_is_still_starting(self):
         snapshots = [{"plan": None, "log": None, "complete": False, "runner": None},
                      {"plan": {"runs": ["layers"], "timeout_minutes": 20}, "log": '{"name":"layers","exit":0,"seconds":1}',
