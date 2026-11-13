@@ -100,6 +100,7 @@ pub struct Settings {
     /// Shared by Quick Mask and every saved selection, across documents.
     pub selection_painting: layer_core::SelectionPaintBehavior,
     pub pressure_curve: layer_core::PressureResponse,
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub tilt_calibrations: BTreeMap<String,layer_core::TiltCalibration>,
     pub cursor: CursorMode,
     pub hide_cursor_while_drawing: bool,
@@ -117,14 +118,15 @@ pub struct Settings {
     pub platform_prediction: bool,
     pub prediction_ms: f32,
     /// Only overrides are stored. Empty keys disable an action's shortcut.
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub shortcuts: BTreeMap<String, Vec<KeyChord>>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "crate::lenient::map")]
     pub gestures: BTreeMap<String, String>,
     /// What each pen button does per kind of tool, when set that way.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "crate::lenient::map")]
     pub pen_buttons: BTreeMap<String, BTreeMap<ToolCategory, String>>,
     /// The artist's modifier keys; `None` follows the keymap.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::lenient::optional_vec")]
     pub hold_keys: Option<Vec<crate::shortcuts::HoldKey>>,
     #[serde(skip_serializing_if = "EraserEnd::is_default")]
     pub eraser_end: EraserEnd,
@@ -135,6 +137,7 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keymap: Option<crate::keymaps::KeymapRef>,
     /// Per-preset slider values, shared by every placement of that slider.
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub slider_bookmarks: BTreeMap<String, SliderBookmarks>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

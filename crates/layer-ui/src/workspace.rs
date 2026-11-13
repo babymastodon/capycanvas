@@ -343,6 +343,7 @@ pub struct EditingState {
     pub color_library: crate::ColorLibrary,
     pub canvas_tool: crate::LayerCanvasTool,
     pub selection: crate::SelectionOptions,
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub region_values: std::collections::BTreeMap<String, f32>,
     pub region_sources: [crate::RegionSource; 3],
     #[serde(default = "default_enabled")]

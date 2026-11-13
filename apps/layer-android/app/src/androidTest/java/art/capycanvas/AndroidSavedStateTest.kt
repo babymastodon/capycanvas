@@ -84,6 +84,40 @@ class AndroidSavedStateTest {
             shot("damaged-relaunch-$theme")
         }
     }
+    @Test fun unreadableEditingEntriesStayQuietAcrossLaunches() {
+        fun paletteValue(value: Any?, channel: Boolean = false): Any? = when (value) {
+            is org.json.JSONObject -> value.keys().asSequence().associateWith {paletteValue(value.get(it),it=="rgba")}
+            is org.json.JSONArray -> (0 until value.length()).map {paletteValue(value.get(it),channel)}
+            is Number -> if (channel) value.toFloat() else jsonValue(value)
+            else -> value
+        }
+        val database = releasedStore("editing-entries",false)
+        val expected = android.database.sqlite.SQLiteDatabase.openDatabase(database.path,null,android.database.sqlite.SQLiteDatabase.OPEN_READWRITE or android.database.sqlite.SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { db ->
+            val editing = db.rawQuery("SELECT json FROM editing WHERE id=1",null).use { cursor -> cursor.moveToFirst(); org.json.JSONObject(cursor.getString(0)) }
+            val palettes = editing.getJSONObject("color_library").getJSONArray("palettes")
+            val expected = palettes.objects().associate {it.getString("id") to paletteValue(it)}
+            palettes.put(obj("id" to "bad"))
+            editing.getJSONObject("tool_slots").getJSONObject("choices").put("unknown-slot","unknown-choice")
+            db.execSQL("UPDATE editing SET json=? WHERE id=1",arrayOf(editing.toString()))
+            expected
+        }
+        assertTrue("released palettes exist",expected.isNotEmpty())
+        val theme = startupTheme()
+        wakeDevice()
+        for (launch in 1..3) {
+            launchCapy(120_000).use { scenario ->
+                val host = revealed(scenario)
+                val state = host.snapshot!!.getJSONObject("state")
+                val view = host.workspaceManager!!
+                assertTrue("launch $launch: $view",view.isNull("prompt") && view.isNull("error") && view.isNull("status"))
+                assertTrue("launch $launch: ${state.opt("notice")}",state.isNull("notice"))
+                val palettes = state.getJSONObject("color_library").getJSONArray("palettes").objects().associate {it.getString("id") to paletteValue(it)}
+                for ((id,palette) in expected) assertEquals("launch $launch palette $id",palette,palettes[id])
+                assertFalse("bad palette dropped",palettes.containsKey("bad"))
+                shot("editing-entries-launch-$launch-$theme")
+            }
+        }
+    }
     private fun revealed(scenario: androidx.test.core.app.ActivityScenario<MainActivity>) = scenario.activity().let { activity ->
         activity.host.awaitMain("launch revealed",60_000) {!activity.launchSplash.nativeActive && findTag("launch-splash")==null}
         activity.host

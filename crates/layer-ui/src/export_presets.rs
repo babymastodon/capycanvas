@@ -17,6 +17,7 @@ struct Named {
 pub struct ExportPresets<P = ColorProfile> {
     profiles: Vec<ExportProfile<P>>,
     destinations: [Option<ExportRecipe<usize>>; 4],
+    #[serde(deserialize_with = "crate::lenient::vec")]
     named: Vec<Named>,
 }
 impl ExportPresets {
@@ -383,6 +384,9 @@ mod tests {
                 _ => { assert_eq!(restored.destinations,saved.destinations); assert!(restored.named.is_empty()); },
             }
         }
+        let mut entry = value.clone();
+        entry["named"].as_array_mut().unwrap().push("future".into());
+        assert_eq!(ExportPresets::restore(&binary_payload::encode(b"CAPYPRESETS\x01",&entry,&blocks,ExportPresets::MAX_FILE_BYTES).unwrap()),saved);
     }
     #[test]
     fn binary_profiles_are_compact_and_lossless() {

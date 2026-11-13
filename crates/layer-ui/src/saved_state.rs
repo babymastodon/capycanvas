@@ -41,7 +41,8 @@ pub mod lenient {
     pub fn map<'de, D: Deserializer<'de>, K: DeserializeOwned + Ord, V: DeserializeOwned>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error> {
         Ok(match Value::deserialize(deserializer)? {
             Value::Object(entries) => entries.into_iter()
-                .filter_map(|(key, value)| Some((serde_json::from_value(Value::String(key)).ok()?, serde_json::from_value(value).ok()?)))
+                .filter_map(|entry| serde_json::from_value::<BTreeMap<K, V>>(Value::Object([entry].into_iter().collect())).ok())
+                .flatten()
                 .collect(),
             _ => BTreeMap::new(),
         })
@@ -68,6 +69,36 @@ mod tests {
         value["color_library"]["palettes"] = "unreadable".into();
         assert_eq!(EditingState::restore(&value.to_string(),&english),original);
         assert_eq!(EditingState::restore("invalid JSON",&english),original);
+    }
+    #[test]
+    fn an_unreadable_entry_drops_only_itself() {
+        use serde_json::json;
+        let english = Localizer::shared(UiLanguage::English);
+        let released = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compat/1.0.15");
+        let unreadable = |value: &mut serde_json::Value, arrays: &[&str], maps: &[&str], entry: serde_json::Value| {
+            for pointer in arrays { value.pointer_mut(pointer).unwrap().as_array_mut().unwrap().push("future".into()); }
+            for pointer in maps { value.pointer_mut(pointer).unwrap().as_object_mut().unwrap().insert("future".into(), entry.clone()); }
+        };
+        let editing = EditingState::restore(&std::fs::read_to_string(released.join("editing-complete.json")).unwrap(), &english);
+        let mut value = serde_json::to_value(&editing).unwrap();
+        unreadable(&mut value, &["/color_library/palettes", "/color_library/palettes/0/swatches", "/color_library/history"],
+            &["/tools/tools", "/tools/groups", "/tools/overrides", "/tool_slots/choices", "/region_values"], json!({"future": true}));
+        assert_eq!(EditingState::restore(&value.to_string(), &english), editing);
+        let settings = crate::Settings::restore(&std::fs::read_to_string(released.join("settings-complete.json")).unwrap());
+        let mut value = serde_json::to_value(&settings).unwrap();
+        unreadable(&mut value, &["/hold_keys", "/new_document/setups", "/new_document/recent", "/new_document/paper_colors"],
+            &["/tilt_calibrations", "/shortcuts", "/gestures", "/pen_buttons", "/slider_bookmarks"], json!(17));
+        assert_eq!(crate::Settings::restore(&value.to_string()), settings);
+        let mut state = EditingState::default();
+        let palettes = state.color_library.palettes.clone();
+        assert!(palettes.len() > 2 && !palettes[1].swatches.is_empty());
+        state.color_library.active = palettes[1].id;
+        state.color_library.selected = Some(palettes[1].swatches[0].id);
+        let mut value = serde_json::to_value(&state).unwrap();
+        value["color_library"]["palettes"][1]["id"] = "future".into();
+        let library = EditingState::restore(&value.to_string(), &english).color_library;
+        assert_eq!(library.palettes, [&palettes[..1], &palettes[2..]].concat());
+        assert_eq!(library.active_palette(), &palettes[0]);
     }
     #[test]
     fn saved_documents_tolerate_missing_and_unknown_fields() {

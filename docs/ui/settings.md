@@ -400,7 +400,11 @@ be reported without blocking pen input.
 Stored data may come from any build, older or newer. Editing state written by
 1.0.15 is converted in memory before validation; loading does not rewrite it.
 Preferences, editing and working state restore each readable top-level field
-and use defaults for fields they cannot read:
+and use defaults for fields they cannot read. Inside a field, a list or map of
+independent entries (palettes and their colors, color history, tool memory and
+overrides, tool-slot choices, region values, shortcuts, gestures, pen buttons,
+hold keys, tilt calibrations, slider bookmarks, saved canvas setups and named
+export presets) drops only the entries it cannot read:
 
 - Preferences: hosts pass the saved text to `UiAction::RestoreSavedSettings`, or
   to `Settings::restore` when they need settings before a session exists. Each

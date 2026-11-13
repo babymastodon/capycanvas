@@ -142,7 +142,7 @@ fn editing_reads_restore_fields_with_the_requested_language_without_writing() {
 
 #[test]
 fn editing_merge_keeps_unreadable_fields_and_rejects_invalid_submissions() {
-    let palettes = serde_json::json!([{"id":17,"name":"Future palette","swatches":"unreadable"}]);
+    let palettes = serde_json::json!([{"id":"future","name":"Future palette","swatches":"unreadable"}]);
     let mut partial = serde_json::to_value(layer_ui::EditingState::default()).unwrap();
     partial["preset"] = "unreadable".into();
     partial["color_library"]["palettes"] = palettes.clone();
