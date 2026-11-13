@@ -696,7 +696,7 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
         else if(!stopping&&!busyCompleted)send(to_string(O({{L"operation",S(L"workflow")},{L"id",N(num(state,L"id"))},{L"action",O({{L"op",S(L"cancel")}})}}).Stringify()));
         busyDialog=false;showing=false;changed();
     }
-    CanvasModelInputs inputs;bool wasBlocked=false;
+    CanvasModelInputs inputs;bool wasBlocked=false;uint64_t copyGeneration=uint64_t(-1);
     void apply(J const& snapshot,bool blocked) {
         data->model=snapshot;
         bool relocalize=data->adoptLocalization(snapshot);
@@ -706,6 +706,7 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
         data->refreshPalette();
         if(dialog)dialogSurface(data,dialog);
         if(newDrawing)newDrawing->Apply();
+        if(object(model,L"windows_document").HasKey(L"details")&&std::exchange(copyGeneration,data->localizationGeneration)!=data->localizationGeneration&&!relocalize)data->refreshCopy();
         if(workflowChanged)workflowChanged();
         if(relocalize&&presentationChanged)presentationChanged();
         if(relocalize&&dialog){

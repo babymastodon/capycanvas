@@ -262,9 +262,10 @@ struct WorkspaceData : CanvasModelSource,std::enable_shared_from_this<WorkspaceD
     std::vector<std::function<bool()>> copyViews;
     size_t copyCleanup=64;
     void copyView(std::function<bool()> update){
-        if(copyViews.size()>=copyCleanup){std::erase_if(copyViews,[](auto const& refresh){return !refresh();});copyCleanup=std::max(size_t(64),copyViews.size()*2);}
+        if(copyViews.size()>=copyCleanup){refreshCopy();copyCleanup=std::max(size_t(64),copyViews.size()*2);}
         copyViews.emplace_back(std::move(update));
     }
+    void refreshCopy(){std::erase_if(copyViews,[](auto const& update){return !update();});}
     bool adoptLocalization(J const& snapshot){
         auto presentation=object(snapshot,L"localization");
         if(!presentation.Size())return false;
@@ -276,7 +277,7 @@ struct WorkspaceData : CanvasModelSource,std::enable_shared_from_this<WorkspaceD
         if(!next)throw hresult_invalid_argument(L"Invalid localization presentation");
         if(snapshot.HasKey(L"state")){model=snapshot;state=branch(snapshot,L"state");}
         nextCatalog=copyObject(nextCatalog);nextCatalog.Insert(L"bootstrap",bootstrap);catalog=nextCatalog;localization=std::move(next);localizationGeneration=generation;
-        std::erase_if(copyViews,[](auto const& update){return !update();});
+        refreshCopy();
         return true;
     }
     std::shared_ptr<FilterPreviewCache> previews;
