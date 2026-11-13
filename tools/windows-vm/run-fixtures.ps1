@@ -197,6 +197,7 @@ foreach ($script in Get-ChildItem (Join-Path $scripts 'exercise-*.ps1')) {
         }
     }
 }
+$runs.Remove('tool-bubbles:HdrOnly')
 $runs.Remove('edge-reach:SweepOnly')
 foreach($scenario in 'photo','photo-open','photo-collapsed','paint'){
     $runs.Remove("edge-reach:$scenario")
@@ -226,6 +227,7 @@ function Select-Fixtures([string[]]$Available,[string[]]$Requested) {
     if($null -eq $Requested -or !$Requested.Count){return $Available}
     $Requested=@($Requested|ForEach-Object {
         switch($_){
+            'tool-bubbles:HdrOnly'{'tool-bubbles:hdr-dark';'tool-bubbles:hdr-light'}
             'header-settings'{'header:catalog-only';'header:catalog-only-light'}
             'edge-reach:SweepOnly'{foreach($scenario in 'photo','photo-open','photo-collapsed','paint'){foreach($theme in 'dark','light'){"edge-reach:sweep-$scenario-$theme"}}}
             'smoke'{

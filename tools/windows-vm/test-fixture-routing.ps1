@@ -228,6 +228,38 @@ $edgeRuns=& {
     . ([scriptblock]::Create(($statements[$first..($last-1)]|ForEach-Object {$_.Extent.Text}) -join "`n"))
     $runs
 }
+& {
+    $expected=@('tool-bubbles:hdr-dark','tool-bubbles:hdr-light')
+    $leaves=@($edgeRuns.Keys|Where-Object {$_ -in $expected})
+    if($leaves.Count -ne 2 -or $edgeRuns.Contains('tool-bubbles:HdrOnly')){throw 'HDR matrix must split the two full themes without an aggregate duplicate'}
+    $selected=@(Select-Fixtures @($edgeRuns.Keys) @('tool-bubbles:HdrOnly'))
+    $deduplicated=@(Select-Fixtures @($edgeRuns.Keys) (@('tool-bubbles:HdrOnly')+$expected))
+    if(($selected -join ',') -cne ($expected -join ',') -or ($selected -join ',') -cne ($deduplicated -join ',')){throw 'HDR legacy selector lost or duplicated a theme'}
+    $hdrAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/exercise-tool-bubbles.ps1'),[ref]$tokens,[ref]$errors)
+    if(@($errors).Count){throw ($errors|Out-String)}
+    $prefix=@();foreach($statement in $hdrAst.EndBlock.Statements){if($statement.Extent.Text.StartsWith('. (Join-Path')){break};$prefix+=$statement.Extent.Text}
+    $probe=[scriptblock]::Create($hdrAst.ParamBlock.Extent.Text+"`n"+'$PSCommandPath="Invoke-HdrTheme"'+"`n"+($prefix -join "`n")+"`n"+'[pscustomobject]@{variant=$Variant;hdr=[bool]$HdrOnly;preview=[bool]$HdrPreviewOnly;retirement=[bool]$HdrRetirementOnly;contacts=[bool]$HdrContactsOnly;depth=$HdrDepth}')
+    function Invoke-HdrTheme($Executable,$Variant,[switch]$HdrOnly,[switch]$HdrRetirementOnly,[switch]$HdrPreviewOnly,[switch]$HdrContactsOnly,$HdrDepth){
+        [pscustomobject]@{variant=$Variant;hdr=[bool]$HdrOnly;preview=[bool]$HdrPreviewOnly;retirement=[bool]$HdrRetirementOnly;contacts=[bool]$HdrContactsOnly;depth=$HdrDepth}
+    }
+    $direct=@(& $probe -Executable 'C:\owned\CapyCanvas.exe' -HdrOnly)
+    $split=@(foreach($name in $expected){
+        $arguments=@($edgeRuns[$name].arguments)
+        if(($arguments -join ',') -cne ('-Variant,'+($name -replace '^tool-bubbles:',''))){throw 'HDR leaf lost its exact theme argument'}
+        & $probe -Executable 'C:\owned\CapyCanvas.exe' -Variant $arguments[1]
+    })
+    if($direct.Count -ne 2 -or $split.Count -ne 2 -or ($direct|ConvertTo-Json -Compress) -cne ($split|ConvertTo-Json -Compress)){throw 'HDR leaves changed the direct HdrOnly theme/check/depth union'}
+    $selection=@($ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -in '$selected','$planned'})
+    $list=$ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -eq '$List'}
+    $listBody=@($list.Clauses[0].Item2.Statements|Where-Object {$_ -isnot [Management.Automation.Language.ExitStatementAst]})
+    $listCode=(($selection+$listBody)|ForEach-Object {$_.Extent.Text}) -join "`n"
+    foreach($request in @($null,'tool-bubbles:HdrOnly')){
+        $plan=& {$runs=$edgeRuns;$Name=$request;. ([scriptblock]::Create($listCode))}|ConvertFrom-Json
+        $names=@($plan.runs|Where-Object {$_ -in $expected})
+        if($names.Count -ne 2 -or @($plan.runs|Where-Object {$_ -ceq 'tool-bubbles:HdrOnly'}).Count){throw 'Actual List lost a full HDR leaf or retained the aggregate'}
+        if($request -and @($plan.runs).Count -ne 2){throw 'Legacy HDR selector expanded beyond the two full themes'}
+    }
+}
 foreach($case in @(@{option='CanvasResetOnly';journey='Check-CanvasReset'},@{option='CancelOnly';journey='Check-NativeEdgeCancel'})){
     $journey=$edgeAst.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $case.journey},$false)
     $defaults=$edgeAst.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text.Contains("PSBoundParameters.ContainsKey('Device')")}
