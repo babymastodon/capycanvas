@@ -140,6 +140,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         bool hidden=false,gpu=false;
         ContourCommands bridge;
         hstring bridgeKey;
+        std::array<uint64_t,4> bridgeSource{UINT64_MAX};
         int order=0;
     };
     std::map<uint32_t,Group> groups;
@@ -1254,11 +1255,14 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         }
         collapsed->PresentBridges(panelBridgeFrame,nativeResize());
         for(auto& [id,group]:groups){
-            J path;
-            if(nativeResize()&&!group.hidden&&!group.presented.Size())for(auto value:array(panelBridgeFrame,L"paths"))
-                if(num(value.GetObject(),L"group")==id){path=value.GetObject();break;}
-            auto key=path.Stringify();
-            if(key!=group.bridgeKey){group.bridgeKey=key;group.bridge=bridgeCommands(array(path,L"commands"));group.backgroundKey.reset();}
+            std::array<uint64_t,4> source{panelBridgeRevision,nativeResize(),group.hidden,group.presented.Size()!=0};
+            if(std::exchange(group.bridgeSource,source)!=source){
+                J path;
+                if(nativeResize()&&!group.hidden&&!group.presented.Size())for(auto value:array(panelBridgeFrame,L"paths"))
+                    if(num(value.GetObject(),L"group")==id){path=value.GetObject();break;}
+                auto key=path.Stringify();
+                if(key!=group.bridgeKey){group.bridgeKey=key;group.bridge=bridgeCommands(array(path,L"commands"));group.backgroundKey.reset();}
+            }
             auto const& chrome=*data->chromeFrames;
             bool connected=!nativeResize()&&!group.presented.Size()&&columnReceiver(id);
             group.gpu=connected&&chrome.Group(id)&&chrome.presented.elements.contains(ChromeFrames::Id(group.frame));
