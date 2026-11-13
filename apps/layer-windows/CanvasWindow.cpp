@@ -1832,17 +1832,18 @@ winrt::fire_and_forget CanvasWindow::DecodeSnapshots(std::shared_ptr<SnapshotSta
             batch.localization=state->pendingLocalization;
             if(batch.localization){batch.sections=CanvasAllSections;batch.changes.all=true;}
         }
-        auto prepareInput=[&](Windows::Data::Json::JsonObject const& model){
+        auto prepareInput=[&](Windows::Data::Json::JsonObject const& model,bool full){
+            if(full&&state->layoutInputFull&&!state->models.changes.Touches({L"layout_input"}))return state->layoutInput;
             auto bytes=to_string(CapyUi::object(model,L"layout_input").Stringify());
             if(!state->layoutInput||bytes!=state->layoutInputBytes){
                 NativeLayoutInput next(capy_layout_input_prepare(bytes.c_str()),capy_layout_input_free);
                 if(!next)throw std::invalid_argument("Invalid workspace layout input");
-                state->layoutInputBytes=std::move(bytes);state->layoutInput=std::move(next);
-            }
+                state->layoutInputBytes=std::move(bytes);state->layoutInput=std::move(next);state->layoutInputFull=full;
+            }else state->layoutInputFull|=full;
             return state->layoutInput;
         };
-        if(batch.full)batch.fullInput=prepareInput(batch.full);
-        if(batch.layout)batch.reflowInput=prepareInput(batch.layout);
+        if(batch.full)batch.fullInput=prepareInput(batch.full,true);
+        if(batch.layout)batch.reflowInput=prepareInput(batch.layout,false);
     }catch(hresult_error const& error){failure=to_string(error.message());}
      catch(std::exception const& error){failure=error.what();}
     raw={};

@@ -176,6 +176,7 @@ private:
         std::deque<std::pair<uint64_t,std::function<void()>>> replies;
         std::string layoutInputBytes;
         NativeLayoutInput layoutInput;
+        bool layoutInputFull=false;
         NativeModelUpdates modelUpdates;
         CanvasModelUpdate models;
         uint32_t unappliedSections=0;
