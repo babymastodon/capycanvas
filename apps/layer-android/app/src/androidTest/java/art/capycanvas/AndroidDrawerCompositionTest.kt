@@ -203,12 +203,17 @@ class AndroidDrawerCompositionTest {
         }
     }
 
-    @Test fun phoneDrawerShadowStaysOutsideJoinedFacesOverSurround() {
+    @Test fun phoneDrawerGlassMatchesOverPaperAtLowAndHighTransparency() = phoneDrawerGlassMatchesBackdrop(true)
+
+    @Test fun phoneDrawerShadowStaysOutsideJoinedFacesOverSurround() = phoneDrawerGlassMatchesBackdrop(false)
+
+    private fun phoneDrawerGlassMatchesBackdrop(paper: Boolean) {
         val host = compose.activity.host
         host.awaitReady(compose = compose)
         assumeTrue("Requires the native phone layout", host.snapshot!!.getJSONObject("layout").objectOrNull("phone") != null)
         host.awaitMain("launch reveal removed", 30_000, { "" }, compose) { findTag("launch-splash") == null }
         host.awaitMain("Drawing accepts input", 30_000, { "" }, compose) { !host.documentInputBlocked }
+        if (paper) host.useFlatPaper(compose)
         host.drain(obj("type" to "select_brush", "id" to host.snapshot!!.getJSONObject("state").getJSONObject("brush").getInt("preset")))
         host.awaitReady(compose = compose)
         val activity = compose.activity
@@ -221,13 +226,13 @@ class AndroidDrawerCompositionTest {
                     (host.snapshot!!.getJSONObject("layout").array("viewport").let { it.getDouble(0) < it.getDouble(1) }) ==
                         (orientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
                 }
-                host.frameGlassBackdrop(compose)
+                host.frameGlassBackdrop(compose, paper)
                 val dock = checkNotNull(host.workspaceInteraction)
                 val tiles = host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
                 val selected = host.snapshot!!.array("phone_tools").objects().indexOfFirst { it.optBoolean("selected") }
                 assertTrue("Painter has a selected tool", selected >= 0)
-                val backdrop = "surround"
-                for ((level, value) in listOf("high" to 3)) {
+                val backdrop = if (paper) "paper" else "surround"
+                for ((level, value) in if (paper) listOf("low" to 1, "high" to 3) else listOf("high" to 3)) {
                     host.drain(obj("type" to "preferences", "action" to obj("type" to "edit", "id" to "transparency", "value" to value)))
                     compose.waitForIdle()
                     assertEquals(level, host.snapshot!!.getJSONObject("state").getJSONObject("settings").getString("transparency"))
@@ -245,7 +250,7 @@ class AndroidDrawerCompositionTest {
                             }))?.presented == true
                         }
                         compose.waitForIdle()
-                        host.captureDrawerGlass("$backdrop-$orientation-$level-$family", compose.runOnIdle { checkNotNull(frame()).copy() }, failures)
+                        host.captureDrawerGlass("$backdrop-$orientation-$level-$family", compose.runOnIdle { checkNotNull(frame()).copy() }, failures, paper)
                         host.drain(if (family == "capy") obj("type" to "phone", "action" to obj("kind" to "capy"))
                             else obj("type" to "customize", "action" to obj("type" to "close_expanded")))
                         compose.mainClock.advanceTimeBy(400)

@@ -13,6 +13,61 @@ class AndroidTabletBridgeLayeringTest {
     @get:Rule(order=0) val device=CapyDeviceRule()
     @get:Rule(order=1) val compose=createAndroidComposeRule<MainActivity>()
 
+    @Test fun tabletHeaderDrawerGlassMatchesOverPaperAtLowAndHighTransparency() {
+        val host = compose.activity.host
+        host.awaitReady(compose = compose)
+        host.awaitMain("launch revealed", 30_000, { "" }, compose) { findTag("launch-splash") == null }
+        assumeTrue("Requires the tablet workspace", host.snapshot!!.getJSONObject("layout").objectOrNull("phone") == null)
+        host.awaitMain("Drawing accepts input", 30_000, { "" }, compose) { !host.documentInputBlocked }
+        host.useFlatPaper(compose)
+        fun action(value: JSONObject) { host.drain(value); compose.waitForIdle() }
+        fun header(value: JSONObject) = action(obj("type" to "customize", "action" to obj("type" to "header", "action" to value)))
+        header(obj("type" to "edit", "editing" to true))
+        val headerId = host.snapshot!!.getJSONObject("header").getJSONObject("model").getInt("next_id")
+        header(obj("type" to "add", "zone" to "left", "before" to null,
+            "item" to obj("kind" to "tool", "control" to obj("kind" to "command", "command" to "eraser"))))
+        header(obj("type" to "edit", "editing" to false))
+        action(obj("type" to "invoke", "command" to "eraser"))
+        val dock = checkNotNull(host.workspaceInteraction)
+        val anchor = obj("kind" to "header", "id" to headerId)
+        val failures = mutableListOf<String>()
+        for (theme in listOf("light", "dark")) {
+            action(obj("type" to "set_theme", "theme" to theme))
+            for ((level, value) in listOf("low" to 1, "high" to 3)) {
+                action(obj("type" to "preferences", "action" to obj("type" to "edit", "id" to "transparency", "value" to value)))
+                assertEquals(level, host.snapshot!!.getJSONObject("state").getJSONObject("settings").getString("transparency"))
+                host.coverChromeWithPaper(compose)
+                val snapshot = host.snapshot!!
+                val presentation = snapshot.getJSONObject("header_presentation")
+                val placements = presentation.array("items").objects()
+                assertTrue("Header tool has a published placement", placements.any { it.getInt("id") == headerId })
+                val geometry = checkNotNull(kotlinx.coroutines.runBlocking { host.awaitQuery(obj("type" to "header", "request" to obj(
+                    "op" to "geometry", "model" to snapshot.getJSONObject("header").getJSONObject("model"), "editing" to false,
+                    "documents" to host.drawingTabs.rows.size, "width" to snapshot.getJSONObject("layout").array("viewport").getDouble(0),
+                    "insets" to org.json.JSONArray(listOf(0, 0)), "metrics" to org.json.JSONArray(placements.map {
+                        obj("id" to it.getInt("id"), "width" to it.getJSONObject("bounds").number("width"), "compact" to it.getJSONObject("bounds").number("width"))
+                    })))) })
+                assertTrue("Header tool joins a glass bar", geometry.array("bars").objects().any { bar ->
+                    bar.array("items").values().any { (it as Number).toInt() == headerId }
+                })
+                val at = compose.runOnIdle { checkNotNull(findTag("header-control-$headerId")).second.boundsInRoot.center }
+                for (event in listOf(android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP))
+                    instrumentation.uiAutomation.injectInputEvent(motion(android.view.MotionEvent.TOOL_TYPE_FINGER, event, at, android.os.SystemClock.uptimeMillis()), true)
+                host.drain()
+                compose.mainClock.advanceTimeBy(400)
+                host.awaitMain("Header drawer glass presented", 30_000, { "${dock.drawer}" }, compose) {
+                    dock.drawer?.objectOrNull("connection") != null && dock.anchorSource(anchor)?.presented == true
+                }
+                compose.waitForIdle()
+                host.captureDrawerGlass("tablet-header-$theme-$level", compose.runOnIdle { checkNotNull(dock.drawer).copy() }, failures)
+                action(obj("type" to "customize", "action" to obj("type" to "close_expanded")))
+                compose.mainClock.advanceTimeBy(400)
+                host.awaitMain("Header drawer closed", 30_000, { "" }, compose) { dock.drawer == null }
+            }
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
     @Test fun tabletDrawerBridgesAndBodiesStayAbovePanelWindows() {
         val host=compose.activity.host
         host.awaitReady(compose=compose)

@@ -20,6 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -407,14 +409,16 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
         enabled = enabled || explained, role = Role.Button, onClickLabel = label, onDoubleClick = onDoubleClick.takeIf { enabled },
         onLongClick = if (explained) {{ reveal += 1 }} else onLongClick, onClick = if (enabled) onClick else {{ reveal += 1 }}).semantics { if (!enabled) disabled() }
     HoverTip(reason.takeIf { explained } ?: label, modifier, reveal = reveal) {
-    val paint = Modifier.clip(shape)
-        .then(if (surface && !inBar) Modifier.glass(shape, colors.headerSurface, active = active) else Modifier).background(when {
+    val fill = when {
         drawer != null -> colors.drawerFill(drawerPresented)
         selected -> colors.headerActive
         enabled && pressed -> colors.text.copy(alpha = .16f)
         enabled && hovered -> colors.text.copy(alpha = .10f)
         else -> Color.Transparent
-    })
+    }
+    val paint = Modifier.clip(shape)
+        .then(if (surface && !inBar) Modifier.glass(shape, if (drawer == null) colors.headerSurface else Color.Transparent, active = active) else Modifier)
+        .drawBehind { drawRect(fill, blendMode = if (drawer != null) BlendMode.Src else BlendMode.SrcOver) }
     Box((if (fillWidth) Modifier.fillMaxSize() else Modifier.fillMaxHeight()).then(if (face == null) paint else Modifier).then(click),
         contentAlignment = if (face == null) Alignment.Center else androidx.compose.ui.AbsoluteAlignment.TopLeft) {
         if (face == null) content() else Box(face.then(paint), contentAlignment = Alignment.Center) { content() }
