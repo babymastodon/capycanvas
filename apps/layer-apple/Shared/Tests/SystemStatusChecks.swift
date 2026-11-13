@@ -234,7 +234,7 @@ extension XCTestCase {
                 }) else { lastLayerBounds = []; return false }
             let name = row.staticTexts.firstMatch
             let thumbnail = row.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "layer-thumbnail-")).firstMatch
-            guard name.exists, thumbnail.exists, !(name.value as? String ?? name.label).isEmpty else { lastLayerBounds = []; return false }
+            guard name.exists, thumbnail.exists, !(name.label + (name.value as? String ?? "")).isEmpty else { lastLayerBounds = []; return false }
             let bounds = drawer.frame, frames = (controls + [row, name, thumbnail]).map(\.frame)
             guard !bounds.isEmpty, self.workspaceViewport(in: app).frame.contains(bounds),
                 frames.allSatisfy({ !$0.isEmpty && bounds.contains($0) }),
