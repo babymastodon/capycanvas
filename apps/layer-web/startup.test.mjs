@@ -146,8 +146,7 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
       await evaluate(`layerApp.dispatch({type:'workspace_manager',command:{type:'switch',id:'builtin:workspace:photographer'}})`);
       await wait('JSON.parse(layerApp.app.workspace_view()).name === "Photo" && !JSON.parse(layerApp.app.workspace_view()).busy');
       if(!mobile) {
-        await evaluate(`layerApp.dispatch({type:'invoke',command:'zen_mode'});layerApp.app.workspace_observe()`);
-        await wait('JSON.parse(layerApp.app.workspace_view()).dirty');
+        assert.equal(await evaluate(`layerApp.dispatch({type:'invoke',command:'zen_mode'});layerApp.app.workspace_observe();layerApp.app.workspace_tick();JSON.parse(layerApp.app.workspace_view()).dirty`),true,'Zen changes publish a dirty workspace before its asynchronous save');
       }
       await wait('!JSON.parse(layerApp.app.workspace_view()).dirty && !JSON.parse(layerApp.app.workspace_view()).busy && !JSON.parse(layerApp.app.workspace_view()).saving');
       await settle();
