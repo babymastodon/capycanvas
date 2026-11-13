@@ -2761,3 +2761,45 @@ fn a_color_ring_pick_is_one_step_that_ring_taps_undo_and_redo() {
         }
     }
 }
+
+#[test]
+fn a_second_finger_ends_the_bubble_color_contact_it_rolls_back() {
+    use layer_core::color::SampleDepth;
+    for (depth, platform, intensity) in [SampleDepth::F16, SampleDepth::F32].into_iter()
+        .flat_map(|depth| Platform::ALL.into_iter().flat_map(move |platform| [false, true].map(move |intensity| (depth, platform, intensity)))) {
+        let mut s = hdr_desk(depth, platform);
+        let id = take_ring(&mut s, FAR);
+        act(&mut s, BubbleAction::SetIntensity { id, stops: -1. }).unwrap();
+        let mut now = settle(&mut s, 0);
+        let before = s.state.colors.clone();
+        let checkpoint = s.engine.checkpoint();
+        let arc = view(&s, id).color.unwrap().intensity.unwrap();
+        let send = |s: &mut UiSession<Recorder>, phase, at: f32| act(s, if intensity {
+            BubbleAction::Intensity { id, phase, position: arc.point(at) }
+        } else { BubbleAction::Wheel { id, phase, part: ColorWheelPart::Field, position: [60. * at - 30., -10.] } }).unwrap();
+        let touch = |s: &mut UiSession<Recorder>, finger: u64, phase, travel: f32, ms: u64|
+            s.input(UiInput::ColorTouch { surface: 9, id: finger, phase, position: [40. * finger as f32 + travel, 0.], time_ns: ms * 1_000_000 }).unwrap();
+        let case = format!("{depth:?} {platform:?} intensity={intensity}");
+        send(&mut s, ContactPhase::Down, 0.75);
+        touch(&mut s, 0, ContactPhase::Down, 0., 1);
+        assert_ne!(s.state.colors, before, "{case}: the first finger edits");
+        let claim = touch(&mut s, 1, ContactPhase::Down, 0., 2);
+        assert!(claim.handled, "{case}");
+        assert_eq!(s.state.colors, before, "{case}: the claim rolls back");
+        for finger in 0..2 { touch(&mut s, finger, ContactPhase::Move, 20., 10 + finger); }
+        send(&mut s, ContactPhase::Move, 0.85);
+        assert_eq!(s.state.colors, before, "{case}: motion after the claim");
+        now = settle(&mut s, now);
+        assert!(!s.chrome_in_motion(false), "{case}: the claim ends the wheel contact");
+        assert_ne!(claim.change.regions & regions::BUBBLES, 0, "{case}: the claim republishes the bubble");
+        send(&mut s, ContactPhase::Up, 0.85);
+        for finger in 0..2 { touch(&mut s, finger, ContactPhase::Up, 20., 50 + finger); }
+        assert_eq!(s.state.colors, before, "{case}: release after the claim");
+        assert_eq!(s.engine.checkpoint(), checkpoint);
+        settle(&mut s, now);
+        send(&mut s, ContactPhase::Down, 0.25);
+        assert_ne!(s.state.colors, before, "{case}: a later contact starts");
+        send(&mut s, ContactPhase::Cancel, 0.25);
+        assert_eq!(s.state.colors, before, "{case}");
+    }
+}

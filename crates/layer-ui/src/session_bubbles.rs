@@ -193,8 +193,7 @@ impl<R: CanvasRenderer> UiSession<R> {
         let mut change = if let Some(ring) = self.bubble_state.ring {
             self.bubble_ring(ring.id, ContactPhase::Cancel, [0.; 2])?
         } else { UiChange::default() };
-        if let Some(wheel) = self.bubble_state.wheel {
-            let restored = self.bubble_color(wheel.id, ContactPhase::Cancel, wheel.part, [0.; 2])?;
+        if let Some(restored) = self.cancel_bubble_wheel()? {
             change.regions |= restored.regions;
             change.canvas_wake |= restored.canvas_wake;
             change.presentation_wake |= restored.presentation_wake;
@@ -202,6 +201,10 @@ impl<R: CanvasRenderer> UiSession<R> {
         }
         self.bubble_state = Bubbles { stroke: self.bubble_state.stroke, ..Bubbles::default() };
         Ok(change)
+    }
+
+    pub(super) fn cancel_bubble_wheel(&mut self) -> Result<Option<UiChange>, String> {
+        self.bubble_state.wheel.map(|wheel| self.bubble_color(wheel.id, ContactPhase::Cancel, wheel.part, [0.; 2])).transpose()
     }
 
     pub fn bubble_grab(&self, grab: BubbleGrab, held: bool) -> Option<BubbleGrab> {
