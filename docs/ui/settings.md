@@ -426,8 +426,9 @@ and use defaults for fields they cannot read:
   replaces the stored content. An item whose name or kind can't be read is left
   out of the list and kept. When no workspace can be listed, startup creates
   a new workspace from the included layout and raises the shared update notice.
-  Only damaged storage (SQLite corruption, or a Web store that can't be decoded)
-  is set aside; see
+  Only damaged storage (SQLite corruption, a Web store that can't be decoded,
+  or an older store schema) is set aside, and its newest readable version copy
+  takes its place with a notice and no question; see
   [workspace startup](../internals/workspace-ownership.md#startup-always-adopts-a-workspace).
 - Caches discard data they cannot use.
 - Artwork is never replaced automatically. A recovery copy this build cannot

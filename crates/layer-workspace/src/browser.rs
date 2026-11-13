@@ -9,10 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 type Result<T> = std::result::Result<T, StoreError>;
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct BrowserDatabase {
     schema: u32,
     editing: Option<String>,
+    #[serde(deserialize_with = "layer_ui::lenient::map")]
     items: BTreeMap<String, BrowserRecord>,
     fences: BTreeMap<String, String>,
     receipts: BTreeMap<String, (String, CommitReceipt)>,
@@ -101,34 +101,12 @@ fn schema(text: &str) -> serde_json::Result<Option<u64>> {
 }
 impl BrowserDatabase {
     pub fn decode(text: &str) -> Result<Self> {
-        let damaged = |error: serde_json::Error| match error.classify() {
-            serde_json::error::Category::Data => StoreError::from(error),
-            _ => StoreError::new(ErrorKind::DamagedStorage, error.to_string()),
-        };
-        match schema(text).map_err(damaged)? {
-            Some(schema) if schema == u64::from(SCHEMA_VERSION) => serde_json::from_str(text).map_err(damaged),
+        let damaged = |error: String| StoreError::new(ErrorKind::DamagedStorage, error);
+        match schema(text).map_err(|error| damaged(error.to_string()))? {
             Some(schema) if schema > u64::from(SCHEMA_VERSION) => Err(newer_schema()),
-            _ => Err(other_schema()),
+            Some(schema) if schema == u64::from(SCHEMA_VERSION) => serde_json::from_str(text).map_err(|error| damaged(error.to_string())),
+            schema => Err(damaged(format!("Workspace storage schema {schema:?}"))),
         }
-    }
-    pub fn restorable(text: &str, workspace: Option<&str>) -> Result<Self> {
-        let database = Self::decode(text).map_err(unopenable_copy)?;
-        check_copy(
-            database.items.iter().map(|(id, record)| record.stored(id).map(|stored| stored.entity)),
-            database.editing.as_deref(),
-            workspace,
-        )?;
-        Ok(database)
-    }
-    /// `StoreRequest::Reset` for a snapshot that may not decode at all.
-    pub fn replace(previous: Option<&str>) -> Result<Self> {
-        if previous
-            .and_then(|text| schema(text).ok().flatten())
-            .is_some_and(|schema| schema > u64::from(SCHEMA_VERSION))
-        {
-            return Err(newer_schema());
-        }
-        Ok(Self::default())
     }
     pub fn encoded(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
@@ -286,14 +264,8 @@ impl BrowserDatabase {
             Binding { key } => StoreResponse::Binding(self.bindings.get(&key).cloned()),
             Pending => StoreResponse::Pending(self.pending.values().filter_map(|value| serde_json::from_value(value.clone()).ok())
                 .filter(|batch| validate_payload(batch, |_| Err(missing_resource())).is_ok()).collect()),
-            Reopen => StoreResponse::Reopened(None),
-            RestoreSnapshot { .. } | CheckSnapshot { .. } | SetAside => return Err(StoreError::new(ErrorKind::Unavailable,"Snapshots require persistent storage.")),
-            Snapshots => StoreResponse::Snapshots(Vec::new()),
-            Adopted => StoreResponse::Done,
-            Reset => {
-                *self = Self::default();
-                StoreResponse::Done
-            }
+            Reopen | Adopted => StoreResponse::Done,
+            SetAside => return Err(StoreError::new(ErrorKind::Unavailable,"Only persistent storage can be set aside.")),
             Maintenance { owner, clear_older } => {
                 let items = retention::readable_items(self.items.iter().map(|(id, record)| record.stored(id)))?;
                 let changed = retention::retention_plan(

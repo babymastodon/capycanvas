@@ -1,5 +1,5 @@
 use crate::*;
-use crate::snapshots::{SnapshotEnvironment, SnapshotInfo, VersionMarker};
+use crate::snapshots::{RetainedCopy, SnapshotEnvironment, SnapshotInfo, VersionMarker};
 use layer_ui::{Localizer, Platform, UiLanguage};
 use std::{cell::{Cell, RefCell}, collections::BTreeMap, path::Path, rc::Rc, sync::Arc};
 
@@ -32,9 +32,6 @@ impl Records {
         }
         records
     }
-    fn copies(&self) -> Vec<String> {
-        self.records.borrow().keys().filter(|id| id.starts_with("snapshot:")).cloned().collect()
-    }
     fn json(&self, id: &str) -> serde_json::Value {
         serde_json::from_str(&self.records.borrow()[id]).unwrap()
     }
@@ -44,15 +41,13 @@ impl WorkspaceStore for WebStore {
     async fn execute(&self, request: StoreRequest) -> Result<StoreResponse, StoreError> {
         let records = &self.0;
         let protect = !records.checked.get() || request.needs_snapshots()
-            || matches!(request, StoreRequest::Reopen | StoreRequest::Adopted | StoreRequest::Snapshots);
+            || matches!(request, StoreRequest::Reopen | StoreRequest::Adopted);
         let snapshot = records.records.borrow().get("database").cloned();
         let protection = protect.then(|| {
-            let restoring = match &request {
-                StoreRequest::RestoreSnapshot { id } | StoreRequest::CheckSnapshot { id, .. } => records.records.borrow().get(id).cloned(),
-                _ => None,
-            };
+            let copies = records.records.borrow().iter().filter(|(id, _)| id.starts_with("snapshot:"))
+                .map(|(id, snapshot)| RetainedCopy { id: id.clone(), snapshot: snapshot.clone() }).collect();
             let unreadable = records.records.borrow().get("unreadable").cloned();
-            snapshots::protect(snapshot.as_deref(), SnapshotEnvironment { marker: records.marker.borrow().clone(), unreadable, restoring }, &request)
+            snapshots::protect(snapshot.as_deref(), SnapshotEnvironment { marker: records.marker.borrow().clone(), unreadable, copies }, &request)
         }).transpose()?;
         let (plan, restored, response) = protection.map_or((None, None, None), |protection| (Some(protection.plan), protection.restored, protection.response));
         let mut database = match restored {
@@ -101,11 +96,8 @@ fn send<S: WorkspaceStore + 'static>(controller: &mut WorkspaceController<S>, ho
     controller.input(&mut host.session, input, now).unwrap();
     settle(controller, host, now, |c| !c.view.busy && !c.view.loading);
 }
-fn submit() -> WorkspaceInput {
-    WorkspaceInput::Submit { name: String::new(), description: None, choice: None }
-}
 fn opens<S: WorkspaceStore + 'static>(controller: &WorkspaceController<S>, id: &str) -> bool {
-    pollster::block_on(controller.manager.load(id)).and_then(|stored| stored.entity.check_opens()).is_ok()
+    pollster::block_on(controller.manager.load(id)).is_ok_and(|stored| !stored.fallback)
 }
 fn starting_layout(id: &str, platform: Platform) -> layer_ui::DockLayout {
     Entity::included_workspace(id, platform, false, 0).unwrap().capture().unwrap().history.layout().clone()
@@ -280,71 +272,80 @@ fn notice(host: &layer_host::NativeHost) -> Option<String> {
     host.session.state().notice.as_ref().map(|notice| notice.text.clone())
 }
 const DAMAGED_NOTICE: &str = "Your saved workspaces were damaged. Capy Canvas started new ones.";
+const RESTORED_NOTICE: &str = "Your saved workspaces were damaged. Capy Canvas restored an earlier copy.";
+fn quiet_start<S: WorkspaceStore + 'static>(controller: &WorkspaceController<S>) {
+    assert!(controller.view.ready && controller.view.error.is_none() && controller.view.prompt.is_none() && controller.view.status.is_none(), "{:?} {:?}", controller.view.error, controller.view.prompt);
+}
 
 #[test]
-fn a_damaged_web_store_is_set_aside_and_offers_an_earlier_copy_once() {
+fn a_damaged_web_store_installs_its_newest_readable_copy_once() {
     let truncated = &RELEASE_1_0_15[..RELEASE_1_0_15.len() / 2];
+    let earlier = copy_id("1.0.14");
+    let newest = copy_id(snapshots::VERSION);
     for retained in [false, true] {
-        let pristine = copy_id(snapshots::VERSION);
-        let copies = if retained { vec![(pristine.as_str(), RELEASE_1_0_15)] } else { Vec::new() };
+        let copies = if retained { vec![(earlier.as_str(), RELEASE_1_0_15), (newest.as_str(), truncated)] } else { Vec::new() };
         let records = Records::new(truncated, &copies);
-        let (mut controller, mut host) = start_web(&records);
+        let (controller, host) = start_web(&records);
+        quiet_start(&controller);
         assert!(!controller.manager.in_memory());
-        assert_eq!(notice(&host).as_deref(), Some(DAMAGED_NOTICE));
+        assert_eq!(notice(&host).as_deref(), Some(if retained { RESTORED_NOTICE } else { DAMAGED_NOTICE }));
         let damaged: Vec<_> = records.records.borrow().iter().filter(|(id, _)| id.starts_with("damaged:")).map(|(_, text)| text.clone()).collect();
         assert_eq!(damaged, vec![truncated.to_string()]);
-        assert!(records.marker.borrow().as_ref().unwrap().copies.iter().all(|copy| copy.id.starts_with("snapshot:")));
-        assert!(BrowserDatabase::decode(&records.records.borrow()["database"]).is_ok());
+        assert!(records.records.borrow().get(&earlier).is_none(), "the installed copy is consumed");
+        assert!(records.marker.borrow().as_ref().unwrap().copies.iter().all(|copy| copy.id != earlier));
         if retained {
-            assert_eq!(controller.view.prompt_action, Some(ManagerAction::RestoreCopy(pristine.clone())));
-            assert_eq!(controller.view.prompt.as_ref().unwrap().title, "Restore Earlier Workspaces?");
-            send(&mut controller, &mut host, WEB_NOW, submit());
-            settle(&mut controller, &mut host, WEB_NOW, |c| c.view.ready && !c.view.busy && c.view.prompt.is_none());
+            assert!(records.records.borrow().contains_key(&newest), "a copy that can't be read stays retained");
             for (id, _) in DEFAULT_WORKSPACES {
                 assert!(opens(&controller, id), "{id}");
             }
-        } else {
-            assert!(controller.view.prompt.is_none());
-            assert!(records.copies().iter().any(|id| records.records.borrow()[id] == truncated), "the store found after an upgrade is kept");
+            let editing = serde_json::from_str::<serde_json::Value>(RELEASE_1_0_15).unwrap()["editing"].as_str().unwrap().to_owned();
+            assert_eq!(*controller.manager.editing().unwrap(), layer_ui::EditingState::restore(&editing, &Localizer::shared(UiLanguage::English)));
         }
-        assert!(controller.view.error.is_none());
         drop(controller);
         records.checked.set(false);
         let (controller, host) = start_web(&records);
+        quiet_start(&controller);
         assert!(!controller.manager.in_memory());
         assert_eq!(notice(&host), None);
-        assert!(controller.view.prompt.is_none());
         assert_eq!(records.records.borrow().keys().filter(|id| id.starts_with("damaged:")).count(), 1);
     }
 }
 
 #[test]
-fn a_damaged_native_store_is_set_aside_and_offers_an_earlier_copy_once() {
-    let (directory, pristine) = native_store(true);
-    std::fs::write(directory.join("workspaces.sqlite3"), b"damaged SQLite store").unwrap();
-    let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
-    settle(&mut controller, &mut host, 1000, |c| c.view.prompt.is_some());
-    assert!(!controller.manager.in_memory());
-    assert_eq!(notice(&host).as_deref(), Some(DAMAGED_NOTICE));
-    assert_eq!(controller.view.prompt_action, Some(ManagerAction::RestoreCopy(pristine)));
-    let damaged: Vec<_> = std::fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.starts_with("workspaces.damaged.")).collect();
-    assert_eq!(damaged.len(), 1);
-    assert_eq!(std::fs::read(directory.join(&damaged[0])).unwrap(), b"damaged SQLite store");
-    send(&mut controller, &mut host, 1000, submit());
-    settle(&mut controller, &mut host, 1000, |c| c.view.ready && !c.view.busy && c.view.prompt.is_none());
-    assert!(controller.view.error.is_none(), "{:?}", controller.view.error);
-    for (id, _) in DEFAULT_WORKSPACES {
-        assert!(opens(&controller, id), "{id}");
+fn a_damaged_native_store_installs_its_newest_readable_copy_once() {
+    for (retained, older) in [(false, false), (true, false), (true, true)] {
+        let (directory, pristine) = native_store(retained);
+        let database = directory.join("workspaces.sqlite3");
+        if older {
+            rusqlite::Connection::open(&database).unwrap().pragma_update(None, "user_version", SCHEMA_VERSION - 1).unwrap();
+        } else {
+            std::fs::write(&database, b"damaged SQLite store").unwrap();
+        }
+        let damaged_bytes = std::fs::read(&database).unwrap();
+        let expected: Option<String> = retained.then(|| rusqlite::Connection::open(directory.join(&pristine)).unwrap().query_row("SELECT json FROM editing", [], |row| row.get(0)).unwrap());
+        let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
+        settle(&mut controller, &mut host, 1000, |c| c.view.ready && !c.view.busy);
+        quiet_start(&controller);
+        assert!(!controller.manager.in_memory());
+        assert_eq!(notice(&host).as_deref(), Some(if retained { RESTORED_NOTICE } else { DAMAGED_NOTICE }));
+        let damaged: Vec<_> = std::fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with("workspaces.damaged.") && name.ends_with(".sqlite3")).collect();
+        assert_eq!(damaged.len(), 1);
+        assert_eq!(std::fs::read(directory.join(&damaged[0])).unwrap(), damaged_bytes);
+        assert!(!directory.join(&pristine).exists(), "the installed copy is consumed");
+        if retained {
+            for (id, _) in DEFAULT_WORKSPACES {
+                assert!(opens(&controller, id), "{id}");
+            }
+            let installed: String = rusqlite::Connection::open(&database).unwrap().query_row("SELECT json FROM editing", [], |row| row.get(0)).unwrap();
+            assert_eq!(Some(installed), expected);
+        }
+        crate::controller_tests::close_native(controller, &mut host);
+        let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
+        settle(&mut controller, &mut host, 1000, |c| c.view.ready && !c.view.busy);
+        quiet_start(&controller);
+        assert_eq!(notice(&host), None);
+        crate::controller_tests::close_native(controller, &mut host);
+        std::fs::remove_dir_all(directory).unwrap();
     }
-    crate::controller_tests::close_native(controller, &mut host);
-    let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
-    settle(&mut controller, &mut host, 1000, |c| c.view.ready && !c.view.busy);
-    assert_eq!(notice(&host), None);
-    assert!(controller.view.prompt.is_none());
-    for (id, _) in DEFAULT_WORKSPACES {
-        assert!(opens(&controller, id), "{id}");
-    }
-    crate::controller_tests::close_native(controller, &mut host);
-    std::fs::remove_dir_all(directory).unwrap();
 }

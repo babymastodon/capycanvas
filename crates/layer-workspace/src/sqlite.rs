@@ -56,10 +56,8 @@ pub struct SqliteStore {
     connection: Connection,
     clock: Arc<dyn Clock>,
     ownership: ownership::Ownership,
-    /// Set for a store of another version; only `StoreRequest::Reset` is served.
-    incompatible: Option<StoreError>,
+    newer: bool,
     snapshots_ready: bool,
-    restore: Option<String>,
 }
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self> {
@@ -99,17 +97,15 @@ impl SqliteStore {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "wal_autocheckpoint", 1000)?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let protection = snapshots::protect(&tx);
-        let snapshots_ready = protection.is_ok();
-        let restore = protection.ok().flatten();
-        let incompatible = match tx.pragma_query_value(None, "user_version", |r| r.get(0))? {
-            SCHEMA_VERSION => None,
+        let snapshots_ready = snapshots::protect(&tx).is_ok();
+        let newer = match tx.pragma_query_value(None, "user_version", |r| r.get(0))? {
+            SCHEMA_VERSION => false,
             0 if table_names(&tx)?.is_empty() => {
                 create_schema(&tx)?;
-                None
+                false
             }
-            version if version > SCHEMA_VERSION => Some(newer_schema()),
-            _ => Some(other_schema()),
+            version if version > SCHEMA_VERSION => true,
+            version => return Err(StoreError::new(ErrorKind::DamagedStorage, format!("Workspace storage schema {version}"))),
         };
         tx.commit()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -118,59 +114,19 @@ impl SqliteStore {
             connection,
             clock,
             ownership: ownership::Ownership::new(path)?,
-            incompatible,
+            newer,
             snapshots_ready,
-            restore,
         })
     }
-    fn reset(&mut self) -> Result<()> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > SCHEMA_VERSION {
+    pub fn handle(&mut self, request: StoreRequest) -> Result<StoreResponse> {
+        if self.newer {
             return Err(newer_schema());
         }
-        preserve(Path::new(tx.path().unwrap_or_default()))?;
-        for table in table_names(&tx)? {
-            tx.execute(
-                &format!("DROP TABLE \"{}\"", table.replace('"', "\"\"")),
-                [],
-            )?;
-        }
-        create_schema(&tx)?;
-        tx.commit()?;
-        self.ownership.release_all();
-        self.incompatible = None;
-        Ok(())
-    }
-    pub fn handle(&mut self, request: StoreRequest) -> Result<StoreResponse> {
-        if let Some(error) = self
-            .incompatible
-            .as_ref()
-            .filter(|_| !matches!(request, StoreRequest::Reset))
-        {
-            return Err(error.clone());
-        }
         match request {
-            StoreRequest::RestoreSnapshot { id } => {
-                snapshots::restore(&mut self.connection,&id)?;
-                self.ownership.release_all();
-                Ok(StoreResponse::Done)
-            }
-            StoreRequest::Snapshots => Ok(StoreResponse::Snapshots(snapshots::retained(&self.connection)?)),
-            StoreRequest::CheckSnapshot { id, workspace } => {
-                snapshots::check_snapshot(&self.connection,&id,workspace.as_deref())?;
-                Ok(StoreResponse::Done)
-            }
             StoreRequest::Adopted => {
                 let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 if self.snapshots_ready { snapshots::prune(&tx)?; }
                 tx.commit()?;
-                Ok(StoreResponse::Done)
-            }
-            StoreRequest::Reset => {
-                self.reset()?;
                 Ok(StoreResponse::Done)
             }
             StoreRequest::Editing { language } => {
@@ -265,7 +221,7 @@ impl SqliteStore {
             StoreRequest::Reopen => {
                 self.connection
                     .execute_batch("PRAGMA wal_checkpoint(PASSIVE)")?;
-                Ok(StoreResponse::Reopened(self.restore.take()))
+                Ok(StoreResponse::Done)
             }
         }
     }
@@ -566,29 +522,8 @@ impl SqliteStore {
         Ok(result)
     }
 }
-/// Copies a store this build cannot read beside it before a reset replaces it.
-/// The write lock held by the caller keeps the database and its log consistent.
-fn preserve(path: &Path) -> Result<()> {
-    let failed = |e: std::io::Error| StoreError::new(ErrorKind::FailedWrite, format!("Cannot keep a copy of workspace storage: {e}"));
-    let backup = path.with_extension("unreadable.sqlite3");
-    let suffixed = |path: &Path, suffix: &str| {
-        let mut name = path.as_os_str().to_owned();
-        name.push(suffix);
-        std::path::PathBuf::from(name)
-    };
-    for suffix in ["", "-wal", "-shm"] {
-        match std::fs::remove_file(suffixed(&backup, suffix)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(failed(e)),
-            _ => {}
-        }
-    }
-    for suffix in ["", "-wal"] {
-        match std::fs::copy(suffixed(path, suffix), suffixed(&backup, suffix)) {
-            Err(e) if !(suffix == "-wal" && e.kind() == std::io::ErrorKind::NotFound) => return Err(failed(e)),
-            _ => {}
-        }
-    }
-    Ok(())
+pub(crate) fn install_newest_copy(path: &Path) -> Result<bool> {
+    snapshots::install(path)
 }
 fn harden(connection: &Connection) -> Result<()> {
     use rusqlite::{config::DbConfig, limits::Limit};

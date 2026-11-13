@@ -13,7 +13,7 @@ struct PendingSave {
 struct State {
     editing_dropped: bool,
     startup_created: bool,
-    restore: Option<ManagerAction>,
+    restored_copy: bool,
     editing: Option<Box<layer_ui::EditingState>>,
     saved_editing: Option<Box<layer_ui::EditingState>>,
     saved: Option<StoredEntity>,
@@ -97,34 +97,10 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
     }
     pub(crate) async fn set_aside_storage(&self) -> Result<()> {
         *self.state.borrow_mut() = State::default();
-        self.execute(StoreRequest::SetAside).await.map(|_| ())
-    }
-    pub(crate) async fn reopen(&self, set_aside: bool) -> Result<()> {
-        if let StoreResponse::Reopened(legacy) = self.execute(StoreRequest::Reopen).await? {
-            let restore = match legacy {
-                Some(id) => Some(ManagerAction::RestoreWorkspaces(id)),
-                None if set_aside => self.openable_copy(None).await.map(ManagerAction::RestoreCopy),
-                None => None,
-            };
-            self.state.borrow_mut().restore = restore;
+        if let StoreResponse::SetAside {restored} = self.execute(StoreRequest::SetAside).await? {
+            self.state.borrow_mut().restored_copy = restored;
         }
         Ok(())
-    }
-    pub(crate) fn take_restore(&self) -> Option<ManagerAction> { self.state.borrow_mut().restore.take() }
-    pub(crate) async fn restore_snapshot(&self, id: String) -> Result<()> {
-        self.flush().await?;
-        self.execute(StoreRequest::RestoreSnapshot {id}).await?;
-        *self.state.borrow_mut() = State::default();
-        Ok(())
-    }
-    async fn openable_copy(&self, workspace: Option<&str>) -> Option<String> {
-        let Ok(StoreResponse::Snapshots(copies)) = self.execute(StoreRequest::Snapshots).await else { return None };
-        for id in copies {
-            if self.execute(StoreRequest::CheckSnapshot {id:id.clone(),workspace:workspace.map(Into::into)}).await.is_ok() {
-                return Some(id);
-            }
-        }
-        None
     }
     fn starting_content(&self, id: &str) -> ItemContent {
         let id = if is_default_item(id) { id } else { self.initial_id() };
@@ -210,6 +186,7 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
     pub fn editing(&self) -> Option<Box<layer_ui::EditingState>> { self.state.borrow().editing.clone() }
     pub(crate) fn editing_dropped(&self) -> bool { self.state.borrow().editing_dropped }
     pub(crate) fn startup_created(&self) -> bool { self.state.borrow().startup_created }
+    pub(crate) fn restored_copy(&self) -> bool { self.state.borrow().restored_copy }
     pub async fn load_editing(&self) -> Result<()> {
         if let StoreResponse::Editing {state:editing,dropped} = self.execute(StoreRequest::Editing {language:self.localization().language()}).await? {
             let mut state = self.state.borrow_mut();

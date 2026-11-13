@@ -219,7 +219,7 @@ These tests need other arguments:
 | `AndroidToolBubblesTest#sketchEraserBubbleKeepsItsHaloChooserAndSettingsAcrossThemesAndDevices` | `-e bubbleTheme light\|dark -e bubbleInput mouse\|touch\|pen` for one variant |
 | `AndroidInteractionTest`, `AndroidColorPanelTest` | `-e systemInput true` uses OS input injection where the device allows it |
 | `AndroidFeatureParityTest#paperLibraryImportsRenamesAndDeletesWithoutChangingTheDrawing` | `-e theme light` or `dark` |
-| `AndroidSavedStateTest#releasedWorkspacesOpenWithoutAsking`, `#damagedWorkspaceStoreOffersEarlierWorkspacesOnce` | `-e theme light` or `dark` |
+| `AndroidSavedStateTest#releasedWorkspacesOpenWithoutAsking`, `#damagedWorkspaceStoreInstallsItsNewestCopy` | `-e theme light` or `dark` |
 | `AndroidRasterTest#sharedImageObjectsKeepPosePixelsAndIdentityAcrossFilesAndRecovery` | `-e objectArchive /data/local/tmp/capy-object-ga-functional.capy`, made from a small photo by `object_fixture` ([brush benchmark](#brush-workload-benchmark)); `-e theme light` and `dark` |
 | `AndroidRasterTest#hdrDisplayNegotiation` | `-e hdrFile <device path of a PQ PNG>`; `-e requireHdr true` fails instead of passing on an SDR-only display |
 | `AndroidRasterTest#portablePhotoGainmapDelivery` | `-e photoDirectory /data/local/tmp/capy-portable-photo`, holding the shared `p3-grid-8bit.heic`, `p3-gray-10bit.heic` and `p3-12bit.avif` fixtures and the `web-hdr.jpg` and `web-hdr.avif` that Web's `--portable-photo` test produces |

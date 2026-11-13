@@ -2144,7 +2144,7 @@ impl WorkspaceStore for FaultyStore {
             return Err(StoreError::new(f.kind.clone(), "invalid type: map, expected a boolean"));
         }
         f.healed.set(f.healed.get() || aside);
-        if aside { *f.database.borrow_mut() = BrowserDatabase::default(); return Ok(StoreResponse::Done); }
+        if aside { *f.database.borrow_mut() = BrowserDatabase::default(); return Ok(StoreResponse::SetAside { restored: false }); }
         if let StoreRequest::Commit { batch } = &request {
             f.database.borrow_mut().prepare_delivery(batch)?;
         }
@@ -2775,64 +2775,6 @@ fn workspace_projection_uses_one_identity_without_publishing_or_dirtying() {
         assert!(!manager.dirty());
         assert_eq!(serde_json::to_string(&manager.current().unwrap()).unwrap(), before);
         assert_eq!(backend.deliveries.borrow().len(), publications);
-    }
-}
-
-#[test]
-fn reset_restore_prompt_keeps_both_choices_and_a_copy_of_replaced_data() {
-    for restore in [false,true] {
-        let directory = crate::test_support::temp_dir("reset-restore-prompt");
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("workspaces.sqlite3");
-        std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compat/1.0.15/workspaces.sqlite3"),&path).unwrap();
-        {
-            let mut store = SqliteStore::open(&path).unwrap();
-            store.handle(StoreRequest::Reset).unwrap();
-        }
-        let english = Localizer::shared(UiLanguage::English);
-        let mut current = layer_ui::EditingState::new_localized(&english);
-        current.tools.set_override(current.preset,"size",43.,&english).unwrap();
-        {
-            let sql = rusqlite::Connection::open(&path).unwrap();
-            sql.execute("INSERT INTO editing(id,json) VALUES(1,?1)",[serde_json::to_string(&current).unwrap()]).unwrap();
-        }
-        let (mut controller,mut host) = start_native(&directory);
-        fn drive(controller:&mut WorkspaceController<StoreWorker>,host:&mut layer_host::NativeHost,done:impl Fn(&WorkspaceController<StoreWorker>,&layer_host::NativeHost)->bool) {
-            let deadline = std::time::Instant::now()+std::time::Duration::from_secs(20);
-            while !done(controller,host) && std::time::Instant::now()<deadline {
-                controller.tick(&mut host.session,1000);
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            assert!(done(controller,host),"{:?}",controller.view.error);
-        }
-        drive(&mut controller,&mut host,|c,_|c.view.prompt.is_some());
-        let prompt = controller.view.prompt.as_ref().unwrap();
-        assert_eq!(prompt.title,"Restore Workspaces?");
-        assert_eq!(prompt.message,"An older version of Capy Canvas reset your workspaces, palettes and brush settings. Restoring replaces changes you made after the reset.");
-        assert_eq!(prompt.confirm,"Restore");
-        assert_eq!(prompt.cancel.as_deref(),Some("Keep Current"));
-        assert_eq!(host.session.state().brush.diameter,43.);
-        let copies = || std::fs::read_dir(&directory).unwrap().map(|entry|entry.unwrap().path())
-            .filter(|path|path.file_name().unwrap().to_string_lossy().strip_suffix(".sqlite3").is_some_and(crate::snapshots::managed_name)).collect::<Vec<_>>();
-        let before = copies();
-        controller.input(&mut host.session,if restore {WorkspaceInput::Submit {name:String::new(),description:None,choice:None}} else {WorkspaceInput::Cancel},1000).unwrap();
-        drive(&mut controller,&mut host,|c,h|c.view.prompt.is_none() && c.view.ready && h.session.state().brush.diameter==if restore {37.} else {43.});
-        assert!(controller.view.prompt.is_none(),"{:?}",controller.view.error);
-        assert!(controller.view.error.is_none(),"{:?}",controller.view.error);
-        assert_eq!(host.session.state().brush.diameter,if restore {37.} else {43.});
-        let added: Vec<_> = copies().into_iter().filter(|path|!before.contains(path)).collect();
-        assert_eq!(added.len(),usize::from(restore));
-        if restore {
-            let sql = rusqlite::Connection::open(&added[0]).unwrap();
-            let json: String = sql.query_row("SELECT json FROM editing",[],|row|row.get(0)).unwrap();
-            assert_eq!(layer_ui::EditingState::restore(&json,&english),current);
-        }
-        close_native(controller,&mut host);
-        let (controller,mut host) = start_native(&directory);
-        assert!(controller.view.prompt.is_none());
-        assert_eq!(host.session.state().brush.diameter,if restore {37.} else {43.});
-        close_native(controller,&mut host);
-        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 

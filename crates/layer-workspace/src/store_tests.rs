@@ -939,12 +939,10 @@ fn newer_schemas_and_corrupt_items_are_preserved() {
         .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
         .unwrap();
     let mut newer = f.connection();
-    for request in [StoreRequest::List, StoreRequest::Reset] {
-        assert_eq!(
-            newer.handle(request).unwrap_err().kind,
-            ErrorKind::UnsupportedSchema
-        );
-    }
+    assert_eq!(
+        newer.handle(StoreRequest::List).unwrap_err().kind,
+        ErrorKind::UnsupportedSchema
+    );
     assert_eq!(newer.list().unwrap().len(), 1);
     let version: u32 = f
         .store
@@ -955,49 +953,16 @@ fn newer_schemas_and_corrupt_items_are_preserved() {
 }
 
 #[test]
-fn stores_of_other_versions_serve_only_reset() {
+fn stores_of_older_versions_count_as_damaged() {
     for version in [SCHEMA_VERSION - 1, 0] {
         let mut f = Fixture::new();
         f.create("Older");
-        f.store
-            .connection
-            .execute_batch("CREATE TABLE retired (id TEXT PRIMARY KEY)")
-            .unwrap();
-        f.store
-            .connection
-            .pragma_update(None, "user_version", version)
-            .unwrap();
-        let mut store = f.connection();
-        assert_eq!(
-            store.handle(StoreRequest::List).unwrap_err().kind,
-            ErrorKind::UnsupportedSchema,
-            "version {version}"
-        );
-        assert_eq!(store.list().unwrap().len(), 1);
-        store.handle(StoreRequest::Reset).unwrap();
-        let StoreResponse::List(items) = store.handle(StoreRequest::List).unwrap() else {
-            panic!()
-        };
-        assert!(items.is_empty());
-        let kept = Connection::open(std::fs::canonicalize(f.directory.join("workspaces.unreadable.sqlite3")).unwrap()).unwrap();
-        let older: u32 = kept.query_row("SELECT count(*) FROM items", [], |r| r.get(0)).unwrap();
-        assert_eq!(older, 1, "version {version}");
-        let retired: u32 = store
-            .connection
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name='retired'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(retired, 0);
-        let current: u32 = store
-            .connection
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .unwrap();
-        assert_eq!(current, SCHEMA_VERSION);
-        let saved = f.create("Current");
-        assert_eq!(store.load(&saved.entity.id).unwrap(), saved);
+        f.store.connection.execute_batch("CREATE TABLE retired (id TEXT PRIMARY KEY)").unwrap();
+        f.store.connection.pragma_update(None, "user_version", version).unwrap();
+        let error = SqliteStore::with_clock(&f.directory.join("workspaces.sqlite3"), f.clock.clone()).err().unwrap();
+        assert_eq!(error.kind, ErrorKind::DamagedStorage, "version {version}");
+        let kept: u32 = f.store.connection.query_row("SELECT count(*) FROM items", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 1, "version {version}");
     }
 }
 

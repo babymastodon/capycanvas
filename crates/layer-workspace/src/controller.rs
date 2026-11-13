@@ -242,7 +242,6 @@ enum Outcome {
     Editing(Option<Box<StoredEntity>>),
     Done,
     Deleted(String),
-    Restart,
     Dismiss,
     Closed,
     Focus(FocusTarget),
@@ -517,7 +516,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 Startup::SetAside => m.set_aside_storage().await?,
                 Startup::InMemory => m.use_memory(),
             }
-            m.reopen(stage == Startup::SetAside).await?;
+            m.execute(StoreRequest::Reopen).await?;
             m.load_editing().await?;
             m.refresh_switcher().await?;
             let mut bound = Vec::new();
@@ -562,9 +561,8 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         let mut ids = Vec::new();
         match self.startup? {
             Startup::Stored => {},
-            Startup::SetAside => ids.push(M::WORKSPACE_STORAGE_DAMAGED_NOTICE),
-            Startup::InMemory => ids.push(if self.startup_error.as_ref().is_some_and(|error|error.kind==ErrorKind::UnsupportedSchema
-                && error.known!=Some(WorkspaceRefusal::WorkspaceStorageWasWrittenByAnEarlierVersionOfCapyCanvas)) {
+            Startup::SetAside => ids.push(if self.manager.restored_copy() { M::WORKSPACE_STORAGE_RESTORED_NOTICE } else { M::WORKSPACE_STORAGE_DAMAGED_NOTICE }),
+            Startup::InMemory => ids.push(if self.startup_error.as_ref().is_some_and(|error|error.kind==ErrorKind::UnsupportedSchema) {
                 M::WORKSPACE_STORAGE_NEWER_NOTICE
             } else { M::WORKSPACE_STORAGE_UNAVAILABLE_NOTICE }),
         }
@@ -1269,10 +1267,6 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 }))
             };
             Ok(match action {
-                ManagerAction::RestoreWorkspaces(id) | ManagerAction::RestoreCopy(id) => {
-                    m.restore_snapshot(id).await?;
-                    Outcome::Restart
-                }
                 ManagerAction::New => Outcome::adopt(m.create_workspace(&name, now).await?),
                 ManagerAction::Rename(id) => {
                     let metadata = m.load(&id).await?.entity.metadata;
@@ -1669,11 +1663,6 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 Ok(outcome) => {
                     let keep_prompt = matches!(outcome, Outcome::Adopt(_) | Outcome::Editing(Some(_)) | Outcome::Install(_));
                     match outcome {
-                        Outcome::Restart => {
-                            merge(&mut change, self.dismiss(session));
-                            self.view.ready = false; self.preferences=None; self.refreshed_editing=None; self.renew=None;
-                            self.start(Startup::Stored,now);
-                        },
                         Outcome::Adopt(incoming) => {
                             if self
                                 .view
@@ -2023,14 +2012,6 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                     Err(error) => self.set_error(StoreError::invalid(error)),
                 },
                 Ok(_) => {},
-                Err(error) => self.set_error(error),
-            }
-        }
-        if self.view.ready && self.task.is_none() && self.incoming.is_none() && !self.terminating && self.view.prompt.is_none()
-            && let Some(action) = self.manager.take_restore()
-        {
-            match self.form(session,action) {
-                Ok(c) => {merge(&mut change,c);presentation_changed=true;},
                 Err(error) => self.set_error(error),
             }
         }

@@ -360,7 +360,6 @@
     {"family":"pages","state":"replace-toolbar"},
     {"family":"pages","state":"reset-brushes"},
     {"family":"pages","state":"reset-workspace"},
-    {"family":"pages","state":"restore-workspaces"},
     {"family":"pages","state":"save-as-new-workspace"},
     {"family":"pages","state":"save-export-preset"},
     {"family":"pages","state":"save-toolbar"},

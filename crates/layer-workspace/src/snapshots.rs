@@ -50,7 +50,14 @@ impl VersionMarker {
 pub struct SnapshotEnvironment {
     pub marker: Option<VersionMarker>,
     pub unreadable: Option<String>,
-    pub restoring: Option<String>,
+    #[serde(default)]
+    pub copies: Vec<RetainedCopy>,
+}
+
+#[derive(Deserialize)]
+pub struct RetainedCopy {
+    pub id: String,
+    pub snapshot: String,
 }
 
 #[derive(Serialize)]
@@ -65,7 +72,6 @@ pub struct SnapshotPlan {
     pub marker: VersionMarker,
     pub copies: Vec<SnapshotCopy>,
     pub remove: Vec<String>,
-    pub restore: Option<String>,
 }
 
 pub fn plan(snapshot: Option<&str>, environment: SnapshotEnvironment, adopted: bool) -> Result<SnapshotPlan, StoreError> {
@@ -89,18 +95,9 @@ pub fn plan(snapshot: Option<&str>, environment: SnapshotEnvironment, adopted: b
     if changed && let Some(text) = &environment.unreadable {
         copy("unreadable",text);
     }
-    let restorable = changed && environment.unreadable.as_deref().is_some_and(|text| BrowserDatabase::restorable(text, None).is_ok());
-    let restore = restorable.then(||copies.last().map(|copy|copy.info.id.clone())).flatten();
     previous.unreadable_identity = unreadable_identity;
     let (marker, remove) = previous.finish(copies.iter().map(|copy|copy.info.clone()).collect(), adopted);
-    Ok(SnapshotPlan {marker,copies,remove,restore})
-}
-impl SnapshotPlan {
-    pub fn keep_current(&mut self, snapshot: &str) {
-        let info = SnapshotInfo {id:format!("snapshot:{}",name(VERSION)),bytes:snapshot.len() as u64};
-        self.marker.copies.push(info.clone());
-        self.copies.push(SnapshotCopy {info,snapshot:snapshot.into()});
-    }
+    Ok(SnapshotPlan {marker,copies,remove})
 }
 
 pub struct Protection {
@@ -109,35 +106,31 @@ pub struct Protection {
     pub response: Option<StoreResponse>,
 }
 pub fn protect(snapshot: Option<&str>, mut environment: SnapshotEnvironment, request: &StoreRequest) -> Result<Protection, StoreError> {
-    let restoring = environment.restoring.take();
+    let retained = std::mem::take(&mut environment.copies);
     let mut plan = plan(snapshot, environment, matches!(request, StoreRequest::Adopted))?;
-    let retained = |plan: &SnapshotPlan, id: &str| {
-        if !plan.marker.copies.iter().any(|copy| copy.id == id) { return Err(StoreError::invalid("Unknown workspace snapshot.")); }
-        restoring.as_deref().ok_or_else(|| StoreError::invalid("Missing workspace snapshot."))
-    };
-    let current = || snapshot.ok_or_else(|| StoreError::invalid("Missing current workspace store."));
-    let (restored, response) = match request {
-        StoreRequest::Reopen => (None, Some(StoreResponse::Reopened(plan.restore.clone()))),
-        StoreRequest::Snapshots => (None, Some(StoreResponse::Snapshots(plan.marker.copies.iter().rev().map(|copy| copy.id.clone()).collect()))),
-        StoreRequest::CheckSnapshot {id, workspace} => {
-            BrowserDatabase::restorable(retained(&plan, id)?, workspace.as_deref())?;
-            (None, Some(StoreResponse::Done))
-        }
-        StoreRequest::RestoreSnapshot {id} => {
-            let mut database = BrowserDatabase::restorable(retained(&plan, id)?, None)?;
+    if !matches!(request, StoreRequest::SetAside) {
+        return Ok(Protection {plan, restored: None, response: None});
+    }
+    let damaged = snapshot.filter(|text| BrowserDatabase::decode(text).is_err_and(|error| error.kind == ErrorKind::DamagedStorage))
+        .ok_or_else(|| StoreError::new(ErrorKind::Unavailable, "Only damaged storage can be set aside."))?;
+    plan.copies.push(SnapshotCopy {info: SnapshotInfo {id: format!("damaged:{}", new_id()), bytes: damaged.len() as u64}, snapshot: damaged.into()});
+    let installed = plan.marker.copies.iter().rev().find_map(|copy| {
+        let text = plan.copies.iter().find(|new| new.info.id == copy.id).map(|new| &new.snapshot)
+            .or_else(|| retained.iter().find(|old| old.id == copy.id).map(|old| &old.snapshot))?;
+        BrowserDatabase::decode(text).ok().map(|database| (copy.id.clone(), database))
+    });
+    let restored = installed.is_some();
+    let database = match installed {
+        Some((id, mut database)) => {
+            plan.marker.copies.retain(|copy| copy.id != id);
+            plan.copies.retain(|copy| copy.info.id != id);
+            plan.remove.push(id);
             database.release_unlocked(&[], u64::MAX);
-            plan.keep_current(current()?);
-            (Some(database), Some(StoreResponse::Done))
+            database
         }
-        StoreRequest::SetAside => {
-            let damaged = snapshot.filter(|text| BrowserDatabase::decode(text).is_err_and(|error| error.kind == ErrorKind::DamagedStorage))
-                .ok_or_else(|| StoreError::new(ErrorKind::Unavailable, "Only damaged storage can be set aside."))?;
-            plan.copies.push(SnapshotCopy {info: SnapshotInfo {id: format!("damaged:{}", new_id()), bytes: damaged.len() as u64}, snapshot: damaged.into()});
-            (Some(BrowserDatabase::default()), Some(StoreResponse::Done))
-        }
-        _ => (None, None),
+        None => BrowserDatabase::default(),
     };
-    Ok(Protection {plan, restored, response})
+    Ok(Protection {plan, restored: Some(database), response: Some(StoreResponse::SetAside {restored})})
 }
 
 #[cfg(test)]
@@ -165,44 +158,6 @@ mod tests {
         assert_ne!(first.copies[0].info.id,down.copies[0].info.id);
     }
     const RELEASE_1_0_15: &str = include_str!("../tests/fixtures/web-store-1.0.15.json");
-    fn legacy(marker: Option<VersionMarker>, text: &str) -> SnapshotEnvironment {
-        SnapshotEnvironment {marker,unreadable:Some(text.into()),restoring:Some(text.into())}
-    }
-    #[test]
-    fn legacy_copies_are_offered_and_restored_only_when_this_build_opens_them() {
-        let current = BrowserDatabase::default().encoded().unwrap();
-        let mut unopenable: serde_json::Value = serde_json::from_str(RELEASE_1_0_15).unwrap();
-        unopenable["items"][crate::DEFAULT_WORKSPACES[0].0]["entity"]["metadata"] = "{not json".into();
-        let unopenable = unopenable.to_string();
-        for (text, opens) in [(unopenable.as_str(), false), (RELEASE_1_0_15, true)] {
-            let first = protect(Some(&current),legacy(None,text),&StoreRequest::Reopen).unwrap();
-            let copy = first.plan.copies.iter().find(|copy|copy.snapshot == text).unwrap().info.id.clone();
-            let Some(StoreResponse::Reopened(offered)) = first.response else {panic!()};
-            assert_eq!(offered, opens.then(||copy.clone()));
-            let marker = first.plan.marker;
-            let Ok(Protection {response:Some(StoreResponse::Snapshots(retained)),..}) = protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::Snapshots) else {panic!()};
-            assert_eq!(retained, vec![copy.clone()]);
-            for (id, _) in crate::DEFAULT_WORKSPACES {
-                let checked = protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::CheckSnapshot {id:copy.clone(),workspace:Some(id.into())});
-                assert_eq!(checked.is_ok(), opens, "{id}");
-            }
-            match protect(Some(&current),legacy(Some(marker.clone()),text),&StoreRequest::RestoreSnapshot {id:copy.clone()}) {
-                Ok(restored) => {
-                    assert!(opens);
-                    let mut database = restored.restored.unwrap();
-                    for (id, _) in crate::DEFAULT_WORKSPACES {
-                        database.execute(StoreRequest::Claim {id:id.into(),owner:crate::Owner::fresh()},0).unwrap();
-                    }
-                    assert_eq!(restored.plan.copies.len(), 1);
-                    assert_eq!(restored.plan.copies[0].snapshot, current);
-                }
-                Err(error) => {
-                    assert!(!opens);
-                    assert_eq!(error.known, Some(crate::WorkspaceRefusal::UnopenableWorkspaceCopy));
-                }
-            }
-        }
-    }
     #[test]
     fn damaged_current_stores_are_copied_on_version_change_and_set_aside_unmanaged() {
         let damaged = &RELEASE_1_0_15[..RELEASE_1_0_15.len()/2];
@@ -212,18 +167,43 @@ mod tests {
         assert_eq!(first.copies[0].snapshot, damaged);
         let environment = || SnapshotEnvironment {marker:Some(first.marker.clone()),..Default::default()};
         let aside = protect(Some(damaged),environment(),&StoreRequest::SetAside).unwrap();
-        assert!(matches!(aside.response, Some(StoreResponse::Done)));
+        assert!(matches!(aside.response, Some(StoreResponse::SetAside {restored:false})));
         assert_eq!(aside.restored.unwrap().encoded().unwrap(), BrowserDatabase::default().encoded().unwrap());
         let [kept] = &aside.plan.copies[..] else {panic!()};
         assert!(kept.info.id.starts_with("damaged:"));
         assert_eq!(kept.snapshot, damaged);
         assert_eq!(aside.plan.marker.copies, first.marker.copies);
         let unknown_field = RELEASE_1_0_15.replacen('{', r#"{"future":1,"#, 1);
-        assert_eq!(BrowserDatabase::decode(&unknown_field).err().unwrap().kind, ErrorKind::InvalidData);
-        for current in [None, Some(RELEASE_1_0_15), Some(unknown_field.as_str()), Some(r#"{"schema":99}"#), Some(r#"{"schema":8}"#)] {
+        BrowserDatabase::decode(&unknown_field).unwrap();
+        for current in [None, Some(RELEASE_1_0_15), Some(unknown_field.as_str()), Some(r#"{"schema":99}"#)] {
             let Err(error) = protect(current,environment(),&StoreRequest::SetAside) else {panic!()};
             assert_eq!(error.kind, ErrorKind::Unavailable, "{current:?}");
         }
+        for older in [r#"{"schema":8}"#, r#"{"items":{}}"#, "[]"] {
+            assert_eq!(BrowserDatabase::decode(older).err().unwrap().kind, ErrorKind::DamagedStorage, "{older}");
+            assert!(protect(Some(older),environment(),&StoreRequest::SetAside).is_ok(), "{older}");
+        }
+    }
+    #[test]
+    fn setting_aside_installs_and_consumes_the_newest_readable_copy() {
+        let damaged = &RELEASE_1_0_15[..RELEASE_1_0_15.len()/2];
+        let copies = [(format!("snapshot:{}",name("1.0.14")), RELEASE_1_0_15), (format!("snapshot:{}",name("1.0.15")), damaged)];
+        let mut marker = VersionMarker {version:VERSION.into(),..Default::default()};
+        marker.copies = copies.iter().map(|(id,text)| SnapshotInfo {id:id.clone(),bytes:text.len() as u64}).collect();
+        let environment = |marker: &VersionMarker| SnapshotEnvironment {marker:Some(marker.clone()),unreadable:None,
+            copies:copies.iter().filter(|(id,_)| marker.copies.iter().any(|copy| &copy.id == id)).map(|(id,text)| RetainedCopy {id:id.clone(),snapshot:text.to_string()}).collect()};
+        let aside = protect(Some(damaged),environment(&marker),&StoreRequest::SetAside).unwrap();
+        assert!(matches!(aside.response, Some(StoreResponse::SetAside {restored:true})));
+        let mut expected = BrowserDatabase::decode(RELEASE_1_0_15).unwrap();
+        expected.release_unlocked(&[], u64::MAX);
+        assert_eq!(aside.restored.unwrap().encoded().unwrap(), expected.encoded().unwrap());
+        assert_eq!(aside.plan.remove, vec![copies[0].0.clone()]);
+        assert_eq!(aside.plan.marker.copies.iter().map(|copy| &copy.id).collect::<Vec<_>>(), [&copies[1].0]);
+        let [kept] = &aside.plan.copies[..] else {panic!()};
+        assert_eq!(kept.snapshot, damaged);
+        let again = protect(Some(damaged),environment(&aside.plan.marker),&StoreRequest::SetAside).unwrap();
+        assert!(matches!(again.response, Some(StoreResponse::SetAside {restored:false})), "a consumed copy is never installed again");
+        assert_eq!(again.plan.marker.copies, aside.plan.marker.copies);
     }
     #[test]
     fn retention_keeps_the_newest_within_count_and_bytes_and_at_least_three() {

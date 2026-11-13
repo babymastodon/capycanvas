@@ -65,26 +65,21 @@ pub fn workspace_database(
         };
         if protection.is_none() && request.needs_snapshots() { return Err(StoreError::invalid("Workspace restoration requires a version copy.")); }
         let (compatibility,restored,protected) = protection.map_or((None,None,None),|protection|(Some(protection.plan),protection.restored,protection.response));
-        let reset = matches!(request, StoreRequest::Reset);
         let cached = DATABASE_CACHE.with(|cache| cache.borrow_mut().take());
         let mut cached = match (cached,restored) {
             (_,Some(database)) => CachedDatabase {source:snapshot,database,bytes:0,list:None},
-            (Some(cached),None) if !reset && js_sys::Object::is(&cached.source, &snapshot) => cached,
+            (Some(cached),None) if js_sys::Object::is(&cached.source, &snapshot) => cached,
             _ => {
                 let source = snapshot.as_string();
                 if source.is_none() && !snapshot.is_null() && !snapshot.is_undefined() {
                     return Err(StoreError::invalid("Invalid workspace database snapshot."));
                 }
                 CachedDatabase {
-                    database: if reset {
-                        BrowserDatabase::replace(source.as_deref())?
-                    } else {
-                        source
-                            .as_deref()
-                            .map(BrowserDatabase::decode)
-                            .transpose()?
-                            .unwrap_or_default()
-                    },
+                    database: source
+                        .as_deref()
+                        .map(BrowserDatabase::decode)
+                        .transpose()?
+                        .unwrap_or_default(),
                     bytes: source.as_ref().map_or(0, String::len),
                     source: snapshot,
                     list: None,
@@ -101,8 +96,8 @@ pub fn workspace_database(
         let read_only = !pending && matches!(&request,
             StoreRequest::Editing { .. } | StoreRequest::List | StoreRequest::Load { .. }
             | StoreRequest::Receipt { .. } | StoreRequest::Binding { .. }
-            | StoreRequest::Pending | StoreRequest::Snapshots | StoreRequest::CheckSnapshot { .. }
-            | StoreRequest::Reopen | StoreRequest::Adopted | StoreRequest::Switcher | StoreRequest::WorkspaceOrder);
+            | StoreRequest::Pending | StoreRequest::Reopen | StoreRequest::Adopted
+            | StoreRequest::Switcher | StoreRequest::WorkspaceOrder);
         let listing = !pending && matches!(&request, StoreRequest::List);
         let response = if listing && let Some(reply) = &cached.list {
             reply.clone()

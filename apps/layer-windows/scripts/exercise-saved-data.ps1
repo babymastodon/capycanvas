@@ -10,7 +10,7 @@ $review=$null
 function Launch([string]$Name){
     $script:review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $run ($Name+'-stderr.log'))
     $null=$review.Handle
-    Wait-Until {$review.Refresh();(Owned-DrawingWindow $review) -and (Model).windows_workspace.ready -and ($Name -eq 'damaged' -or (Review-Ready))} 'Saved-data window did not become ready' 120
+    Wait-Until {$review.Refresh();(Owned-DrawingWindow $review) -and (Model).windows_workspace.ready -and ($Name -in 'damaged','restored' -or (Review-Ready))} 'Saved-data window did not become ready' 120
     [CapyWindowApi]::ShowWindow((Owned-DrawingWindow $review).Handle,3)|Out-Null
     $owned=@{window=$null}
     Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window} 'Owned saved-data window is unavailable'
@@ -48,29 +48,30 @@ try {
     if((Get-FileHash -LiteralPath $copies[0].FullName).Hash -ne $hash){throw 'Restart changed the damaged copy'}
     Capture "restart-$Theme" -WithModel
     Close
-    foreach($restore in @($false,$true)){
-        $env:CAPY_STORAGE_DIR=Join-Path $run ("restore-"+$restore)
-        [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json -Depth 4))
-        $workspaces=Join-Path $env:CAPY_STORAGE_DIR 'data/workspaces'
-        [IO.Directory]::CreateDirectory($workspaces)|Out-Null
-        Copy-Item -LiteralPath (Join-Path $repo 'crates/layer-workspace/tests/compat/1.0.15/workspaces.sqlite3') -Destination (Join-Path $workspaces 'workspaces.unreadable.sqlite3')
-        Launch ("restore-"+$restore)
-        Wait-Until {(Model).windows_workspace.prompt -and (Find 'Keep Current' -Name)} 'The restore prompt did not render'
-        $prompt=(Model).windows_workspace.prompt
-        if($prompt.title -cne 'Restore Workspaces?' -or $prompt.message -cne 'An older version of Capy Canvas reset your workspaces, palettes and brush settings. Restoring replaces changes you made after the reset.' -or $prompt.confirm -cne 'Restore' -or $prompt.cancel -cne 'Keep Current'){throw 'The restore prompt did not use the approved shared text'}
-        Capture ("restore-$restore-$Theme") -WithModel
-        Invoke $(if($restore){'PrimaryButton'}else{'CloseButton'}) -Within (Control 'workspace-manager')
-        $expected=if($restore){37}else{9}
-        Wait-Until {$model=Model;!$model.windows_workspace.prompt -and $model.windows_workspace.ready -and $model.state.brush.diameter -eq $expected} 'The restore choice did not adopt its editing state' 120
-        if((Model).windows_workspace.error){throw 'The restore choice left a workspace error'}
-        $kept=@(Get-ChildItem -LiteralPath $workspaces -Filter 'workspaces.*.sqlite3' -File|Where-Object {$_.Name -ne 'workspaces.unreadable.sqlite3'})
-        if($kept.Count -ne $(if($restore){2}else{1})){throw 'Restoration did not retain the expected version copies'}
-        Close
-        Launch ("restore-restart-"+$restore)
-        if((Model).windows_workspace.prompt -or (Model).state.brush.diameter -ne $expected){throw 'Restart repeated the restore prompt or lost the chosen settings'}
-        Close
-    }
-    @{theme=$Theme;damaged_notice='passed';preserved_bytes='passed';persistent_restart='passed';restore='passed';keep_current='passed';replaced_store_copy='passed'}|ConvertTo-Json
+    $env:CAPY_STORAGE_DIR=Join-Path $run 'restored'
+    [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json -Depth 4))
+    $workspaces=Join-Path $env:CAPY_STORAGE_DIR 'data/workspaces'
+    [IO.Directory]::CreateDirectory($workspaces)|Out-Null
+    $copy='workspaces.1.0.15.'+[Guid]::NewGuid().ToString()+'.sqlite3'
+    Copy-Item -LiteralPath (Join-Path $repo 'crates/layer-workspace/tests/compat/1.0.15/workspaces.sqlite3') -Destination (Join-Path $workspaces $copy)
+    $marker=@{version='';unreadable_identity=$null;copies=@(@{id=$copy;bytes=(Get-Item -LiteralPath (Join-Path $workspaces $copy)).Length})}
+    [IO.File]::WriteAllText((Join-Path $workspaces 'last-version'),($marker|ConvertTo-Json -Depth 4 -Compress))
+    [IO.File]::WriteAllBytes((Join-Path $workspaces 'workspaces.sqlite3'),[Text.Encoding]::UTF8.GetBytes('damaged SQLite store'))
+    Launch 'restored'
+    $expected='Your saved workspaces were damaged. Capy Canvas restored an earlier copy.'
+    Wait-Until {(Model).state.notice.text -ceq $expected} 'The restored-copy notice did not use the approved shared text'
+    Wait-Until {$notice=Find $expected -Name;$notice -and !$notice.Current.IsOffscreen} 'The restored-copy notice was not rendered'
+    if(@((Model).state.notice.actions).Count){throw 'The restored-copy notice offered a button'}
+    if((Model).windows_workspace.prompt -or (Model).windows_workspace.error){throw 'Installing the earlier copy asked or failed'}
+    Wait-Until {(Model).state.brush.diameter -eq 37} 'The earlier copy did not adopt its editing state' 120
+    if(Test-Path -LiteralPath (Join-Path $workspaces $copy)){throw 'The installed copy was not consumed'}
+    if(@(Get-ChildItem -LiteralPath $workspaces -Filter 'workspaces.damaged.*.sqlite3' -File).Count -ne 1){throw 'The damaged database was not kept aside'}
+    Capture "restored-$Theme" -WithModel
+    Close
+    Launch 'restored-restart'
+    if((Model).state.notice -or (Model).windows_workspace.prompt -or (Model).state.brush.diameter -ne 37){throw 'Restart repeated the notice, asked or lost the restored settings'}
+    Close
+    @{theme=$Theme;damaged_notice='passed';preserved_bytes='passed';persistent_restart='passed';restored_copy='passed';consumed_copy='passed'}|ConvertTo-Json
 }catch{
     if($review -and !$review.HasExited){try{Capture 'failure' -WithModel}catch{}}
     throw

@@ -69,37 +69,6 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
       if(kind==='newer')assert.equal(JSON.parse(await storage("const read=store.get('database');read.onsuccess=()=>{result=read.result.snapshot;};")).schema,database.schema);
     }
   }
-  const released=await readFile(new URL('../../crates/layer-workspace/tests/compat/1.0.15/browser.json',import.meta.url),'utf8');
-  let reset=0;
-  for(const theme of ['light','dark'])for(const restore of [false,true]) {
-    await wait('!JSON.parse(layerApp.app.workspace_view()).dirty&&!JSON.parse(layerApp.app.workspace_view()).saving');
-    const current=JSON.parse(baseline),editing=structuredClone(template);
-    for(const values of Object.values(editing.tools.overrides))values.size=43;
-    current.editing=JSON.stringify(editing);
-    const legacy=released+'\n'.repeat(++reset);
-    await storage(`store.put({id:'database',snapshot:${JSON.stringify(JSON.stringify(current))}});store.put({id:'unreadable',snapshot:${JSON.stringify(legacy)}});`);
-    await evaluate(`localStorage.setItem('layer.preferences.v1',JSON.stringify({...layerApp.state().settings,language:{Explicit:'en'},theme:${JSON.stringify(theme)}}))`);
-    await restart();
-    await wait("document.querySelector('dialog.workspace-form[open]')?.textContent.includes('Keep Current')");
-    const prompt=await evaluate('JSON.parse(layerApp.app.workspace_view()).prompt');
-    assert.equal(prompt.title,'Restore Workspaces?');
-    assert.equal(prompt.message,"An older version of Capy Canvas reset your workspaces, palettes and brush settings. Restoring replaces changes you made after the reset.");
-    assert.equal(prompt.confirm,'Restore');assert.equal(prompt.cancel,'Keep Current');
-    const before=await storage('const request=store.getAll();request.onsuccess=()=>{result=request.result.filter(row=>row.id.startsWith("snapshot:")).map(({id,snapshot})=>({id,snapshot}));};');
-    await shot(`web-restore-${restore?'restore':'keep'}-${theme}`);
-    await wait('!JSON.parse(layerApp.app.workspace_view()).switcher_busy');
-    await evaluate(`[...document.querySelectorAll('dialog.workspace-form[open] footer button')].find(button=>button.textContent===${JSON.stringify(restore?'Restore':'Keep Current')}).click()`);
-    await wait(`JSON.parse(layerApp.app.workspace_view()).prompt==null&&JSON.parse(layerApp.app.workspace_view()).ready&&layerApp.state().brush.diameter===${restore?37:43}`);
-    const after=await storage('const request=store.getAll();request.onsuccess=()=>{result=request.result.filter(row=>row.id.startsWith("snapshot:")).map(({id,snapshot})=>({id,snapshot}));};');
-    const added=after.filter(row=>!before.some(old=>old.id===row.id));
-    assert.equal(added.length,restore?1:0);
-    if(restore)assert.equal(JSON.parse(JSON.parse(added[0].snapshot).editing).tools.overrides['2'].size,43);
-    await wait('!JSON.parse(layerApp.app.workspace_view()).dirty&&!JSON.parse(layerApp.app.workspace_view()).saving');
-    await restart();await ready();
-    assert.equal(await evaluate('JSON.parse(layerApp.app.workspace_view()).prompt'),null,'A second start does not ask again');
-    assert.equal(await evaluate('layerApp.state().brush.diameter'),restore?37:43);
-    evidence.push({name:`web-restore-${restore?'restore':'keep'}-${theme}`,source:'real IndexedDB legacy copy, approved prompt and persistent choice'});
-  }
   const store1012=await readFile(new URL('../../crates/layer-workspace/tests/fixtures/web-store-1.0.12.json',import.meta.url),'utf8');
   const earlier=await readFile(new URL('../../crates/layer-workspace/tests/fixtures/web-store-1.0.15.json',import.meta.url),'utf8');
   const workspaces={sketch:'builtin:workspace:painter',paint:'builtin:workspace:illustrator',photo:'builtin:workspace:photographer'};
@@ -130,30 +99,39 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
     for(const id of Object.values(workspaces))assert.deepEqual(stored.items[id].entity.content,JSON.parse(store1012).items[id].entity.content,`opening ${id} rewrote none of it`);
     evidence.push({name:`web-released-${theme}`,source:'released 1.0.12 store as the current IndexedDB store'});
   }
+  const restored="Your saved workspaces were damaged. Capy Canvas restored an earlier copy.";
+  const records=()=>storage('const request=store.getAll();request.onsuccess=()=>{result=request.result.map(({id,snapshot})=>({id,snapshot}));};');
   for(const theme of ['light','dark']) {
     await wait('!JSON.parse(layerApp.app.workspace_view()).dirty&&!JSON.parse(layerApp.app.workspace_view()).saving');
-    const copy=`snapshot:workspaces.1.0.15.${crypto.randomUUID()}`,truncated=earlier.slice(0,earlier.length>>1);
-    await storage(`store.clear();store.put({id:'database',snapshot:${JSON.stringify(truncated)}});store.put({id:${JSON.stringify(copy)},snapshot:${JSON.stringify(earlier)}});store.put({id:'version',value:{version:'',unreadable_identity:null,copies:[{id:${JSON.stringify(copy)},bytes:${earlier.length}}]}});`);
+    const older=`snapshot:workspaces.1.0.14.${crypto.randomUUID()}`,newest=`snapshot:workspaces.1.0.15.${crypto.randomUUID()}`,truncated=earlier.slice(0,earlier.length>>1);
+    const copies=[{id:older,bytes:earlier.length},{id:newest,bytes:truncated.length}];
+    await storage(`store.clear();store.put({id:'database',snapshot:${JSON.stringify(truncated)}});store.put({id:${JSON.stringify(older)},snapshot:${JSON.stringify(earlier)}});store.put({id:${JSON.stringify(newest)},snapshot:${JSON.stringify(truncated)}});store.put({id:'version',value:{version:'',unreadable_identity:null,copies:${JSON.stringify(copies)}}});`);
     await evaluate(`localStorage.setItem('layer.preferences.v1',JSON.stringify({...layerApp.state().settings,language:{Explicit:'en'},theme:${JSON.stringify(theme)}}))`);
     await restart();
-    await wait("document.querySelector('dialog.workspace-form[open]')?.textContent.includes('Restore')");
-    await wait(`layerApp.state().notice?.text===${JSON.stringify(messages.damaged)}`);
-    const prompt=await evaluate('JSON.parse(layerApp.app.workspace_view()).prompt');
-    assert.equal(prompt.title,'Restore Earlier Workspaces?');
-    assert.deepEqual(await evaluate('JSON.parse(layerApp.app.workspace_view()).prompt_action'),{type:'restore_copy',value:copy});
+    await ready();
+    await wait(`layerApp.state().notice?.text===${JSON.stringify(restored)}`);
+    await wait(`(()=>{const notice=document.querySelector('.canvas-notice');return notice&&!notice.hidden&&notice.textContent.includes(${JSON.stringify(restored)});})()`);
+    assert.equal(await evaluate("document.querySelector('.canvas-notice').querySelectorAll('button:not([hidden])').length"),0,'The notice has no buttons');
+    await quiet('restored');
     const name=`web-set-aside-${theme}`;
     await shot(name);
-    const damaged=await storage('const request=store.getAll();request.onsuccess=()=>{result=request.result.filter(row=>row.id.startsWith("damaged:")).map(row=>row.snapshot);};');
-    assert.deepEqual(damaged,[truncated],'The damaged store is kept aside');
-    await evaluate("[...document.querySelectorAll('dialog.workspace-form[open] footer button')].find(button=>button.textContent==='Restore').click()");
-    await wait("JSON.parse(layerApp.app.workspace_view()).ready&&JSON.parse(layerApp.app.workspace_view()).prompt==null&&!JSON.parse(layerApp.app.workspace_view()).status");
+    const rows=await records();
+    assert.deepEqual(rows.filter(row=>row.id.startsWith('damaged:')).map(row=>row.snapshot),[truncated],'The damaged store is kept aside');
+    assert.ok(!rows.some(row=>row.id===older),'The installed copy is consumed');
+    assert.ok(rows.some(row=>row.id===newest),'A copy that can\'t be read stays retained');
+    assert.deepEqual(Object.keys(JSON.parse(rows.find(row=>row.id==='database').snapshot).items).sort(),Object.keys(JSON.parse(earlier).items).sort());
+    for(const id of Object.values(workspaces)) {
+      await evaluate(`layerApp.app.workspace_input(JSON.stringify({type:'switch',id:${JSON.stringify(id)}}));null`);
+      await wait(`JSON.parse(layerApp.app.workspace_view()).id===${JSON.stringify(id)}&&JSON.parse(layerApp.app.workspace_view()).ready&&!JSON.parse(layerApp.app.workspace_view()).busy`);
+      await quiet(`restored ${id}`);
+    }
     await wait('!JSON.parse(layerApp.app.workspace_view()).dirty&&!JSON.parse(layerApp.app.workspace_view()).saving');
     await restart();await ready();
-    assert.equal(await evaluate('JSON.parse(layerApp.app.workspace_view()).prompt'),null,'A second start does not ask again');
-    assert.equal(await evaluate('layerApp.state().notice?.text??null'),null,'A second start shows no damaged notice');
-    assert.equal(await evaluate("JSON.parse(layerApp.app.workspace_view()).id"),'builtin:workspace:illustrator');
-    evidence.push({name,source:'1.0.15 IndexedDB store cut to half its length, with a retained 1.0.15 copy'});
+    assert.equal(await evaluate('layerApp.state().notice?.text??null'),null,'A second start shows no notice');
+    await quiet('relaunch');
+    assert.equal((await records()).filter(row=>row.id.startsWith('damaged:')).length,1,'A second start sets nothing aside');
+    evidence.push({name,source:'1.0.15 IndexedDB store cut to half its length, with a readable older copy and an unreadable newer copy'});
   }
   await writeFile(`${output}/web-messages.json`,JSON.stringify(evidence,null,2));
-  console.log('PASS saved-data messages: all approved messages, both restore choices, the released 1.0.12 workspaces and the damaged-store set-aside rendered in both themes; real newer schema, truncated store, discarded editing, unreadable workspaces and package readers');
+  console.log('PASS saved-data messages: all approved messages, the released 1.0.12 workspaces and the damaged store replaced by its newest readable copy in both themes; real newer schema, truncated store, discarded editing, unreadable workspaces and package readers');
 }

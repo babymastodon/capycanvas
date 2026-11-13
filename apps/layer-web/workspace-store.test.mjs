@@ -153,26 +153,21 @@ async function checkWorkspaceSnapshots(evaluate, commit) {
       const restored = (await records()).find(row => row.id==='database').snapshot===original;
       await store.execute('{"type":"adopted"}');
       const restoredCount = (await records()).filter(row => row.id.startsWith('snapshot:')).length;
-      await store.execute(${JSON.stringify(JSON.stringify(commit))});
-      const beforeRestore=await records(), sourceCopy=beforeRestore.find(row=>row.id.startsWith('snapshot:')&&row.snapshot===original);
-      const restoring={type:'restore_snapshot',id:sourceCopy.id};
-      let restoreAttempts=0,restoreQuotaError;
-      quota=createWorkspaceStore((...args)=>{
-        const result=reduce(...args);
-        if(JSON.parse(args[1]).type==='restore_snapshot'){restoreAttempts++;throw JSON.stringify({kind:'storage_full',message:'Injected restore copy failure'});}
-        return result;
-      },{name});
-      try{await quota.execute(JSON.stringify(restoring));}catch(error){restoreQuotaError=JSON.parse(error).kind;}
-      const restoreUnchanged=encoded(await records())===encoded(beforeRestore);
-      await store.execute(JSON.stringify(restoring));
-      const afterRestore=await records(),currentCopy=afterRestore.filter(row=>row.id.startsWith('snapshot:')&&!beforeRestore.some(old=>old.id===row.id));
-      const replacedKept=currentCopy.length===1&&currentCopy[0].snapshot===beforeRestore.find(row=>row.id==='database').snapshot;
-      const sourceKept=afterRestore.find(row=>row.id===sourceCopy.id).snapshot===sourceCopy.snapshot;
-      const restoredItemMissing=!JSON.parse(afterRestore.find(row=>row.id==='database').snapshot).items[${JSON.stringify(commit.batch.writes[0].id)}];
+      const beforeAside=await records(),versionCopies=beforeAside.find(row=>row.id==='version').value.copies;
+      const readable=id=>{try{return JSON.parse(beforeAside.find(row=>row.id===id).snapshot).schema!=null;}catch{return false;}};
+      const newest=[...versionCopies].reverse().find(copy=>readable(copy.id)).id;
+      const truncated=original.slice(0,original.length>>1);
+      await records([{id:'database',snapshot:truncated}]);
+      const aside=JSON.parse(await store.execute('{"type":"set_aside"}'));
+      const afterAside=await records();
+      const installed=JSON.parse(afterAside.find(row=>row.id==='database').snapshot);
+      const asideInstalled=aside.value.restored&&Object.keys(installed.items).join()===Object.keys(JSON.parse(beforeAside.find(row=>row.id===newest).snapshot).items).join();
+      const asideConsumed=!afterAside.some(row=>row.id===newest)&&!afterAside.find(row=>row.id==='version').value.copies.some(copy=>copy.id===newest);
+      const asideKept=afterAside.filter(row=>row.id.startsWith('damaged:')).map(row=>row.snapshot).join()===truncated;
       return {copies:copies.map(row => row.snapshot).sort(),repeated:encoded(first)===encoded(repeated),
         beforeAdoption,kept:kept.filter(row => row.id.startsWith('snapshot:')).length,
         metadata:kept.find(row => row.id==='version').value.copies.length,
-        abortError,unchanged,attempts,quotaMarkerUnchanged,quotaSaved,quotaRetried,restored,restoredCount,restoreQuotaError,restoreAttempts,restoreUnchanged,replacedKept,sourceKept,restoredItemMissing};
+        abortError,unchanged,attempts,quotaMarkerUnchanged,quotaSaved,quotaRetried,restored,restoredCount,asideInstalled,asideConsumed,asideKept};
     } finally { store.close(); aborted?.close(); quota?.close(); connection.close(); indexedDB.deleteDatabase(name); }
   })()`);
   assert.deepEqual(result.copies, [released, "legacy unreadable bytes"].sort());
@@ -182,9 +177,8 @@ async function checkWorkspaceSnapshots(evaluate, commit) {
   assert.equal(result.abortError, "failed_write"); assert.ok(result.unchanged);
   assert.equal(result.attempts, 1); assert.ok(result.quotaMarkerUnchanged); assert.ok(result.quotaSaved); assert.ok(result.quotaRetried);
   assert.ok(result.restored); assert.equal(result.restoredCount, 10);
-  assert.equal(result.restoreQuotaError,'storage_full');assert.equal(result.restoreAttempts,1);assert.ok(result.restoreUnchanged);
-  assert.ok(result.replacedKept);assert.ok(result.sourceKept);assert.ok(result.restoredItemMissing);
-  console.log("PASS: Web version copies preserve released and legacy bytes, survive downgrade, prune after adoption, roll back queued copies on abort and restore by hand");
+  assert.ok(result.asideInstalled);assert.ok(result.asideConsumed);assert.ok(result.asideKept);
+  console.log("PASS: Web version copies preserve released and legacy bytes, survive downgrade, prune after adoption, roll back queued copies on abort, restore by hand, and replace a damaged store with the newest readable copy once");
 }
 
 export async function checkStaleStorageStartup({evaluate, reload}) {

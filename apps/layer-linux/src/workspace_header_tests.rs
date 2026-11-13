@@ -4800,9 +4800,6 @@ fn native_saved_data_messages_input() {
                 let sql = rusqlite::Connection::open(std::fs::canonicalize(&path).unwrap()).unwrap();
                 sql.execute("UPDATE items SET metadata='{}' WHERE kind='workspace'",[]).unwrap();
             },
-            "restore" | "keep-current" => {
-                std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/layer-workspace/tests/compat/1.0.15/workspaces.sqlite3"),directory.join("workspaces.unreadable.sqlite3")).unwrap();
-            },
             "drawing-unsupported" | "drawing-damaged" => {},
             _ => panic!("unknown saved-data case"),
         }
@@ -4820,7 +4817,6 @@ fn native_saved_data_messages_input() {
     let package = super::canvas_bar_tests::until_some(||receiver.try_recv().ok(),"saved-data fixture");
     let mut d = Driver::managed("art.capycanvas.SavedDataMessages");
     let expected = match case.as_str() {
-        "restore" | "keep-current" => M::WORKSPACE_RESTORE_WORKSPACES_TITLE,
         "newer" => M::WORKSPACE_STORAGE_NEWER_NOTICE,
         "unavailable" => M::WORKSPACE_STORAGE_UNAVAILABLE_NOTICE,
         "damaged" => M::WORKSPACE_STORAGE_DAMAGED_NOTICE,
@@ -4835,7 +4831,7 @@ fn native_saved_data_messages_input() {
         let w = d.w.clone();
         glib::MainContext::default().spawn_local(async move {crate::files::open::show_package(w.window.upcast_ref(),package,None,&w.localization()).await.unwrap();});
         until(|| d.w.window.visible_dialog().is_some(),"saved drawing dialog");
-    } else if case!="restore" && case!="keep-current" {assert_eq!(state(&d.w).notice.as_ref().unwrap().text,expected);}
+    } else {assert_eq!(state(&d.w).notice.as_ref().unwrap().text,expected);}
     fn shown(widget:&gtk::Widget,text:&str)->bool {
         if widget.is_mapped() && widget.downcast_ref::<gtk::Label>().is_some_and(|label|label.text()==text) {return true;}
         let mut child=widget.first_child();
@@ -4845,12 +4841,7 @@ fn native_saved_data_messages_input() {
     until(||shown(d.w.window.upcast_ref(),&expected),"saved-data message is rendered");
     let theme = std::env::var("CAPY_NATIVE_TEST_THEME").unwrap();
     d.input.perform(serde_json::json!([{"capture":format!("gtk-{case}-{theme}")} ]));
-    if case=="restore" || case=="keep-current" {
-        d.click_label(if case=="restore" {"Restore"} else {"Keep Current"});
-        until(||d.w.workspaces.view().prompt.is_none() && d.w.workspaces.view().ready && !d.w.workspaces.view().busy,"restore choice adopted");
-        assert_eq!(state(&d.w).brush.diameter,if case=="restore" {37.} else {9.});
-        assert!(d.w.workspaces.view().error.is_none());
-    } else if let Some(dialog)=d.w.window.visible_dialog() {dialog.close();}
+    if let Some(dialog)=d.w.window.visible_dialog() {dialog.close();}
     d.finish();
 }
 
@@ -4904,20 +4895,28 @@ fn native_released_workspaces_open_without_asking() {
 }
 
 #[test]
-#[ignore = "isolated native-input.js --native-test=native_damaged_workspace_store_offers_earlier_workspaces --native-storage, with CAPY_NATIVE_TEST_THEME light and dark"]
-fn native_damaged_workspace_store_offers_earlier_workspaces() {
+#[ignore = "isolated native-input.js --native-test=native_damaged_workspace_store_installs_its_newest_copy --native-storage, with CAPY_NATIVE_TEST_THEME light and dark"]
+fn native_damaged_workspace_store_installs_its_newest_copy() {
     let (database,theme) = released_workspace_store(true);
     std::fs::write(&database,b"damaged SQLite store").unwrap();
+    let copies = |directory: &std::path::Path| std::fs::read_dir(directory).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.starts_with("workspaces.") && name.ends_with(".sqlite3") && name != "workspaces.sqlite3").collect::<std::collections::BTreeSet<_>>();
+    let directory = database.parent().unwrap().to_path_buf();
+    let before = copies(&directory);
     let mut d = Driver::managed("art.capycanvas.DamagedWorkspaceStore");
-    let damaged = d.w.localization().text(layer_ui::MessageId::WORKSPACE_STORAGE_DAMAGED_NOTICE).to_string();
-    until(|| d.w.workspaces.view().prompt.is_some() && d.w.window.visible_dialog().is_some(),"the damaged store offers its earlier copy");
-    let prompt = d.w.workspaces.view().prompt.unwrap();
-    assert_eq!(prompt.title,"Restore Earlier Workspaces?");
-    assert_eq!(state(&d.w).notice.map(|notice| notice.text).as_deref(),Some(damaged.as_str()));
-    until(|| mapped_label(d.w.window.upcast_ref(),&damaged).is_some(),"the damaged-store notice is shown");
-    capture_store(&mut d,&format!("gtk-damaged-prompt-{theme}"));
-    d.click_label("Restore");
-    until(|| {let view = d.w.workspaces.view(); view.ready && !view.busy && view.prompt.is_none() && view.error.is_none() && state(&d.w).brush.diameter == 37.},"the earlier workspaces open");
+    let restored = d.w.localization().text(layer_ui::MessageId::WORKSPACE_STORAGE_RESTORED_NOTICE).to_string();
+    until(|| state(&d.w).notice.as_ref().is_some_and(|notice| notice.text == restored) && mapped_label(d.w.window.upcast_ref(),&restored).is_some(),"the restored-copy notice is shown");
+    let quiet = |w: &Workspace, step: &str| {
+        let view = w.workspaces.view();
+        assert!(view.error.is_none() && view.status.is_none() && view.prompt.is_none(),"{step}: {:?} {:?}",view.status,view.prompt);
+        assert!(w.window.visible_dialog().is_none(),"{step} asks nothing");
+    };
+    quiet(&d.w,"set aside");
+    assert!(state(&d.w).notice.as_ref().unwrap().actions.is_empty(),"the notice has no buttons");
+    assert_eq!(state(&d.w).brush.diameter,37.,"the retained copy's settings open");
+    let after = copies(&directory);
+    assert_eq!(after.iter().filter(|name| name.starts_with("workspaces.damaged.")).count(),1);
+    assert!(before.iter().all(|name| !after.contains(name)),"the installed copy is consumed");
     capture_store(&mut d,&format!("gtk-damaged-restored-{theme}"));
     until(|| !d.w.workspaces.view().dirty && !d.w.workspaces.view().saving,"the restored workspaces are saved");
     d.w.window.close();
@@ -4927,9 +4926,10 @@ fn native_damaged_workspace_store_offers_earlier_workspaces() {
     d.w.window.present();
     wait_workspaces(&d.w);
     pump(500);
-    let view = d.w.workspaces.view();
-    assert!(view.prompt.is_none() && view.error.is_none() && state(&d.w).notice.is_none(),"the restored store reopens without a notice or prompt: {:?} {:?}",view.prompt,state(&d.w).notice);
+    quiet(&d.w,"relaunch");
+    assert!(state(&d.w).notice.is_none(),"the restored store reopens without a notice");
     assert_eq!(state(&d.w).brush.diameter,37.);
+    assert_eq!(copies(&directory),after,"a second start sets nothing aside and installs nothing");
     capture_store(&mut d,&format!("gtk-damaged-relaunch-{theme}"));
     d.finish();
 }

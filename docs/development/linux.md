@@ -244,7 +244,7 @@ After changing the tablet proxy, run its tests with
 | --- | --- |
 | `native_session_restart`, `native_session_restart_saved_origins`, `native_document_files`, `native_object_only_shared_images`, `native_document_tabs_blocked_writer_keeps_canvas_live` | `--native-recovery` |
 | `native_dialog_lines_match_the_palette` | `--native-storage` |
-| `native_released_workspaces_open_without_asking`, `native_damaged_workspace_store_offers_earlier_workspaces` | `--native-storage`, `CAPY_NATIVE_TEST_THEME=light` and `dark`; set `LAYER_NATIVE_CAPTURE_DIR` for captures. |
+| `native_released_workspaces_open_without_asking`, `native_damaged_workspace_store_installs_its_newest_copy` | `--native-storage`, `CAPY_NATIVE_TEST_THEME=light` and `dark`; set `LAYER_NATIVE_CAPTURE_DIR` for captures. |
 | `native_phone_editor_pages` | `--native-storage`, `LAYER_MOTION_VIEWPORT=412x891`, `CAPY_NATIVE_TEST_THEME=light`, `GTK_A11Y=test`; set `LAYER_NATIVE_CAPTURE_DIR` for the editor-page inventory and open Capy menu. |
 | `native_phone_page_bounds` | `--native-storage`, `GTK_A11Y=test` and captures; `280x280`, `280x560` and `320x568`, light/dark. Opens every editor inventory page and checks actual body minimums, window/header bounds and GTK size warnings. |
 | `native_phone_motion` | `--native-storage`, `LAYER_NATIVE_EVENT_MS=4`, a phone `LAYER_MOTION_VIEWPORT`, and `LAYER_PHONE_MOTION_REPORT` under the test artifacts directory. |

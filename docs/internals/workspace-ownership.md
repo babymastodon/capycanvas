@@ -68,20 +68,25 @@ Every host (GTK, Web, Android, Apple and Windows) starts through
 adoption moves startup to a later stage:
 
 1. **Stored**: start from the store as it is.
-2. **Set aside**: only SQLite corruption or not-a-database errors, or a Web
-   store that isn't valid JSON or fails to decode at the current schema, reach
-   `StoreRequest::SetAside`. The worker renames the database and its existing
-   WAL/SHM sidecars to `workspaces.damaged.<uuid>.sqlite3` and matching sidecar names,
-   then opens a fresh store. These files are never pruned as version copies.
-   Recovery serializes set-aside operations and rechecks corruption. It moves
-   sidecars before the main file and restores moved names if a rename fails.
+2. **Set aside**: only SQLite corruption, not-a-database errors or an older
+   `user_version`, or a Web store that isn't valid JSON, doesn't decode at the
+   current schema or comes from an older one, reach `StoreRequest::SetAside`.
+   The worker renames the database and its existing WAL/SHM sidecars to
+   `workspaces.damaged.<uuid>.sqlite3` and matching sidecar names, moves the
+   newest retained version copy that reads into its place and drops it from the
+   copy list, or else starts a fresh store. These files are never pruned as
+   version copies. Recovery serializes set-aside operations and rechecks
+   corruption. It moves sidecars before the main file and restores moved names
+   if a rename fails.
 3. **In memory**: after any other error, or a failed set-aside, continue on a
    `BrowserDatabase` owned by the manager. Nothing in this window is persisted,
    and the next launch tries the store again.
 
-Stages 2 and 3 raise the shared canvas notice. A successful set-aside shows the
-damaged-store message; a newer schema shows the newer-version message, and other
-failures show the can't-open message. Stage 3 reads nothing that was stored: it seeds the
+Stages 2 and 3 raise the shared canvas notice, which has no buttons. A
+set-aside shows the restored-copy message when it installed a copy and the
+damaged-store message otherwise; a newer schema shows the newer-version message,
+and other failures show the can't-open message. Each retained copy is installed
+at most once, so a copy that later fails can't be set aside again and again. Stage 3 reads nothing that was stored: it seeds the
 built-in presets from code into an empty store and adopts one. Startup
 therefore always ends with an adopted workspace, provided the presets adopt on
 that platform and every storage request eventually replies or fails. Tests
@@ -97,10 +102,8 @@ the shared update notice once.
 Readable documents are not rejected for their version number.
 `WorkspaceInput::Focus` and resume reload editing state on the storage worker;
 unchanged paths adopt the stored values while local changes made during the read
-stay pending. The [version-copy guide](storage.md#workspace-version-copies)
-describes the startup restore prompt.
-`SCHEMA_VERSION` identifies the tables: a store of any other schema version
-serves nothing but `Reset`.
+stay pending. `SCHEMA_VERSION` identifies the tables: an older store is set
+aside, and a newer one serves nothing.
 Workspace and toolbar rows whose metadata can't be read are left out of the list
 and kept; rows whose content can't be read open with their fallback and are
 skipped by retention. Pending deliveries and switcher preferences remain
@@ -111,8 +114,8 @@ startup creates a new workspace from the included layout and leaves the
 unlisted rows untouched. Copy protection precedes schema setup, maintenance
 and ownership writes; copy retention runs only after adoption. See
 [version copies](storage.md#workspace-version-copies).
-`Reset` refuses a newer table schema. A build that cannot read that schema
-keeps the store and runs in memory.
+A build that cannot read a newer table schema keeps the store and runs in
+memory.
 
 ## Verification
 
@@ -125,11 +128,14 @@ browser lease behavior.
 
 Startup is covered by `startup_on_every_platform_adopts_from_empty_or_unusable_storage`
 and `startup_survives_a_failure_at_every_storage_request`, which fails each
-startup request in turn, with and without a healing reset.
+startup request in turn, with and without a healing set-aside.
 `startup_replaces_only_storage_it_cannot_read` checks that invalid records,
-unavailable, busy, owned, failed and full storage never reach `Reset`, and
-`stores_of_other_versions_serve_only_reset` checks the kept copy. The SQLite cases
-`sqlite_startup_creates_one_workspace_and_keeps_unreadable_rows` and
+unavailable, busy, owned, failed and full storage never reach `SetAside`;
+`stores_of_older_versions_count_as_damaged` checks older native stores, and
+`a_damaged_web_store_installs_its_newest_readable_copy_once` and
+`a_damaged_native_store_installs_its_newest_readable_copy_once` check the
+set-aside install. The SQLite cases
+`sqlite_startup_opens_unreadable_workspaces_without_rewriting_them` and
 `sqlite_startup_keeps_a_newer_store_and_runs_in_memory` cover the rest. The same
 journey runs on real storage with
 `node apps/layer-web/test.mjs --headless --stale-storage` and

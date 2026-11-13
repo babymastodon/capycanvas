@@ -131,13 +131,11 @@ pub enum WorkspaceRefusal {
     UnexpectedWorkspaceLoadReply,
     UnexpectedWorkspaceOrderReply,
     UnexpectedWorkspaceSwitcherReply,
-    UnopenableWorkspaceCopy,
     WaitForTheCurrentWorkspaceOperationToFinish,
     WorkspaceGenerationExhausted,
     WorkspaceOwnershipChangedWhileLoadingTheToolbar,
     WorkspacePreferencesChangedInAnotherWindow,
     WorkspaceSaveIsAlreadyInProgress,
-    WorkspaceStorageWasWrittenByAnEarlierVersionOfCapyCanvas,
 }
 impl WorkspaceRefusal {
     fn message_id(self) -> layer_ui::MessageId {
@@ -212,13 +210,11 @@ impl WorkspaceRefusal {
             Self::UnexpectedWorkspaceLoadReply => layer_ui::MessageId::WORKSPACE_REFUSAL_UNEXPECTED_WORKSPACE_LOAD_REPLY,
             Self::UnexpectedWorkspaceOrderReply => layer_ui::MessageId::WORKSPACE_REFUSAL_UNEXPECTED_WORKSPACE_ORDER_REPLY,
             Self::UnexpectedWorkspaceSwitcherReply => layer_ui::MessageId::WORKSPACE_REFUSAL_UNEXPECTED_WORKSPACE_SWITCHER_REPLY,
-            Self::UnopenableWorkspaceCopy => layer_ui::MessageId::WORKSPACE_REFUSAL_UNOPENABLE_WORKSPACE_COPY,
             Self::WaitForTheCurrentWorkspaceOperationToFinish => layer_ui::MessageId::WORKSPACE_REFUSAL_WAIT_FOR_THE_CURRENT_WORKSPACE_OPERATION_TO_FINISH,
             Self::WorkspaceGenerationExhausted => layer_ui::MessageId::WORKSPACE_REFUSAL_WORKSPACE_GENERATION_EXHAUSTED,
             Self::WorkspaceOwnershipChangedWhileLoadingTheToolbar => layer_ui::MessageId::WORKSPACE_REFUSAL_WORKSPACE_OWNERSHIP_CHANGED_WHILE_LOADING_THE_TOOLBAR,
             Self::WorkspacePreferencesChangedInAnotherWindow => layer_ui::MessageId::WORKSPACE_REFUSAL_WORKSPACE_PREFERENCES_CHANGED_IN_ANOTHER_WINDOW,
             Self::WorkspaceSaveIsAlreadyInProgress => layer_ui::MessageId::WORKSPACE_REFUSAL_WORKSPACE_SAVE_IS_ALREADY_IN_PROGRESS,
-            Self::WorkspaceStorageWasWrittenByAnEarlierVersionOfCapyCanvas => layer_ui::MessageId::WORKSPACE_REFUSAL_WORKSPACE_STORAGE_WAS_WRITTEN_BY_AN_EARLIER_VERSION_OF_CAPY_CANVAS,
         }
     }
     pub fn message(self, localization: &layer_ui::Localizer) -> std::sync::Arc<str> { localization.text(self.message_id()) }
@@ -614,15 +610,6 @@ impl Entity {
             self.capture()?.validate_structure().map_err(StoreError::workspace)?;
         } else if self.working.is_some() {
             return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::SavedToolbarsCannotContainWorkspaceToolSettings));
-        }
-        Ok(())
-    }
-    pub(crate) fn check_opens(&self) -> Result<(), StoreError> {
-        let mut entity = self.clone();
-        entity.validate()?;
-        entity.resolve_phone()?;
-        if entity.metadata.kind == ItemKind::Workspace {
-            layer_ui::PreparedWorkspace::new(entity.capture()?).map_err(StoreError::workspace)?;
         }
         Ok(())
     }

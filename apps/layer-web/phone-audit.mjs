@@ -894,7 +894,6 @@ export const dialogAuditRows=[
   {batch:'w6c',id:'stroke-recording-failure',rootselector:'dialog.document-dialog[open]',openaction:auditRecordingFailureOpen,closeaction:auditRecordingFailureClose,finalize:auditRecordingFailureRestore},
   {batch:'w6c',id:'recover-interrupted-workspaces',rootselector:'.workspace-form[open]',openaction:auditInterruptedWorkspaceOpen,closeaction:auditInterruptedWorkspaceClose,finalize:auditBoundaryRestore},
   ...[
-    ['restore-workspaces','Requires the existing released-storage/restart setup in saved-data-ux.'],
     ['workspace-not-saved','Web uses the browser-owned beforeunload prompt; no application close-recovery consumer exists. W7 storage-alert is this same native state, not another Web route.'],
     ['preserved-package-preview','Requires the existing package fixture preparation in package-view.'],
   ].map(([id,blocked])=>({batch:'w6c',id,blocked})),
