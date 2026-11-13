@@ -714,7 +714,7 @@ extension EditorLaunchTests {
             "actual_canvas_size": actualSize, "selected_drawing": title, "document_count": 1,
             "future_new_drawing_defaults": "UI-created canonical recipe"]
         phoneDrawingFixtures[storage] = proof
-        addTeardownBlock { await MainActor.run { _ = phoneDrawingFixtures.removeValue(forKey: storage) } }
+        addTeardownBlock { MainActor.assumeIsolated { _ = phoneDrawingFixtures.removeValue(forKey: storage) } }
         let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: proof, options: [.sortedKeys]), uniformTypeIdentifier: "public.json")
         attachment.name = "phone-canonical-drawing-fixture"; attachment.lifetime = .keepAlways; add(attachment)
     }

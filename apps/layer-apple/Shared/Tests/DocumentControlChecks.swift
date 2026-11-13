@@ -191,7 +191,7 @@ extension XCTestCase {
 
     @MainActor func checkNativeImagePaste(in app: XCUIApplication) throws {
         let clipboard = try NativePhotoPasteboard()
-        addTeardownBlock { await MainActor.run { clipboard.restore() } }
+        addTeardownBlock { MainActor.assumeIsolated { clipboard.restore() } }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Capy Paste " + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }

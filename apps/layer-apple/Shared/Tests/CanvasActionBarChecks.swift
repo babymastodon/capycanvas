@@ -173,7 +173,7 @@ extension XCTestCase {
             expectation(for: NSPredicate { _, _ in (window.frame.width > narrow + 200) == enter }, evaluatedWith: app)
             waitForExpectations(timeout: 15)
         }
-        addTeardownBlock { await MainActor.run { if window.frame.width > narrow + 200 { fullscreen(false) } } }
+        addTeardownBlock { MainActor.assumeIsolated { if window.frame.width > narrow + 200 { fullscreen(false) } } }
         #endif
 
         editorMenu(in: app, menu: "Select", id: "select_all", label: "Select all pixels")

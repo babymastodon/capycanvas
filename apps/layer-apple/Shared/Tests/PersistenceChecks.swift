@@ -9,7 +9,7 @@ extension XCTestCase {
         // Clean up the app even when an assertion interrupts the workflow.
         // Each test owns this application; unrelated app instances stay open.
         addTeardownBlock {
-            await MainActor.run {
+            MainActor.assumeIsolated {
                 if app.state != .notRunning { app.terminate() }
             }
         }
