@@ -176,22 +176,33 @@ function Test-ThumbnailSquircles([long]$Id){
     Invoke "layer-$Id-mask";Wait-Until {(Model).state.layer_tools.editing_layer.mask_selected} 'Mask target did not restore'
 }
 
-try {
-    Enter-CapyEnvironment
-    $env:CAPY_STORAGE_DIR=Join-Path $run 'profile'
-    $env:CAPY_TRACE_UI='1';$env:CAPY_SMOKE_TEST='1';$env:CAPY_TEST_DISPLAY='1';$env:CAPY_TEST_PRIMARY='1'
-    if($Paper -or $PaperLight){. (Join-Path $PSScriptRoot 'layer-paper.ps1');Seed-PaperLibrary}
-    $stderr=Join-Path $run 'stderr.log'
-    $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
-    $null=$review.Handle
-    [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/layers-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
-    Write-Output "Owned Layers review $($review.Id)"
+function Open-LayersReview([string]$Log){
+    $script:stderr=Join-Path $run $Log
+    $script:review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $script:stderr
+    $null=$script:review.Handle
+    [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/layers-review.json'),(@{process_id=$script:review.Id;run=$run}|ConvertTo-Json))
+    Write-Output "Owned Layers review $($script:review.Id)"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready} 'Review did not start' 45
+    Wait-Until {$native.window=Owned-DrawingWindow $script:review;$null -ne $native.window -and (Model).brush_ready} 'Review did not start' 45
     [CapyLayersCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
-    $root=$native.window.Root;$drawingWindow=$native.window.Handle
+    $script:root=$native.window.Root;$script:drawingWindow=$native.window.Handle
     Use-PaintWorkspace
     if(!@((Model).layout.groups|Where-Object {$_.active -eq 'layers'}).Count){Invoke 'Layers' -Name}
+}
+
+try {
+    Enter-CapyEnvironment
+    $env:CAPY_TRACE_UI='1';$env:CAPY_SMOKE_TEST='1';$env:CAPY_TEST_DISPLAY='1';$env:CAPY_TEST_PRIMARY='1'
+    if(!($Relationships -or $Paper -or $PaperLight)){
+        . (Join-Path $PSScriptRoot 'layer-relationships.ps1')
+        $env:CAPY_STORAGE_DIR=Join-Path $run 'large-text-profile'
+        Test-LayerUnit {Open-LayersReview 'large-text.stderr.log';foreach($i in 1..64){$null=Relationship-New}}
+        & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Close -DiscardUnsaved
+        if((Get-Item -LiteralPath $stderr).Length){throw 'Native stderr requires inspection'}
+    }
+    $env:CAPY_STORAGE_DIR=Join-Path $run 'profile'
+    if($Paper -or $PaperLight){. (Join-Path $PSScriptRoot 'layer-paper.ps1');Seed-PaperLibrary}
+    Open-LayersReview 'stderr.log'
     if($Paper -or $PaperLight){
         $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
         $paperViewport=@{bounds=$null;stable=0}
@@ -333,8 +344,6 @@ try {
     $top=(Model).state.layers[0].id
     Wait-Until {$row=Find "layer-$top-name";$row -and !$row.Current.IsOffscreen} 'Scrolling back did not realize the top layer'
     Capture 'virtualized'
-    . (Join-Path $PSScriptRoot 'layer-relationships.ps1')
-    Test-LayerUnit
     $theme=(Model).state.theme
     Invoke 'settings-button'
     $preferences=Control 'Preferences' -Name -Type ([System.Windows.Automation.ControlType]::Window)

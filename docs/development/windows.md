@@ -502,6 +502,9 @@ Follow these rules when writing one:
   rows within the published `panel-body-scroll-N` bounds: a scroll provider's
   bounds can include its whole content extent. Convert DIP sizes with the owned
   window's DPI before resizing.
+- **Launch at the text size you test.** In the VM harness a text-size registry
+  change reaches a running app only seconds later, without a notification; set
+  it before a fresh launch and check the published `text_scale` first.
 - **Use real keyboard focus.** Arrange keyboard targets, then use `Focus-Keyboard`,
   which uses native Tab traversal; UI Automation's SetFocus does not establish
   keyboard modality.
