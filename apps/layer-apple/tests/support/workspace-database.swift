@@ -17,4 +17,14 @@ final class TestWorkspaceDatabase {
             throw HostFailure(message: String(cString: sqlite3_errmsg(handle)))
         }
     }
+    func strings(_ sql: String) throws -> [String] {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw HostFailure(message: String(cString: sqlite3_errmsg(handle)))
+        }
+        defer { sqlite3_finalize(statement) }
+        var rows: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW { rows.append(String(cString: sqlite3_column_text(statement, 0))) }
+        return rows
+    }
 }
