@@ -588,7 +588,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
             auto viewport=array(object(model,L"layout"),L"viewport");
             if(viewport.Size()==2){viewportWidth=float(viewport.GetNumberAt(0));viewportHeight=float(viewport.GetNumberAt(1));}
         }
-        bool layoutChanged=resolveLayout()||reflow||relocalize||data->changes.all||data->changes.Touches({L"chrome_hidden"})||data->changes.Touches({L"state",L"palette"})||data->changes.Touches({L"windows_gpu_generation"});
+        bool layoutChanged=resolveLayout()||relocalize||data->changes.all||data->changes.Touches({L"chrome_hidden"})||data->changes.Touches({L"state",L"palette"})||data->changes.Touches({L"windows_gpu_generation"});
         if(layoutChanged)applyLayout(data->model,full);
         else{
             for(auto& [id,group]:groups){

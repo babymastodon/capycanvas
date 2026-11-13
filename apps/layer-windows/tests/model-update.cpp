@@ -277,6 +277,10 @@ int main(){
         assert(CapyUi::num(CapyUi::object(batch.model,L"windows_glass"),L"chrome_revision")==2&&batch.model.HasKey(L"unregistered_background")&&batch.model.GetNamedValue(L"unregistered_background").ValueType()==winrt::Windows::Data::Json::JsonValueType::Null);
         {CanvasModelSource::Adoption adoption(batch,initial,{});assert(batch.changes.Touches({L"state",L"workspace",L"layout",L"height"})&&batch.changes.Touches({L"unregistered_background"}));}
         assert(batch.model.Stringify()==original&&!batch.HasPendingChanges());
+        batch.Patch(J::Parse(LR"({"windows_glass":{"chrome_revision":1}})"));
+        assert(!batch.HasPendingChanges());
+        batch.Patch(J::Parse(LR"({"windows_glass":{"chrome_revision":3}})"));
+        assert(batch.HasPendingChanges()&&CapyUi::num(CapyUi::object(batch.model,L"windows_glass"),L"chrome_revision")==3);
     }
     {
         auto snapshot=[](wchar_t const* panels){return J::Parse(std::wstring(LR"({"state":{"camera":{"zoom":1},"workspace":{"id":"paint","layout":{"phone":null,"header":{"items":[{"label":"Ink \"wet\" {1}, [2]"}]},"canvas_info":true,"canvas_bar":{"edge":"top"},"bands":[],"panels":)")+panels+LR"(,"floating":[],"collapsed":[],"column_stacks":[[1,2]],"fit_tab_groups":[],"fit_height_groups":[],"next_tile_id":4,"next_id":9}}},"layout":{"width":200},"windows_glass":{"chrome_revision":1}})");};

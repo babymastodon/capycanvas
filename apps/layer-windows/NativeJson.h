@@ -44,28 +44,7 @@ inline std::string CameraTracePayload(winrt::Windows::Data::Json::JsonObject con
     }
     return result+"}";
 }
-inline bool JsonEqual(winrt::Windows::Data::Json::IJsonValue const& left,winrt::Windows::Data::Json::IJsonValue const& right){
-    using Type=winrt::Windows::Data::Json::JsonValueType;
-    if(!left||!right)return !left&&!right;
-    if(left.ValueType()!=right.ValueType())return false;
-    switch(left.ValueType()){
-    case Type::Object:{
-        auto a=left.GetObject(),b=right.GetObject();if(a.Size()!=b.Size())return false;
-        for(auto const& entry:a)if(!b.HasKey(entry.Key())||!JsonEqual(entry.Value(),b.Lookup(entry.Key())))return false;
-        return true;
-    }
-    case Type::Array:{
-        auto a=left.GetArray(),b=right.GetArray();if(a.Size()!=b.Size())return false;
-        for(uint32_t i=0;i<a.Size();++i)if(!JsonEqual(a.GetAt(i),b.GetAt(i)))return false;
-        return true;
-    }
-    case Type::String:return left.GetString()==right.GetString();
-    case Type::Number:return left.GetNumber()==right.GetNumber();
-    case Type::Boolean:return left.GetBoolean()==right.GetBoolean();
-    case Type::Null:return true;
-    default:return false;
-    }
-}
+using ::JsonEqual;
 inline void CanonicalJson(std::string_view text,size_t& at,std::string& out){
     auto space=[&]{while(at<text.size()&&std::string_view(" \t\r\n").find(text[at])!=std::string_view::npos)++at;};
     auto token=[&]{
