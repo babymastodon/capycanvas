@@ -31,9 +31,9 @@ fn diagnostics_restored_before_gpu_attachment_collects_actual_drawing_samples() 
             Some(native_renderer());
         host.host.session.sync_renderer_telemetry();
         });
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         // Querying the visible panel must eventually deliver real GPU samples,
         // including the final stroke after drawing has gone idle.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -59,7 +59,7 @@ fn diagnostics_restored_before_gpu_attachment_collects_actual_drawing_samples() 
             metric(&stats, "GPU · ms")["description"]
                 .as_str()
                 .unwrap()
-                .contains("Excludes presentation")
+                .starts_with(&*layer_ui::Localizer::shared(layer_ui::UiLanguage::English).text(layer_ui::MessageId::DIAGNOSTICS_GPU_TIP))
         );
         app.invoke("zoom_in");
         app.draw_frame();

@@ -1075,7 +1075,8 @@ fn new_canvas_dimensions_and_worker_png_export_preserve_captured_pixels() {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
+        app.launched();
         let initial = app.document().composition().size;
         let unordered = ProjectJob::new(&app, true);
         assert_eq!(unsafe { capy_project_new(unordered.0) }, -1);

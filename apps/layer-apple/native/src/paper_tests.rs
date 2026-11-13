@@ -241,13 +241,13 @@ fn apple_new_drawing_resolves_its_uncached_library_paper_on_the_project_worker()
         let configuration=CString::new(json!({"saved":"","preferred_languages":["en"],"paper_directory":directory}).to_string()).unwrap();
         let app=App::from_handle(unsafe {launch_json(1,configuration.as_ptr(),std::ptr::null_mut(),std::ptr::null_mut())});assert!(!(app.0==0));
         app.borrow().host.session.renderer_mut().0=Some(native_renderer());
-        assert_eq!(unsafe {capy_apple_resize(app.0,1200,900,1.)},0);app.draw_frame();
+        assert_eq!(unsafe {capy_apple_resize(app.0,1200,900,1.)},0);app.draw_until_idle();app.launched();
         let list=PaperJob::new(&app,0,&directory);list.work(None);list.apply(&app);
         assert!(matches!(app.borrow().host.session.paper_material(&id),layer_ui::paper_library::PaperMaterial::Stored {..}),"the order begins uncached");
         let before=document(&app);let mark=checkpoint(&app);
         app.order_new_drawing([96,64],&[json!({"op":"paper"}),json!({"op":"pick_paper","id":id}),json!({"op":"use_paper"})]);
         let job=ProjectJob::new(&app,true);let pointer=job.0;
-        assert_eq!(std::thread::spawn(move ||unsafe {capy_project_new(pointer)}).join().unwrap(),0);
+        assert_eq!(std::thread::spawn(move ||unsafe {capy_project_new(pointer)}).join().unwrap(),0,"{:?}",job.error());
         assert_project_document(&document(&app),&before);assert_eq!(checkpoint(&app),mark);
         assert_eq!(unsafe {capy_apple_project_adopt(app.0,job.0,c"Untitled".as_ptr(),c"".as_ptr())},0);
         let texture=document(&app).paper(None).texture;
