@@ -169,12 +169,12 @@ function Check-Textures{
         Park;$emptyRevision=Revision
         foreach($tool in @('fill','lasso_fill','enclose_fill','gradient')){
             Command $tool;Wait-Until {((Model).state.commands|Where-Object id -eq $tool).selected} "Texture tool did not activate: $tool"
-            Settled;Park;$empty=Texture-Samples
+            Park;$empty=Wait-StablePixels -CapturePixels {Texture-Samples} -Idle
             $flat=$null
             foreach($percent in @(0,100,200)){
                 Texture-Strength $percent;Texture-Path $tool
                 Wait-Until {(Revision) -ne $emptyRevision} "Texture $tool did not paint at $percent%" 30
-                Settled;Park;$filled=Texture-Samples
+                Park;$filled=Wait-StablePixels -CapturePixels {Texture-Samples} -Idle
                 if($filled -eq $empty){throw "Texture $tool left sampled pixels empty at $percent%"}
                 if($percent -eq 0){$flat=$filled}elseif($paper -eq 'none' -and $filled -ne $flat){throw "Texture None changed $tool pixels at $percent%"}
                 if($paper -ne 'none' -and $percent -eq 200 -and $filled -eq $flat){throw "$paper did not texture $tool at 200%"}

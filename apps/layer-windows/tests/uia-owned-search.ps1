@@ -3126,3 +3126,40 @@ namespace CapyCanvasSeedTest {
     if(!$seedState.committed-or$seedState.sleeps){throw 'Canvas touch captured its seed before commit or used a settling sleep'}
 }
 Write-Output 'Canvas touch acknowledges the committed seed before mouse navigation despite early modified state and repeated equal pending signatures.'
+
+& {
+ $tokens=$null;$errors=$null
+ $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-enclose-fill.ps1'),[ref]$tokens,[ref]$errors)
+ if($errors.Count){throw($errors|Out-String)}
+ $textures=$source.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Check-Textures'},$true)
+ $endpoints=@(foreach($name in @('empty','filled')){
+  $assignment=$textures.Find({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$'+$name)},$true)
+  if(!$assignment){throw "Missing actual texture endpoint: $name"}
+  $statements=@($assignment.Parent.Statements);$at=[Array]::IndexOf($statements,$assignment)
+  if($at -lt 1 -or $statements[$at-1].Extent.Text -cne 'Park'){throw "Texture endpoint lost cursor parking: $name"}
+  $statements[$at-1].Extent.Text+';'+$assignment.Extent.Text
+ })
+ $comparison=$textures.Find({param($n)$n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$filled -eq $empty'},$true)
+ if(!$comparison){throw 'Missing exact texture endpoint comparison'}
+ $helper=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/CapyUia.ps1'),[ref]$tokens,[ref]$errors)
+ $definition=$helper.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Wait-StablePixels'},$true)
+ . ([scriptblock]::Create($definition.Extent.Text))
+ function Texture-Samples{$script:textureDisplayed}
+ function Park{$script:textureParks++}
+ function Start-Sleep{param($Milliseconds)}
+ function Wait-PresentedFrame([switch]$Idle){
+  if(!$Idle){throw 'Texture endpoint did not require an idle presentation'}
+  $script:textureAcknowledgements++;$script:textureDisplayed=$script:textureAuthored
+ }
+ foreach($schedule in @('baseline-stale','filled-stale')){
+  $script:textureParks=0;$script:textureAcknowledgements=0
+  $script:textureAuthored='empty';$script:textureDisplayed=if($schedule -eq 'baseline-stale'){'filled'}else{'empty'}
+  $tool='fill';$percent=0
+  . ([scriptblock]::Create($endpoints[0]))
+  $script:textureAuthored='filled';$script:textureDisplayed=if($schedule -eq 'filled-stale'){'empty'}else{'filled'}
+  . ([scriptblock]::Create($endpoints[1]))
+  . ([scriptblock]::Create($comparison.Extent.Text))
+  if($empty -cne 'empty' -or $filled -cne 'filled' -or $script:textureParks -ne 2 -or $script:textureAcknowledgements -ne 2){throw "Texture endpoint schedule failed: $schedule"}
+ }
+ 'Actual texture endpoints: baseline-stale and filled-stale acknowledged idle presentation, kept cursor parking and exact hashes.'
+}
