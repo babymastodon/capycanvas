@@ -623,7 +623,11 @@ try{
             if(($hardware -join ',') -ne 'drawers,drawers:light'){throw 'Smoke must require exactly its two approved hardware rows'}
         }
         if(!$case.names){
-            if(@($plan.requirements.PSObject.Properties|Where-Object {$_.Value.hardware_gpu}).Count -ne 22){throw 'Hardware registry membership differs from the approved inventory'}
+            if(@($plan.requirements.PSObject.Properties|Where-Object {$_.Value.hardware_gpu}).Count -ne 24){throw 'Hardware registry membership differs from the approved inventory'}
+            foreach($family in 'lifecycle','multiwindow'){
+                $marked=@($plan.requirements.PSObject.Properties|Where-Object {($_.Name -split ':')[0] -eq $family -and $_.Value.hardware_gpu}|ForEach-Object {$_.Name})
+                if(($marked -join ',') -cne "${family}:RecoverGpu"){throw "Only the bounded device-loss hook row requires hardware in ${family}"}
+            }
             if(!$plan.requirements.drawers.hardware_gpu -or !$plan.requirements.'drawers:light'.hardware_gpu -or !$plan.requirements.'toolbars:light'.hardware_gpu -or $plan.requirements.toolbars.hardware_gpu -or $plan.requirements.'toolbars:dark'.hardware_gpu -or !$plan.requirements.'tool-variations:sketch'.hardware_gpu -or !$plan.requirements.'tool-variations:sketch-light'.hardware_gpu -or $plan.requirements.'localization:journey-dark-large'.hardware_gpu -or $plan.requirements.navigator.hardware_gpu){throw 'Hardware requirements did not preserve exact row membership and CPU defaults'}
         }
     }

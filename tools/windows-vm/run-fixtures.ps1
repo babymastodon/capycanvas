@@ -211,7 +211,7 @@ foreach($scenario in 'photo','photo-open','photo-collapsed','paint'){
         $runs["edge-reach:sweep-$scenario-$theme"]=@{arguments=@('-SweepOnly','-SweepScenario',$scenario,'-Theme',$theme);hardware_gpu=$false}
     }
 }
-foreach($hardwareSelector in @('drawers','drawers:light','toolbars:light','idle-brush','idle-brush:light','touch-gestures','touch-gestures:Simple','touch-gestures:SimpleLight','touch-gestures:ThreeFinger','touch-gestures:layers','localization:ColorOnly','tool-variations:sketch','tool-variations:sketch-light','color-picker:light','tool-bubbles:EraserOnly','tool-bubbles:EraserLightOnly','tool-bubbles:blenders-dark','tool-bubbles:blenders-light','tool-bubbles:BlendersOnly','tool-bubbles:sliders-dark','tool-bubbles:sliders-light','tool-bubbles:SlidersOnly')){
+foreach($hardwareSelector in @('drawers','drawers:light','toolbars:light','idle-brush','idle-brush:light','touch-gestures','touch-gestures:Simple','touch-gestures:SimpleLight','touch-gestures:ThreeFinger','touch-gestures:layers','localization:ColorOnly','tool-variations:sketch','tool-variations:sketch-light','color-picker:light','tool-bubbles:EraserOnly','tool-bubbles:EraserLightOnly','tool-bubbles:blenders-dark','tool-bubbles:blenders-light','tool-bubbles:BlendersOnly','tool-bubbles:sliders-dark','tool-bubbles:sliders-light','tool-bubbles:SlidersOnly','lifecycle:RecoverGpu','multiwindow:RecoverGpu')){
     if(!$runs.Contains($hardwareSelector)){throw "Unknown hardware fixture: $hardwareSelector"}
     $runs[$hardwareSelector].hardware_gpu=$true
 }
