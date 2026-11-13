@@ -1233,11 +1233,12 @@ pub unsafe extern "C" fn capy_acquire(host: u64) -> i32 {
             let gpu = host.native.session.engine().backend().0.as_ref().unwrap();
             let wanted = host.display.surface_config(host.surface.get_default_config(gpu.adapter(), config.width, config.height)
                 .ok_or("D3D12 surface unsupported")?, &host.surface.get_capabilities(gpu.adapter()));
-            if wanted.format != config.format {
+            if wanted.format != config.format || wanted.color_space != config.color_space {
                 config.format = wanted.format;
                 config.color_space = wanted.color_space;
                 config.view_formats = wanted.view_formats;
                 configure_surface(&host.surface, gpu.device(), config);
+                host.native.invalidate_snapshot();
                 set_composition_viewport(&host.surface, host.native.session.state().camera.viewport, host.scale)?;
             }
         }
