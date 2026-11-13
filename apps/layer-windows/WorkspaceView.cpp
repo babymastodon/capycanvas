@@ -168,7 +168,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
     std::shared_ptr<uint64_t> popupGeneration=std::make_shared<uint64_t>(0);
     Bindings popupBindings;
     std::shared_ptr<ZoomReadout> zoom=std::make_shared<ZoomReadout>();
-    Grid cameraSlot;
+    Grid cameraSlot;std::shared_ptr<ChromeVisibility> cameraFade=std::make_shared<ChromeVisibility>();
     Border cameraSurface;std::function<void()> glassChanged;
     Impl(Dispatch send,J catalog,NativeLocalization localization,PreviewTransport previews,std::function<void(bool)> popupChanged,Dispatch document,Dispatch input,EdgeTransport edges){
         data->input=std::move(input);data->edges=std::move(edges);gestures=std::make_shared<WorkspaceGestures>(data,root);
@@ -699,7 +699,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         collapsed->Apply();expansion->Apply(configurationHeight());present();
         applyOverlays(true,full);
         auto status=object(layout,L"status");place(cameraSlot,status);
-        cameraSlot.Visibility(num(status,L"height")>0?Visibility::Visible:Visibility::Collapsed);
+        cameraFade->apply(cameraSlot,num(status,L"height")>0,flag(model,L"chrome_hidden"),[weak=weak_from_this()]{if(auto self=weak.lock())self->queueMeasurements();});
         zoom->text.Foreground(data->brush(L"text"));
         queueMeasurements();
         if(paintedTheme!=data->theme()){paintedTheme=data->theme();std::set<void*> seen;refreshAssetIconTheme(root,paintedTheme,seen);}
