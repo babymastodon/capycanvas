@@ -336,7 +336,7 @@ struct WorkspaceData : CanvasModelSource,std::enable_shared_from_this<WorkspaceD
     mutable std::map<std::pair<std::wstring,uint8_t>,SolidColorBrush> tintBrushes;
     mutable std::map<std::wstring,SolidColorBrush> glassBrushes;
     mutable std::map<std::pair<std::wstring,std::wstring>,SolidColorBrush> lineBrushes;
-    hstring paletteKey;
+    hstring paletteKey;J paletteSource{nullptr};
     ResourceDictionary controlResources=paletteResources();
     static Windows::UI::Color unitColor(A const& value){
         auto channel=[&](uint32_t i){return uint8_t(std::lround(std::clamp(value.GetNumberAt(i),0.,1.)*255));};
@@ -357,13 +357,16 @@ struct WorkspaceData : CanvasModelSource,std::enable_shared_from_this<WorkspaceD
         return value.Size()==4?unitColor(value):Windows::UI::Color{};
     }
     void refreshPalette(){
-        auto palette=object(state,L"palette");auto signature=palette.Stringify();
+        auto palette=object(state,L"palette");
+        if(palette!=paletteSource){
+        paletteSource=palette;auto signature=palette.Stringify();
         if(signature!=paletteKey){
         for(auto const& [role,brush]:paletteBrushes)brush.Color(paletteColor(role.c_str()));
         for(auto const& [role,brush]:glassBrushes)brush.Color(glassColor(role.c_str()));
         for(auto const& [key,brush]:lineBrushes)brush.Color(lineColor(key.first,key.second));
         for(auto const& [key,brush]:tintBrushes){auto value=color(str(palette,key.first.c_str(),L"#414141"));value.A=key.second;brush.Color(value);}
         paletteKey=signature;
+        }
         }
         refreshControlPalette(*this);
     }
