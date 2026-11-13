@@ -138,7 +138,7 @@ struct View:std::enable_shared_from_this<View>{
     std::shared_ptr<WorkspaceData> data;
     Grid root;Canvas stage,wheel,readoutBody;
     bool fitHeight=false;
-    Image image;TextBlock drawError;
+    Image image,markers;TextBlock drawError;
     std::array<Button,3> swatches;
     std::array<std::shared_ptr<PointerClick>,2> slotClicks;
     struct SlotHold {PointerGesture recognizer;std::optional<uint32_t> pointer;};
@@ -265,7 +265,8 @@ struct View:std::enable_shared_from_this<View>{
         AutomationProperties::SetAutomationId(stage,L"color-panel");copyName(data,stage,data->copyCaption(L"color",L"picker"));
         wheel.Background(clear());copyName(data,image,data->copyCaption(L"color",L"wheel"));
         AutomationProperties::SetAutomationId(image,L"color-wheel");
-        image.IsHitTestVisible(false);image.Stretch(Stretch::Fill);wheel.Children().Append(image);stage.Children().Append(wheel);
+        image.IsHitTestVisible(false);image.Stretch(Stretch::Fill);wheel.Children().Append(image);
+        markers.IsHitTestVisible(false);markers.Stretch(Stretch::Fill);AutomationProperties::SetAccessibilityView(markers,Automation::Peers::AccessibilityView::Raw);wheel.Children().Append(markers);stage.Children().Append(wheel);
         drawError.Text(data->caption(L"color",L"wheel_unavailable"));drawError.TextWrapping(TextWrapping::Wrap);drawError.FontSize(12);
         data->copyView([target=make_weak(drawError),resolve=data->copyCaption(L"color",L"wheel_unavailable").current]{if(auto text=target.get()){text.Text(resolve());return true;}return false;});
         drawError.Foreground(data->brush(L"text"));drawError.IsHitTestVisible(false);drawError.Visibility(Visibility::Collapsed);wheel.Children().Append(drawError);
@@ -314,7 +315,7 @@ struct View:std::enable_shared_from_this<View>{
             self->refresh();
         }});
         root.Unloaded([weak](auto&&,auto&&){if(auto self=weak.lock()){self->touches.cancel(*self->data,self->stage);self->scaleChanged.revoke();}});
-        contentsLost=CompositionTarget::SurfaceContentsLost(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock()){self->key=L"";self->drawing.surface=nullptr;self->refresh();}});
+        contentsLost=CompositionTarget::SurfaceContentsLost(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock()){self->key=L"";self->drawing.surface=nullptr;self->drawing.markerSurface=nullptr;self->refresh();}});
         listener=data->colorView([weak]{if(auto self=weak.lock())self->refresh();});
         drawing.start([weak]{if(auto self=weak.lock()){self->key=L"";self->data->queueColors();}});
         edit=control(data->caption(L"color",L"edit"),[weak]{if(auto self=weak.lock();self&&!self->transparentSlot())self->editColor();});
@@ -575,7 +576,7 @@ struct View:std::enable_shared_from_this<View>{
             // Browser canvas paint snaps the two layout edges to logical pixels.
             // Keep shared hit geometry while matching its final image placement.
             double inset=box.GetNumberAt(0),paintInset=std::round(inset),paintSide=std::round(inset+side)-paintInset;
-            image.Width(paintSide);image.Height(paintSide);Canvas::SetLeft(image,paintInset-inset);Canvas::SetTop(image,paintInset-inset);
+            for(auto const& layer:{image,markers}){layer.Width(paintSide);layer.Height(paintSide);Canvas::SetLeft(layer,paintInset-inset);Canvas::SetTop(layer,paintInset-inset);}
             drawError.Width(side);Canvas::SetTop(drawError,side*.4);
             placeBox(readout,array(layout,L"readout"));placeBox(swap,array(layout,L"swap"));placeBox(edit,array(layout,L"edit"));
             for(int i=0;i<2;i++)placeBox(shapes[i],array(layout,L"shapes").GetArrayAt(i));
@@ -616,7 +617,7 @@ struct View:std::enable_shared_from_this<View>{
         auto nextKey=view.Stringify()+to_hstring(side)+L"/"+to_hstring(scale);
         if(nextKey!=key){
             try{
-                drawing.present(image,view,colors,side,scale);
+                drawing.present(image,markers,view,colors,side,scale);
                 data->colorFieldPixels=drawing.fieldPixels;
                 key=nextKey;drawError.Visibility(Visibility::Collapsed);AutomationProperties::SetItemStatus(image,data->caption(L"header",L"ready"));
             }catch(hresult_error const&){drawError.Visibility(Visibility::Visible);AutomationProperties::SetItemStatus(image,data->caption(L"color",L"wheel_failed"));}

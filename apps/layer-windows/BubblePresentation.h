@@ -66,7 +66,7 @@ struct Part {
     std::unique_ptr<CapyWheel::WheelImage> wheel;
     std::unique_ptr<IntensityArt> intensity;
     std::unique_ptr<WorkspaceShadow> colorShadow;
-    Image wheelImage;
+    Image wheelImage,wheelMarkers{nullptr};
     std::array<Shapes::Ellipse,2> halves;
     ContentControl historyHost{nullptr};
     std::array<Button,2> historyButtons{nullptr,nullptr};

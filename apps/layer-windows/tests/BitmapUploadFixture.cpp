@@ -434,19 +434,19 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         auto data=workspace();auto opened=colorUi(data->localization.get(),O({{L"type",S(L"editor_open")},{L"slot",S(L"foreground")}})).GetObject();
         auto model=object(object(opened,L"view"),L"panel");require(model.Size()>0,L"Wheel fixture has no shared color panel");
         CapyWheel::WheelImage wheel;wheel.start([]{});wheel.worker->running=wheel.ringWorker->running=true;
-        Image shown;shown.Width(48);shown.Height(48);surface.Children().Append(shown);co_await rendered(shown);
-        wheel.present(shown,model,data->state,48,1);
+        Image shown,markers;for(auto const& layer:{shown,markers}){layer.Width(48);layer.Height(48);surface.Children().Append(layer);}co_await rendered(shown);
+        wheel.present(shown,markers,model,data->state,48,1);
         auto ring=std::make_shared<CapyWheel::FieldResult>(),field=std::make_shared<CapyWheel::FieldResult>();
         co_await raster(*wheel.ringWorker->pending,ring);co_await raster(*wheel.worker->pending,field);
-        wheel.ringReady=*ring;wheel.ready=*field;wheel.present(shown,model,data->state,48,1);
+        wheel.ringReady=*ring;wheel.ready=*field;wheel.present(shown,markers,model,data->state,48,1);
         auto source=shown.Source();auto oldRing=wheel.ring;auto oldField=wheel.field;
         auto changed=colorUi(data->localization.get(),O({{L"type",S(L"editor")},{L"editor",object(opened,L"editor")},{L"action",O({{L"op",S(L"wheel")},{L"action",O({{L"op",S(L"shape")},{L"shape",S(str(model,L"shape")==L"triangle"?L"circle":L"triangle")}})}})}})).GetObject();
-        model=object(object(changed,L"view"),L"panel");wheel.present(shown,model,data->state,48,1);
+        model=object(object(changed,L"view"),L"panel");wheel.present(shown,markers,model,data->state,48,1);
         bool retained=shown.Source()==source&&wheel.ring==oldRing&&wheel.field==oldField;
         co_await raster(*wheel.ringWorker->pending,ring);co_await raster(*wheel.worker->pending,field);
-        if(ringFirst)wheel.ringReady=*ring;else wheel.ready=*field;wheel.present(shown,model,data->state,56,1);
+        if(ringFirst)wheel.ringReady=*ring;else wheel.ready=*field;wheel.present(shown,markers,model,data->state,56,1);
         require(retained&&shown.Source()==source&&wheel.ring==oldRing&&wheel.field==oldField,L"Wheel layout/partial result replaced the presented surface before both rasters were ready");
-        if(ringFirst)wheel.ready=*field;else wheel.ringReady=*ring;wheel.present(shown,model,data->state,56,1);
+        if(ringFirst)wheel.ready=*field;else wheel.ringReady=*ring;wheel.present(shown,markers,model,data->state,56,1);
         require(wheel.ring!=oldRing&&wheel.field!=oldField&&shown.Source()!=source&&wheel.pixels==56
             &&wheel.worker->pending&&wheel.worker->pending->pixels==56&&wheel.ringWorker->pending&&wheel.ringWorker->pending->pixels==56,
             L"Wheel did not adopt its ready layout pair while the latest size was pending");++checks;

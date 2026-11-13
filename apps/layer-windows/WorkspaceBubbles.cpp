@@ -119,7 +119,7 @@ void WorkspaceBubbles::Impl::init(){
     thumbnailTimer=workspace.DispatcherQueue().CreateTimer();thumbnailTimer.Interval(std::chrono::milliseconds(120));thumbnailTimer.Tick([weak](auto&&,auto&&){if(auto self=weak.lock())self->thumbnails();});
     colorListener=data->colorView([weak]{if(auto self=weak.lock())for(auto const& [id,record]:self->records)self->refresh(record);});
     contentsLost=CompositionTarget::SurfaceContentsLost(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock())for(auto const& [id,record]:self->records){
-        for(auto const& [key,p]:record->parts){if(p->wheel){p->wheel->surface=nullptr;p->wheelKey=L"";}if(p->intensity)p->intensity->image->invalidate();}self->refresh(record);
+        for(auto const& [key,p]:record->parts){if(p->wheel){p->wheel->surface=nullptr;p->wheel->markerSurface=nullptr;p->wheelKey=L"";}if(p->intensity)p->intensity->image->invalidate();}self->refresh(record);
     }});
     workspace.Loaded([weak](auto&&,auto&&){if(auto self=weak.lock())self->thumbnails();});
     workspace.Unloaded([weak](auto&&,auto&&){if(auto self=weak.lock()){self->thumbnailTimer.Stop();ForgetLayerThumbnails(self->data->thumbnails,self.get());}});
@@ -343,9 +343,10 @@ void WorkspaceBubbles::Impl::content(std::shared_ptr<Record> const& r,std::share
     if(p->key==L"face"){
         auto type=str(v,L"kind");
         if(type==L"color"){
-            if(!p->wheel){p->wheel=std::make_unique<CapyWheel::WheelImage>();p->wheel->start([weak,owner,part]{if(auto self=weak.lock())if(auto r=owner.lock())if(auto p=part.lock()){p->wheelKey=L"";self->refresh(r);}});}
+            if(!p->wheel){p->wheelMarkers=Image();p->wheel=std::make_unique<CapyWheel::WheelImage>();p->wheel->start([weak,owner,part]{if(auto self=weak.lock())if(auto r=owner.lock())if(auto p=part.lock()){p->wheelKey=L"";self->refresh(r);}});}
             auto color=object(r->packet,L"color");if(color.Size()){auto bounds=rectangle(object(color,L"bounds"));center={-bounds.X,-bounds.Y};}
-            auto side=float(num(v,L"diameter")-14);p->wheelImage.IsHitTestVisible(false);place(p->wheelImage,center,{side,side});AutomationProperties::SetAutomationId(p->wheelImage,L"bubble-wheel-"+to_hstring(r->id));p->art.Children().Append(p->wheelImage);
+            auto side=float(num(v,L"diameter")-14);for(auto const& layer:{p->wheelImage,p->wheelMarkers}){layer.IsHitTestVisible(false);place(layer,center,{side,side});}
+            AutomationProperties::SetAutomationId(p->wheelImage,L"bubble-wheel-"+to_hstring(r->id));AutomationProperties::SetAccessibilityView(p->wheelMarkers,Automation::Peers::AccessibilityView::Raw);p->art.Children().Append(p->wheelImage);p->art.Children().Append(p->wheelMarkers);
             if(color.Size()){
                 if(!p->intensity){
                     p->intensity=std::make_unique<IntensityArt>();auto& art=*p->intensity;art.root.IsHitTestVisible(false);
@@ -431,7 +432,7 @@ void WorkspaceBubbles::Impl::refresh(std::shared_ptr<Record> const& r){
     bool overlayChanged=false;
     for(auto const& [key,p]:r->parts){overlayChanged=draw(r,p)||overlayChanged;if(p->retired)continue;
         if(p->wheel){auto preview=data->colorPreview;auto model=object(preview,L"view");if(!model.Size())model=object(data->model,L"color_panel");auto colors=object(preview,L"colors");if(!colors.Size())colors=displayColors(data->state);auto side=num(r->view,L"diameter")-14,scale=workspace.XamlRoot()?workspace.XamlRoot().RasterizationScale():1.;auto next=model.Stringify()+colors.Stringify()+to_hstring(side)+L":"+to_hstring(scale);
-            if(p->wheelKey!=next&&side>0){try{p->wheel->present(p->wheelImage,model,colors,side,scale);p->wheelKey=next;}catch(hresult_error const& error){OutputDebugStringW(error.message().c_str());}}
+            if(p->wheelKey!=next&&side>0){try{p->wheel->present(p->wheelImage,p->wheelMarkers,model,colors,side,scale);p->wheelKey=next;}catch(hresult_error const& error){OutputDebugStringW(error.message().c_str());}}
         }
         intensity(r,p);
         if(p->inspector){p->layers->Apply(true);p->inspector->properties->Apply(flag(p->data,L"properties"));p->inspector->refresh(flag(p->data,L"properties"),str(p->data,L"disclosure"),!flag(p->data,L"full"));}

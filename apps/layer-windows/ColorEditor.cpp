@@ -74,7 +74,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
     std::array<Row,3> formRows;
     std::shared_ptr<Field> hex,intensity;
     Canvas wheelBox,arc;
-    Image image;
+    Image image,markers;
     Shapes::Path arcTrack;
     std::shared_ptr<ColorIntensity> intensityArc;
     WheelImage drawing;
@@ -220,6 +220,8 @@ struct Editor:std::enable_shared_from_this<Editor>{
         wheelBox.Background(clear());image.Stretch(Stretch::Fill);image.IsHitTestVisible(false);
         AutomationProperties::SetAutomationId(image,L"edit-color-wheel");AutomationProperties::SetName(image,copy(L"wheel"));
         wheelBox.Children().Append(image);
+        markers.Stretch(Stretch::Fill);markers.IsHitTestVisible(false);AutomationProperties::SetAccessibilityView(markers,Automation::Peers::AccessibilityView::Raw);
+        wheelBox.Children().Append(markers);
         intensityArc=std::make_shared<ColorIntensity>();intensityArc->data=data;
         intensityArc->changed=[weak](double stops){if(auto self=weak.lock())self->setIntensity(stops);};
         intensityArc->init(L"edit-color-intensity-range");arc=intensityArc->root;arcTrack=intensityArc->track;arc.Visibility(Visibility::Collapsed);wheelBox.Children().Append(arc);
@@ -690,7 +692,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
             }
             auto bare=colorUi(data->localization.get(),O({{L"type",S(L"bare_layout")},{L"width",N(width)},{L"height",N(height)},{L"hdr",B(hdr)}})).GetObject();
             side=num(bare,L"wheel");stageSize=num(bare,L"stage");inset=num(bare,L"inset");double bottom=num(bare,L"bottom");
-            wheelBox.Width(side);wheelBox.Height(bottom-inset);image.Width(side);image.Height(side);
+            wheelBox.Width(side);wheelBox.Height(bottom-inset);for(auto const& layer:{image,markers}){layer.Width(side);layer.Height(side);}
             Canvas::SetLeft(arc,-inset);Canvas::SetTop(arc,-inset);arc.Width(stageSize);arc.Height(bottom);
             paintKey=L"";
         }
@@ -698,12 +700,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
         auto nextPaint=panel.Stringify()+L"/"+to_hstring(scale());
         if(nextPaint==paintKey)return;
         try{
-            try{drawing.draw(image,panel,object(editor,L"picker"),side,scale());}
-            catch(hresult_error const& exception){
-                auto code=exception.code();
-                if(code!=DXGI_ERROR_DEVICE_REMOVED&&code!=DXGI_ERROR_DEVICE_RESET&&code!=D2DERR_RECREATE_TARGET&&code!=E_SURFACE_CONTENTS_LOST)throw;
-                drawing.draw(image,panel,object(editor,L"picker"),side,scale(),true);
-            }
+            drawing.present(image,markers,panel,object(editor,L"picker"),side,scale());
             paintKey=nextPaint;AutomationProperties::SetItemStatus(image,data->caption(L"header",L"ready"));
         }catch(hresult_error const&){AutomationProperties::SetItemStatus(image,copy(L"wheel_failed"));}
     }
