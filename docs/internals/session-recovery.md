@@ -261,10 +261,14 @@ Before removing membership, publish a retirement intent. The intent leaves an
 indexed drawing usable, including after a cancelled or failed close. Once the
 authoritative manifest excludes its key, cleanup makes retirement terminal, even
 if the process stopped between membership removal and resource cleanup. Explicit
-discard can prepare this intent without decoding a damaged checkpoint.
+discard can prepare this intent without decoding a damaged checkpoint. The intent
+and terminal markers count by presence, whatever they contain, so a close
+interrupted while writing its marker still completes. Discarding a directory that
+is not a valid store leaves it untouched and still removes the drawing.
 Cleanup only removes unindexed stores with that intent, proven retired, or without
 a published head; an unexplained head is preserved. Only a typed file-not-found
-error establishes absence; access errors stop destructive cleanup. Lock files remain
+error establishes absence. Cleanup never reports an error: it skips a store it
+can't claim, read or retire and leaves it for the next sweep. Lock files remain
 to avoid replacing a lock inode under another process. After readers release retired resources, cleanup removes
 the empty resource and generation directories. A closed drawing keeps only its
 directory, permanent empty lock file and empty terminal marker. These filesystem
@@ -274,8 +278,7 @@ synchronization. GTK checks reachability across every window manifest and
 fails closed when any manifest is unreadable.
 
 Apple performs this sweep after a committed checkpoint, outside the startup
-path. Cleanup failure is a warning about retired files; the acknowledged drawing
-remains saved and later edits can checkpoint again.
+path. The acknowledged drawing remains saved whether or not the sweep finishes.
 
 ## Scheduling, restart and close
 
@@ -346,7 +349,9 @@ branched history, transferring to a worker, storing, restoring and transferring
 back. Storage tests interrupt publication before and after durability boundaries,
 kill subprocess writers, corrupt resources and heads, exercise lock contention,
 retain live readers during collection and check bounded generations over repeated
-edits. UI tests cover manual-save checkpoints, title state, camera, strict records,
+edits. `session_stores::recovery_tests::starting_three_times_shows_no_repeating_notice`
+starts three times on each kind of damaged recovery record in the GTK and
+window-folder layouts and requires every start after the first to be silent. UI tests cover manual-save checkpoints, title state, camera, strict records,
 membership staging/remapping, stale completion and interrupted restore batches.
 
 Captured-frame context tests retain finite filter phases while removing and

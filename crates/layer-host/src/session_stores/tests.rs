@@ -48,7 +48,7 @@ fn fixture_cleanup_survives_poisoned_locks() {
     })).is_err());
     drop(fixture);
 }
-fn capture() -> (SessionCapture, SessionStamp, RetainedTiles, Arc<layer_core::raster::TileBlob>) {
+pub(super) fn capture() -> (SessionCapture, SessionStamp, RetainedTiles, Arc<layer_core::raster::TileBlob>) {
     let mut document = layer_core::Document::new(PortableId::random(), 256, 256,
         layer_core::DocumentNames {paint: "Ink".into(), paper: "Paper".into()});
     use layer_core::raster::{RasterPlane, RasterTile, RasterRevision, RasterData, TileKey, TileBlob};
@@ -232,7 +232,7 @@ fn explicit_discard_prepares_a_corrupt_head_without_decoding_or_changing_another
     assert!(pollster::block_on(SessionStore::open(&path)).is_err());
     let reply=fixture.stores.prepare_retirement("corrupt").unwrap();fixture.run();
     assert!(matches!(reply.try_take(),Some(Ok(StoreResult::RetirementPrepared))));
-    pollster::block_on(collect_unreferenced_stores(&fixture.root,&["corrupt".into()].into(),&cancel)).unwrap();
+    pollster::block_on(collect_unreferenced_stores(&fixture.root,&["corrupt".into()].into(),&cancel));
     assert_eq!(heads(&path),[Some(b"invalid head".to_vec()),Some(b"invalid head".to_vec())]);
     assert_eq!(std::fs::read_dir(path.join("generations")).unwrap().count(),1);
     let manifest=layer_ui::SessionManifest::default().stage(vec![layer_ui::session_recovery::SessionDrawing {id:1,key:"corrupt".into()}],1).unwrap();
@@ -257,9 +257,9 @@ fn retirement_preserves_missing_unrecognized_and_locked_paths() {
     let unknown=fixture.root.join("unrecognized");std::fs::create_dir_all(&unknown).unwrap();
     std::fs::write(unknown.join("keep"),b"unrecognized bytes").unwrap();
     let prepared=fixture.stores.prepare_retirement("unrecognized").unwrap();fixture.run();
-    assert!(matches!(prepared.try_take(),Some(Err(error)) if error=="Invalid drawing session directory"));
+    assert!(matches!(prepared.try_take(),Some(Ok(StoreResult::RetirementPrepared))));
     let retired=fixture.stores.retire_copy("unrecognized").unwrap();fixture.run();
-    assert!(matches!(retired.try_take(),Some(Err(error)) if error=="Invalid drawing session directory"));
+    assert!(matches!(retired.try_take(),Some(Ok(StoreResult::Retired))));
     assert_eq!(std::fs::read_dir(&unknown).unwrap().count(),1);
     assert_eq!(std::fs::read(unknown.join("keep")).unwrap(),b"unrecognized bytes");
     let locked=fixture.root.join("locked");let owner=pollster::block_on(SessionStore::open(&locked)).unwrap();
@@ -291,8 +291,9 @@ fn retirement_never_follows_root_or_nested_storage_symlinks() {
             let target=if ["resources","generations","packs"].contains(&name) {outside.root.clone()}else {outside.root.join("keep")};
             symlink(target,link).unwrap();
         }
-        let prepared=fixture.stores.prepare_retirement(&key).unwrap();fixture.run();assert!(prepared.try_take().unwrap().is_err());
-        let retired=fixture.stores.retire_copy(&key).unwrap();fixture.run();assert!(retired.try_take().unwrap().is_err());
+        let prepared=fixture.stores.prepare_retirement(&key).unwrap();fixture.run();assert!(prepared.try_take().is_some());
+        let retired=fixture.stores.retire_copy(&key).unwrap();fixture.run();assert!(retired.try_take().is_some());
+        assert!(std::fs::symlink_metadata(if name=="root" {path.clone()}else {path.join(name)}).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read(outside.root.join("keep")).unwrap(),b"outside bytes");
         assert_eq!(std::fs::read_dir(&outside.root).unwrap().count(),1);
     }
@@ -312,7 +313,7 @@ fn repeated_retirement_preserves_the_empty_terminal_marker() {
     for _ in 0..8 {
         let prepared=fixture.stores.prepare_retirement("closed").unwrap();fixture.run();assert!(prepared.try_take().unwrap().is_ok());
         let retired=fixture.stores.retire_copy("closed").unwrap();fixture.run();assert!(retired.try_take().unwrap().is_ok());
-        pollster::block_on(collect_unreferenced_stores(&fixture.root,&Default::default(),&AtomicBool::new(false))).unwrap();
+        pollster::block_on(collect_unreferenced_stores(&fixture.root,&Default::default(),&AtomicBool::new(false)));
         let unchanged=std::fs::metadata(path.join(".retired")).unwrap();
         assert_eq!(marker.modified().unwrap(),unchanged.modified().unwrap());
         assert_eq!(directory.modified().unwrap(),std::fs::metadata(&path).unwrap().modified().unwrap());

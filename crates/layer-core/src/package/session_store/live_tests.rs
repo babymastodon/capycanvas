@@ -67,22 +67,22 @@ fn transport_startup_collection_preserves_writers_locations_and_unclaimed_heads(
     store.make_durable(&retained,&cancel).wait().unwrap();let packs=pack_lengths(&store);
     let location=tile.compressed.location().unwrap().unwrap();drop((tile,retained));
     assert!(!directory.0.join(".lock").exists());
-    assert!(!SessionStore::collect_unreferenced_transport(directory.0.clone(),io.clone(),lease.clone()).wait().unwrap());
+    assert!(!SessionStore::collect_unreferenced_transport(directory.0.clone(),io.clone(),lease.clone()).wait());
     assert_eq!(pack_lengths(&store),packs);assert!(!directory.0.join(".retired").exists());drop(store);
-    assert!(SessionStore::collect_unreferenced_transport(directory.0.clone(),io.clone(),lease.clone()).wait().unwrap());
+    assert!(SessionStore::collect_unreferenced_transport(directory.0.clone(),io.clone(),lease.clone()).wait());
     for path in packs.keys() {assert!(path.is_file());}
     assert_eq!(&*location.read().wait().unwrap(),&*encoded);drop(location);
-    assert!(SessionStore::collect_unreferenced_transport(directory.0.clone(),io.clone(),lease.clone()).wait().unwrap());
+    assert!(SessionStore::collect_unreferenced_transport(directory.0.clone(),io.clone(),lease.clone()).wait());
     for path in packs.keys() {assert!(!path.exists());}
     assert_eq!(fs::read(directory.0.join(".retired")).unwrap(),b"");
-    assert!(!SessionStore::collect_unreferenced_transport(directory.0.clone(),io,lease).wait().unwrap());
+    assert!(!SessionStore::collect_unreferenced_transport(directory.0.clone(),io,lease).wait());
     assert_eq!(fs::read_dir(&directory.0).unwrap().count(),1);
 
     let headed=Directory::new();let io=Arc::new(NativeTransport::new(headed.0.clone()));let lease=Arc::new(());
     let mut store=SessionStore::open_transport(headed.0.clone(),io.clone(),lease.clone(),crate::tile_io::ReadCache::new(crate::MemoryBudget::default())).wait().unwrap();
     store.checkpoint(&captured_editor(&document_editor(blob(83))),serde_json::json!({}).into(),&cancel).wait().unwrap();
     let head=read_head(&headed.0).unwrap();let packs=pack_lengths(&store);drop(store);
-    assert!(!SessionStore::collect_unreferenced_transport(headed.0.clone(),io,lease).wait().unwrap());
+    assert!(!SessionStore::collect_unreferenced_transport(headed.0.clone(),io,lease).wait());
     assert_eq!(read_head(&headed.0).unwrap(),head);assert!(!headed.0.join(".retired").exists());
     for (path,length) in packs {assert_eq!(fs::metadata(path).unwrap().len(),length);}
     assert!(!headed.0.join(".lock").exists());

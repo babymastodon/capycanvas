@@ -880,22 +880,18 @@ fn apple_unrelated_cleanup_failure_does_not_block_restoration_or_new_checkpoints
         std::fs::create_dir_all(orphan.join("generations")).unwrap();
         std::fs::write(orphan.join(".lock"), b"").unwrap();
         std::fs::write(orphan.join(".retiring"), b"invalid").unwrap();
-        let preserved = stored_files(&orphan);
         let (app, warning) = launch_report(platform, &path, None, false);
         assert_eq!(warning, None);
         assert_eq!(app.pixels(), pixels);
         for _ in 0..2 {
             app.invoke("add_layer"); app.draw_until_idle();
-            let task = checkpoint(&app, 0, true);
-            let warning = task.error();
-            assert!(warning.as_ref().is_some_and(|warning| warning.contains("Invalid drawing retirement marker")), "{warning:?}");
-            assert_stored_files_preserved(&path, &preserved);
+            assert_eq!(checkpoint(&app, 0, true).error(), None);
+            assert!(orphan.join(".retired").is_file());
         }
         let document = app.document().with_memory(Default::default());
         drop(app);
         let app = launch(platform, &path);
         assert_saved_document(&app.document(), &document);
-        assert_stored_files_preserved(&path, &preserved);
         drop(app);
         std::fs::remove_dir_all(path).unwrap();
     }

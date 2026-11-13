@@ -26,7 +26,7 @@ impl WebApp {
     pub fn import_legacy_sessions(&self)->js_sys::Promise {
         let stores=self.stores.clone();future_to_promise(async move {
             let warnings=legacy_import::import_all(&stores).await.map_err(js)?;
-            collect_unreferenced(&stores).await.map_err(js)?;serialize(&warnings)
+            collect_unreferenced(&stores).await;serialize(&warnings)
         })
     }
     pub fn session_windows(&self)->js_sys::Promise {
@@ -77,13 +77,13 @@ impl WebApp {
     }
 }
 
-async fn collect_unreferenced(stores:&layer_host::session_stores::SessionStores)->Result<(),String> {
+async fn collect_unreferenced(stores:&layer_host::session_stores::SessionStores) {
     let mut roots:std::collections::BTreeSet<_>=stores.bindings().into_iter().map(|(_,binding)|binding.key().to_owned()).collect();
-    for key in store_transport::directories("windows").await? {
-        let Some(io)=store_transport::transport(&format!("windows/{key}")).await? else {return Ok(());};
-        if let Some(manifest)=SessionManifest::read_index(&MetadataStore::new(io,1024*1024)).await? {roots.extend(manifest.drawings.into_iter().map(|drawing|drawing.key));}
+    let (Ok(windows),Ok(drawings))=(store_transport::directories("windows").await,store_transport::directories("drawings").await) else {return};
+    for key in windows {
+        let Ok(Some(io))=store_transport::transport(&format!("windows/{key}")).await else {return};
+        let Ok(manifest)=SessionManifest::read_index(&MetadataStore::new(io,1024*1024)).await else {return};
+        roots.extend(manifest.into_iter().flat_map(|manifest|manifest.drawings).map(|drawing|drawing.key));
     }
-    for key in store_transport::directories("drawings").await? {
-        if !roots.contains(&key) {store_transport::collect_unreferenced(&format!("drawings/{key}")).await?;}
-    }Ok(())
+    for key in drawings.into_iter().filter(|key|!roots.contains(key)) {store_transport::collect_unreferenced(&format!("drawings/{key}")).await;}
 }

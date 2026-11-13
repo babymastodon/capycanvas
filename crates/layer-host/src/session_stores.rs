@@ -584,3 +584,5 @@ impl PressureTrim {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test,not(target_arch="wasm32")))]
+mod recovery_tests;

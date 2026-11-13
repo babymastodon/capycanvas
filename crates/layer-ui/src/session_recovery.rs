@@ -934,7 +934,7 @@ pub(crate) mod tests {
         let mut source=session(Platform::Gtk);source.frame(0,0).unwrap();layer(&mut source,LayerAction::New{group:false,clipped:false});source.frame(1,1).unwrap();
         pollster::block_on(source.capture_session().unwrap().checkpoint(&mut store,&cancel)).unwrap();drop(store);
         let surviving=SessionManifest::read(&path).unwrap().unwrap();let reachable=surviving.drawings.iter().map(|drawing|drawing.key.clone()).collect();
-        pollster::block_on(collect_unreferenced_stores(&root,&reachable,&cancel)).unwrap();
+        pollster::block_on(collect_unreferenced_stores(&root,&reachable,&cancel));
         let mut reopened=pollster::block_on(SessionStore::open(&root.join(&surviving.drawings[0].key))).unwrap();let copy=SessionRestore::from_core(pollster::block_on(reopened.load(ProjectLimits::default(),&cancel)).unwrap().unwrap()).unwrap();
         assert_eq!(copy.document().artwork,source.engine.document().artwork);assert!(copy.editor.can_undo());drop(copy);drop(reopened);drop(source);
         std::fs::remove_dir_all(root).unwrap();

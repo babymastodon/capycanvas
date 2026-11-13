@@ -19,18 +19,15 @@ fn storage_gate(root:&std::path::Path)->Result<OwnerLock,String> {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
-fn collect_stores()->Result<(),String> {
-    let root=directory();let _gate=storage_gate(&root)?;
+fn collect_stores() {
+    let root=directory();let Ok(_gate)=storage_gate(&root) else {return};
+    let Ok(paths)=std::fs::read_dir(&root).and_then(|entries|entries.map(|entry|entry.map(|entry|entry.path())).collect::<Result<Vec<_>,_>>()) else {return};
     let mut reachable=std::collections::BTreeSet::new();
-    for entry in std::fs::read_dir(&root).map_err(|error|error.to_string())? {
-        let path=entry.map_err(|error|error.to_string())?.path();
-        if path.extension().is_some_and(|extension|extension=="json") {
-            let manifest=SessionManifest::read(&path)?.ok_or("Saved session disappeared during cleanup")?;
-            reachable.extend(manifest.drawings.into_iter().map(|drawing|drawing.key));
-        }
+    for path in paths.into_iter().filter(|path|path.extension().is_some_and(|extension|extension=="json")) {
+        let Ok(Some(manifest))=SessionManifest::read(&path) else {return};
+        reachable.extend(manifest.drawings.into_iter().map(|drawing|drawing.key));
     }
-    pollster::block_on(layer_core::package::session_store::collect_unreferenced_stores(&root,&reachable,&AtomicBool::new(false)))?;
-    Ok(())
+    pollster::block_on(layer_core::package::session_store::collect_unreferenced_stores(&root,&reachable,&AtomicBool::new(false)));
 }
 
 pub(crate) struct Recovery {
@@ -265,11 +262,7 @@ impl Restart {
             let desired=self.manifest(w,clean_exit);
             previous.reconcile(desired.drawings,desired.active,clean_exit)
         }).await?;
-        if !clean_exit&&self.collect_due.get() {
-            match gio::spawn_blocking(collect_stores).await.map_err(|error|format!("Session cleanup stopped: {error:?}")).and_then(|result|result) {
-                Ok(())=>self.collect_due.set(false),Err(error)=>w.changed(Err(error)),
-            }
-        }
+        if !clean_exit&&self.collect_due.replace(false) {let _=gio::spawn_blocking(collect_stores).await;}
         Ok(())
     }
     async fn periodic(&self,w:&Rc<Workspace>)->Result<(),String> {
@@ -475,10 +468,8 @@ async fn failed_drawings(w:&Rc<Workspace>)->Result<(),String> {
             w.restart.stores.prepare_retirement(&drawing.key)?.await?;
             if let Some(warning)=w.restart.update_checked(|manifest|manifest.remove(drawing.id),true).await? {w.changed(Err(warning));}
             w.restart.retained.borrow_mut().retain(|entry|entry.id!=drawing.id);
-            let result=async {
-                w.restart.stores.retire_copy(&drawing.key)?.await?;
-                gio::spawn_blocking(collect_stores).await.map_err(|error|format!("Drawing cleanup stopped: {error:?}"))?
-            }.await;
+            let result=async {w.restart.stores.retire_copy(&drawing.key)?.await}.await;
+            let _=gio::spawn_blocking(collect_stores).await;
             if let Err(error)=result {w.changed(Err(error));}
         } else if response=="retry" {
             let attempt=w.restart.begin_restore(drawing.id,true).await?;

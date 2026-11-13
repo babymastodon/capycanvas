@@ -176,9 +176,8 @@ pub(super) async fn legacy_lock(kind:&'static str,name:&str)->Result<Option<Arc<
 pub(super) async fn transport(name:&str)->Result<Option<Arc<dyn FileTransport>>,String> {
     Ok(lease(name,None).await?.map(|lease|Arc::new(BrowserTransport {lease}) as Arc<dyn FileTransport>))
 }
-pub(super) async fn collect_unreferenced(name:&str)->Result<(),String> {
-    let Some(lease)=lease(name,None).await? else {return Ok(());};
-    SessionStore::collect_unreferenced_transport(name.into(),Arc::new(BrowserTransport {lease:lease.clone()}),lease).await?;Ok(())
+pub(super) async fn collect_unreferenced(name:&str) {
+    if let Ok(Some(lease))=lease(name,None).await {SessionStore::collect_unreferenced_transport(name.into(),Arc::new(BrowserTransport {lease:lease.clone()}),lease).await;}
 }
 #[derive(Deserialize)]struct Entry {name:String,directory:bool}
 fn entries(value:JsValue)->Result<Vec<DirectoryEntry>,String> {

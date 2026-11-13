@@ -228,7 +228,6 @@ impl SessionStore {
         let path = &fs::canonicalize(path).map_err(|e| e.to_string())?;
         let Some((owner, writer)) = claim_store(path)? else { return Ok(None) };
         if retired_store(path)? { return Err("This drawing's session copy was retired".into()); }
-        retiring_store(path)?;
         sync_directory(path)?;
         create_directory(&path.join("resources"))?;
         create_directory(&path.join("generations"))?;
@@ -247,34 +246,22 @@ pub(super) fn store_layout_with(path: &Path, terminal: bool) -> Result<bool, Str
         && metadata_optional(&path.join("packs"))?.is_none_or(|metadata| metadata.is_dir())
         && metadata_optional(&path.join("generations"))?.map_or(terminal, |metadata| metadata.is_dir()))
 }
-pub async fn collect_unreferenced_stores(root: &Path, reachable: &BTreeSet<String>, cancelled: &AtomicBool) -> Result<usize, String> {
+pub async fn collect_unreferenced_stores(root: &Path, reachable: &BTreeSet<String>, cancelled: &AtomicBool) -> usize {
     let mut retired = 0;
-    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
-        check_cancelled(cancelled)?;
-        let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
-        let Some(key) = entry.file_name().to_str().map(str::to_owned) else { continue };
-        let path = entry.path();
-        if reachable.contains(&key) || !metadata_optional(&path.join(".lock"))?.is_some_and(|metadata|metadata.is_file()) { continue; }
-        let terminal=retired_store(&path)?;
-        if !store_layout_with(&path,terminal)? {continue;}
-        let path=fs::canonicalize(&path).map_err(|error|error.to_string())?;
-        let Some((owner,writer))=claim_store(&path)? else {continue;};
-        if SessionStore::collect_unreferenced_claim(path,owner,writer).await? {retired+=1;}
-
+    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        if cancelled.load(Ordering::Acquire) { break; }
+        if entry.file_name().to_str().is_some_and(|key| !reachable.contains(key)) && collect_unreferenced_store(&entry.path()).await.unwrap_or(false) { retired += 1; }
     }
-    Ok(retired)
+    retired
+}
+async fn collect_unreferenced_store(path: &Path) -> Result<bool, String> {
+    if !store_layout_with(path, retired_store(path)?)? { return Ok(false); }
+    let path = fs::canonicalize(path).map_err(|error| error.to_string())?;
+    let Some((owner, writer)) = claim_store(&path)? else { return Ok(false) };
+    SessionStore::collect_unreferenced_claim(path, owner, writer).await
 }
 pub(super) fn retired_store(path: &Path) -> Result<bool, String> {
-    let marker = path.join(".retired");
-    let Some(bytes) = read_optional(&marker, 16)? else { return Ok(false) };
-    if !bytes.is_empty() { return Err("Invalid drawing retirement marker".into()); }
-    Ok(true)
-}
-pub(super) fn retiring_store(path: &Path) -> Result<bool, String> {
-    let Some(bytes) = read_optional(&path.join(".retiring"), 16)? else { return Ok(false) };
-    if bytes != b"retiring\n" { return Err("Invalid drawing retirement intent".into()); }
-    Ok(true)
+    Ok(metadata_optional(&path.join(".retired"))?.is_some())
 }
 
 pub(crate) fn sync_file(file: &File) -> std::io::Result<()> {
@@ -296,15 +283,6 @@ pub(crate) fn sync_file(file: &File) -> std::io::Result<()> {
 pub fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     read_file_bounded(file, limit)
-}
-pub(super) fn read_optional(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
-    let Some(metadata) = metadata_optional(path)? else { return Ok(None) };
-    if !metadata.is_file() { return Err("Invalid recovery metadata file".into()); }
-    match File::open(path) {
-        Ok(file) => read_file_bounded(file, limit).map(Some),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.to_string()),
-    }
 }
 pub(super) fn metadata_optional(path: &Path) -> Result<Option<fs::Metadata>, String> {
     match fs::symlink_metadata(path) {
@@ -393,11 +371,7 @@ impl StoreOpener for NativeStoreOpener {
     fn open<'a>(&'a self,path:&'a Path,retirement:bool)->super::super::store_io::FileFuture<'a,Option<SessionStore>> {
         Box::pin(async move {
             if !retirement {return SessionStore::open(path).await.map(Some);}
-            if metadata_optional(path)?.is_none() {return Ok(None);}
-            if retired_store(path)? {
-                return if store_layout_with(path,true)? {Ok(None)}else {Err("Invalid drawing session directory".into())};
-            }
-            if !store_layout(path)? {return Err("Invalid drawing session directory".into());}
+            if retired_store(path)? || !store_layout(path)? {return Ok(None);}
             let path=fs::canonicalize(path).map_err(|error|error.to_string())?;
             let Some((owner,claim))=claim_store(&path)? else {return Err("Recovery drawing is already open".into())};
             Ok(Some(SessionStore::for_retirement(path,owner,claim)))

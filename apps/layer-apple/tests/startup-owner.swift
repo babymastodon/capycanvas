@@ -308,12 +308,13 @@ private final class StartupErrors: @unchecked Sendable {
             try marker.write(to: markerFile)
             try await store.apply(["type": "invoke", "command": "add_layer"])
             let saved = await withCheckedContinuation { done in store.recovery.flush { done.resume(returning: $0) } }
-            try require(saved && store.recovery.error?.contains("Invalid drawing retirement marker") == true,
-                "A committed checkpoint must retain its cleanup warning without reporting save failure: saved=\(saved), error=\(store.recovery.error ?? "nil")")
+            try require(saved && store.recovery.error == nil,
+                "A committed checkpoint must retire a torn orphan without a warning: saved=\(saved), error=\(store.recovery.error ?? "nil")")
             try await store.apply(["type": "invoke", "command": "add_layer"])
-            try await wait("Autosave after cleanup warning", seconds: 20) { store.recovery.hasCurrentCopy }
-            try require(try Data(contentsOf: markerFile) == marker, "A malformed orphan must remain intact after repeated checkpoints")
-            note("PASS \(theme): committed cleanup warning does not block the next edited artwork autosave")
+            try await wait("Autosave after cleanup", seconds: 20) { store.recovery.hasCurrentCopy }
+            try require(FileManager.default.fileExists(atPath: orphan.appendingPathComponent(".retired").path) && !FileManager.default.fileExists(atPath: markerFile.path),
+                "Cleanup must retire an unreferenced store whose close was interrupted")
+            note("PASS \(theme): cleanup retires a torn orphan without a warning or blocking autosave")
             try await prepare(store.native!, "Capture before blocked checkpoint")
             let blocked = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
             NativeProjectTask.io.async {
