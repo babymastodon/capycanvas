@@ -174,7 +174,7 @@ fn released_editing_path_saves_survive_repeated_conversion() {
 }
 
 #[test]
-fn startup_skips_an_unreadable_preference_when_readable_workspaces_are_owned() {
+fn startup_opens_an_unreadable_preference_with_the_initial_layout() {
     pollster::block_on(async {
         let f = Fixture::new();
         let worker = &f.manager.store.worker;
@@ -196,10 +196,12 @@ fn startup_skips_an_unreadable_preference_when_readable_workspaces_are_owned() {
         sql.execute("UPDATE items SET content='{}' WHERE id=?1",[&id]).unwrap();
         let fourth = WorkspaceManager::new(worker.clone(),Platform::Gtk);
         let incoming = fourth.initialize(3000).await.unwrap();
-        assert_ne!(incoming.entity.id,id);
-        assert!(!model::is_default_item(&incoming.entity.id));
+        assert_eq!(incoming.entity.id,id);
+        let initial = Entity::included_workspace(DEFAULT_WORKSPACES[1].0,Platform::Gtk,false,0).unwrap();
+        assert_eq!(incoming.entity.capture().unwrap().history.layout(),initial.capture().unwrap().history.layout());
         incoming.entity.validate().unwrap();
         fourth.release(&incoming).await;
+        assert_eq!(sql.query_row("SELECT content FROM items WHERE id=?1",[&id],|row|row.get::<_,String>(0)).unwrap(),"{}");
     });
 }
 

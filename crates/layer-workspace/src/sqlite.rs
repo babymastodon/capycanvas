@@ -1,4 +1,4 @@
-use crate::protocol::{PreparedWrite, unpack};
+use crate::protocol::{PreparedWrite, resolve};
 use crate::store_rules::*;
 use crate::*;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -163,10 +163,6 @@ impl SqliteStore {
                 snapshots::check_snapshot(&self.connection,&id,workspace.as_deref())?;
                 Ok(StoreResponse::Done)
             }
-            StoreRequest::RestoreIncluded { entity } => {
-                self.restore_included(*entity)?;
-                Ok(StoreResponse::Done)
-            }
             StoreRequest::Adopted => {
                 let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 if self.snapshots_ready { snapshots::prune(&tx)?; }
@@ -273,35 +269,6 @@ impl SqliteStore {
             }
         }
     }
-    fn restore_included(&mut self, entity: Entity) -> Result<()> {
-        if !entity.metadata.builtin || !is_default_item(&entity.id) {
-            return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::ChooseAWorkspace));
-        }
-        entity.check_opens()?;
-        let id = entity.id.clone();
-        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if load(&tx, &id).and_then(|stored| stored.entity.check_opens()).is_ok() {
-            return Ok(());
-        }
-        let counters: [String; 4] = tx
-            .query_row("SELECT metadata_generation,layout_generation,working_generation,fence FROM items WHERE id=?1", [&id], |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?]))
-            .optional()?
-            .ok_or_else(not_found)?;
-        let [metadata_generation, layout_generation, working_generation, fence] = counters.map(|text| advance(parse_counter(&text).unwrap_or_default()));
-        snapshots::keep_current(Path::new(tx.path().unwrap_or_default()))?;
-        let metadata = resolve_name(&tx, entity.metadata.clone(), &id, NamePolicy::Unique)?;
-        let batch = CommitBatch::prepare(Owner::fresh(), vec![Mutation::Create { entity, claim: false, name_policy: NamePolicy::Unique }])?;
-        let write = &batch.writes[0];
-        for (component, json) in &batch.components {
-            tx.execute("INSERT INTO components(id,json) VALUES(?1,?2) ON CONFLICT(id) DO NOTHING", params![component, json])?;
-        }
-        tx.execute("UPDATE items SET kind=?2,name=?3,name_key=?4,metadata=?5,content=?6,working=?7,metadata_generation=?8,layout_generation=?9,working_generation=?10,builtin=1,fence=?11,owner=NULL,epoch=NULL,lease_until=NULL WHERE id=?1", params![
-            id, metadata.kind.key(), metadata.name, name_key(&metadata.name), serde_json::to_string(&metadata)?, write.content_json, write.working_json,
-            metadata_generation?.to_string(), layout_generation?.to_string(), working_generation?.to_string(), fence?.to_string(),
-        ])?;
-        tx.commit()?;
-        Ok(())
-    }
     pub fn load(&mut self, id: &str) -> Result<StoredEntity> {
         let tx = self
             .connection
@@ -361,38 +328,15 @@ impl SqliteStore {
         };
         let values = ids
             .into_iter()
-            .map(|id| {
-                let result = (|| -> Result<ItemSummary> {
-                    let row = header(&tx, &id)?;
+            .filter_map(|id| {
+                let summary = header(&tx, &id).and_then(|row| {
                     let metadata: Metadata = serde_json::from_str(&row.metadata)?;
                     metadata.validate()?;
-                    Ok(ItemSummary {
-                        id: id.clone(),
-                        metadata,
-                        generations: row.generations,
-                        claim: row.claim,
-                        error: None,
-                        unavailable_name: false,
-                    })
-                })();
-                match result {
-                    Ok(summary) => Ok(summary),
-                    Err(error) => {
-                        let (name, kind): (String, String) =
-                            tx.query_row("SELECT name,kind FROM items WHERE id=?1", [&id], |r| {
-                                Ok((r.get(0)?, r.get(1)?))
-                            })?;
-                        let row = header(&tx, &id).ok();
-                        Ok(summary_fallback(
-                            id,
-                            Some(&kind),
-                            Some(&name),
-                            row.as_ref().is_some_and(|r| r.builtin),
-                            row.as_ref().map(|r| r.generations).unwrap_or_default(),
-                            row.and_then(|r| r.claim),
-                            error,
-                        ))
-                    }
+                    Ok(ItemSummary { id, metadata, generations: row.generations, claim: row.claim })
+                });
+                match summary {
+                    Err(error) if error.kind == ErrorKind::InvalidData => None,
+                    summary => Some(summary),
                 }
             })
             .collect::<Result<Vec<_>>>()?;
@@ -684,19 +628,18 @@ fn create_schema(connection: &Connection) -> Result<()> {
 struct Header {
     metadata: String,
     kind: String,
-    builtin: bool,
     generations: Generations,
     fence: u64,
     claim: Option<Claim>,
 }
 fn header(connection: &Connection, id: &str) -> Result<Header> {
-    let row = connection.query_row("SELECT metadata,kind,builtin,metadata_generation,layout_generation,working_generation,fence,owner,epoch,lease_until FROM items WHERE id=?1", [id], |r| Ok((
-        r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, bool>(2)?,
-        r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, String>(5)?,r.get::<_, String>(6)?,
-        r.get::<_, Option<String>>(7)?,r.get::<_, Option<String>>(8)?,r.get::<_, Option<String>>(9)?,
+    let row = connection.query_row("SELECT metadata,kind,metadata_generation,layout_generation,working_generation,fence,owner,epoch,lease_until FROM items WHERE id=?1", [id], |r| Ok((
+        r.get::<_, String>(0)?,r.get::<_, String>(1)?,
+        r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, String>(5)?,
+        r.get::<_, Option<String>>(6)?,r.get::<_, Option<String>>(7)?,r.get::<_, Option<String>>(8)?,
     ))).optional()?.ok_or_else(not_found)?;
-    let fence = parse_counter(&row.6)?;
-    let claim = match (row.7, row.8, row.9) {
+    let fence = parse_counter(&row.5)?;
+    let claim = match (row.6, row.7, row.8) {
         (Some(id), Some(epoch), Some(until)) => Some(Claim {
             owner: Owner { id, epoch },
             fence,
@@ -708,11 +651,10 @@ fn header(connection: &Connection, id: &str) -> Result<Header> {
     Ok(Header {
         metadata: row.0,
         kind: row.1,
-        builtin: row.2,
         generations: Generations {
-            metadata: parse_counter(&row.3)?,
-            layout: parse_counter(&row.4)?,
-            working: parse_counter(&row.5)?,
+            metadata: parse_counter(&row.2)?,
+            layout: parse_counter(&row.3)?,
+            working: parse_counter(&row.4)?,
         },
         fence,
         claim,
@@ -732,18 +674,9 @@ fn load(connection: &Connection, id: &str) -> Result<StoredEntity> {
         connection.query_row("SELECT content,working FROM items WHERE id=?1", [id], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?;
-    let entity = Entity {
-        id: id.into(),
-        metadata: serde_json::from_str(&row.metadata)?,
-        content: unpack(&content, |id| component(connection, id))?,
-        working: working.map(|v| layer_ui::WorkspaceWorkingState::restore(serde_json::from_str(&v).unwrap_or_default())),
-    };
-    entity.validate()?;
-    Ok(StoredEntity {
-        entity,
-        generations: row.generations,
-        claim: row.claim,
-    })
+    let working = working.and_then(|working| serde_json::from_str(&working).ok());
+    let (entity, fallback) = Entity::read(id.into(), serde_json::from_str(&row.metadata)?, resolve(&content, |id| component(connection, id)), working)?;
+    Ok(StoredEntity { entity, generations: row.generations, claim: row.claim, fallback })
 }
 fn receipt(connection: &Connection, id: &str) -> Result<Option<(String, CommitReceipt)>> {
     connection

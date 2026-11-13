@@ -40,7 +40,6 @@ workspace-header-space = Espaço
 workspace-history-title = Histórico de layout — { $name }
 workspace-history-current = Layout atual · { $date }
 workspace-toolbar-in = Barra de ferramentas em { $name }. As alterações são salvas com esta área de trabalho e podem ser recuperadas no Histórico de layout.
-workspace-unavailable = Indisponível: { $error }
 workspace-included-description = { $description }
     Incluído no { common-app-name }.
 workspace-delete-confirm = Excluir “{ $name }”? Esta ação é permanente.
@@ -599,7 +598,6 @@ workspace-refusal-invalid-toolbar-identity = Identidade de barra de ferramentas 
 workspace-storage-write-failed = Não foi possível salvar as alterações da área de trabalho. Tente novamente.
 workspace-storage-full = O armazenamento de áreas de trabalho está cheio. Libere espaço em disco e tente novamente.
 workspace-storage-unavailable = Não foi possível abrir o armazenamento de áreas de trabalho. Tente novamente.
-workspace-unreadable-name = Área de trabalho ilegível
 workspace-backup-saved = Cópia de segurança da área de trabalho salva.
 workspace-tool-description-waveform = Inspecionar cor e brilho da esquerda para a direita
 workspace-tool-strength-slider = Controle de intensidade
@@ -664,7 +662,6 @@ workspace-keep-current = Manter atuais
 workspace-action-restore-earlier-workspaces = Restaurar áreas de trabalho anteriores…
 workspace-restore-earlier-workspaces-title = Restaurar áreas de trabalho anteriores?
 workspace-restore-earlier-workspaces-message = Suas áreas de trabalho, paletas e configurações de pincel voltam a uma cópia anterior. As atuais são mantidas como cópia.
-workspace-restore-included-message = { $name } volta ao layout inicial. Uma cópia das suas áreas de trabalho atuais é mantida.
 
 diagnostics-memory-title = Memória
 diagnostics-memory-ram-label = RAM

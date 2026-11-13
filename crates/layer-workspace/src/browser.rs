@@ -34,12 +34,10 @@ struct BrowserRecord {
     claim: Option<Claim>,
 }
 impl BrowserRecord {
-    fn stored(&self) -> Result<StoredEntity> {
-        Ok(StoredEntity {
-            entity: serde_json::from_value(self.entity.clone())?,
-            generations: self.generations,
-            claim: self.claim.clone(),
-        })
+    fn stored(&self, id: &str) -> Result<StoredEntity> {
+        let working = Some(self.entity["working"].clone()).filter(|working| !working.is_null());
+        let (entity, fallback) = Entity::read(id.into(), self.metadata()?, Ok(self.entity["content"].clone()), working)?;
+        Ok(StoredEntity { entity, generations: self.generations, claim: self.claim.clone(), fallback })
     }
     fn metadata(&self) -> Result<Metadata> {
         Ok(serde_json::from_value(self.entity["metadata"].clone())?)
@@ -116,35 +114,11 @@ impl BrowserDatabase {
     pub fn restorable(text: &str, workspace: Option<&str>) -> Result<Self> {
         let database = Self::decode(text).map_err(unopenable_copy)?;
         check_copy(
-            database.items.values().map(|record| record.stored().map(|stored| stored.entity)),
+            database.items.iter().map(|(id, record)| record.stored(id).map(|stored| stored.entity)),
             database.editing.as_deref(),
             workspace,
         )?;
         Ok(database)
-    }
-    fn restore_included(&mut self, entity: Entity) -> Result<()> {
-        if !entity.metadata.builtin || !is_default_item(&entity.id) {
-            return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::ChooseAWorkspace));
-        }
-        entity.check_opens()?;
-        let record = self.record(&entity.id)?;
-        if record.stored().and_then(|stored| stored.entity.check_opens()).is_ok() {
-            return Ok(());
-        }
-        let generations = Generations {
-            metadata: advance(record.generations.metadata)?,
-            layout: advance(record.generations.layout)?,
-            working: advance(record.generations.working)?,
-        };
-        let fence = advance(self.fence(&entity.id)?)?;
-        let metadata = self.resolve_name(entity.metadata.clone(), &entity.id, NamePolicy::Unique)?;
-        self.fences.insert(entity.id.clone(), fence.to_string());
-        self.items.insert(entity.id.clone(), BrowserRecord::from_stored(StoredEntity {
-            entity: Entity { metadata, ..entity },
-            generations,
-            claim: None,
-        })?);
-        Ok(())
     }
     /// `StoreRequest::Reset` for a snapshot that may not decode at all.
     pub fn replace(previous: Option<&str>) -> Result<Self> {
@@ -176,21 +150,19 @@ impl BrowserDatabase {
         self.items.get(id).ok_or_else(not_found)
     }
     fn item(&self, id: &str) -> Result<StoredEntity> {
-        self.record(id)?.stored()
+        self.record(id)?.stored(id)
     }
     fn claim(&mut self, id: &str, owner: Owner, now: u64) -> Result<StoredEntity> {
         let record = self.record(id)?;
         let fence = claim_fence(record.claim.as_ref(), &owner, self.fence(id)?, now)?;
-        let mut item = record.stored()?;
-        item.entity.validate()?;
+        let mut item = record.stored(id)?;
         item.claim = Some(Claim {
             owner,
             fence,
             expires_at_ms: now.saturating_add(OWNER_LEASE_MS),
         });
         self.fences.insert(id.into(), fence.to_string());
-        self.items
-            .insert(id.into(), BrowserRecord::from_stored(item.clone())?);
+        self.items.get_mut(id).unwrap().claim = item.claim.clone();
         Ok(item)
     }
     fn fence(&self, id: &str) -> Result<u64> {
@@ -266,48 +238,13 @@ impl BrowserDatabase {
             List => StoreResponse::List(
                 self.items
                     .iter()
-                    .map(|(id, s)| {
-                        let metadata = s.metadata().and_then(|m| {
-                            m.validate()?;
-                            Ok(m)
-                        });
-                        let error =
-                            metadata
-                                .as_ref()
-                                .err()
-                                .cloned()
-                                .or_else(|| {
-                                    s.stored()
-                                        .and_then(|s| s.entity.validate())
-                                        .err()
-                                });
-                        match metadata {
-                            Ok(metadata) => ItemSummary {
-                                id: id.clone(),
-                                metadata,
-                                generations: s.generations,
-                                claim: s.claim.clone(),
-                                error,
-                                unavailable_name: false,
-                            },
-                            Err(error) => summary_fallback(
-                                id.clone(),
-                                s.entity["metadata"]["kind"].as_str(),
-                                s.entity["metadata"]["name"].as_str(),
-                                s.entity["metadata"]["builtin"].as_bool() == Some(true),
-                                s.generations,
-                                s.claim.clone(),
-                                error,
-                            ),
-                        }
+                    .filter_map(|(id, s)| {
+                        let metadata = s.metadata().ok().filter(|metadata| metadata.validate().is_ok())?;
+                        Some(ItemSummary { id: id.clone(), metadata, generations: s.generations, claim: s.claim.clone() })
                     })
                     .collect(),
             ),
-            Load { id } => {
-                let s = self.item(&id)?;
-                s.entity.validate()?;
-                StoreResponse::Entity(Box::new(s))
-            }
+            Load { id } => StoreResponse::Entity(Box::new(self.item(&id)?)),
             Claim { id, owner } => StoreResponse::Entity(Box::new(self.claim(&id, owner, now)?)),
             Renew { id, owner, fence } => {
                 let fence = parse_counter(&fence)?;
@@ -352,24 +289,13 @@ impl BrowserDatabase {
             Reopen => StoreResponse::Reopened(None),
             RestoreSnapshot { .. } | CheckSnapshot { .. } | SetAside => return Err(StoreError::new(ErrorKind::Unavailable,"Snapshots require persistent storage.")),
             Snapshots => StoreResponse::Snapshots(Vec::new()),
-            RestoreIncluded { entity } => {
-                self.restore_included(*entity)?;
-                StoreResponse::Done
-            }
             Adopted => StoreResponse::Done,
             Reset => {
                 *self = Self::default();
                 StoreResponse::Done
             }
             Maintenance { owner, clear_older } => {
-                let items = retention::readable_items(self
-                    .items
-                    .values()
-                    .map(|r| {
-                        let stored = r.stored()?;
-                        stored.entity.validate()?;
-                        Ok(stored)
-                    }))?;
+                let items = retention::readable_items(self.items.iter().map(|(id, record)| record.stored(id)))?;
                 let changed = retention::retention_plan(
                     &items,
                     owner.as_ref(),
@@ -381,11 +307,9 @@ impl BrowserDatabase {
                     },
                 )?;
                 for entity in changed {
-                    let s = self.items.get_mut(&entity.id).unwrap();
-                    if s.stored()?.entity.content != entity.content {
-                        s.generations.layout = advance(s.generations.layout)?;
-                    }
-                    s.entity = serde_json::to_value(entity)?;
+                    let record = self.items.get_mut(&entity.id).unwrap();
+                    record.generations.layout = advance(record.generations.layout)?;
+                    record.entity["content"] = serde_json::to_value(entity.content)?;
                 }
                 StoreResponse::Done
             }
@@ -442,7 +366,7 @@ impl BrowserDatabase {
             items: Vec::new(),
         };
         for w in &batch.writes {
-            let s = if w.create {
+            let record = if w.create {
                 if self.items.contains_key(&w.id) || self.tombstones.contains(&w.id) {
                     return Err(StoreError::conflict());
                 }
@@ -466,13 +390,10 @@ impl BrowserDatabase {
                     .transpose()?;
                 self.fences
                     .insert(w.id.clone(), if w.claim { "1" } else { "0" }.into());
-                StoredEntity {
-                    entity: Entity {
-                        id: w.id.clone(),
-                        metadata,
-                        content,
-                        working,
-                    },
+                let entity = Entity { id: w.id.clone(), metadata, content, working };
+                entity.validate()?;
+                BrowserRecord::from_stored(StoredEntity {
+                    entity,
                     generations: Generations {
                         metadata: 1,
                         layout: 1,
@@ -483,34 +404,38 @@ impl BrowserDatabase {
                         fence: 1,
                         expires_at_ms: now.saturating_add(OWNER_LEASE_MS),
                     }),
-                }
+                    fallback: false,
+                })?
             } else {
-                let mut s = self.item(&w.id)?;
-                check_claim(s.claim.as_ref(), &batch.owner, w.fence, now)?;
-                check_update(&s.entity.metadata, s.generations, w)?;
+                let mut record = self.record(&w.id)?.clone();
+                let stored = record.metadata()?;
+                check_claim(record.claim.as_ref(), &batch.owner, w.fence, now)?;
+                check_update(&stored, record.generations, w)?;
                 if w.delete {
                     self.remove(&w.id);
-                    receipt.items.push((w.id.clone(), s.generations));
+                    receipt.items.push((w.id.clone(), record.generations));
                     continue;
                 }
                 if let Some(m) = &w.metadata {
-                    s.entity.metadata = self.resolve_name(m.clone(), &w.id, w.name_policy)?;
-                    s.generations.metadata = advance(s.generations.metadata)?;
+                    record.entity["metadata"] = serde_json::to_value(self.resolve_name(m.clone(), &w.id, w.name_policy)?)?;
+                    record.generations.metadata = advance(record.generations.metadata)?;
                 }
                 if let Some(c) = &w.content_json {
-                    s.entity.content = content(c, &batch)?;
-                    s.generations.layout = advance(s.generations.layout)?;
+                    let content = content(c, &batch)?;
+                    if content.kind() != stored.kind {
+                        return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::InconsistentItemType));
+                    }
+                    record.entity["content"] = serde_json::to_value(content)?;
+                    record.generations.layout = advance(record.generations.layout)?;
                 }
                 if let Some(j) = &w.working_json {
-                    s.entity.working = Some(serde_json::from_str(j)?);
-                    s.generations.working = advance(s.generations.working)?;
+                    record.entity["working"] = serde_json::from_str(j)?;
+                    record.generations.working = advance(record.generations.working)?;
                 }
-                s
+                record
             };
-            s.entity.validate()?;
-            receipt.items.push((w.id.clone(), s.generations));
-            self.items
-                .insert(w.id.clone(), BrowserRecord::from_stored(s)?);
+            receipt.items.push((w.id.clone(), record.generations));
+            self.items.insert(w.id.clone(), record);
         }
         if !batch.pin_workspaces.is_empty() {
             self.switcher = Some(serde_json::to_value(with_created_pins(

@@ -232,28 +232,3 @@ pub(crate) fn check_binding(
     let fence = claim.ok_or_else(StoreError::conflict)?.fence;
     check_claim(claim, owner, fence, now)
 }
-pub(crate) fn summary_fallback(
-    id: String,
-    kind: Option<&str>,
-    name: Option<&str>,
-    builtin: bool,
-    generations: Generations,
-    claim: Option<Claim>,
-    error: StoreError,
-) -> ItemSummary {
-    let kind = match kind {
-        Some("toolbar") => ItemKind::Toolbar,
-        _ => ItemKind::Workspace,
-    };
-    let mut metadata = Metadata::new(kind, name.unwrap_or_default(), 0);
-    metadata.name = name.unwrap_or_default().into();
-    metadata.builtin = builtin;
-    ItemSummary {
-        id,
-        metadata,
-        generations,
-        claim,
-        error: Some(error),
-        unavailable_name: name.is_none(),
-    }
-}

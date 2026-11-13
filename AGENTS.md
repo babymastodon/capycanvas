@@ -38,8 +38,10 @@ These rules cover tests, benchmark harnesses and tools as much as production cod
   [package contract](docs/reference/capy-package.md).
 - Data saved by 1.0.15 or later must survive upgrades: workspaces, toolbars,
   palettes, brush settings, preferences, export presets, drawings and recovery
-  copies. Never rename, reuse or remove a saved key or ID, re-save a released
-  fixture, or reset or overwrite data a build can't read. Follow the
+  copies. Never rename, reuse or remove a saved key, enum name or ID, or re-save
+  a released fixture. App-state readers never ask the painter: an item whose
+  content can't be read opens with its fixed fallback, and reading never
+  writes. Follow the
   [saved-state rules](docs/ui/settings.md#saving-and-loading),
   [storage preservation](docs/internals/storage.md#workspace-version-copies) and
   [released fixture checks](docs/development/testing.md#saved-data-compatibility).

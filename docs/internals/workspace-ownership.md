@@ -101,13 +101,14 @@ stay pending. The [version-copy guide](storage.md#workspace-version-copies)
 describes the startup restore prompt.
 `SCHEMA_VERSION` identifies the tables: a store of any other schema version
 serves nothing but `Reset`.
-Unreadable workspace and toolbar rows remain listed and are skipped during
-startup and retention. Pending deliveries and switcher preferences remain
+Workspace and toolbar rows whose metadata can't be read are left out of the list
+and kept; rows whose content can't be read open with their fallback and are
+skipped by retention. Pending deliveries and switcher preferences remain
 opaque until read; unreadable ones are skipped and kept. Component collection
 scans raw item and delivery JSON and keeps referenced components. If it cannot
-follow a malformed graph, it skips collection. When no workspace can be read,
+follow a malformed graph, it skips collection. When no workspace can be listed,
 startup creates a new workspace from the included layout and leaves the
-unreadable rows untouched. Copy protection precedes schema setup, maintenance
+unlisted rows untouched. Copy protection precedes schema setup, maintenance
 and ownership writes; copy retention runs only after adoption. See
 [version copies](storage.md#workspace-version-copies).
 `Reset` refuses a newer table schema. A build that cannot read that schema

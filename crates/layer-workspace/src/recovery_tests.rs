@@ -104,154 +104,120 @@ fn send<S: WorkspaceStore + 'static>(controller: &mut WorkspaceController<S>, ho
 fn submit() -> WorkspaceInput {
     WorkspaceInput::Submit { name: String::new(), description: None, choice: None }
 }
-fn recovery<S: WorkspaceStore + 'static>(controller: &WorkspaceController<S>) -> ManagerAction {
-    let status = controller.view.status.clone().expect("a status for the failed workspace");
-    assert!(status.error && !status.retry, "{status:?}");
-    status.action.expect("a recovery action").action
-}
 fn opens<S: WorkspaceStore + 'static>(controller: &WorkspaceController<S>, id: &str) -> bool {
     pollster::block_on(controller.manager.load(id)).and_then(|stored| stored.entity.check_opens()).is_ok()
 }
 fn starting_layout(id: &str, platform: Platform) -> layer_ui::DockLayout {
     Entity::included_workspace(id, platform, false, 0).unwrap().capture().unwrap().history.layout().clone()
 }
+fn opened_layout(name: &str, layout: layer_ui::DockLayout) -> layer_ui::DockLayout {
+    let mut entity = Entity::workspace(name, layer_ui::WorkspaceCapture::from_template(&layout).unwrap(), layout, 0);
+    entity.resolve_phone().unwrap();
+    entity.capture().unwrap().history.layout().clone()
+}
 fn stored_layout<S: WorkspaceStore + 'static>(controller: &WorkspaceController<S>, id: &str) -> layer_ui::DockLayout {
     pollster::block_on(controller.manager.load(id)).unwrap().entity.capture().unwrap().history.layout().clone()
 }
-
-#[test]
-fn an_earlier_copy_that_opens_recovers_workspaces_this_build_cannot_open() {
-    let earlier = copy_id("earlier");
-    let unreadable = copy_id("unreadable");
-    let kept = copy_id(snapshots::VERSION);
-    let records = Records::new(RELEASE_1_0_12, &[(&earlier, RELEASE_1_0_15), (&unreadable, RELEASE_1_0_12), (&kept, RELEASE_1_0_15)]);
-    let (mut controller, mut host) = start_web(&records);
-    assert!(controller.view.error.is_none());
-    assert_eq!(controller.manager.active_id().as_deref(), Some(PHOTO), "startup skips the bound workspace it can't open");
-    for id in [PAINT, SKETCH] {
-        send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Switch { id: id.into() });
-        assert_eq!(controller.manager.active_id().as_deref(), Some(PHOTO));
-        assert_eq!(recovery(&controller), ManagerAction::RestoreCopy(kept.clone()), "{id}");
-    }
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Open { page: ManagerPage::Workspaces });
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Select { id: Some(SKETCH.into()) });
-    assert_eq!(controller.view.primary, "Restore Earlier Workspaces…");
-    assert!(controller.view.enabled);
-    let before = records.copies();
-    let pre_recovery = records.json("database");
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Confirm);
-    assert_eq!(controller.view.prompt_action, Some(ManagerAction::RestoreCopy(kept.clone())));
-    let prompt = controller.view.prompt.clone().unwrap();
-    assert_eq!(prompt.title, "Restore Earlier Workspaces?");
-    assert_eq!(prompt.message, "Your workspaces, palettes and brush settings return to an earlier copy. The current ones are kept as a copy.");
-    send(&mut controller, &mut host, WEB_NOW, submit());
-    settle(&mut controller, &mut host, WEB_NOW, |c| c.view.ready && !c.view.busy && c.view.prompt.is_none());
-    assert!(controller.view.error.is_none());
-    assert_eq!(controller.view.page, None);
-    assert_eq!(controller.manager.active_id().as_deref(), Some(SKETCH), "the restored copy opens the workspace that couldn't be opened");
-    for (id, _) in DEFAULT_WORKSPACES {
-        assert!(opens(&controller, id), "{id}");
-    }
-    let added: Vec<_> = records.copies().into_iter().filter(|id| !before.contains(id)).collect();
-    assert_eq!(added.len(), 1);
-    assert_eq!(records.json(&added[0])["items"][PAINT]["entity"], pre_recovery["items"][PAINT]["entity"]);
-    assert!(records.marker.borrow().as_ref().unwrap().copies.iter().any(|copy| copy.id == added[0]));
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Switch { id: PAINT.into() });
-    assert_eq!(controller.manager.active_id().as_deref(), Some(PAINT));
-    assert!(controller.view.status.is_none());
+fn switch<S: WorkspaceStore + 'static>(controller: &mut WorkspaceController<S>, host: &mut layer_host::NativeHost, now: u64, id: &str) {
+    send(controller, host, now, WorkspaceInput::Switch { id: id.into() });
+    assert_eq!(controller.manager.active_id().as_deref(), Some(id), "{:?}", controller.view.error);
+    assert!(controller.view.error.is_none() && controller.view.status.is_none() && controller.view.prompt.is_none(), "{id}: {:?}", controller.view.status);
+}
+fn edit_layout<S: WorkspaceStore + 'static>(controller: &WorkspaceController<S>, now: u64) {
+    let mut capture = controller.manager.current().unwrap().capture().unwrap();
+    let mut layout = capture.history.layout().clone();
+    layout.canvas_bar = !layout.canvas_bar;
+    capture.history.append(&layout, layer_ui::LayoutChange::CanvasBar);
+    controller.manager.observe(capture, now);
+    pollster::block_on(controller.manager.flush()).unwrap();
+}
+fn web_content(records: &Records, id: &str) -> serde_json::Value {
+    records.json("database")["items"][id]["entity"]["content"].clone()
 }
 
 #[test]
-fn an_included_workspace_without_an_openable_copy_restores_its_starting_layout() {
-    let records = Records::new(RELEASE_1_0_12, &[]);
-    let (mut controller, mut host) = start_web(&records);
-    assert_eq!(controller.manager.active_id().as_deref(), Some(PHOTO));
-    assert_eq!(records.copies().len(), 1, "the store this build found is kept");
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Switch { id: PAINT.into() });
-    assert_eq!(recovery(&controller), ManagerAction::RestoreIncluded(PAINT.into()));
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Open { page: ManagerPage::Workspaces });
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Select { id: Some(PAINT.into()) });
-    assert_eq!(controller.view.selected.as_deref(), Some(PAINT));
-    assert_eq!(controller.view.primary, "Restore Starting Layout…");
-    assert!(controller.view.enabled);
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Confirm);
-    assert_eq!(controller.view.prompt_action, Some(ManagerAction::RestoreIncluded(PAINT.into())));
-    let prompt = controller.view.prompt.clone().unwrap();
-    assert_eq!(prompt.title, "Restore Starting Layout");
-    assert_eq!(prompt.message, "Paint returns to its starting layout. A copy of your current workspaces is kept.");
-    let before = records.copies();
-    let pre_recovery = records.json("database");
-    send(&mut controller, &mut host, WEB_NOW, submit());
-    assert!(controller.view.error.is_none());
-    assert_eq!(controller.manager.active_id().as_deref(), Some(PAINT));
-    assert_eq!(controller.view.page, None);
-    assert_eq!(stored_layout(&controller, PAINT), starting_layout(PAINT, Platform::Web));
-    assert!(!opens(&controller, SKETCH), "other workspaces are left alone");
-    let added: Vec<_> = records.copies().into_iter().filter(|id| !before.contains(id)).collect();
-    assert_eq!(added.len(), 1);
-    assert_eq!(records.json(&added[0])["items"][PAINT], pre_recovery["items"][PAINT]);
-}
-
-#[test]
-fn garbage_in_an_item_follows_the_same_recovery() {
+fn unreadable_workspaces_open_with_their_starting_layout_and_nothing_is_written() {
     let mut database: serde_json::Value = serde_json::from_str(RELEASE_1_0_15).unwrap();
     database["items"][SKETCH]["entity"]["content"] = "{not json".into();
-    let damaged = database.to_string();
-    for retained in [false, true] {
-        let pristine = copy_id(snapshots::VERSION);
-        let copies = if retained { vec![(pristine.as_str(), RELEASE_1_0_15)] } else { Vec::new() };
-        let records = Records::new(&damaged, &copies);
-        let (mut controller, mut host) = start_web(&records);
-        send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Switch { id: SKETCH.into() });
-        let action = recovery(&controller);
-        assert_eq!(action, if retained { ManagerAction::RestoreCopy(pristine.clone()) } else { ManagerAction::RestoreIncluded(SKETCH.into()) });
-        let before = records.copies();
-        send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Form { action });
-        send(&mut controller, &mut host, WEB_NOW, submit());
-        settle(&mut controller, &mut host, WEB_NOW, |c| c.view.ready && !c.view.busy && c.view.prompt.is_none());
-        assert!(controller.view.error.is_none());
-        assert!(opens(&controller, SKETCH));
-        let added: Vec<_> = records.copies().into_iter().filter(|id| !before.contains(id)).collect();
-        assert_eq!(added.len(), 1);
-        assert_eq!(records.json(&added[0])["items"][SKETCH]["entity"]["content"], "{not json");
+    database["items"][PAINT]["entity"]["content"]["history"]["current"] = "missing".into();
+    let records = Records::new(&database.to_string(), &[]);
+    let (mut controller, mut host) = start_web(&records);
+    for id in [SKETCH, PAINT, PHOTO] {
+        switch(&mut controller, &mut host, WEB_NOW, id);
+    }
+    for id in [SKETCH, PAINT] {
+        assert_eq!(stored_layout(&controller, id), starting_layout(id, Platform::Web), "{id}");
+        assert_eq!(web_content(&records, id), database["items"][id]["entity"]["content"], "{id}");
+    }
+    drop(controller);
+    records.checked.set(false);
+    let (mut controller, mut host) = start_web(&records);
+    for id in [SKETCH, PAINT] {
+        assert_eq!(web_content(&records, id), database["items"][id]["entity"]["content"], "restart and maintenance keep {id}");
+    }
+    switch(&mut controller, &mut host, WEB_NOW, SKETCH);
+    edit_layout(&controller, WEB_NOW);
+    let saved: ItemContent = serde_json::from_value(web_content(&records, SKETCH)).unwrap();
+    saved.validate().unwrap();
+    assert_eq!(web_content(&records, PAINT), database["items"][PAINT]["entity"]["content"]);
+}
+
+#[test]
+fn a_released_1_0_12_store_opens_every_workspace_without_asking() {
+    let records = Records::new(RELEASE_1_0_12, &[]);
+    let original = records.json("database");
+    let (mut controller, mut host) = start_web(&records);
+    assert!(notice(&host).is_none());
+    for id in [SKETCH, PAINT, PHOTO] {
+        switch(&mut controller, &mut host, WEB_NOW, id);
+        assert_eq!(web_content(&records, id), original["items"][id]["entity"]["content"], "{id}");
     }
 }
 
 #[test]
-fn a_custom_workspace_this_build_cannot_open_never_offers_a_failing_action() {
+fn an_unreadable_custom_workspace_opens_with_its_baseline_or_the_initial_layout() {
     let mut database = BrowserDatabase::decode(RELEASE_1_0_15).unwrap();
-    let custom = crate::test_support::workspace("Mine");
+    let baseline = layer_ui::WorkspacePreset::Photographer.layout(Platform::Web);
+    let custom = Entity::workspace("Mine", layer_ui::WorkspaceCapture::from_template(&baseline).unwrap(), baseline.clone(), WEB_NOW);
     let id = custom.id.clone();
     let batch = CommitBatch::prepare(Owner::fresh(), vec![Mutation::Create { entity: custom, claim: false, name_policy: NamePolicy::Exact }]).unwrap();
     database.execute(StoreRequest::Commit { batch }, WEB_NOW).unwrap();
     let mut database: serde_json::Value = serde_json::from_str(&database.encoded().unwrap()).unwrap();
     database["items"][&id]["entity"]["content"]["history"] = "{not json".into();
-    let records = Records::new(&database.to_string(), &[]);
-    let (mut controller, mut host) = start_web(&records);
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Switch { id: id.clone() });
-    assert_eq!(recovery(&controller), ManagerAction::SaveAsNew);
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Open { page: ManagerPage::Workspaces });
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Select { id: Some(id.clone()) });
-    assert_eq!(controller.view.selected, None);
-    assert!(!controller.view.enabled);
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Dismiss);
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Switch { id: id.clone() });
-    let previous = controller.manager.active_id();
-    let action = recovery(&controller);
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Form { action });
-    send(&mut controller, &mut host, WEB_NOW, WorkspaceInput::Submit { name: "Recovered".into(), description: None, choice: None });
-    assert!(controller.view.error.is_none());
-    assert_ne!(controller.manager.active_id(), previous);
-    assert_eq!(controller.manager.active_name().as_deref(), Some("Recovered"));
+    let initial = DEFAULT_WORKSPACES.iter().find(|(_, preset)| *preset == layer_ui::WorkspacePreset::initial(Platform::Web, false)).unwrap().0;
+    for (broken, expected) in [(false, opened_layout("Mine", baseline)), (true, starting_layout(initial, Platform::Web))] {
+        if broken { database["items"][&id]["entity"]["content"]["baseline"] = "newer".into(); }
+        let records = Records::new(&database.to_string(), &[]);
+        let (mut controller, mut host) = start_web(&records);
+        switch(&mut controller, &mut host, WEB_NOW, &id);
+        assert_eq!(controller.manager.active_name().as_deref(), Some("Mine"));
+        assert_eq!(stored_layout(&controller, &id), expected, "baseline broken: {broken}");
+        assert_eq!(web_content(&records, &id), database["items"][&id]["entity"]["content"]);
+    }
 }
 
-fn native_copies(directory: &Path) -> Vec<String> {
-    let mut copies: Vec<_> = std::fs::read_dir(directory).unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.strip_suffix(".sqlite3").is_some_and(snapshots::managed_name))
-        .collect();
-    copies.sort();
-    copies
+#[test]
+fn native_stores_open_unreadable_workspaces_with_their_starting_layout() {
+    let (directory, _) = native_store(false);
+    let path = directory.join("workspaces.sqlite3");
+    let content = |id: &str| rusqlite::Connection::open(&path).unwrap().query_row("SELECT content FROM items WHERE id=?1", [id], |row| row.get::<_, String>(0)).unwrap();
+    rusqlite::Connection::open(&path).unwrap().execute("UPDATE items SET content='{not json' WHERE id=?1", [SKETCH]).unwrap();
+    for launch in 0..2 {
+        let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
+        assert!(controller.view.ready && controller.view.error.is_none(), "{:?}", controller.view.error);
+        switch(&mut controller, &mut host, 1000, SKETCH);
+        assert_eq!(stored_layout(&controller, SKETCH), starting_layout(SKETCH, Platform::Gtk));
+        switch(&mut controller, &mut host, 1000, PAINT);
+        assert_eq!(content(SKETCH), "{not json", "launch {launch}");
+        crate::controller_tests::close_native(controller, &mut host);
+    }
+    let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
+    switch(&mut controller, &mut host, 1000, SKETCH);
+    edit_layout(&controller, 1000);
+    assert_ne!(content(SKETCH), "{not json");
+    assert!(opens(&controller, SKETCH));
+    crate::controller_tests::close_native(controller, &mut host);
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 fn native_store(retained: bool) -> (std::path::PathBuf, String) {
@@ -272,39 +238,6 @@ fn notice(host: &layer_host::NativeHost) -> Option<String> {
     host.session.state().notice.as_ref().map(|notice| notice.text.clone())
 }
 const DAMAGED_NOTICE: &str = "Your saved workspaces were damaged. Capy Canvas started new ones.";
-
-#[test]
-fn native_stores_recover_included_workspaces_they_cannot_open() {
-    for retained in [false, true] {
-        let (directory, pristine) = native_store(retained);
-        let path = directory.join("workspaces.sqlite3");
-        rusqlite::Connection::open(&path).unwrap().execute("UPDATE items SET content='{not json' WHERE id=?1", [SKETCH]).unwrap();
-        let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
-        assert!(controller.view.ready && controller.view.error.is_none());
-        send(&mut controller, &mut host, 1000, WorkspaceInput::Switch { id: SKETCH.into() });
-        let action = recovery(&controller);
-        assert_eq!(action, if retained { ManagerAction::RestoreCopy(pristine.clone()) } else { ManagerAction::RestoreIncluded(SKETCH.into()) });
-        let before = native_copies(&directory);
-        send(&mut controller, &mut host, 1000, WorkspaceInput::Form { action });
-        send(&mut controller, &mut host, 1000, submit());
-        settle(&mut controller, &mut host, 1000, |c| c.view.ready && !c.view.busy && c.view.prompt.is_none());
-        assert!(controller.view.error.is_none(), "{:?}", controller.view.error);
-        for (id, _) in DEFAULT_WORKSPACES {
-            assert!(opens(&controller, id), "{id}");
-        }
-        assert_eq!(controller.manager.active_id().as_deref(), Some(SKETCH));
-        if !retained {
-            assert_eq!(stored_layout(&controller, SKETCH), starting_layout(SKETCH, Platform::Gtk));
-        }
-        let added: Vec<_> = native_copies(&directory).into_iter().filter(|id| !before.contains(id)).collect();
-        assert_eq!(added.len(), 1);
-        let kept: String = rusqlite::Connection::open(directory.join(&added[0])).unwrap()
-            .query_row("SELECT content FROM items WHERE id=?1", [SKETCH], |row| row.get(0)).unwrap();
-        assert_eq!(kept, "{not json");
-        crate::controller_tests::close_native(controller, &mut host);
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-}
 
 #[test]
 fn a_damaged_web_store_is_set_aside_and_offers_an_earlier_copy_once() {

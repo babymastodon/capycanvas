@@ -2214,7 +2214,7 @@ fn release_fixtures_load_without_loss() {
 }
 
 #[test]
-fn saved_slots_alias_released_ids_and_keep_unknown_layouts_without_resetting_storage() {
+fn saved_slots_alias_released_ids_and_open_unknown_layouts_without_resetting_storage() {
     for slot in ["lasso_fill", "unknown_slot"] {
         let backend = Rc::new(Backend::default());
         let layout = layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web);
@@ -2226,20 +2226,15 @@ fn saved_slots_alias_released_ids_and_keep_unknown_layouts_without_resetting_sto
         let stored = backend.database.borrow().encoded().unwrap().replace("\"slot\":\"fill\"", &format!("\"slot\":\"{slot}\""));
         *backend.database.borrow_mut() = BrowserDatabase::decode(&stored).unwrap();
         let (controller, mut host) = start(Store(backend), Platform::Web);
-        if slot == "unknown_slot" { assert_started(&controller, &mut host, slot); }
         assert!(controller.view.ready);
         assert!(controller.view.error.is_none());
         assert!(host.session.state().workspace_ready);
         assert_eq!(notice(&host), None);
+        assert_eq!(controller.manager.current().unwrap().id, id, "{slot}");
         assert_eq!(host.session.capture_workspace().unwrap().history.layout(), &layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web));
-        let loaded = pollster::block_on(controller.manager.load(&id));
-        if slot == "lasso_fill" {
-            assert_eq!(controller.manager.current().unwrap().id, id);
-            assert_eq!(loaded.unwrap().entity.capture().unwrap().history.layout(), &layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web));
-            assert_eq!(serde_json::from_str::<layer_ui::ToolSlotId>("\"lasso_fill\"").unwrap(), layer_ui::ToolSlotId::Fill);
-        } else {
-            assert!(loaded.is_err());
-        }
+        let loaded = pollster::block_on(controller.manager.load(&id)).unwrap();
+        assert_eq!(loaded.entity.capture().unwrap().history.layout(), &layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web));
+        assert_eq!(serde_json::from_str::<layer_ui::ToolSlotId>("\"lasso_fill\"").unwrap(), layer_ui::ToolSlotId::Fill);
         assert_eq!(controller.manager.items().len(), DEFAULT_WORKSPACES.len() + 1);
         assert!(!controller.manager.in_memory());
     }
@@ -2598,7 +2593,7 @@ fn sqlite_startup_retention_does_not_delay_workspace_forms() {
 }
 
 #[test]
-fn sqlite_startup_creates_one_workspace_and_keeps_unreadable_rows() {
+fn sqlite_startup_opens_unreadable_workspaces_without_rewriting_them() {
     let directory = crate::test_support::temp_dir("workspace-stale");
     let (controller, mut host) = start_native(&directory);
     assert_started(&controller, &mut host, "first start");
@@ -2623,26 +2618,23 @@ fn sqlite_startup_creates_one_workspace_and_keeps_unreadable_rows() {
     assert_eq!(stale, DEFAULT_WORKSPACES.len());
 
     let unreadable_rows = || {
-        let mut query = db.prepare("SELECT * FROM items WHERE content='{}' ORDER BY id").unwrap();
+        let mut query = db.prepare("SELECT id,content,working FROM items WHERE content='{}' ORDER BY id").unwrap();
         let columns = query.column_count();
         query.query_map([],|row| (0..columns).map(|column| row.get::<_,rusqlite::types::Value>(column)).collect::<rusqlite::Result<Vec<_>>>()).unwrap()
             .collect::<rusqlite::Result<Vec<_>>>().unwrap()
     };
     let original = unreadable_rows();
-    let mut active = None;
     for launch in ["stale start","restart"] {
         let (controller, mut host) = start_native(&directory);
         assert!(controller.view.ready && !controller.view.busy, "{launch}: {:?}",controller.view.error);
         assert!(controller.view.error.is_none());
-        assert!(host.session.capture_workspace().is_ok());
         assert!(host.session.state().workspace_ready);
-        assert_eq!(notice(&host).as_deref(),(launch=="stale start").then_some("This version of Capy Canvas can't open your saved workspaces. Update Capy Canvas to open them."));
+        assert_eq!(notice(&host), None, "{launch}");
         assert!(!controller.manager.in_memory());
         let id = controller.manager.active_id().unwrap();
-        assert!(!DEFAULT_WORKSPACES.iter().any(|(builtin,_)| *builtin==id));
-        if let Some(previous) = &active { assert_eq!(&id,previous); }
-        active = Some(id);
-        assert_eq!(controller.manager.items().iter().filter(|item|item.metadata.kind==ItemKind::Workspace).count(),stale+1);
+        let included = Entity::included_workspace(&id,Platform::Gtk,false,0).unwrap();
+        assert_eq!(host.session.capture_workspace().unwrap().history.layout(),included.capture().unwrap().history.layout(),"{launch}");
+        assert_eq!(controller.manager.items().iter().filter(|item|item.metadata.kind==ItemKind::Workspace).count(),stale);
         close_native(controller, &mut host);
         assert_eq!(unreadable_rows(),original);
     }

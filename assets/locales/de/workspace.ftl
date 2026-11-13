@@ -39,7 +39,6 @@ workspace-header-space = Abstand
 workspace-history-title = Layoutverlauf — { $name }
 workspace-history-current = Aktuelles Layout · { $date }
 workspace-toolbar-in = Werkzeugleiste in { $name }. Änderungen werden in diesem Arbeitsbereich gespeichert und lassen sich im Layoutverlauf wiederherstellen.
-workspace-unavailable = Nicht verfügbar: { $error }
 workspace-included-description = { $description }
     In { common-app-name } enthalten.
 workspace-delete-confirm = „{ $name }“ löschen? Dies ist endgültig.
@@ -596,7 +595,6 @@ workspace-refusal-invalid-toolbar-identity = Ungültige Werkzeugleistenkennung.
 workspace-storage-write-failed = Arbeitsbereichsänderungen konnten nicht gespeichert werden. Erneut versuchen.
 workspace-storage-full = Arbeitsbereichsspeicher ist voll. Speicherplatz freigeben und erneut versuchen.
 workspace-storage-unavailable = Arbeitsbereichsspeicher konnte nicht geöffnet werden. Erneut versuchen.
-workspace-unreadable-name = Unlesbarer Arbeitsbereich
 workspace-backup-saved = Arbeitsbereichssicherung gespeichert.
 workspace-tool-description-waveform = Farbe und Helligkeit von links nach rechts prüfen
 workspace-tool-strength-slider = Stärkeregler
@@ -661,7 +659,6 @@ workspace-keep-current = Aktuelle behalten
 workspace-action-restore-earlier-workspaces = Frühere Arbeitsbereiche wiederherstellen…
 workspace-restore-earlier-workspaces-title = Frühere Arbeitsbereiche wiederherstellen?
 workspace-restore-earlier-workspaces-message = Deine Arbeitsbereiche, Paletten und Pinseleinstellungen kehren zu einer früheren Kopie zurück. Die aktuellen bleiben als Kopie erhalten.
-workspace-restore-included-message = { $name } kehrt zum Ausgangslayout zurück. Eine Kopie deiner aktuellen Arbeitsbereiche bleibt erhalten.
 
 diagnostics-memory-title = Speicher
 diagnostics-memory-ram-label = RAM

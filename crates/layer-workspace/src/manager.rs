@@ -88,6 +88,9 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
             self.store.execute(request).await?
         };
         if let StoreResponse::Entity(stored) = &mut response {
+            if stored.fallback {
+                stored.entity.content = self.starting_content(&stored.entity.id);
+            }
             stored.entity.resolve_phone()?;
         }
         Ok(response)
@@ -123,20 +126,12 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
         }
         None
     }
-    pub(crate) async fn recovery(&self, workspace: &str) -> ManagerAction {
-        match self.openable_copy(Some(workspace)).await {
-            Some(id) => ManagerAction::RestoreCopy(id),
-            None if is_default_item(workspace) => ManagerAction::RestoreIncluded(workspace.into()),
-            None => ManagerAction::SaveAsNew,
-        }
+    fn starting_content(&self, id: &str) -> ItemContent {
+        let id = if is_default_item(id) { id } else { self.initial_id() };
+        Entity::included_workspace(id, self.platform, self.tablet.get(), 0).unwrap().content
     }
-    pub(crate) async fn restore_included(&self, id: &str, now: u64) -> Result<StoredEntity> {
-        let entity = Entity::included_workspace(id, self.platform, self.tablet.get(), now)
-            .ok_or_else(|| StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::ChooseAWorkspace))?;
-        self.flush().await?;
-        self.execute(StoreRequest::RestoreIncluded {entity:Box::new(entity)}).await?;
-        self.refresh().await?;
-        self.prepare_switch(id, now).await
+    fn initial_id(&self) -> &'static str {
+        DEFAULT_WORKSPACES.iter().find(|(_, preset)| *preset == self.initial_workspace.get()).unwrap().0
     }
     /// Continue on a new store that lives only in this manager.
     pub fn use_memory(&self) {
@@ -492,7 +487,7 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
         let id = binding
             .filter(|id| self.items().iter().any(|i| &i.id == id))
             .or(prior_workspace)
-            .unwrap_or_else(|| DEFAULT_WORKSPACES.iter().find(|(_, preset)| *preset == self.initial_workspace.get()).unwrap().0.into());
+            .unwrap_or_else(|| self.initial_id().into());
         self.prepare_startup(&id, now).await
     }
 
@@ -552,8 +547,7 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
             return self.create_from_snapshot(source, &name, true, now).await;
         }
         if occupied { return Err(crate::store_rules::owned_elsewhere()); }
-        let (id,_) = DEFAULT_WORKSPACES.iter().find(|(_,preset)|*preset==self.initial_workspace.get()).unwrap();
-        let source = Entity::included_workspace(id,self.platform,self.tablet.get(),now).unwrap();
+        let source = Entity::included_workspace(self.initial_id(),self.platform,self.tablet.get(),now).unwrap();
         let name = self.display_name(&source.id,&source.metadata);
         let incoming = self.create_from_snapshot(source,&name,true,now).await?;
         self.state.borrow_mut().startup_created = true;
@@ -573,7 +567,6 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
         if self.items().iter().any(|i| i.id == entity.id) {
             return Ok(());
         }
-        let id = entity.id.clone();
         let batch = CommitBatch::prepare(
             self.owner.clone(),
             vec![Mutation::Create {
@@ -586,8 +579,7 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
         let result = self.publish(batch).await;
         self.refresh().await?;
         if let Err(error) = result {
-            // Another window may have seeded this same stable ID.
-            if error.kind != ErrorKind::Conflict || !self.items().iter().any(|i| i.id == id) {
+            if error.kind != ErrorKind::Conflict {
                 return Err(error);
             }
             let mut cleanup = CommitBatch::prepare(self.owner.clone(), Vec::new())?;

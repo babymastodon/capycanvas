@@ -39,7 +39,6 @@ workspace-header-space = Espace
 workspace-history-title = Historique des dispositions — { $name }
 workspace-history-current = Disposition actuelle · { $date }
 workspace-toolbar-in = Barre d’outils dans { $name }. Les modifications sont enregistrées avec cet espace de travail et peuvent être récupérées dans l’historique des dispositions.
-workspace-unavailable = Indisponible : { $error }
 workspace-included-description = { $description }
     Inclus avec { common-app-name }.
 workspace-delete-confirm = Supprimer « { $name } » ? Cette action est définitive.
@@ -596,7 +595,6 @@ workspace-refusal-invalid-toolbar-identity = Identifiant de barre d’outils inv
 workspace-storage-write-failed = Les modifications d’espace de travail n’ont pas pu être enregistrées. Réessayer.
 workspace-storage-full = Le stockage des espaces de travail est plein. Libérer de l’espace disque et réessayer.
 workspace-storage-unavailable = Le stockage des espaces de travail n’a pas pu être ouvert. Réessayer.
-workspace-unreadable-name = Espace de travail illisible
 workspace-backup-saved = Sauvegarde de l’espace de travail enregistrée.
 workspace-tool-description-waveform = Examiner les couleurs et la luminosité de gauche à droite
 workspace-tool-strength-slider = Curseur d’intensité
@@ -661,7 +659,6 @@ workspace-keep-current = Conserver les actuels
 workspace-action-restore-earlier-workspaces = Restaurer les espaces de travail précédents…
 workspace-restore-earlier-workspaces-title = Restaurer les espaces de travail précédents ?
 workspace-restore-earlier-workspaces-message = Vos espaces de travail, palettes et réglages des pinceaux reviennent à une copie précédente. Les actuels sont conservés en copie.
-workspace-restore-included-message = { $name } revient à sa disposition initiale. Une copie de vos espaces de travail actuels est conservée.
 
 diagnostics-memory-title = Mémoire
 diagnostics-memory-ram-label = RAM

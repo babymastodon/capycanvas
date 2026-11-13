@@ -39,7 +39,6 @@ workspace-header-space = Spazio
 workspace-history-title = Cronologia disposizione — { $name }
 workspace-history-current = Disposizione corrente · { $date }
 workspace-toolbar-in = Barra strumenti in { $name }. Le modifiche vengono salvate con questa area di lavoro e possono essere recuperate nella Cronologia disposizione.
-workspace-unavailable = Non disponibile: { $error }
 workspace-included-description = { $description }
     Incluso in { common-app-name }.
 workspace-delete-confirm = Eliminare «{ $name }»? È un'azione permanente.
@@ -593,7 +592,6 @@ workspace-refusal-invalid-toolbar-identity = Identità della barra strumenti non
 workspace-storage-write-failed = Impossibile salvare le modifiche dell'area di lavoro. Riprova.
 workspace-storage-full = L'archivio delle aree di lavoro è pieno. Libera spazio sul disco e riprova.
 workspace-storage-unavailable = Impossibile aprire l'archivio delle aree di lavoro. Riprova.
-workspace-unreadable-name = Area di lavoro illeggibile
 workspace-backup-saved = Backup dell'area di lavoro salvato.
 workspace-tool-description-waveform = Esamina colore e luminosità da sinistra a destra
 workspace-tool-strength-slider = Cursore intensità
@@ -658,7 +656,6 @@ workspace-keep-current = Mantieni le attuali
 workspace-action-restore-earlier-workspaces = Ripristina aree di lavoro precedenti…
 workspace-restore-earlier-workspaces-title = Ripristinare le aree di lavoro precedenti?
 workspace-restore-earlier-workspaces-message = Le aree di lavoro, le tavolozze e le impostazioni dei pennelli tornano a una copia precedente. Quelle attuali vengono conservate come copia.
-workspace-restore-included-message = { $name } torna alla disposizione iniziale. Viene conservata una copia delle aree di lavoro attuali.
 
 diagnostics-memory-title = Memoria
 diagnostics-memory-ram-label = RAM

@@ -75,7 +75,6 @@ workspace-history-current = Tata letak saat ini · { $date }
 
 workspace-toolbar-in = Bilah alat dalam { $name }. Perubahan disimpan bersama ruang kerja ini dan dapat dipulihkan melalui Riwayat Tata Letak.
 
-workspace-unavailable = Tidak tersedia: { $error }
 
 workspace-included-description = { $description }
         Disertakan bersama { common-app-name }.
@@ -1172,7 +1171,6 @@ workspace-storage-full = Penyimpanan ruang kerja penuh. Kosongkan ruang disk dan
 
 workspace-storage-unavailable = Penyimpanan ruang kerja tidak dapat dibuka. Coba lagi.
 
-workspace-unreadable-name = Ruang kerja tidak dapat dibaca
 
 workspace-backup-saved = Cadangan ruang kerja disimpan.
 workspace-tool-description-waveform = Periksa warna dan kecerahan dari kiri ke kanan
@@ -1235,7 +1233,6 @@ workspace-keep-current = Pertahankan Saat Ini
 workspace-action-restore-earlier-workspaces = Pulihkan Ruang Kerja Sebelumnya…
 workspace-restore-earlier-workspaces-title = Pulihkan Ruang Kerja Sebelumnya?
 workspace-restore-earlier-workspaces-message = Ruang kerja, palet, dan pengaturan kuas Anda kembali ke salinan sebelumnya. Yang saat ini disimpan sebagai salinan.
-workspace-restore-included-message = { $name } kembali ke tata letak awalnya. Salinan ruang kerja Anda saat ini tetap disimpan.
 
 diagnostics-memory-title = Memori
 diagnostics-memory-ram-label = RAM

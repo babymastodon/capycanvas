@@ -39,7 +39,6 @@ workspace-header-space = Espacio
 workspace-history-title = Historial de distribución — { $name }
 workspace-history-current = Distribución actual · { $date }
 workspace-toolbar-in = Barra de herramientas de { $name }. Los cambios se guardan con este espacio de trabajo y pueden recuperarse en el Historial de distribución.
-workspace-unavailable = No disponible: { $error }
 workspace-included-description = { $description }
     Incluido con { common-app-name }.
 workspace-delete-confirm = ¿Eliminar «{ $name }»? Esta acción es permanente.
@@ -596,7 +595,6 @@ workspace-refusal-invalid-toolbar-identity = Identificador de barra de herramien
 workspace-storage-write-failed = No se pudieron guardar los cambios del espacio de trabajo. Inténtalo de nuevo.
 workspace-storage-full = El almacenamiento de espacios de trabajo está lleno. Libera espacio en disco e inténtalo de nuevo.
 workspace-storage-unavailable = No se pudo abrir el almacenamiento de espacios de trabajo. Inténtalo de nuevo.
-workspace-unreadable-name = Espacio de trabajo ilegible
 workspace-backup-saved = Copia de seguridad del espacio de trabajo guardada.
 workspace-tool-description-waveform = Inspeccionar color y brillo de izquierda a derecha
 workspace-tool-strength-slider = Control de intensidad
@@ -661,7 +659,6 @@ workspace-keep-current = Mantener actuales
 workspace-action-restore-earlier-workspaces = Restaurar espacios de trabajo anteriores…
 workspace-restore-earlier-workspaces-title = ¿Restaurar espacios de trabajo anteriores?
 workspace-restore-earlier-workspaces-message = Tus espacios de trabajo, paletas y ajustes de pincel vuelven a una copia anterior. Los actuales se conservan como copia.
-workspace-restore-included-message = { $name } vuelve a su distribución inicial. Se conserva una copia de tus espacios de trabajo actuales.
 
 diagnostics-memory-title = Memoria
 diagnostics-memory-ram-label = RAM

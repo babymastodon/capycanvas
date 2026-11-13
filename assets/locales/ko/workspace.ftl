@@ -39,7 +39,6 @@ workspace-header-space = 여백
 workspace-history-title = 레이아웃 기록 — { $name }
 workspace-history-current = 현재 레이아웃 · { $date }
 workspace-toolbar-in = { $name } 작업 영역의 도구 모음입니다. 변경 내용은 이 작업 영역에 저장되며 레이아웃 기록에서 복원할 수 있습니다.
-workspace-unavailable = 사용할 수 없음: { $error }
 workspace-included-description = { $description }
     { common-app-name }에 포함되어 있습니다.
 workspace-delete-confirm = “{ $name }” 항목을 삭제할까요? 되돌릴 수 없습니다.
@@ -622,7 +621,6 @@ workspace-refusal-invalid-toolbar-identity = 도구 모음 식별자가 잘못�
 workspace-storage-write-failed = 작업 영역 변경 사항을 저장하지 못했습니다. 다시 시도하세요.
 workspace-storage-full = 작업 영역 저장소가 가득 찼습니다. 디스크 공간을 확보하고 다시 시도하세요.
 workspace-storage-unavailable = 작업 영역 저장소를 열지 못했습니다. 다시 시도하세요.
-workspace-unreadable-name = 읽을 수 없는 작업 영역
 workspace-backup-saved = 작업 공간 백업을 저장했습니다.
 workspace-tool-description-waveform = 왼쪽부터 오른쪽까지 색상과 밝기 확인
 workspace-tool-strength-slider = 강도 슬라이더
@@ -684,7 +682,6 @@ workspace-keep-current = 현재 상태 유지
 workspace-action-restore-earlier-workspaces = 이전 작업 영역 복원…
 workspace-restore-earlier-workspaces-title = 이전 작업 영역을 복원할까요?
 workspace-restore-earlier-workspaces-message = 작업 영역, 팔레트 및 브러시 설정이 이전 사본으로 돌아갑니다. 현재 상태는 사본으로 보관됩니다.
-workspace-restore-included-message = { $name } 작업 영역이 시작 레이아웃으로 돌아갑니다. 현재 작업 영역의 사본은 보관됩니다.
 
 diagnostics-memory-title = 메모리
 diagnostics-memory-ram-label = RAM

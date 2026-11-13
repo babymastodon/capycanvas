@@ -33,7 +33,6 @@ pub enum ManagerAction {
     RecoverInterrupted,
     RestoreWorkspaces(String),
     RestoreCopy(String),
-    RestoreIncluded(String),
     Switch(String),
     SwitchToWindow(String),
     Rename(String),
@@ -65,7 +64,7 @@ impl ManagerAction {
             Self::Rename(_) | Self::RenameToolbar(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_RENAME).to_string(),
             Self::DuplicateToolbar(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_DUPLICATE).to_string(),
             Self::ResetBrushes => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_RESET_ALL_BRUSHES).to_string(),
-            Self::Reset(_) | Self::RestoreIncluded(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_RESTORE_STARTING_LAYOUT).to_string(),
+            Self::Reset(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_RESTORE_STARTING_LAYOUT).to_string(),
             Self::History(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_LAYOUT_HISTORY).to_string(),
             Self::Delete(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_DELETE).to_string(),
             Self::AddToolbar(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_ADD_TO_WORKSPACE).to_string(),
@@ -209,9 +208,7 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
                     .contains(&layer_ui::normalize_search(query))
             })
             .map(|i| {
-                let subtitle = if let Some(error) = &i.error {
-                    message(&self.localization(), layer_ui::MessageId::WORKSPACE_UNAVAILABLE, &[("error", error.localized_message(&self.localization()))])
-                } else if active.as_ref() == Some(&i.id) {
+                let subtitle = if active.as_ref() == Some(&i.id) {
                     self.localization().text(layer_ui::MessageId::WORKSPACE_CURRENT_WORKSPACE).to_string()
                 } else if i
                     .claim

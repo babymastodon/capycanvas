@@ -39,7 +39,6 @@ workspace-header-space = 空白
 workspace-history-title = 布局历史——{ $name }
 workspace-history-current = 当前布局 · { $date }
 workspace-toolbar-in = { $name }中的工具栏。更改随此工作区保存，可通过布局历史恢复。
-workspace-unavailable = 不可用：{ $error }
 workspace-included-description = { $description }
     { common-app-name } 内置。
 workspace-delete-confirm = 删除“{ $name }”吗？此操作无法撤销。
@@ -622,7 +621,6 @@ workspace-refusal-invalid-toolbar-identity = 工具栏标识无效。
 workspace-storage-write-failed = 无法保存工作区更改。请重试。
 workspace-storage-full = 工作区存储空间已满。请释放磁盘空间后重试。
 workspace-storage-unavailable = 无法打开工作区存储。请重试。
-workspace-unreadable-name = 无法读取的工作区
 workspace-backup-saved = 工作区备份已保存。
 workspace-tool-description-waveform = 从左到右查看颜色和亮度
 workspace-tool-strength-slider = 强度滑块
@@ -684,7 +682,6 @@ workspace-keep-current = 保留当前设置
 workspace-action-restore-earlier-workspaces = 恢复之前的工作区…
 workspace-restore-earlier-workspaces-title = 恢复之前的工作区？
 workspace-restore-earlier-workspaces-message = 您的工作区、调色板和画笔设置将恢复为之前的副本。当前设置会保留为副本。
-workspace-restore-included-message = { $name }将恢复为初始布局。当前工作区的副本会保留。
 
 diagnostics-memory-title = 内存
 diagnostics-memory-ram-label = RAM

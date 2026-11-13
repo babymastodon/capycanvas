@@ -38,7 +38,6 @@ workspace-header-space = Khoảng trống
 workspace-history-title = Lịch sử bố cục — { $name }
 workspace-history-current = Bố cục hiện tại · { $date }
 workspace-toolbar-in = Thanh công cụ trong { $name }. Thay đổi được lưu cùng không gian làm việc này và có thể khôi phục trong Lịch sử bố cục.
-workspace-unavailable = Không khả dụng: { $error }
 workspace-included-description = { $description }
     Có sẵn trong { common-app-name }.
 workspace-delete-confirm = Xóa “{ $name }”? Không thể khôi phục.
@@ -593,7 +592,6 @@ workspace-refusal-invalid-toolbar-identity = Định danh thanh công cụ khôn
 workspace-storage-write-failed = Không thể lưu thay đổi không gian làm việc. Hãy thử lại.
 workspace-storage-full = Bộ lưu trữ không gian làm việc đã đầy. Giải phóng dung lượng đĩa rồi thử lại.
 workspace-storage-unavailable = Không thể mở bộ lưu trữ không gian làm việc. Hãy thử lại.
-workspace-unreadable-name = Không gian làm việc không đọc được
 workspace-backup-saved = Đã lưu bản sao lưu không gian làm việc.
 workspace-tool-description-waveform = Kiểm tra màu và độ sáng từ trái sang phải
 workspace-tool-strength-slider = Thanh trượt cường độ
@@ -655,7 +653,6 @@ workspace-keep-current = Giữ hiện tại
 workspace-action-restore-earlier-workspaces = Khôi phục không gian làm việc trước đó…
 workspace-restore-earlier-workspaces-title = Khôi phục không gian làm việc trước đó?
 workspace-restore-earlier-workspaces-message = Các không gian làm việc, bảng màu và thiết lập cọ của bạn sẽ trở về một bản sao trước đó. Các thiết lập hiện tại được giữ lại thành bản sao.
-workspace-restore-included-message = { $name } sẽ trở về bố cục ban đầu. Một bản sao các không gian làm việc hiện tại của bạn được giữ lại.
 
 diagnostics-memory-title = Bộ nhớ
 diagnostics-memory-ram-label = RAM

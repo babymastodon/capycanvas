@@ -39,7 +39,6 @@ workspace-header-space = 空白
 workspace-history-title = レイアウト履歴 — { $name }
 workspace-history-current = 現在のレイアウト · { $date }
 workspace-toolbar-in = { $name }のツールバーです。変更はこのワークスペースに保存され、レイアウト履歴から復元できます。
-workspace-unavailable = 使用できません：{ $error }
 workspace-included-description = { $description }
     { common-app-name }に同梱されています。
 workspace-delete-confirm = 「{ $name }」を削除しますか？この操作は元に戻せません。
@@ -622,7 +621,6 @@ workspace-refusal-invalid-toolbar-identity = ツールバーの ID が無効で�
 workspace-storage-write-failed = ワークスペースの変更を保存できませんでした。もう一度お試しください。
 workspace-storage-full = ワークスペースの保存領域がいっぱいです。ディスクの空き容量を増やして、もう一度お試しください。
 workspace-storage-unavailable = ワークスペースの保存データを開けませんでした。もう一度お試しください。
-workspace-unreadable-name = 読み取れないワークスペース
 workspace-backup-saved = ワークスペースのバックアップを保存しました。
 workspace-tool-description-waveform = 画像の左右に沿って色と明るさを確認
 workspace-tool-strength-slider = 強度スライダー
@@ -684,7 +682,6 @@ workspace-keep-current = 現在の状態を保持
 workspace-action-restore-earlier-workspaces = 以前のワークスペースを復元…
 workspace-restore-earlier-workspaces-title = 以前のワークスペースを復元しますか？
 workspace-restore-earlier-workspaces-message = ワークスペース、パレット、ブラシ設定が以前のコピーに戻ります。現在の状態はコピーとして保持されます。
-workspace-restore-included-message = { $name }を開始時のレイアウトに戻します。現在のワークスペースのコピーは保持されます。
 
 diagnostics-memory-title = メモリ
 diagnostics-memory-ram-label = RAM

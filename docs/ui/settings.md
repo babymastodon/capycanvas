@@ -415,7 +415,12 @@ and use defaults for fields they cannot read:
   survive. The binary envelope, digest and size limits remain strict. The
   hidden-profile list keeps the IDs this build reads. The web color-preference database
   adds missing stores when its version changes and never deletes stored data.
-- Workspaces: unreadable rows are kept. When none can be read, startup creates
+- Workspaces: an item whose content can't be read still opens. An included
+  workspace gets its starting layout, a custom workspace its saved starting
+  layout or else the device's first included layout, and a saved toolbar keeps
+  its name with the default tools. Opening writes nothing; the next save
+  replaces the stored content. An item whose name or kind can't be read is left
+  out of the list and kept. When no workspace can be listed, startup creates
   a new workspace from the included layout and raises the shared update notice.
   Only damaged storage (SQLite corruption, or a Web store that can't be decoded)
   is set aside; see

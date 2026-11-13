@@ -39,7 +39,6 @@ workspace-header-space = Space
 workspace-history-title = Layout History — { $name }
 workspace-history-current = Current layout · { $date }
 workspace-toolbar-in = Toolbar in { $name }. Changes are saved with this workspace and can be recovered in Layout History.
-workspace-unavailable = Unavailable: { $error }
 workspace-included-description = { $description }
     Included with { common-app-name }.
 workspace-delete-confirm = Delete “{ $name }”? This is permanent.
@@ -596,7 +595,6 @@ workspace-refusal-invalid-toolbar-identity = Invalid toolbar identity.
 workspace-storage-write-failed = Workspace changes couldn't be saved. Try again.
 workspace-storage-full = Workspace storage is full. Free disk space and try again.
 workspace-storage-unavailable = Workspace storage couldn't be opened. Try again.
-workspace-unreadable-name = Unreadable workspace
 workspace-backup-saved = Workspace backup saved.
 workspace-tool-description-waveform = Inspect color and brightness from left to right
 workspace-tool-strength-slider = Strength slider
@@ -661,7 +659,6 @@ workspace-keep-current = Keep Current
 workspace-action-restore-earlier-workspaces = Restore Earlier Workspaces…
 workspace-restore-earlier-workspaces-title = Restore Earlier Workspaces?
 workspace-restore-earlier-workspaces-message = Your workspaces, palettes and brush settings return to an earlier copy. The current ones are kept as a copy.
-workspace-restore-included-message = { $name } returns to its starting layout. A copy of your current workspaces is kept.
 
 diagnostics-memory-title = Memory
 diagnostics-memory-ram-label = RAM

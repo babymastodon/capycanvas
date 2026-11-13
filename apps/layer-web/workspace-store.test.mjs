@@ -252,6 +252,7 @@ export async function checkStaleStorageStartup({evaluate, reload}) {
   const stale = await evaluate(snapshot(`database => Object.values(database.items).map(item => { item.entity.content = {}; item.claim = null; return item.entity.id; })`));
   assert.ok(stale.length >= 3);
   const unreadable = await evaluate(workspaceRecord("database"));
+  const stored = item => ({content: item.entity.content, working: item.entity.working});
   const previousCopy = await evaluate(workspaceRecord("unreadable"));
   await evaluate(`localStorage.setItem("layer.preferences.v1", JSON.stringify({...layerApp.state().settings, pan_speed: 2, tip_lock: true, prediction_algorithm: "kalman", zoom_speed: "fast"}))`);
   await evaluate(`sessionStorage.setItem("capy.workspace.owner", JSON.stringify({id: 7, epoch: "stale", extra: true}))`);
@@ -259,14 +260,14 @@ export async function checkStaleStorageStartup({evaluate, reload}) {
   await restart();
   const view = JSON.parse(await evaluate("layerApp.app.workspace_view()"));
   assert.equal(view.error, null);
-  assert.ok(!stale.includes(view.id));
-  assert.equal(await evaluate("layerApp.state().notice?.text"),"This version of Capy Canvas can't open your saved workspaces. Update Capy Canvas to open them.");
+  assert.ok(stale.includes(view.id));
+  assert.equal(await evaluate("layerApp.state().notice?.text ?? null"), null);
   assert.equal(await evaluate('document.querySelector("#status").textContent'), "");
   assert.equal(await evaluate('[...document.querySelectorAll("dialog")].some(d => d.open)'), false);
   assert.equal(await evaluate(workspaceRecord("unreadable")), previousCopy);
   const retained = JSON.parse(await evaluate(workspaceRecord("database")));
-  for (const id of stale) assert.deepEqual(retained.items[id], JSON.parse(unreadable).items[id]);
-  assert.equal(Object.keys(retained.items).length, stale.length + 1);
+  for (const id of stale) assert.deepEqual(stored(retained.items[id]), stored(JSON.parse(unreadable).items[id]));
+  assert.equal(Object.keys(retained.items).length, stale.length);
   assert.equal(await evaluate("layerApp.state().settings.pan_speed"), 2);
   assert.equal(await evaluate("layerApp.state().settings.zoom_speed"), 1);
   const zen = await evaluate(snapshot(`database => Object.values(database.items).map(item => item.entity.working.zen_mode)`));
@@ -296,8 +297,8 @@ export async function checkStaleStorageStartup({evaluate, reload}) {
   assert.equal(await evaluate("!!layerApp.state().notice"), false);
   assert.equal(JSON.parse(await evaluate("layerApp.app.workspace_view()")).id, view.id);
   const restarted = JSON.parse(await evaluate(workspaceRecord("database")));
-  assert.equal(Object.keys(restarted.items).length, stale.length + 1);
-  for (const id of stale) assert.deepEqual(restarted.items[id], JSON.parse(unreadable).items[id]);
+  assert.equal(Object.keys(restarted.items).length, stale.length);
+  for (const id of stale) assert.deepEqual(stored(restarted.items[id]), stored(JSON.parse(unreadable).items[id]));
   assert.equal(await evaluate('document.querySelector("#status").textContent'), "");
   assert.equal(await evaluate("layerApp.state().settings.pan_speed"), 2);
   const released = JSON.parse(await readFile(new URL("../../crates/layer-workspace/tests/compat/1.0.15/browser.json", import.meta.url), "utf8"));
@@ -307,5 +308,5 @@ export async function checkStaleStorageStartup({evaluate, reload}) {
   assert.equal(await evaluate('layerApp.state().color_library.palettes.some(p => p.name === "Release palette" && p.swatches.some(s => s.name === "Release blue"))'), true);
   assert.equal(await evaluate('layerApp.state().brush.diameter'), 37);
   assert.equal(await evaluate('!!layerApp.state().notice'), false);
-  console.log(`PASS: startup read stale preferences, kept ${stale.length} unreadable workspaces and created one persistent workspace, upgraded older color preferences without losing data, and opened Export without a message`);
+  console.log(`PASS: startup read stale preferences, opened ${stale.length} unreadable workspaces without rewriting them, upgraded older color preferences without losing data, and opened Export without a message`);
 }

@@ -304,9 +304,15 @@ pub(crate) fn pack(
 }
 pub(crate) fn unpack(
     text: &str,
-    mut read: impl FnMut(&str) -> Result<String, StoreError>,
+    read: impl FnMut(&str) -> Result<String, StoreError>,
 ) -> Result<ItemContent, StoreError> {
-    fn resolve(
+    ItemContent::read(resolve(text, read)?)
+}
+pub(crate) fn resolve(
+    text: &str,
+    mut read: impl FnMut(&str) -> Result<String, StoreError>,
+) -> Result<Value, StoreError> {
+    fn follow(
         value: Value,
         read: &mut impl FnMut(&str) -> Result<String, StoreError>,
         depth: usize,
@@ -329,17 +335,17 @@ pub(crate) fn unpack(
                     if content_id(json.as_bytes()) != id {
                         return Err(StoreError::invalid("A workspace resource is corrupt."));
                     }
-                    return resolve(serde_json::from_str(&json)?, read, depth + 1, remaining);
+                    return follow(serde_json::from_str(&json)?, read, depth + 1, remaining);
                 }
                 for v in object.values_mut() {
-                    *v = resolve(v.take(), read, depth + 1, remaining)?;
+                    *v = follow(v.take(), read, depth + 1, remaining)?;
                 }
                 Ok(Value::Object(object))
             }
             Value::Array(values) => Ok(Value::Array(
                 values
                     .into_iter()
-                    .map(|v| resolve(v, read, depth + 1, remaining))
+                    .map(|v| follow(v, read, depth + 1, remaining))
                     .collect::<Result<_, _>>()?,
             )),
             v => Ok(v),
@@ -351,10 +357,7 @@ pub(crate) fn unpack(
         ));
     }
     let mut remaining = MAX_PACKAGE_BYTES;
-    let value = resolve(serde_json::from_str(text)?, &mut read, 0, &mut remaining)?;
-    let content: ItemContent = serde_json::from_value(value)?;
-    content.validate()?;
-    Ok(content)
+    follow(serde_json::from_str(text)?, &mut read, 0, &mut remaining)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -415,7 +418,6 @@ pub enum StoreRequest {
     RestoreSnapshot { id: String },
     Snapshots,
     CheckSnapshot { id: String, workspace: Option<String> },
-    RestoreIncluded { entity: Box<Entity> },
     SetAside,
     Adopted,
     /// Replace every stored item and record with an empty current store. A
@@ -424,7 +426,7 @@ pub enum StoreRequest {
 }
 impl StoreRequest {
     pub fn needs_snapshots(&self) -> bool {
-        matches!(self, Self::RestoreSnapshot {..} | Self::CheckSnapshot {..} | Self::RestoreIncluded {..} | Self::SetAside)
+        matches!(self, Self::RestoreSnapshot {..} | Self::CheckSnapshot {..} | Self::SetAside)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

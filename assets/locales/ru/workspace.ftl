@@ -41,7 +41,6 @@ workspace-header-space = Пробел
 workspace-history-title = История расположения — { $name }
 workspace-history-current = Текущее расположение · { $date }
 workspace-toolbar-in = Панель инструментов в «{ $name }». Изменения сохраняются с этим рабочим пространством и доступны для восстановления в истории расположения.
-workspace-unavailable = Недоступно: { $error }
 workspace-included-description = { $description }
     Входит в { common-app-name }.
 workspace-delete-confirm = Удалить «{ $name }»? Это необратимо.
@@ -602,7 +601,6 @@ workspace-refusal-invalid-toolbar-identity = Недопустимый идент
 workspace-storage-write-failed = Не удалось сохранить изменения рабочего пространства. Повторите попытку.
 workspace-storage-full = Хранилище рабочих пространств заполнено. Освободите место на диске и повторите попытку.
 workspace-storage-unavailable = Не удалось открыть хранилище рабочих пространств. Повторите попытку.
-workspace-unreadable-name = Нечитаемое рабочее пространство
 workspace-backup-saved = Резервная копия рабочего пространства сохранена.
 workspace-tool-description-waveform = Проверить цвет и яркость слева направо
 workspace-tool-strength-slider = Ползунок силы
@@ -664,7 +662,6 @@ workspace-keep-current = Оставить текущие
 workspace-action-restore-earlier-workspaces = Восстановить прежние рабочие пространства…
 workspace-restore-earlier-workspaces-title = Восстановить прежние рабочие пространства?
 workspace-restore-earlier-workspaces-message = Ваши рабочие пространства, палитры и настройки кистей вернутся к более ранней копии. Текущие сохранятся в виде копии.
-workspace-restore-included-message = «{ $name }» вернётся к начальному расположению. Копия текущих рабочих пространств сохранится.
 
 diagnostics-memory-title = Память
 diagnostics-memory-ram-label = ОЗУ

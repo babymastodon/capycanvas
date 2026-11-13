@@ -33,9 +33,12 @@ notice once when any field was discarded.
 Saves merge only this window's changed JSON paths, keeping other windows' brush
 overrides and palettes and unchanged unreadable fields; see
 [editing saves](workspace-ownership.md).
-Unreadable rows and pending deliveries stay in place. When no workspace can be
-read, startup creates a new workspace from the included layout and leaves the
-unreadable rows untouched and shows the shared update notice. SQLite corruption
+A workspace or toolbar whose content can't be read opens with its fallback (see
+[saving and loading](../ui/settings.md#saving-and-loading)); opening writes
+nothing, and the next save replaces the stored content. Rows whose metadata
+can't be read and unreadable pending deliveries stay in place, left out of the
+list. When no workspace can be listed, startup creates a new workspace from the
+included layout and shows the shared update notice. SQLite corruption
 or not-a-database errors rename the database and its existing WAL/SHM sidecars to
 `workspaces.damaged.<uuid>.sqlite3` and matching sidecar names, then start a fresh
 store. A Web store that isn't valid JSON, or fails to decode at the current
@@ -96,13 +99,6 @@ restarts workspace adoption. **Keep Current** leaves the current store in place.
 Restoring a copy this build can't open is refused before anything is written. A
 failed restoration retains the current store and copies; restoration never falls
 back to writing without its version copy.
-
-When a workspace can't be opened, the status and the manager offer **Restore
-Earlier Workspaces…** for the newest retained copy that this build can open and
-that contains the workspace; startup then opens that workspace. Without one, an
-included workspace offers **Restore Starting Layout…**, which keeps a version
-copy of the whole store and then replaces only that item, even when it can't be
-decoded. Other workspaces offer **Save as New Workspace…**.
 
 To restore a native copy, close every Capy Canvas process. Move the current
 database and its `-wal` and `-shm` sidecars into a separate recovery folder.

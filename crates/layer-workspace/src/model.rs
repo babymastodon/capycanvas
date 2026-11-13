@@ -410,6 +410,14 @@ impl ToolbarDefinition {
         }
         Ok(())
     }
+    fn fallback(name: &str) -> Self {
+        Self {
+            name: name.chars().take(64).collect::<String>().trim_end().into(),
+            tiles: layer_ui::TOOLBAR_CONTROLS.iter().zip(1..).map(|(&control, id)| ToolbarTile { id, control, slider_style: Default::default() }).collect(),
+            tile_style: Default::default(),
+            hide_tab: false,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -438,6 +446,14 @@ impl ItemContent {
             Self::Toolbar { definition } => definition.validate(),
         }
     }
+    pub(crate) fn read(value: serde_json::Value) -> Result<Self, StoreError> {
+        let content: Self = serde_json::from_value(value)?;
+        content.validate()?;
+        Ok(content)
+    }
+    fn starting(layout: DockLayout) -> Self {
+        Self::Workspace { history: LayoutHistory::new(&layout), baseline: Box::new(layout) }
+    }
 }
 fn validate_stored_layout(layout: &DockLayout) -> Result<(), StoreError> {
     layout.validate().map_err(StoreError::invalid)?;
@@ -455,6 +471,30 @@ pub struct Entity {
     pub working: Option<WorkspaceWorkingState>,
 }
 impl Entity {
+    pub(crate) fn read(
+        id: String,
+        metadata: Metadata,
+        content: Result<serde_json::Value, StoreError>,
+        working: Option<serde_json::Value>,
+    ) -> Result<(Self, bool), StoreError> {
+        metadata.validate()?;
+        let content = content.unwrap_or_default();
+        let fallback = match metadata.kind {
+            ItemKind::Toolbar => Some(ItemContent::Toolbar { definition: ToolbarDefinition::fallback(&metadata.name) }),
+            ItemKind::Workspace if !is_default_item(&id) => serde_json::from_value(content["baseline"].clone()).ok().map(ItemContent::starting),
+            ItemKind::Workspace => None,
+        };
+        let working = (metadata.kind == ItemKind::Workspace).then(|| WorkspaceWorkingState::restore(working.unwrap_or_default()));
+        let mut entity = Self { id, metadata, content: ItemContent::starting(DockLayout::default()), working };
+        for candidate in ItemContent::read(content).into_iter().chain(fallback) {
+            let placeholder = std::mem::replace(&mut entity.content, candidate);
+            if entity.validate().and_then(|()| entity.clone().resolve_phone()).is_ok() {
+                return Ok((entity, false));
+            }
+            entity.content = placeholder;
+        }
+        Ok((entity, true))
+    }
     pub(crate) fn resolve_phone(&mut self) -> Result<(), StoreError> {
         let preset = DEFAULT_WORKSPACES
             .iter()
@@ -610,6 +650,8 @@ pub struct StoredEntity {
     pub entity: Entity,
     pub generations: Generations,
     pub claim: Option<Claim>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fallback: bool,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ItemSummary {
@@ -617,14 +659,11 @@ pub struct ItemSummary {
     pub metadata: Metadata,
     pub generations: Generations,
     pub claim: Option<Claim>,
-    pub error: Option<StoreError>,
-    pub unavailable_name: bool,
 }
 
 impl ItemSummary {
     pub fn display_name(&self, localization: &layer_ui::Localizer) -> String {
-        if self.unavailable_name { localization.text(layer_ui::MessageId::WORKSPACE_UNREADABLE_NAME).to_string() }
-        else { workspace_display_name(&self.id, &self.metadata, localization) }
+        workspace_display_name(&self.id, &self.metadata, localization)
     }
 }
 
@@ -659,10 +698,9 @@ mod localization_tests {
         let localization = layer_ui::Localizer::shared(layer_ui::UiLanguage::Japanese);
         let numeric = layer_ui::NumericError::Range { label: layer_ui::MessageId::TOOL_SETTING_SIZE.into(), min: 0.5, max: 2048.0 };
         let reason = StoreError::workspace(layer_ui::WorkspaceValidationError::Numeric(numeric.clone()));
-        let item = ItemSummary { id: "literal {id} 🖌".into(), metadata: Metadata::new(ItemKind::Toolbar, "literal {name} 🖌", 1), generations: Default::default(), claim: None, error: Some(reason), unavailable_name: false };
-        let restored: ItemSummary = serde_json::from_slice(&serde_json::to_vec(&item).unwrap()).unwrap();
-        assert_eq!(restored, item);
-        assert_eq!(restored.error.unwrap().localized_message(&localization), numeric.message(&localization));
+        let restored: StoreError = serde_json::from_slice(&serde_json::to_vec(&reason).unwrap()).unwrap();
+        assert_eq!(restored, reason);
+        assert_eq!(restored.localized_message(&localization), numeric.message(&localization));
         let raw = StoreError::new(ErrorKind::FailedWrite, "literal driver {detail} 🖌");
         assert_eq!(raw.message, "literal driver {detail} 🖌");
         assert_eq!(raw.localized_message(&localization), localization.text(layer_ui::MessageId::WORKSPACE_STORAGE_WRITE_FAILED).as_ref());

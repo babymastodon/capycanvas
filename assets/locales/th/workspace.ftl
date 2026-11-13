@@ -36,7 +36,6 @@ workspace-header-space = พื้นที่ว่าง
 workspace-history-title = ประวัติผัง — { $name }
 workspace-history-current = ผังปัจจุบัน · { $date }
 workspace-toolbar-in = แถบเครื่องมือใน { $name } การเปลี่ยนแปลงบันทึกกับพื้นที่ทำงานนี้และกู้คืนได้ในประวัติผัง
-workspace-unavailable = ใช้ไม่ได้: { $error }
 workspace-included-description = { $description }
     มีมาใน { common-app-name }
 workspace-delete-confirm = ลบ “{ $name }” หรือไม่? ลบถาวร
@@ -584,7 +583,6 @@ workspace-refusal-invalid-toolbar-identity = รหัสแถบเครื�
 workspace-storage-write-failed = บันทึกการเปลี่ยนพื้นที่ทำงานไม่ได้ ลองอีกครั้ง
 workspace-storage-full = ที่เก็บพื้นที่ทำงานเต็ม เพิ่มพื้นที่ว่างในดิสก์แล้วลองอีกครั้ง
 workspace-storage-unavailable = เปิดที่เก็บพื้นที่ทำงานไม่ได้ ลองอีกครั้ง
-workspace-unreadable-name = พื้นที่ทำงานที่อ่านไม่ได้
 workspace-backup-saved = บันทึกสำรองพื้นที่ทำงานแล้ว
 workspace-tool-description-waveform = ตรวจสอบสีและความสว่างจากซ้ายไปขวา
 workspace-tool-strength-slider = แถบเลื่อนความแรง
@@ -646,7 +644,6 @@ workspace-keep-current = เก็บปัจจุบันไว้
 workspace-action-restore-earlier-workspaces = กู้คืนพื้นที่ทำงานก่อนหน้า…
 workspace-restore-earlier-workspaces-title = กู้คืนพื้นที่ทำงานก่อนหน้าหรือไม่?
 workspace-restore-earlier-workspaces-message = พื้นที่ทำงาน จานสี และการตั้งค่าพู่กันของคุณจะกลับไปเป็นสำเนาก่อนหน้า ส่วนปัจจุบันจะถูกเก็บไว้เป็นสำเนา
-workspace-restore-included-message = { $name } จะกลับไปใช้ผังเริ่มต้น สำเนาพื้นที่ทำงานปัจจุบันของคุณจะถูกเก็บไว้
 
 diagnostics-memory-title = หน่วยความจำ
 diagnostics-memory-ram-label = RAM

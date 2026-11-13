@@ -93,7 +93,7 @@ fn unreadable_rows_deliveries_and_preferences_survive_maintenance() {
         assert!(matches!(f.store.handle(StoreRequest::Load {id:good.id.clone()}).unwrap(),StoreResponse::Entity(_)));
         assert!(matches!(browser.execute(StoreRequest::Load {id:good.id},1_000_000).unwrap(),StoreResponse::Entity(_)));
         assert!(f.store.list().unwrap().iter().any(|item|item.id==bad.id));
-        assert!(f.store.load(&bad.id).is_err());
+        assert!(f.store.load(&bad.id).unwrap().fallback);
         assert_eq!(f.store.connection.query_row("SELECT content FROM items WHERE id=?1",[&bad.id],|row|row.get::<_,String>(0)).unwrap(),content);
         assert_eq!(f.store.connection.query_row("SELECT payload FROM pending WHERE id=?1",[&pending.operation_id],|row|row.get::<_,String>(0)).unwrap(),payload.to_string());
         for id in pending.components.keys().chain(std::iter::once(&extra_id)) {
@@ -925,14 +925,7 @@ fn newer_schemas_and_corrupt_items_are_preserved() {
         )
         .unwrap();
     let list = f.store.list().unwrap();
-    assert_eq!(list.len(), 2);
-    assert!(
-        list.iter()
-            .find(|i| i.id == bad.entity.id)
-            .unwrap()
-            .error
-            .is_some()
-    );
+    assert_eq!(list.iter().map(|i| &i.id).collect::<Vec<_>>(), [&good.entity.id]);
     assert!(f.store.load(&bad.entity.id).is_err());
     assert_eq!(f.store.load(&good.entity.id).unwrap(), good);
     f.store.handle(StoreRequest::Maintenance {
@@ -952,7 +945,7 @@ fn newer_schemas_and_corrupt_items_are_preserved() {
             ErrorKind::UnsupportedSchema
         );
     }
-    assert_eq!(newer.list().unwrap().len(), 2);
+    assert_eq!(newer.list().unwrap().len(), 1);
     let version: u32 = f
         .store
         .connection
@@ -1444,73 +1437,61 @@ fn failed_worker_open_can_be_retried_after_storage_becomes_available() {
 }
 
 #[test]
-fn cold_storage_lists_preserve_known_refusal_identity() {
+fn items_with_unreadable_metadata_are_left_out_and_kept() {
     let mut f = Fixture::new();
     let stored = f.create("Literal 🖌 {name}");
+    let kept = f.create("Kept");
     let mut browser = BrowserDatabase::default();
-    let batch = CommitBatch::prepare(f.owner.clone(), vec![create(stored.entity.clone())]).unwrap();
+    let batch = CommitBatch::prepare(f.owner.clone(), vec![create(stored.entity.clone()), create(kept.entity.clone())]).unwrap();
     browser.prepare_delivery(&batch).unwrap();
     browser.execute(StoreRequest::Commit { batch }, 1_000_000).unwrap();
-    let mut snapshot: serde_json::Value = serde_json::from_str(&browser.encoded().unwrap()).unwrap();
-    snapshot["items"][&stored.entity.id]["entity"]["metadata"]["name"] = serde_json::json!("");
-    let browser = BrowserDatabase::decode(&snapshot.to_string()).unwrap();
+    let snapshot: serde_json::Value = serde_json::from_str(&browser.encoded().unwrap()).unwrap();
+    for metadata in [serde_json::json!({"name":""}), serde_json::json!({"builtin":{}}), serde_json::json!("newer payload")] {
+        let mut source = snapshot.clone();
+        match metadata.as_object() {
+            Some(fields) => for (key, value) in fields { source["items"][&stored.entity.id]["entity"]["metadata"][key] = value.clone(); },
+            None => source["items"][&stored.entity.id]["entity"]["metadata"] = metadata.clone(),
+        }
+        let record = source["items"][&stored.entity.id].clone();
+        let mut browser = BrowserDatabase::decode(&source.to_string()).unwrap();
+        let StoreResponse::List(items) = browser.execute(StoreRequest::List, 1_000_000).unwrap() else { panic!() };
+        assert_eq!(items.iter().map(|i| &i.id).collect::<Vec<_>>(), [&kept.entity.id], "{metadata}");
+        assert!(browser.execute(StoreRequest::Load { id: stored.entity.id.clone() }, 1_000_000).is_err());
+        browser.execute(StoreRequest::Maintenance { owner: None, clear_older: true }, 1_000_000).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&browser.encoded().unwrap()).unwrap();
+        assert_eq!(after["items"][&stored.entity.id], record);
+    }
     let mut metadata = stored.entity.metadata.clone();
     metadata.name.clear();
     f.store.connection.execute("UPDATE items SET metadata=?1 WHERE id=?2", (serde_json::to_string(&metadata).unwrap(), &stored.entity.id)).unwrap();
-    let StoreResponse::List(browser_items) = browser.clone().execute(StoreRequest::List, 1_000_000).unwrap() else { panic!() };
-    let sqlite_items = f.store.list().unwrap();
-    let english = layer_ui::Localizer::shared(layer_ui::UiLanguage::English);
-    for items in [browser_items, sqlite_items] {
-        let reason = items.into_iter().find(|i| i.id == stored.entity.id).unwrap().error.unwrap();
-        assert_eq!(reason.known, Some(WorkspaceRefusal::EnterANameOf1100CharactersWithoutLeadingOrTrailingSpaces));
-        assert_eq!(reason.localized_message(&english), reason.known.unwrap().message(&english).as_ref());
-        assert_ne!(reason.localized_message(&english), reason.message);
-    }
+    let row = |f: &Fixture| f.store.connection.query_row("SELECT metadata,content FROM items WHERE id=?1", [&stored.entity.id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap();
+    let before = row(&f);
+    assert_eq!(f.store.list().unwrap().iter().map(|i| &i.id).collect::<Vec<_>>(), [&kept.entity.id]);
+    f.store.handle(StoreRequest::Maintenance { owner: None, clear_older: true }).unwrap();
+    assert_eq!(row(&f), before);
 }
 
 #[test]
-fn browser_cold_list_retains_toolbar_size_range_payload() {
-    let f = Fixture::new();
+fn an_unreadable_toolbar_opens_with_its_name_and_the_default_tiles() {
+    let mut f = Fixture::new();
     let entity = Entity::toolbar(ToolbarDefinition { name: "literal toolbar 🖌".into(), tiles: vec![layer_ui::ToolbarTile { slider_style: Default::default(), id: 1, control: layer_ui::ToolbarControl::Size { tenths: 120 } }], tile_style: Default::default(), hide_tab: false }, 1);
     let id = entity.id.clone();
     let mut browser = BrowserDatabase::default();
     let batch = CommitBatch::prepare(f.owner.clone(), vec![create(entity)]).unwrap();
+    f.store.commit(batch.clone()).unwrap();
     browser.prepare_delivery(&batch).unwrap();
     browser.execute(StoreRequest::Commit { batch }, 1_000_000).unwrap();
     let mut snapshot: serde_json::Value = serde_json::from_str(&browser.encoded().unwrap()).unwrap();
-    snapshot["items"][&id]["entity"]["content"]["definition"]["tiles"][0]["control"]["tenths"] = serde_json::json!(0);
+    snapshot["items"][&id]["entity"]["content"]["definition"]["tiles"] = serde_json::json!("newer tiles");
     let mut browser = BrowserDatabase::decode(&snapshot.to_string()).unwrap();
-    let StoreResponse::List(items) = browser.execute(StoreRequest::List, 1_000_000).unwrap() else { panic!() };
-    let reason = items.into_iter().find(|i| i.id == id).unwrap().error.unwrap();
-    let expected = layer_ui::NumericError::Range { label: layer_ui::MessageId::TOOL_SETTING_SIZE.into(), min: 0.5, max: 2048.0 };
-    assert_eq!(reason.numeric, Some(expected.clone()));
-    let localization = layer_ui::Localizer::shared(layer_ui::UiLanguage::Japanese);
-    assert_eq!(reason.localized_message(&localization), expected.message(&localization));
-}
-
-#[test]
-fn corrupt_browser_summary_marks_missing_titles_without_reclassifying_literal_names() {
-    let f = Fixture::new();
-    let entity = workspace("Unreadable workspace");
-    let id = entity.id.clone();
-    let mut browser = BrowserDatabase::default();
-    let batch = CommitBatch::prepare(f.owner.clone(), vec![create(entity)]).unwrap();
-    browser.prepare_delivery(&batch).unwrap();
-    browser.execute(StoreRequest::Commit { batch }, 1_000_000).unwrap();
-    let mut snapshot: serde_json::Value = serde_json::from_str(&browser.encoded().unwrap()).unwrap();
-    snapshot["items"][&id]["entity"]["metadata"]["builtin"] = serde_json::json!({});
-    for missing_name in [false, true] {
-        let mut source = snapshot.clone();
-        if missing_name { source["items"][&id]["entity"]["metadata"].as_object_mut().unwrap().remove("name"); }
-        let mut browser = BrowserDatabase::decode(&source.to_string()).unwrap();
-        let StoreResponse::List(items) = browser.execute(StoreRequest::List, 1_000_000).unwrap() else { panic!() };
-        let item = items.into_iter().find(|i| i.id == id).unwrap();
-        assert_eq!(item.unavailable_name, missing_name);
-        assert!(item.error.is_some());
-        assert_eq!(item.metadata.name, if missing_name { "" } else { "Unreadable workspace" });
-        let localization = layer_ui::Localizer::shared(layer_ui::UiLanguage::Japanese);
-        assert_eq!(item.display_name(&localization), if missing_name { "読み取れないワークスペース" } else { "Unreadable workspace" });
-        let restored: ItemSummary = serde_json::from_slice(&serde_json::to_vec(&item).unwrap()).unwrap();
-        assert_eq!(restored, item);
+    f.store.connection.execute("UPDATE items SET content=?2 WHERE id=?1", (&id, r#"{"type":"toolbar","definition":{"name":"literal toolbar 🖌","tiles":"newer tiles"}}"#)).unwrap();
+    let StoreResponse::Entity(web) = browser.execute(StoreRequest::Load { id: id.clone() }, 1_000_000).unwrap() else { panic!() };
+    let native = f.store.load(&id).unwrap();
+    for stored in [*web, native] {
+        assert!(!stored.fallback);
+        let ItemContent::Toolbar { definition } = stored.entity.content else { panic!() };
+        assert_eq!(definition.name, "literal toolbar 🖌");
+        assert_eq!(definition.tiles.iter().map(|tile| tile.control).collect::<Vec<_>>(), layer_ui::TOOLBAR_CONTROLS);
+        definition.validate().unwrap();
     }
 }

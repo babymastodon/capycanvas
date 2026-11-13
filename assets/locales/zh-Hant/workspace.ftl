@@ -39,7 +39,6 @@ workspace-header-space = 空白
 workspace-history-title = 版面配置歷史——{ $name }
 workspace-history-current = 目前版面配置 · { $date }
 workspace-toolbar-in = { $name }中的工具列。變更隨此工作區儲存，可透過版面配置歷史恢復。
-workspace-unavailable = 無法使用：{ $error }
 workspace-included-description = { $description }
     { common-app-name } 內建。
 workspace-delete-confirm = 要刪除「{ $name }」嗎？此動作無法復原。
@@ -622,7 +621,6 @@ workspace-refusal-invalid-toolbar-identity = 工具列識別碼無效。
 workspace-storage-write-failed = 無法儲存工作區變更。請重試。
 workspace-storage-full = 工作區儲存空間已滿。請釋放磁碟空間後重試。
 workspace-storage-unavailable = 無法開啟工作區儲存資料。請重試。
-workspace-unreadable-name = 無法讀取的工作區
 workspace-backup-saved = 已儲存工作區備份。
 workspace-tool-description-waveform = 從左到右檢視色彩和亮度
 workspace-tool-strength-slider = 強度滑桿
@@ -684,7 +682,6 @@ workspace-keep-current = 保留目前設定
 workspace-action-restore-earlier-workspaces = 還原先前的工作區…
 workspace-restore-earlier-workspaces-title = 還原先前的工作區？
 workspace-restore-earlier-workspaces-message = 您的工作區、色票盤及筆刷設定將還原為先前的副本。目前的設定會保留為副本。
-workspace-restore-included-message = { $name }將恢復為初始版面配置。目前工作區的副本會保留。
 
 diagnostics-memory-title = 記憶體
 diagnostics-memory-ram-label = RAM

@@ -196,7 +196,7 @@ mod tests {
             let legacy = path.with_extension("unreadable.sqlite3");
             fs::copy(&path,&legacy).unwrap();
             if !opens {
-                Connection::open(&legacy).unwrap().execute("UPDATE items SET content='{not json' WHERE id=?1",[crate::DEFAULT_WORKSPACES[0].0]).unwrap();
+                Connection::open(&legacy).unwrap().execute("UPDATE items SET metadata='{not json' WHERE id=?1",[crate::DEFAULT_WORKSPACES[0].0]).unwrap();
             }
             write_marker(&directory.join("last-version"),&VersionMarker {version:snapshots::VERSION.into(),..Default::default()}).unwrap();
             let mut store = SqliteStore::open(&path).unwrap();

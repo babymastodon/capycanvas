@@ -39,7 +39,6 @@ workspace-header-space = Boşluk
 workspace-history-title = Düzen geçmişi — { $name }
 workspace-history-current = Geçerli düzen · { $date }
 workspace-toolbar-in = { $name } içindeki araç çubuğu. Değişiklikler bu çalışma alanıyla kaydedilir ve Düzen geçmişinden kurtarılabilir.
-workspace-unavailable = Kullanılamıyor: { $error }
 workspace-included-description = { $description }
     { common-app-name } ile birlikte gelir.
 workspace-delete-confirm = “{ $name }” silinsin mi? Bu işlem kalıcıdır.
@@ -596,7 +595,6 @@ workspace-refusal-invalid-toolbar-identity = Geçersiz araç çubuğu kimliği.
 workspace-storage-write-failed = Çalışma alanı değişiklikleri kaydedilemedi. Tekrar deneyin.
 workspace-storage-full = Çalışma alanı depolaması dolu. Diskte yer açıp tekrar deneyin.
 workspace-storage-unavailable = Çalışma alanı depolaması açılamadı. Tekrar deneyin.
-workspace-unreadable-name = Okunamayan çalışma alanı
 workspace-backup-saved = Çalışma alanı yedeği kaydedildi.
 workspace-tool-description-waveform = Rengi ve parlaklığı soldan sağa incele
 workspace-tool-strength-slider = Güç kaydırıcısı
@@ -658,7 +656,6 @@ workspace-keep-current = Geçerli Olanları Koru
 workspace-action-restore-earlier-workspaces = Önceki çalışma alanlarını geri yükle…
 workspace-restore-earlier-workspaces-title = Önceki Çalışma Alanları Geri Yüklensin mi?
 workspace-restore-earlier-workspaces-message = Çalışma alanlarınız, paletleriniz ve fırça ayarlarınız önceki bir kopyaya döner. Geçerli olanlar kopya olarak saklanır.
-workspace-restore-included-message = { $name } başlangıç düzenine döner. Geçerli çalışma alanlarınızın bir kopyası saklanır.
 
 diagnostics-memory-title = Bellek
 diagnostics-memory-ram-label = RAM

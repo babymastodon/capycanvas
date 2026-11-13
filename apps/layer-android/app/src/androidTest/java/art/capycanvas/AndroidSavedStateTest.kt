@@ -132,67 +132,43 @@ class AndroidSavedStateTest {
         File(workspaces,"last-version").writeText(obj("version" to BuildConfig.VERSION_NAME,"unreadable_identity" to null,"copies" to copies).toString())
         return database
     }
-    @Test fun unopenableWorkspaceOffersOnlyItsRecovery() {
-        val sketch = "builtin:workspace:painter"
-        for (retained in listOf(false,true)) {
-            val database = releasedStore("recover-$retained",retained)
-            val theme = startupTheme()
-            android.database.sqlite.SQLiteDatabase.openDatabase(database.path,null,android.database.sqlite.SQLiteDatabase.OPEN_READWRITE or android.database.sqlite.SQLiteDatabase.NO_LOCALIZED_COLLATORS)
-                .use { it.execSQL("UPDATE items SET content='{not json' WHERE id=?",arrayOf(sketch)) }
-            val label = if(retained)"Restore Earlier Workspaces…" else "Restore Starting Layout…"
-            val variant = if(retained)"earlier" else "starting"
-            wakeDevice()
-            launchCapy(120_000).use { scenario ->
-                val host = revealed(scenario)
-                val retry = host.catalog.getJSONObject("native_copy").getJSONObject("header").getString("retry")
-                val phone = host.snapshot!!.getJSONObject("layout").objectOrNull("phone") != null
-                val surface = if(phone)"workspace-status" else "workspace-error"
-                fun view() = host.workspaceManager!!
-                fun shows(tag: String, text: String) = findTag(tag)?.second?.find(hasLabel(text)) != null
-                fun press(name: String, match: (androidx.compose.ui.semantics.SemanticsNode) -> Boolean) {
-                    host.awaitMain(name,30_000,{brief(host)}) {findNode(match)!=null}
-                    tap(match)
-                }
-                fun fail() {
-                    if (host.snapshot!!.getJSONObject("state").getJSONObject("workspace").optBoolean("zen_mode")) host.drain(obj("type" to "invoke","command" to "zen_mode"))
-                    press("Sketch in the switcher",hasTag("workspace-switch-$sketch"))
-                    host.awaitMain("Sketch can't be opened",30_000,{brief(host)}) {host.workspaceManager?.let {!it.optBoolean("busy") && it.objectOrNull("status")?.optBoolean("error")==true}==true}
-                    val status = view().getJSONObject("status")
-                    assertFalse(status.getBoolean("retry"))
-                    assertEquals(label,status.getJSONObject("action").getString("label"))
-                    host.awaitMain("only $label is offered",30_000,{brief(host)}) {shows("$surface-action",label) && findTag("$surface-retry")==null && findNode(hasLabel(retry))==null}
-                }
-                assertTrue(view().isNull("error"))
-                assertNotEquals(sketch,view().optString("id"))
-                fail()
-                shot("recover-$variant-error-$theme")
-                if (!phone) {
-                    press("Keep Open",hasTag("workspace-error-open"))
-                    host.awaitMain("the title bar keeps $label",30_000,{brief(host)}) {findTag("workspace-error")==null && shows("workspace-switcher-action",label) && findNode(hasLabel(retry))==null}
-                    shot("recover-$variant-header-$theme")
-                }
-                instrumentation.runOnMainSync {host.workspaceInput(obj("type" to "open","page" to "workspaces"))}
-                press("Sketch in Manage Workspaces",hasTag("workspace-row-$sketch"))
-                host.awaitMain("selecting Sketch offers $label",30_000,{brief(host)}) {host.workspaceManager?.let {it.optString("selected")==sketch && !it.optBoolean("loading") && !it.optBoolean("busy") && it.optString("primary")==label}==true && shows("workspace-confirm",label)}
-                shot("recover-$variant-manager-$theme")
-                press("Cancel",hasTag("workspace-cancel"))
-                host.awaitMain("Manage Workspaces closes",30_000) {host.workspaceManager?.isNull("page")==true && findTag("workspace-manager")==null}
-                fail()
-                press(label,hasTag("$surface-action"))
-                host.awaitMain("$label asks first",30_000,{brief(host)}) {host.workspaceManager?.objectOrNull("prompt")!=null && shows("workspace-submit","Restore")}
-                assertEquals(if(retained)"Restore Earlier Workspaces?" else "Restore Starting Layout",view().getJSONObject("prompt").getString("title"))
-                shot("recover-$variant-prompt-$theme")
-                press("Restore",hasTag("workspace-submit"))
-                host.awaitMain("$label restores the workspaces",120_000,{brief(host)}) {host.workspaceManager?.let {it.optBoolean("ready") && !it.optBoolean("busy") && it.isNull("prompt") && it.isNull("status")}==true}
-                host.awaitMain("$label opens Sketch and saves it",60_000,{brief(host)}) {host.workspaceManager?.let {it.optString("id")==sketch && !it.optBoolean("busy") && it.isNull("status") && !it.optBoolean("dirty") && !it.optBoolean("saving")}==true}
-                shot("recover-$variant-restored-$theme")
+    @Test fun releasedWorkspacesOpenWithoutAsking() {
+        val workspaces = listOf("builtin:workspace:painter" to "sketch","builtin:workspace:illustrator" to "paint","builtin:workspace:photographer" to "photo")
+        val database = releasedStore("released",false)
+        val released = org.json.JSONObject(instrumentation.context.assets.open("web-store-1.0.12.json").bufferedReader().use {it.readText()}).getJSONObject("items")
+        fun stored() = android.database.sqlite.SQLiteDatabase.openDatabase(database.path,null,android.database.sqlite.SQLiteDatabase.OPEN_READONLY or android.database.sqlite.SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { db ->
+            workspaces.map { (id,_) -> db.rawQuery("SELECT content FROM items WHERE id=?",arrayOf(id)).use {it.moveToFirst();it.getString(0)} }
+        }
+        android.database.sqlite.SQLiteDatabase.openDatabase(database.path,null,android.database.sqlite.SQLiteDatabase.OPEN_READWRITE or android.database.sqlite.SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { db ->
+            for ((id,_) in workspaces) db.execSQL("UPDATE items SET content=? WHERE id=?",arrayOf(released.getJSONObject(id).getJSONObject("entity").getJSONObject("content").toString(),id))
+        }
+        val before = stored()
+        val theme = startupTheme()
+        wakeDevice()
+        launchCapy(120_000).use { scenario ->
+            val host = revealed(scenario)
+            fun quiet(step: String) {
+                val view = host.workspaceManager!!
+                assertTrue("$step: ${brief(host)}",view.isNull("error") && view.isNull("status") && view.isNull("prompt"))
+                assertNull("$step asks nothing",findTag("workspace-error"))
             }
-            launchCapy(120_000).use { scenario ->
-                val view = revealed(scenario).workspaceManager!!
-                assertEquals(sketch,view.optString("id"))
-                assertTrue(view.isNull("error") && view.isNull("status"))
-                shot("recover-$variant-relaunch-$theme")
+            quiet("startup")
+            if (host.snapshot!!.getJSONObject("state").getJSONObject("workspace").optBoolean("zen_mode")) host.drain(obj("type" to "invoke","command" to "zen_mode"))
+            for ((id,name) in workspaces) {
+                host.awaitMain("$name in the switcher",30_000,{brief(host)}) {findNode(hasTag("workspace-switch-$id"))!=null}
+                tap(hasTag("workspace-switch-$id"))
+                host.awaitMain("$name opens",60_000,{brief(host)}) {host.workspaceManager?.let {it.optString("id")==id && it.optBoolean("ready") && !it.optBoolean("busy")}==true}
+                quiet(name)
+                shot("released-$name-$theme")
             }
+            host.awaitMain("opening saves nothing pending",30_000) {host.workspaceManager?.let {!it.optBoolean("dirty") && !it.optBoolean("saving")}==true}
+        }
+        assertEquals("opening released workspaces rewrites none of them",before,stored())
+        launchCapy(120_000).use { scenario ->
+            val view = revealed(scenario).workspaceManager!!
+            assertEquals(workspaces.last().first,view.optString("id"))
+            assertTrue("$view",view.isNull("error") && view.isNull("status") && view.isNull("prompt"))
+            shot("released-relaunch-$theme")
         }
     }
     private fun tap(match: (androidx.compose.ui.semantics.SemanticsNode) -> Boolean) {

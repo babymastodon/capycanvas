@@ -129,10 +129,6 @@ pub fn protect(snapshot: Option<&str>, mut environment: SnapshotEnvironment, req
             plan.keep_current(current()?);
             (Some(database), Some(StoreResponse::Done))
         }
-        StoreRequest::RestoreIncluded {..} => {
-            plan.keep_current(current()?);
-            (None, None)
-        }
         StoreRequest::SetAside => {
             let damaged = snapshot.filter(|text| BrowserDatabase::decode(text).is_err_and(|error| error.kind == ErrorKind::DamagedStorage))
                 .ok_or_else(|| StoreError::new(ErrorKind::Unavailable, "Only damaged storage can be set aside."))?;
@@ -168,7 +164,6 @@ mod tests {
         assert_eq!(down.copies.len(),1);
         assert_ne!(first.copies[0].info.id,down.copies[0].info.id);
     }
-    const RELEASE_1_0_12: &str = include_str!("../tests/fixtures/web-store-1.0.12.json");
     const RELEASE_1_0_15: &str = include_str!("../tests/fixtures/web-store-1.0.15.json");
     fn legacy(marker: Option<VersionMarker>, text: &str) -> SnapshotEnvironment {
         SnapshotEnvironment {marker,unreadable:Some(text.into()),restoring:Some(text.into())}
@@ -176,7 +171,10 @@ mod tests {
     #[test]
     fn legacy_copies_are_offered_and_restored_only_when_this_build_opens_them() {
         let current = BrowserDatabase::default().encoded().unwrap();
-        for (text, opens) in [(RELEASE_1_0_12, false), (RELEASE_1_0_15, true)] {
+        let mut unopenable: serde_json::Value = serde_json::from_str(RELEASE_1_0_15).unwrap();
+        unopenable["items"][crate::DEFAULT_WORKSPACES[0].0]["entity"]["metadata"] = "{not json".into();
+        let unopenable = unopenable.to_string();
+        for (text, opens) in [(unopenable.as_str(), false), (RELEASE_1_0_15, true)] {
             let first = protect(Some(&current),legacy(None,text),&StoreRequest::Reopen).unwrap();
             let copy = first.plan.copies.iter().find(|copy|copy.snapshot == text).unwrap().info.id.clone();
             let Some(StoreResponse::Reopened(offered)) = first.response else {panic!()};

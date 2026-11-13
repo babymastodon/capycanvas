@@ -147,17 +147,6 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
                 self.localization().text(layer_ui::MessageId::WORKSPACE_RESTORE_EARLIER_WORKSPACES_MESSAGE).to_string(),
                 self.localization().text(layer_ui::MessageId::WORKSPACE_RESTORE).to_string(),
             ),
-            A::RestoreIncluded(id) => {
-                if !is_default_item(id) {
-                    return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::ChooseAWorkspace));
-                }
-                let metadata = Metadata { builtin: true, ..Metadata::new(ItemKind::Workspace, "", 0) };
-                ManagerPrompt::confirm(
-                    self.localization().text(layer_ui::MessageId::WORKSPACE_RESTORE_STARTING_LAYOUT).to_string(),
-                    message(&self.localization(), layer_ui::MessageId::WORKSPACE_RESTORE_INCLUDED_MESSAGE, &[("name", self.display_name(id, &metadata))]),
-                    self.localization().text(layer_ui::MessageId::WORKSPACE_RESTORE).to_string(),
-                )
-            }
             A::New => {
                 let mut p = ManagerPrompt::confirm(
                     self.localization().text(layer_ui::MessageId::WORKSPACE_NEW_WORKSPACE).to_string(),
