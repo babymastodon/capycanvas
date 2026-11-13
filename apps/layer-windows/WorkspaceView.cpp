@@ -150,7 +150,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
     J resolvedLayout;
     float viewportWidth=0,viewportHeight=0,resolvedWidth=0,resolvedHeight=0;
     uint64_t panelLayoutRevision=0,panelQueryLayoutRevision=0;
-    J panelBridgeFrame;
+    J panelBridgeFrame;std::string panelBridgeReply;
     uint64_t panelBridgeRevision=0;
     bool windowResizing=false,resizeHandback=false;
     int64_t nativeSizingStartQpc=0,nativeSizingEndQpc=0;
@@ -1139,15 +1139,16 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         auto request=to_string(O({{L"groups",measured},{L"columns",columns}}).Stringify());
         auto result=capy_panel_bridges(layoutInput.get(),viewportWidth,viewportHeight,request.c_str());
         NativeString reply(result,capy_string_free);
+        if(reply&&panelBridgeReply==reply.get()){panelBridgeKey=std::move(key);panelQueryLayoutRevision=panelLayoutRevision;return;}
         J packet;if(reply)J::TryParse(to_hstring(reply.get()),packet);
         auto frame=object(packet,L"result");
         if(!frame.Size()){
-            panelBridgeKey.reset();
+            panelBridgeKey.reset();panelBridgeReply.clear();
             OutputDebugStringW((L"Capy panel bridge projection failed: "+str(packet,L"error")+L"\n").c_str());
             return;
         }
         panelBridgeKey=std::move(key);panelQueryLayoutRevision=panelLayoutRevision;
-        if(frame.Stringify()!=panelBridgeFrame.Stringify()){panelBridgeFrame=frame;++panelBridgeRevision;}
+        panelBridgeReply=reply.get();panelBridgeFrame=frame;++panelBridgeRevision;
     }
     A panelColor(Windows::UI::Color color,double opacity=1)const{
         if(windowResizing&&!resizeTintFrame)color={0,0,0,0};
