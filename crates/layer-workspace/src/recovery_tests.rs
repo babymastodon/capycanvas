@@ -199,6 +199,7 @@ fn a_native_store_with_released_1_0_12_workspaces_keeps_their_layouts() {
     for id in [SKETCH, PAINT] {
         sql.execute("UPDATE items SET content=?2 WHERE id=?1", (id, released_content(id).to_string())).unwrap();
     }
+    drop(sql);
     let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
     for id in [SKETCH, PAINT] {
         switch(&mut controller, &mut host, 1000, id);
