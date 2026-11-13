@@ -339,15 +339,6 @@ fn install_actions(app: &adw::Application, active: &Rc<RefCell<Vec<Rc<workspace:
         }
     ));
     app.add_action(&settings_changed);
-    app.connect_window_removed(glib::clone!(
-        #[weak]
-        active,
-        move |_, window| {
-            active
-                .borrow_mut()
-                .retain(|w| w.window.upcast_ref::<gtk::Window>() != window);
-        }
-    ));
     let new_window = gtk::gio::SimpleAction::new("new-window", None);
     new_window.connect_activate(glib::clone!(
         #[weak]
@@ -413,6 +404,16 @@ fn open_workspace_ready(
         if let Some(w) = owner.upgrade() { w.documents.enqueue(&w, (project, location)); }
     }));
     active.borrow_mut().push(workspace.clone());
+    workspace.window.connect_local("retire-renderers", false, glib::clone!(
+        #[weak] active,
+        #[weak(rename_to = window)] workspace.window,
+        #[upgrade_or] None,
+        move |_| {
+            let index = active.borrow().iter().position(|w| w.window == window);
+            let _closing = index.map(|index| active.borrow_mut().remove(index));
+            None
+        }
+    ));
     workspace.window.present();
     if let Some(settings) = settings {
         workspace.dispatch(layer_ui::UiAction::RestoreSettings { settings: Box::new(settings) });
