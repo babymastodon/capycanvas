@@ -306,7 +306,7 @@ struct NewDrawingDialog::Impl:std::enable_shared_from_this<Impl>{
             self->arrange(size.Width>0&&size.Width<NarrowWidth);
         }});
         resized=xaml.Changed(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock())fitPicker(self->root);});
-        dialog.Opened([weak](auto&&,auto&&){if(auto self=weak.lock()){fitPicker(self->root);self->name.Focus(FocusState::Programmatic);}});
+        dialog.Opened([weak](auto&&,auto&&){if(auto self=weak.lock())fitPicker(self->root);});
         dialog.Closing([weak](auto&&,ContentDialogClosingEventArgs const& e){if(auto self=weak.lock()){
             if(self->programmatic||self->stopping)return;
             e.Cancel(true);
@@ -330,7 +330,7 @@ struct NewDrawingDialog::Impl:std::enable_shared_from_this<Impl>{
 
         nameLabel=caption();
         input(name);name.HorizontalAlignment(HorizontalAlignment::Stretch);name.MaxLength(256);name.Padding({10,0,10,0});entryBaseline(name);
-        AutomationProperties::SetAutomationId(name,L"new-drawing-name");inheritLanguage(name,data);
+        AutomationProperties::SetAutomationId(name,L"new-drawing-name");inheritLanguage(name,data);name.TabIndex(0);
         name.TextChanging([weak](auto&&,auto&&){if(auto self=weak.lock();self&&!self->data->updating&&self->name.Text()!=str(self->shown,L"name"))self->send(O({{L"op",S(L"name")},{L"text",S(self->name.Text())}}));});
         name.KeyDown([weak](auto&&,KeyRoutedEventArgs const& e){if(auto self=weak.lock();self&&!composingKey(e)&&e.Key()==winrt::Windows::System::VirtualKey::Enter){e.Handled(true);self->createDrawing();}});
         Grid nameRow;nameRow.ColumnSpacing(RowGap);columns(nameRow,{autoWidth(),star()});column(nameRow,nameLabel,0);column(nameRow,name,1);

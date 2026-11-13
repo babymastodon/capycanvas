@@ -17,6 +17,20 @@ Add-Type -Path (Join-Path $PSScriptRoot 'PackageFixture.cs') -ReferencedAssembli
     'System.IO.Compression.dll','System.IO.Compression.FileSystem.dll'
     if($PSVersionTable.PSEdition -eq 'Core'){'System.Collections.dll';'System.IO.Compression.ZipFile.dll'}
 )
+if(!('NewDrawingFocus' -as [type])){Add-Type -ReferencedAssemblies @([System.Windows.Automation.AutomationElement].Assembly.Location;[System.Windows.Automation.AutomationEvent].Assembly.Location;if($PSVersionTable.PSEdition -eq 'Core'){'System.Collections.dll'}) -TypeDefinition @'
+using System.Collections.Generic;using System.Windows.Automation;
+public static class NewDrawingFocus {
+ static readonly List<string> ids=new List<string>();static AutomationFocusChangedEventHandler handler;
+ public static void Start(int process){
+  lock(ids)ids.Clear();
+  handler=(sender,e)=>{var element=sender as AutomationElement;if(element==null)return;try{if(element.Cached.ProcessId==process)lock(ids)ids.Add(element.Cached.AutomationId);}catch(System.Exception){}};
+  var request=new CacheRequest();request.Add(AutomationElement.AutomationIdProperty);request.Add(AutomationElement.ProcessIdProperty);
+  using(request.Activate())Automation.AddAutomationFocusChangedEventHandler(handler);
+ }
+ public static bool Saw(string id){lock(ids)return ids.Contains(id);}
+ public static string[] Stop(){if(handler!=null)Automation.RemoveAutomationFocusChangedEventHandler(handler);handler=null;lock(ids)return ids.ToArray();}
+}
+'@}
 $CapyCacheModel=$true
 $CapyPopups=$true
 $drawIndex=0
@@ -221,11 +235,15 @@ function Context-Item([string]$Target,[string]$Item) {
 }
 function New-Capture([string]$Name) {Start-Sleep -Milliseconds 800;Capture "new-drawing-$Name-$($script:newTheme)" -WithModel}
 function Open-NewDrawing {
-    File-Command 'new_document'
-    Wait-Until {
-        $name=Find 'new-drawing-name' -Within $root
-        (Drawing) -and (Find 'new-drawing-dialog' -Within $root) -and (Find 'document-width' -Within $root) -and $name -and !$name.Current.IsOffscreen -and $name.Current.HasKeyboardFocus
-    } 'New drawing did not open with its native name field focused' 45
+    [NewDrawingFocus]::Start([int]$review.Id)
+    try{
+        File-Command 'new_document'
+        Wait-Until {
+            $name=Find 'new-drawing-name' -Within $root
+            (Drawing) -and (Find 'new-drawing-dialog' -Within $root) -and (Find 'document-width' -Within $root) -and $name -and !$name.Current.IsOffscreen -and $name.Current.HasKeyboardFocus -and [NewDrawingFocus]::Saw('new-drawing-name')
+        } 'New drawing did not open with its native name field focused' 45
+    }finally{$focused=@([NewDrawingFocus]::Stop())}
+    if(@($focused|Where-Object {$_ -ceq 'new-drawing-preview' -or $_ -ceq 'new-drawing-name'})[0] -cne 'new-drawing-name'){throw "New drawing focused its preview before its name field: $($focused -join ', ')"}
     if((Drawing).untitled -ne (Model).windows_tabs.upcoming_untitled){throw 'New drawing did not offer the next untitled name'}
 }
 function Close-NewDrawing([string]$Id) {
