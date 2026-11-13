@@ -250,7 +250,7 @@ try{
  Wait-Until {$null -ne (Find 'Preferences' -Name)} 'Preferences did not open over a resting finger'
  [CapyCanvasTouch]::Up(1);Start-Sleep -Milliseconds 150
  Invoke 'CloseButton'
- Wait-Until {$null -eq (Find 'Preferences' -Name)} 'Preferences did not close'
+ Wait-Until {$canvas=Find 'drawing-canvas';!(Model).preferences -and $canvas -and $canvas.Current.IsEnabled} 'Preferences did not close'
  [CapyCanvasTouch]::SetForegroundWindow($handle)|Out-Null;Start-Sleep -Milliseconds 150
  [CapyCanvasTouch]::Down(1,($cx+40),$cy)
  for($i=1;$i -le 10;$i++){[CapyCanvasTouch]::Move(1,($cx+40+$i*6),($cy+$i*4));Start-Sleep -Milliseconds 12}

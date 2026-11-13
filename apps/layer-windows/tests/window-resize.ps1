@@ -82,19 +82,21 @@ Set-ResizeSnapshot 144
 if(& $predicate){throw 'Resize accepted another process canvas'}
 'Native resize acknowledgement geometry and ownership: passed'
 
-$navigation=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-zoom-readout.ps1'),[ref]$tokens,[ref]$errors)
-if($errors.Count){throw 'Zoom fixture does not parse'}
-$shortcut=$navigation.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Navigation-Shortcut'},$true)
-$release=@($shortcut.Body.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-Until'},$true))[-1]
-$released=$release.CommandElements[1].ScriptBlock.GetScriptBlock()
 function Model {@{preferences=$script:shortcutPreferences}}
-function Find([string]$Id){if($Id -cne 'drawing-canvas'){throw 'Shortcut release queried another control'};$script:shortcutCanvas}
-$shortcutPreferences=$null;$shortcutCanvas=[pscustomobject]@{Current=[pscustomobject]@{IsEnabled=$false}}
-if(& $released){throw 'Shortcut Preferences acknowledged closure before the native canvas was enabled'}
-$shortcutCanvas=$null
-if(& $released){throw 'Shortcut Preferences acknowledged closure without a native canvas'}
-$shortcutCanvas=[pscustomobject]@{Current=[pscustomobject]@{IsEnabled=$true}};$shortcutPreferences=@{page='shortcuts'}
-if(& $released){throw 'Shortcut Preferences acknowledged closure while the model was open'}
-$shortcutPreferences=$null
-if(!(& $released)){throw 'Shortcut Preferences did not acknowledge a closed model and enabled native canvas'}
-'Shortcut Preferences native canvas release: passed'
+function Find([string]$Id,[switch]$Name){if($Name){return $null};if($Id -cne 'drawing-canvas'){throw 'Preferences release queried another control'};$script:shortcutCanvas}
+foreach($fixture in @(@{file='exercise-zoom-readout.ps1';message='Shortcut Preferences did not close'},@{file='exercise-canvas-touch.ps1';message='Preferences did not close'})){
+ $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot ('../scripts/'+$fixture.file)),[ref]$tokens,[ref]$errors)
+ if($errors.Count){throw "$($fixture.file) does not parse"}
+ $release=@($source.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-Until' -and $node.CommandElements[2].Value -ceq $fixture.message}.GetNewClosure(),$true))
+ if($release.Count -ne 1){throw "Missing actual Preferences release in $($fixture.file)"}
+ $released=$release[0].CommandElements[1].ScriptBlock.GetScriptBlock()
+ $shortcutPreferences=$null;$shortcutCanvas=[pscustomobject]@{Current=[pscustomobject]@{IsEnabled=$false}}
+ if(& $released){throw "$($fixture.file) acknowledged Preferences closure before the native canvas was enabled"}
+ $shortcutCanvas=$null
+ if(& $released){throw "$($fixture.file) acknowledged Preferences closure without a native canvas"}
+ $shortcutCanvas=[pscustomobject]@{Current=[pscustomobject]@{IsEnabled=$true}};$shortcutPreferences=@{page='shortcuts'}
+ if(& $released){throw "$($fixture.file) acknowledged Preferences closure while the model was open"}
+ $shortcutPreferences=$null
+ if(!(& $released)){throw "$($fixture.file) did not acknowledge a closed model and enabled native canvas"}
+}
+'Preferences native canvas release in Navigation and canvas touch: passed'
