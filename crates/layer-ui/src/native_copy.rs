@@ -111,7 +111,6 @@ copy_struct! { PaletteCopy {
 } }
 
 copy_struct! { HeaderCopy {
-    save_as_new_workspace: WORKSPACE_ACTION_SAVE_AS_NEW_WORKSPACE,
     owned_elsewhere: WORKSPACE_REFUSAL_THIS_WORKSPACE_IS_OPEN_IN_ANOTHER_WINDOW,
     owner_lost: WORKSPACE_OWNER_LOST,
     description: COMMON_DESCRIPTION,

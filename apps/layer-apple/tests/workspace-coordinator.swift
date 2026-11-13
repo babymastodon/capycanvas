@@ -1,7 +1,6 @@
 // Exercise the shared workspace controller through the Apple editor lifecycle
 // with temporary native SQLite storage. No visible window or menu automation.
 import Foundation
-import SQLite3
 
 @main struct WorkspaceCoordinatorChecks {
     @MainActor static func main() async throws {
@@ -197,22 +196,5 @@ import SQLite3
         try await workspaces.perform(["type": "switch", "id": original])
         precondition(editor.state["brush"]["diameter"].number == 91)
         try await workspaces.answer(["type": "delete", "value": created])
-    }
-}
-
-private final class TestWorkspaceDatabase {
-    private let handle: OpaquePointer
-    init(directory: URL) throws {
-        var handle: OpaquePointer?
-        guard sqlite3_open(directory.appendingPathComponent("workspaces.sqlite3").path, &handle) == SQLITE_OK, let handle else {
-            throw HostFailure(message: "Could not open fixture SQLite connection")
-        }
-        self.handle = handle
-    }
-    deinit { sqlite3_close(handle) }
-    func execute(_ sql: String) throws {
-        guard sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK else {
-            throw HostFailure(message: String(cString: sqlite3_errmsg(handle)))
-        }
     }
 }

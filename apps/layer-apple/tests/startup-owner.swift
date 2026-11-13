@@ -355,10 +355,63 @@ private final class StartupErrors: @unchecked Sendable {
         }
     }
 
+    @MainActor static func interruptedWorkspaceRecovery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("capy-interrupted-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for theme in [ColorScheme.light, .dark] {
+            let storage = EditorPersistence(root: directory.appendingPathComponent("\(theme)"))
+            let store = EditorStore(platform: 1, scene: UUID().uuidString, persistence: storage, managedWorkspaces: true)
+            let workspaces = store.workspaces!
+            try await workspaces.started("Recovering window")
+            let peerStore = EditorStore(platform: 1, scene: UUID().uuidString, persistence: storage, managedWorkspaces: true)
+            let peer = peerStore.workspaces!
+            try await peer.started("Interrupted window")
+            let database = try TestWorkspaceDatabase(directory: storage.locations!.workspaces)
+            try database.execute("CREATE TRIGGER interrupt_publication BEFORE INSERT ON receipts BEGIN SELECT RAISE(ABORT,'interrupted publication'); END")
+            try await peer.perform(["type": "form", "action": ["type": "new"]])
+            peer.formName = "Interrupted"; peer.submit()
+            try await wait("Interrupted publication") { peer.error != nil }
+            try database.execute("DROP TRIGGER interrupt_publication")
+            await peer.detached()
+            let window = NSWindow(contentRect: CGRect(x: 80, y: 80, width: 640, height: 220),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: WorkspaceStartupNotice(workspaces: workspaces)
+                .environment(\.editorPopupStore, store).environment(\.capyCommonCopy, store.bootstrap["common"])
+                .environment(\.capyNativeCopy, store.catalog["native_copy"]).environment(\.colorScheme, theme)
+                .frame(width: 640, height: 220))
+            window.contentView = host
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            defer { window.contentView = nil; window.close() }
+            try await wait("Interrupted change recovery offered", seconds: 60, failure: { workspaces.error }) {
+                workspaces.view["status"]["action"]["action"]["type"].string == "recover_interrupted"
+                    && element(host, "workspace-status-action") != nil
+            }
+            let status = workspaces.view["status"]
+            try require(button(host, label: status["action"]["label"].string) != nil
+                && button(host, label: store.catalog["native_copy"]["header"]["retry"].string) == nil,
+                "The notice offers only the shared status recovery: \(status.stableKey)")
+            try capture(host, "interrupted-workspace-\(theme)")
+            try require(press(element(host, "workspace-status-action")!), "The status recovery rejected input")
+            try await wait("Interrupted recovery prompt") { workspaces.view["prompt_action"]["type"].string == "recover_interrupted" }
+            let choices = workspaces.view["prompt"]["choices"].array
+            try require(choices.count == 1, "One interrupted change is offered: \(choices.map(\.stableKey))")
+            workspaces.formChoice = choices[0]["id"].string; workspaces.submit()
+            try await workspaces.settle("Interrupted change recovery")
+            try await wait("Recovered change leaves the status", seconds: 60) {
+                workspaces.view["interrupted"].uint == 0 && workspaces.view["status"].isNull && element(host, "workspace-status-action") == nil
+            }
+            try require(try await workspaces.workspaceRows().contains { $0["title"].string.contains("Interrupted") },
+                "Recovery publishes the interrupted workspace")
+            note("PASS \(theme): the notice offers the shared interrupted-change recovery and recovers the change")
+            try await workspaces.closed()
+        }
+    }
+
     @MainActor static func main() {
         _ = NSApplication.shared; NSApp.setActivationPolicy(.accessory)
         Task { @MainActor in
-            do { try await ownerChecks(); try await viewChecks(); exit(0) }
+            do { try await ownerChecks(); try await interruptedWorkspaceRecovery(); try await viewChecks(); exit(0) }
             catch { note("FAIL: \(error.localizedDescription)"); exit(1) }
         }
         NSApp.run()
