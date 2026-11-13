@@ -173,19 +173,7 @@ impl<R: CanvasRenderer> UiSession<R> {
         let mut model = match menu {
             M::Primary => ContextMenu {
                 title: menu.localized_label(self.localization()).to_string(),
-                sections: vec![
-                    M::ALL
-                        .into_iter()
-                        .map(|id| {
-                            let mut item = ContextMenuItem::submenu(&id.localized_label(self.localization()), if id == M::Layer && self.selection_masks.quick() { self.quick_mask_menu().sections } else if id == M::Layer {
-                                self.application_layer_sections()
-                            } else { sections(id) });
-                            item.page = Some(MenuPageId::Application(id));
-                            item
-                        })
-                        .collect(),
-                    vec![command(CommandId::Settings)],
-                ],
+                sections: vec![vec![command(CommandId::Settings)]],
             },
             M::Layer if self.selection_masks.quick() => self.quick_mask_menu(),
             M::Edit => ContextMenu { title: menu.localized_label(self.localization()).to_string(), sections: vec![
@@ -286,7 +274,17 @@ impl<R: CanvasRenderer> UiSession<R> {
             model.sections.insert(1, vec![finger, command(CommandId::ZenMode), swap]);
         }
         model.title = menu.localized_label(self.localization()).to_string();
-        model.with_shortcuts_localized(&self.state.settings, self.state.platform, self.localization())
+        let mut model = model.with_shortcuts_localized(&self.state.settings, self.state.platform, self.localization());
+        if menu == M::Primary {
+            let submenus = M::ALL.into_iter().map(|id| {
+                let mut item = ContextMenuItem::submenu(&id.localized_label(self.localization()), sections(id));
+                item.page = Some(MenuPageId::Application(id));
+                item
+            }).collect();
+            let at = if self.phone_layout().is_some() { model.sections.len() } else { 0 };
+            model.sections.insert(at, submenus);
+        }
+        model
     }
 
     pub fn zoom_menu(&self) -> ZoomMenu {
@@ -351,6 +349,18 @@ mod tests {
             assert!(!names.is_empty(), "{platform:?}: the application menus contain icons");
             let missing = names.iter().filter(|name| !bank.join(format!("{name}.svg")).is_file()).collect::<Vec<_>>();
             assert!(missing.is_empty(), "{platform:?}: missing canonical menu assets: {missing:?}");
+        }
+    }
+
+    #[test]
+    fn primary_submenus_match_their_application_menus() {
+        for platform in Platform::ALL {
+            let session = session(platform);
+            let primary = session.application_menu(ApplicationMenu::Primary);
+            let submenus = primary.sections.iter().find(|section| section.iter().any(|item| item.page.is_some())).unwrap();
+            for (item, menu) in submenus.iter().zip(ApplicationMenu::ALL) {
+                assert_eq!(item.sections, session.application_menu(menu).sections, "{platform:?} {menu:?}");
+            }
         }
     }
 
