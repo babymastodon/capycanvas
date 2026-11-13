@@ -19,6 +19,132 @@ class AndroidDrawerGlassSurfaceTest {
     @get:Rule(order=0) val device = CapyDeviceRule()
     @get:Rule(order=1) val compose = createAndroidComposeRule<MainActivity>()
 
+    @Test fun selectedHeaderFacesKeepTheirClosedColour() {
+        val host = compose.activity.host
+        host.awaitReady(compose = compose)
+        assumeTrue("Requires the tablet workspace", host.snapshot!!.getJSONObject("layout").objectOrNull("phone") == null)
+        host.awaitMain("launch revealed", 30_000, { "" }, compose) { findTag("launch-splash") == null && !host.documentInputBlocked }
+        host.useFlatPaper(compose)
+        host.coverChromeWithPaper(compose)
+        val failures = mutableListOf<String>()
+        for (theme in listOf("light", "dark")) for ((level, value) in listOf("low" to 1, "high" to 3)) {
+            host.drain(obj("type" to "set_theme", "theme" to theme))
+            host.drain(obj("type" to "preferences", "action" to obj("type" to "edit", "id" to "transparency", "value" to value)))
+            compose.waitForIdle()
+            val palette = Palette(theme == "dark", host.snapshot!!.getJSONObject("state").getJSONObject("palette"))
+            lateinit var view: ComposeView
+            compose.runOnIdle {
+                view = ComposeView(compose.activity)
+                compose.activity.addContentView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
+                view.setContent {
+                    CompositionLocalProvider(LocalCanvasHost provides host, LocalPalette provides palette) {
+                        Box(Modifier.fillMaxSize()) {
+                            for ((row, inBar) in listOf(false, true).withIndex()) for ((column, open) in listOf(false, true).withIndex()) {
+                                val bounds = Modifier.offset((80 + column * 160).dp, (140 + row * 80).dp).size(80.dp, 48.dp)
+                                Box(bounds.then(if (inBar) Modifier.glass(TileShape, palette.headerSurface) else Modifier)) {
+                                    HeaderButton("Selected tool", true, true, if (open) "bottom" else null,
+                                        Modifier.fillMaxSize().testTag("selected-header-$row-$column"), inBar = inBar,
+                                        drawerPresented = true, onClick = {}) {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            try {
+                host.awaitMain("Selected header faces", 30_000, { "" }, compose) {
+                    findTag("selected-header-1-1", view.descendant<androidx.compose.ui.platform.ViewRootForTest>()) != null
+                }
+                compose.waitForIdle()
+                val points = compose.runOnIdle {
+                    val root = checkNotNull(view.descendant<androidx.compose.ui.platform.ViewRootForTest>())
+                    val origin = IntArray(2).also(root.view::getLocationOnScreen)
+                    (0..1).flatMap { row -> (0..1).map { column ->
+                        checkNotNull(findTag("selected-header-$row-$column", root)).second.boundsInRoot.center + androidx.compose.ui.geometry.Offset(origin[0].toFloat(), origin[1].toFloat())
+                    } }
+                }
+                val receipt = obj("theme" to theme, "transparency" to level)
+                var inspected = false
+                screenshot("validation/drawer-faces/selected-header-$theme-$level.png") { image ->
+                    inspected = true
+                    assertTrue("Selected header reference points exist", points.size == 4)
+                    val colors = points.map { at -> listOf(16, 8, 0).map { shift ->
+                        (-1..1).sumOf { dy -> (-1..1).sumOf { dx -> image.getPixel(at.x.roundToInt() + dx, at.y.roundToInt() + dy) shr shift and 255 } } / 9.0
+                    } }
+                    assertTrue("Selected header samples are visible", colors.all { rgb -> rgb.any { it > 0.0 } })
+                    receipt.put("closed_open_rgb", org.json.JSONArray(colors.map { org.json.JSONArray(it) }))
+                    for (row in 0..1) {
+                        val delta = colors[row * 2 + 1].zip(colors[row * 2]).map { (open, closed) -> open - closed }
+                        if (delta.any { kotlin.math.abs(it) > 1.0 }) failures += "$theme/$level/inBar=${row == 1}: selected open−closed=$delta"
+                    }
+                }
+                assertTrue("Selected header screenshot inspected", inspected)
+                java.io.File(instrumentation.targetContext.getExternalFilesDir(null), "validation/drawer-faces/selected-header-$theme-$level.json").writeText(receipt.toString(2))
+            } finally { compose.runOnIdle { view.disposeComposition(); (view.parent as android.view.ViewGroup).removeView(view) } }
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    @Test fun selectedPanelTileKeepsItsClosedColour() {
+        val host = compose.activity.host
+        host.awaitReady(compose = compose)
+        assumeTrue("Requires the tablet workspace", host.snapshot!!.getJSONObject("layout").objectOrNull("phone") == null)
+        host.awaitMain("launch revealed", 30_000, { "" }, compose) { findTag("launch-splash") == null && !host.documentInputBlocked }
+        val panelId = host.snapshot!!.array("panels").objects().first { it.array("tiles").length() > 0 }.getString("id")
+        val workspace = host.snapshot!!.getJSONObject("state").getJSONObject("workspace").copy()
+        val layout = workspace.getJSONObject("layout")
+        layout.array("panels").objects().single { it.getString("id") == panelId }.getJSONObject("content")
+            .put("tiles", org.json.JSONArray(listOf(obj("id" to 900, "control" to obj("kind" to "brush", "id" to host.snapshot!!.getJSONObject("state").getJSONObject("brush").getInt("preset"))))))
+        layout.put("next_tile_id", 901)
+        host.drain(obj("type" to "restore_workspace", "workspace" to workspace))
+        host.drain(obj("type" to "select_brush", "id" to host.snapshot!!.getJSONObject("state").getJSONObject("brush").getInt("preset")))
+        compose.waitForIdle()
+        val failures = mutableListOf<String>()
+        for (theme in listOf("light", "dark")) for ((level, value) in listOf("low" to 1, "high" to 3)) {
+            host.drain(obj("type" to "set_theme", "theme" to theme))
+            host.drain(obj("type" to "preferences", "action" to obj("type" to "edit", "id" to "transparency", "value" to value)))
+            compose.waitForIdle()
+            val selected = host.snapshot!!.array("panels").objects().flatMap { panel -> panel.array("tiles").objects().map { panel.getString("id") to it } }
+                .firstOrNull { (panel, tile) -> tile.optBoolean("selected") && !tile.has("component") && findTag("tile-$panel-${tile.getInt("id")}") != null }
+            assertNotNull("Selected visible tile: ${host.snapshot!!.array("panels")}", selected)
+            val (panel, tile) = checkNotNull(selected)
+            val tag = "tile-$panel-${tile.getInt("id")}"
+            val colors = mutableListOf<List<Double>>()
+            for (open in listOf(false, true)) {
+                if (open) {
+                    host.drain(obj("type" to "customize", "action" to obj("type" to "toggle_tool_drawer", "anchor" to obj("panel" to panel, "tile" to tile.getInt("id")))))
+                    compose.mainClock.advanceTimeBy(400)
+                    host.awaitMain("Selected panel drawer presented", 30_000, { "${host.workspaceInteraction?.drawer}" }, compose) {
+                        host.workspaceInteraction?.anchorSource(obj("kind" to "tile", "panel" to panel, "tile" to tile.getInt("id")))?.presented == true
+                    }
+                }
+                val bounds = compose.runOnIdle {
+                    val actual = checkNotNull(findTag(tag))
+                    val origin = IntArray(2).also(actual.first.view::getLocationOnScreen)
+                    actual.second.boundsInRoot.translate(androidx.compose.ui.geometry.Offset(origin[0].toFloat(), origin[1].toFloat()))
+                }
+                var inspected = false
+                screenshot("validation/drawer-faces/selected-panel-$theme-$level-$open.png") { image ->
+                    inspected = true
+                    val x = bounds.left.roundToInt() + 3
+                    val y = bounds.center.y.roundToInt()
+                    assertTrue("Selected panel patch lies inside tile", bounds.contains(androidx.compose.ui.geometry.Offset(x - 1f, y - 1f)) && bounds.contains(androidx.compose.ui.geometry.Offset(x + 1f, y + 1f)))
+                    colors += listOf(16, 8, 0).map { shift -> (-1..1).sumOf { dy -> (-1..1).sumOf { dx -> image.getPixel(x + dx, y + dy) shr shift and 255 } } / 9.0 }
+                }
+                assertTrue("Selected panel screenshot inspected", inspected)
+                assertTrue("Selected panel samples are visible", colors.last().any { it > 0.0 })
+            }
+            val delta = colors[1].zip(colors[0]).map { (open, closed) -> open - closed }
+            if (delta.any { kotlin.math.abs(it) > 1.0 }) failures += "$theme/$level selected panel open−closed=$delta"
+            java.io.File(instrumentation.targetContext.getExternalFilesDir(null), "validation/drawer-faces/selected-panel-$theme-$level.json")
+                .writeText(obj("closed_rgb" to org.json.JSONArray(colors[0]), "open_rgb" to org.json.JSONArray(colors[1]), "delta" to org.json.JSONArray(delta)).toString(2))
+            host.drain(obj("type" to "customize", "action" to obj("type" to "close_expanded")))
+            compose.mainClock.advanceTimeBy(400)
+            host.awaitMain("Selected panel drawer closed", 30_000, { "" }, compose) { host.workspaceInteraction?.drawer == null }
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
     @Test fun standaloneHeaderFaceMatchesPanelGlassOverPaper() {
         val host = compose.activity.host
         host.awaitReady(compose = compose)

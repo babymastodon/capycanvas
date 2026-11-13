@@ -65,8 +65,8 @@ import kotlin.math.roundToInt
                 Box(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxSize().clip(shape).alpha(if (enabled) 1f else .4f)
                     .background(when {
-                        source != null -> colors.joinedPanelFill(source.presented)
                         tile.optBoolean("selected") -> colors.active
+                        source != null -> colors.joinedPanelFill(source.presented)
                         else -> Color.Transparent
                     })
                     .then(activation.modifier).combinedClickable(enabled = enabled || reason != null,

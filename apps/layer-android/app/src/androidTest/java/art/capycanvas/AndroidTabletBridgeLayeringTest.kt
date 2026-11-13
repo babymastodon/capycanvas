@@ -25,9 +25,8 @@ class AndroidTabletBridgeLayeringTest {
         header(obj("type" to "edit", "editing" to true))
         val headerId = host.snapshot!!.getJSONObject("header").getJSONObject("model").getInt("next_id")
         header(obj("type" to "add", "zone" to "left", "before" to null,
-            "item" to obj("kind" to "tool", "control" to obj("kind" to "command", "command" to "eraser"))))
+            "item" to obj("kind" to "tool", "control" to obj("kind" to "color"))))
         header(obj("type" to "edit", "editing" to false))
-        action(obj("type" to "invoke", "command" to "eraser"))
         val dock = checkNotNull(host.workspaceInteraction)
         val anchor = obj("kind" to "header", "id" to headerId)
         val failures = mutableListOf<String>()
@@ -81,9 +80,8 @@ class AndroidTabletBridgeLayeringTest {
         fun header(value:JSONObject)=action(obj("type" to "customize","action" to obj("type" to "header","action" to value)))
         header(obj("type" to "edit","editing" to true))
         val headerId=host.snapshot!!.getJSONObject("header").getJSONObject("model").getInt("next_id")
-        header(obj("type" to "add","zone" to "left","before" to null,"item" to obj("kind" to "tool","control" to obj("kind" to "command","command" to "eraser"))))
+        header(obj("type" to "add","zone" to "left","before" to null,"item" to obj("kind" to "tool","control" to obj("kind" to "color"))))
         header(obj("type" to "edit","editing" to false))
-        action(obj("type" to "invoke","command" to "eraser"))
         val dock=checkNotNull(host.workspaceInteraction)
         val output=File(instrumentation.targetContext.getExternalFilesDir(null),"validation/tablet-bridges").apply { mkdirs() }
         fun bounds(tag:String):Rect=compose.runOnIdle { checkNotNull(findTag(tag)) { "Missing $tag" }.second.boundsInRoot }
@@ -191,7 +189,6 @@ class AndroidTabletBridgeLayeringTest {
         try {
             for(theme in listOf("light","dark")) {
                 action(obj("type" to "set_theme","theme" to theme))
-                action(obj("type" to "invoke","command" to "eraser"))
                 journey("$theme-header","header-control-$headerId")
                 val panel=host.snapshot!!.array("panels").objects().first { it.getString("id")=="toolbar" }
                 val tile=panel.array("tiles").objects().first { it.getJSONObject("control").getString("kind")=="color" }

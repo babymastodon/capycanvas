@@ -269,7 +269,7 @@ internal class PhoneInteraction(val host: CanvasHost, val dock: DockInteraction,
         Box(Modifier.placedAbsolute(capyFace.hit, density).chromeRegion(dock).testTag("phone-capy-target"), contentAlignment = androidx.compose.ui.AbsoluteAlignment.TopLeft) {
             key(host.phoneContactEpoch) {
             HeaderButton(snapshot.getString("capy_caption"), false, true, source?.direction,
-                capyModifier, inBar = true, drawerPresented = source?.presented == true,
+                capyModifier, inBar = true, phoneFace = true, drawerPresented = source?.presented == true,
                 face = capyFace.modifier(density),
                 onClick = { input.click(obj("kind" to "capy")) }) {
                 SharedIcon(capy.getString("icon"), null, Modifier.size(layout.number("capy_icon").dp))
@@ -302,7 +302,7 @@ internal class PhoneInteraction(val host: CanvasHost, val dock: DockInteraction,
         val face = geometry.modifier(density).testTag(tag)
         if (geometry.divider) ToolbarDivider(face, horizontal = input.layout.getString("edge") != "top", length = null)
         else key(host.phoneContactEpoch) { HeaderButton(view.getString("tooltip"), view.optBoolean("selected"), view.optBoolean("enabled") || view.optBoolean("has_variants"), source?.direction,
-            Modifier.fillMaxSize().phoneFocus(host,focus).semantics { selected = view.optBoolean("selected") }.testTag("$tag-hit"), inBar = true, face = face,
+            Modifier.fillMaxSize().phoneFocus(host,focus).semantics { selected = view.optBoolean("selected") }.testTag("$tag-hit"), inBar = true, face = face, phoneFace = true,
             drawerPresented = source?.presented == true,
             reason = view.nullableString("disabled_reason"),
             onDoubleClick = if (view.optBoolean("double_click")) ({ host.dispatch(obj("type" to "double_click_tool", "control" to view.getJSONObject("resolved_control"))) }) else null,

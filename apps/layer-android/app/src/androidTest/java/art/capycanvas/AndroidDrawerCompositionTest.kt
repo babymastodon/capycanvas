@@ -81,10 +81,11 @@ class AndroidDrawerCompositionTest {
                 val dock=checkNotNull(host.workspaceInteraction)
                 fun frame(menu:Boolean)=if(menu)dock.phone?.menu?.frame else dock.drawer
                 val tiles=host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
-                val selected=host.snapshot!!.array("phone_tools").objects().indexOfFirst { it.optBoolean("selected") }
-                assertTrue("Painter has a selected tool",selected>=0)
+                val colorIndex=tiles.indexOfFirst { it.getJSONObject("control").optString("kind")=="color" }
+                assertTrue("Phone has Color",colorIndex>=0)
+                assertFalse("Color is not selected",host.snapshot!!.array("phone_tools").getJSONObject(colorIndex).optBoolean("selected"))
                 for((family,action) in listOf("capy" to obj("kind" to "capy"),"settings" to obj("kind" to "tool_settings"),
-                    "selected" to obj("kind" to "tool","tile" to tiles[selected].getInt("id")))) {
+                    "color" to obj("kind" to "tool","tile" to tiles[colorIndex].getInt("id")))) {
                     val menu=family=="capy"
                     host.drain(obj("type" to "phone","action" to action))
                     compose.mainClock.advanceTimeBy(400)
@@ -203,6 +204,57 @@ class AndroidDrawerCompositionTest {
         }
     }
 
+    @Test fun selectedPhoneFaceKeepsSelectionAtRestAndMidSlide() {
+        val host = compose.activity.host
+        host.awaitReady(compose = compose)
+        assumeTrue("Requires the phone workspace", host.snapshot!!.getJSONObject("layout").objectOrNull("phone") != null)
+        host.awaitMain("launch revealed", 30_000, { "" }, compose) { findTag("launch-splash") == null && !host.documentInputBlocked }
+        host.useFlatPaper(compose)
+        host.drain(obj("type" to "select_brush", "id" to host.snapshot!!.getJSONObject("state").getJSONObject("brush").getInt("preset")))
+        val failures = mutableListOf<String>()
+        try {
+            for (theme in listOf("light", "dark")) for ((level, value) in listOf("low" to 1, "high" to 3)) {
+                host.drain(obj("type" to "set_theme", "theme" to theme))
+                host.drain(obj("type" to "preferences", "action" to obj("type" to "edit", "id" to "transparency", "value" to value)))
+                host.coverChromeWithPaper(compose)
+                val snapshot = host.snapshot!!
+                val index = snapshot.array("phone_tools").objects().indexOfFirst { it.optBoolean("selected") }
+                assertTrue("Paint tool is selected", index >= 0)
+                val tile = snapshot.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").getJSONObject(index)
+                val tint = Palette(theme == "dark", snapshot.getJSONObject("state").getJSONObject("palette")).headerActive
+                val dock = checkNotNull(host.workspaceInteraction)
+                host.drain(obj("type" to "phone", "action" to obj("kind" to "tool", "tile" to tile.getInt("id"))))
+                compose.mainClock.advanceTimeBy(400)
+                host.awaitMain("Selected drawer presented", 30_000, { "${dock.drawer}" }, compose) {
+                    dock.anchorSource(obj("kind" to "phone", "anchor" to obj("kind" to "tool", "id" to tile.getInt("id"))))?.presented == true
+                }
+                compose.waitForIdle()
+                assertTrue("Open Paint remains selected", host.snapshot!!.array("phone_tools").getJSONObject(index).optBoolean("selected"))
+                host.captureDrawerGlass("selected-phone-$theme-$level-rest", compose.runOnIdle { checkNotNull(dock.drawer).copy() }, failures, faceTint = tint)
+                val full = compose.runOnIdle { checkNotNull(dock.drawer).getJSONObject("placement").getJSONObject("bounds").rect() }
+                compose.mainClock.autoAdvance = false
+                host.drain(obj("type" to "customize", "action" to obj("type" to "close_expanded")))
+                var moving = false
+                for (frame in 1..12) {
+                    compose.mainClock.advanceTimeByFrame()
+                    instrumentation.waitForIdleSync()
+                    moving = compose.runOnIdle {
+                        dock.drawer?.getJSONObject("placement")?.getJSONObject("bounds")?.rect()?.let {
+                            it.width / full.width in .25f.. .8f || it.height / full.height in .25f.. .8f
+                        } == true
+                    }
+                    if (moving) break
+                }
+                assertTrue("Selected drawer has a mid-slide frame", moving)
+                host.captureDrawerGlass("selected-phone-$theme-$level-mid", compose.runOnIdle { checkNotNull(dock.drawer).copy() }, failures, faceTint = tint)
+                compose.mainClock.autoAdvance = true
+                compose.mainClock.advanceTimeBy(400)
+                host.awaitMain("Selected drawer closed", 30_000, { "" }, compose) { dock.drawer == null }
+            }
+            assertTrue(failures.joinToString("\n"), failures.isEmpty())
+        } finally { compose.mainClock.autoAdvance = true }
+    }
+
     @Test fun phoneDrawerGlassMatchesOverPaperAtLowAndHighTransparency() = phoneDrawerGlassMatchesBackdrop(true)
 
     @Test fun phoneDrawerShadowStaysOutsideJoinedFacesOverSurround() = phoneDrawerGlassMatchesBackdrop(false)
@@ -229,8 +281,9 @@ class AndroidDrawerCompositionTest {
                 host.frameGlassBackdrop(compose, paper)
                 val dock = checkNotNull(host.workspaceInteraction)
                 val tiles = host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
-                val selected = host.snapshot!!.array("phone_tools").objects().indexOfFirst { it.optBoolean("selected") }
-                assertTrue("Painter has a selected tool", selected >= 0)
+                val colorIndex = tiles.indexOfFirst { it.getJSONObject("control").optString("kind") == "color" }
+                assertTrue("Phone has Color", colorIndex >= 0)
+                assertFalse("Color is not selected", host.snapshot!!.array("phone_tools").getJSONObject(colorIndex).optBoolean("selected"))
                 val backdrop = if (paper) "paper" else "surround"
                 for ((level, value) in if (paper) listOf("low" to 1, "high" to 3) else listOf("high" to 3)) {
                     host.drain(obj("type" to "preferences", "action" to obj("type" to "edit", "id" to "transparency", "value" to value)))
@@ -238,7 +291,7 @@ class AndroidDrawerCompositionTest {
                     assertEquals(level, host.snapshot!!.getJSONObject("state").getJSONObject("settings").getString("transparency"))
                     screenshot("validation/drawer-faces/$backdrop-$orientation-$level-backdrop.png")
                     for ((family, action) in listOf("capy" to obj("kind" to "capy"), "settings" to obj("kind" to "tool_settings"),
-                        "selected" to obj("kind" to "tool", "tile" to tiles[selected].getInt("id")))) {
+                        "color" to obj("kind" to "tool", "tile" to tiles[colorIndex].getInt("id")))) {
                         fun frame() = if (family == "capy") dock.phone?.menu?.frame else dock.drawer
                         host.drain(obj("type" to "phone", "action" to action))
                         compose.mainClock.advanceTimeBy(400)
@@ -246,7 +299,7 @@ class AndroidDrawerCompositionTest {
                             frame()?.objectOrNull("connection") != null && dock.anchorSource(obj("kind" to "phone", "anchor" to when (family) {
                                 "capy" -> obj("kind" to "capy")
                                 "settings" -> obj("kind" to "tool_settings")
-                                else -> obj("kind" to "tool", "id" to tiles[selected].getInt("id"))
+                                else -> obj("kind" to "tool", "id" to tiles[colorIndex].getInt("id"))
                             }))?.presented == true
                         }
                         compose.waitForIdle()

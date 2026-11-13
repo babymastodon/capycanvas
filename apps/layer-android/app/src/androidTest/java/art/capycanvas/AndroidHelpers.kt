@@ -42,7 +42,7 @@ internal fun CanvasHost.frameGlassBackdrop(compose: androidx.compose.ui.test.jun
     }
 }
 
-internal fun CanvasHost.captureDrawerGlass(name: String, frame: JSONObject, failures: MutableList<String>, paper: Boolean = true) {
+internal fun CanvasHost.captureDrawerGlass(name: String, frame: JSONObject, failures: MutableList<String>, paper: Boolean = true, faceTint: androidx.compose.ui.graphics.Color? = null) {
     val dock = checkNotNull(workspaceInteraction)
     val connection = frame.getJSONObject("connection")
     val bounds = connection.getJSONObject("bounds").rect()
@@ -90,8 +90,17 @@ internal fun CanvasHost.captureDrawerGlass(name: String, frame: JSONObject, fail
         }
         val deltas = listOf(0 to 1, 2 to 1, 0 to 2).map { (first, second) -> means[first].zip(means[second]).map { (a, b) -> a - b } }
         receipt.put("face_minus_bridge", org.json.JSONArray(deltas[0])).put("body_minus_bridge", org.json.JSONArray(deltas[1])).put("face_minus_body", org.json.JSONArray(deltas[2]))
-        if (deltas.flatten().any { kotlin.math.abs(it) > 1.0 }) failures += "$name: face−bridge=${deltas[0]}, body−bridge=${deltas[1]}, face−body=${deltas[2]}"
-        if (paper && dock.phone != null) capturePhoneGlassCurve(image, name, frame, origin, means[0], receipt, failures)
+        if (faceTint == null) {
+            if (deltas.flatten().any { kotlin.math.abs(it) > 1.0 }) failures += "$name: face−bridge=${deltas[0]}, body−bridge=${deltas[1]}, face−body=${deltas[2]}"
+            if (paper && dock.phone != null) capturePhoneGlassCurve(image, name, frame, origin, means[0], receipt, failures)
+        } else {
+            val expected = listOf(faceTint.red, faceTint.green, faceTint.blue).zip(means[1]).map { (tint, base) -> (tint * 255 * faceTint.alpha + base * (1 - faceTint.alpha)).roundToInt() }
+            val difference = means[0].zip(expected).map { (actual, want) -> actual - want }
+            receipt.put("expected_selected_rgb", org.json.JSONArray(expected)).put("selection_error", org.json.JSONArray(difference))
+            if (difference.any { kotlin.math.abs(it) > 1.0 } || deltas[1].any { kotlin.math.abs(it) > 1.0 })
+                failures += "$name: selection error=$difference, body−bridge=${deltas[1]}"
+            if (deltas[0].all { kotlin.math.abs(it) <= 1.0 }) failures += "$name selected face is indistinguishable from bridge: ${deltas[0]}"
+        }
     }
     org.junit.Assert.assertTrue("$name screenshot captured", inspected)
     java.io.File(instrumentation.targetContext.getExternalFilesDir(null), "validation/drawer-faces/$name.json").writeText(receipt.toString(2))

@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -398,7 +399,7 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
 @Composable internal fun HeaderButton(label: String, selected: Boolean, enabled: Boolean, drawer: String?,
     modifier: Modifier, fillWidth: Boolean = true, surface: Boolean = true, shape: Shape = drawerButtonShape(drawer), drawerPresented: Boolean = false,
     inBar: Boolean = false, active: Boolean = true, reason: String? = null, onDoubleClick: (() -> Unit)? = null, onLongClick: (() -> Unit)? = null,
-    face: Modifier? = null, onClick: () -> Unit, content: @Composable () -> Unit) {
+    face: Modifier? = null, phoneFace: Boolean = false, onClick: () -> Unit, content: @Composable () -> Unit) {
     val colors = LocalPalette.current
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -409,16 +410,17 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
         enabled = enabled || explained, role = Role.Button, onClickLabel = label, onDoubleClick = onDoubleClick.takeIf { enabled },
         onLongClick = if (explained) {{ reveal += 1 }} else onLongClick, onClick = if (enabled) onClick else {{ reveal += 1 }}).semantics { if (!enabled) disabled() }
     HoverTip(reason.takeIf { explained } ?: label, modifier, reveal = reveal) {
+    val panelFace = drawer != null && (phoneFace || !selected)
     val fill = when {
-        drawer != null -> colors.drawerFill(drawerPresented)
+        panelFace -> colors.drawerFill(drawerPresented).let { if (selected) colors.headerActive.compositeOver(it) else it }
         selected -> colors.headerActive
         enabled && pressed -> colors.text.copy(alpha = .16f)
         enabled && hovered -> colors.text.copy(alpha = .10f)
         else -> Color.Transparent
     }
     val paint = Modifier.clip(shape)
-        .then(if (surface && !inBar) Modifier.glass(shape, if (drawer == null) colors.headerSurface else Color.Transparent, active = active) else Modifier)
-        .drawBehind { drawRect(fill, blendMode = if (drawer != null) BlendMode.Src else BlendMode.SrcOver) }
+        .then(if (surface && !inBar) Modifier.glass(shape, if (panelFace) Color.Transparent else colors.headerSurface, active = active) else Modifier)
+        .drawBehind { drawRect(fill, blendMode = if (panelFace) BlendMode.Src else BlendMode.SrcOver) }
     Box((if (fillWidth) Modifier.fillMaxSize() else Modifier.fillMaxHeight()).then(if (face == null) paint else Modifier).then(click),
         contentAlignment = if (face == null) Alignment.Center else androidx.compose.ui.AbsoluteAlignment.TopLeft) {
         if (face == null) content() else Box(face.then(paint), contentAlignment = Alignment.Center) { content() }
