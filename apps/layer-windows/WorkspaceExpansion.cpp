@@ -49,7 +49,7 @@ struct WorkspaceExpansion::Impl:std::enable_shared_from_this<Impl>{
         }
     }
     void drive(){
-        if(disposed||(!dirty&&!animating)){timer.Stop();return;}
+        if(disposed||(!dirty&&!animating&&!busy)){timer.Stop();return;}
         if(busy||!root.IsLoaded()||root.ActualWidth()<=0||root.ActualHeight()<=0)return;
         auto duration=std::max(1.,num(data->catalog,L"panel_expansion_ms",200))/1000.;
         bool measuring=measurePending;
