@@ -103,7 +103,7 @@ extension XCTestCase {
         waitForExpectations(timeout: 15)
         attachEditor(in: app, name: "paper-color-property")
         let texture = app.buttons["property-texture"], scale = app.buttons["number-value-property-scale"]
-        let propertyScroll = app.scrollViews.containing(.any, identifier: "layer-properties").firstMatch
+        let propertyScroll = app.scrollViews.containing(.button, identifier: "property-texture").firstMatch
         func expectPaperValue(_ element: XCUIElement, _ text: String) {
             expectation(for: NSPredicate(format: "value == %@", text), evaluatedWith: element)
             waitForExpectations(timeout: 10)
