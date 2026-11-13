@@ -3,6 +3,7 @@
 #include <cstdint>
 #include "CanvasModelInputs.h"
 #include <initializer_list>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -20,30 +21,39 @@ using A=winrt::Windows::Data::Json::JsonArray;
 using V=winrt::Windows::Data::Json::IJsonValue;
 inline J copyObject(J const& value){J result;for(auto const& item:value)result.Insert(item.Key(),item.Value());return result;}
 
-inline std::string CameraTracePayload(winrt::Windows::Data::Json::JsonObject const& packet,bool full,std::string const& identity){
-    using namespace winrt::Windows::Data::Json;
-    auto source=full?packet.GetNamedObject(L"state",JsonObject{}):packet;
-    auto camera=source.GetNamedObject(L"camera",JsonObject{});
-    if(!camera.Size())return {};
-    auto result=identity+",\"camera\":"+winrt::to_string(camera.Stringify());
-    auto tabValue=packet.GetNamedValue(L"windows_tabs",JsonValue::CreateNullValue());
-    if(tabValue.ValueType()!=JsonValueType::Object)return result+"}";
-    auto tabs=tabValue.GetObject();
-    auto selected=tabs.GetNamedNumber(L"selected",0);
-    for(auto value:tabs.GetNamedArray(L"session_stamps",JsonArray{})){
-        auto entry=value.GetObject();
-        if(entry.GetNamedNumber(L"id",-1)!=selected)continue;
-        auto stamp=entry.GetNamedObject(L"stamp");
-        JsonObject navigation;
-        navigation.Insert(L"drawing_id",entry.GetNamedValue(L"id"));
-        navigation.Insert(L"artwork",stamp.GetNamedValue(L"artwork"));
-        navigation.Insert(L"epoch",stamp.GetNamedValue(L"epoch"));
-        navigation.Insert(L"revision",stamp.GetNamedValue(L"camera_navigation"));
-        result+=",\"navigation\":"+winrt::to_string(navigation.Stringify());
-        break;
+struct CameraTrace {
+    std::optional<J> navigation;
+    double cameraRevision=0,automaticRevisions=0;
+    std::string Payload(J const& packet,bool full,std::string const& identity){
+        auto source=full?packet.GetNamedObject(L"state",J{}):packet;
+        auto camera=source.GetNamedObject(L"camera",J{});
+        if(camera.Size())cameraRevision=camera.GetNamedNumber(L"revision");
+        if(packet.HasKey(L"windows_tabs")){
+            navigation.reset();
+            auto tabValue=packet.GetNamedValue(L"windows_tabs");
+            auto tabs=tabValue.ValueType()==JsonValueType::Object?tabValue.GetObject():J{};
+            auto selected=tabs.GetNamedNumber(L"selected",0);
+            for(auto value:tabs.GetNamedArray(L"session_stamps",A{})){
+                auto entry=value.GetObject();
+                if(entry.GetNamedNumber(L"id",-1)!=selected)continue;
+                auto stamp=entry.GetNamedObject(L"stamp");
+                navigation=J{};
+                navigation->Insert(L"drawing_id",entry.GetNamedValue(L"id"));
+                navigation->Insert(L"artwork",stamp.GetNamedValue(L"artwork"));
+                navigation->Insert(L"epoch",stamp.GetNamedValue(L"epoch"));
+                automaticRevisions=cameraRevision-stamp.GetNamedNumber(L"camera_navigation");
+                break;
+            }
+        }
+        if(!camera.Size())return {};
+        auto result=identity+",\"camera\":"+winrt::to_string(camera.Stringify());
+        if(navigation){
+            navigation->Insert(L"revision",JsonValue::CreateNumberValue(cameraRevision-automaticRevisions));
+            result+=",\"navigation\":"+winrt::to_string(navigation->Stringify());
+        }
+        return result+"}";
     }
-    return result+"}";
-}
+};
 using ::JsonEqual;
 inline void CanonicalJson(std::string_view text,size_t& at,std::string& out){
     auto space=[&]{while(at<text.size()&&std::string_view(" \t\r\n").find(text[at])!=std::string_view::npos)++at;};

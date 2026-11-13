@@ -1775,7 +1775,7 @@ void CanvasWindow::Publish(std::string snapshot,CapySnapshotInfo const& info) {
             auto search=full?CapyUi::branch(model,L"state").GetNamedValue(L"command_search",Windows::Data::Json::JsonValue::CreateNullValue()):model.GetNamedValue(L"command_search");
             TraceState("search-state",identity+",\"search\":"+to_string(search.Stringify())+"}");
         }
-        auto view=CapyUi::CameraTracePayload(model,full,identity);
+        auto view=cameraTrace.Payload(model,full,identity);
         if(!view.empty())TraceState("camera-state",view);
     }
     if(full){

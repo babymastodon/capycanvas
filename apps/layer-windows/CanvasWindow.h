@@ -1,6 +1,7 @@
 #pragma once
 #include "pch.h"
 #include "CanvasModelUpdate.h"
+#include "NativeJson.h"
 #include "WorkspaceView.h"
 #include "HeaderView.h"
 #include "SettingsView.h"
@@ -155,6 +156,7 @@ private:
     std::unique_ptr<WorkspaceManagerView> workspaceManager;
     winrt::Windows::Data::Json::JsonObject lastModel;
     winrt::Windows::Data::Json::JsonObject tracedModel;
+    CapyUi::CameraTrace cameraTrace;
     std::string lastGlass;
     uint64_t chromeRevision=0;
     std::wstring workspaceOwnerProperty;
