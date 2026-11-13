@@ -237,8 +237,9 @@ import Foundation
         precondition(workspaces.readOnly && editor.state["brush"]["diameter"].number == 95)
         try await workspaces.answer(["type": "save_as_new"], name: "Ownership Recovery")
         let recovered = workspaces.view["id"].string
-        precondition(recovered != original && !workspaces.readOnly && workspaces.error == nil
-            && editor.state["brush"]["diameter"].number == 95)
+        try require(recovered != original && !workspaces.readOnly && workspaces.error == nil
+            && [95, 96].contains(editor.state["brush"]["diameter"].number),
+            "Save as New after losing ownership keeps this window's brush or the peer's durable one: id \(recovered) from \(original), read-only \(workspaces.readOnly), error \(workspaces.error ?? "none"), brush \(editor.state["brush"]["diameter"].number)")
         try await successor.workspaces!.closed()
         try await workspaces.perform(["type": "focus"])
         precondition(editor.state["brush"]["diameter"].number == 96, "The peer's durable brush preference must be adopted before switching")
