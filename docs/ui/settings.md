@@ -368,7 +368,11 @@ Saved app-state keys, IDs and enum names keep their stored names and meaning.
 Never reuse or remove a released name; use Serde `rename` when only the Rust
 name changes. Add defaults for new option fields, while keeping identity,
 ownership and structural fields required. App-state objects ignore unknown
-fields and retain their size and validation limits. Preferences, editing state,
+fields and retain their size and validation limits. Workspace and toolbar
+readers also give an option field they can't read its default (the
+`layer_ui::lenient` helpers), drop list elements and map entries they can't
+read, and drop tiles, title-bar tools, panel controls and bubbles this build
+doesn't offer before the usual validation. Preferences, editing state,
 working state and workspace document versions do not require an exact match;
 physical database schemas and file envelopes have their own admission rules.
 

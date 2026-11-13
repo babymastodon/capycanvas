@@ -148,6 +148,7 @@ pub use session::{CANVAS_BAR_REAPPEAR_MS, CanvasBarContext, CanvasBarItem, Canva
 pub mod keymaps;
 mod settings;
 mod saved_state;
+pub use saved_state::lenient;
 mod shortcut_page;
 mod shortcuts;
 mod theme;
@@ -302,7 +303,7 @@ pub enum ToolbarControl {
     ColorPicker,
     BrushSizeSlider,
     BrushStrengthSlider,
-    ToolOptions { #[serde(default)] style: ToolOptionsStyle },
+    ToolOptions { #[serde(default, deserialize_with = "crate::lenient::fields")] style: ToolOptionsStyle },
     Panel { panel: Panel },
     Divider,
 }

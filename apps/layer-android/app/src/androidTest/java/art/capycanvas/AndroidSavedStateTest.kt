@@ -143,6 +143,11 @@ class AndroidSavedStateTest {
             for ((id,_) in workspaces) db.execSQL("UPDATE items SET content=? WHERE id=?",arrayOf(released.getJSONObject(id).getJSONObject("entity").getJSONObject("content").toString(),id))
         }
         val before = stored()
+        fun toolbars(layout: org.json.JSONObject) = layout.getJSONArray("panels").let { panels -> (0 until panels.length()).map {panels.getJSONObject(it)} }
+            .filter {it.getJSONObject("content").getString("kind")=="toolbar"}.associate { panel ->
+                val tiles = panel.getJSONObject("content").getJSONArray("tiles").let { tiles -> (0 until tiles.length()).map {tiles.getJSONObject(it)} }
+                panel.get("id").toString() to tiles.filter { val control = it.getJSONObject("control"); control.getString("kind") !in listOf("opacity","brush_opacity_slider") && control.optString("command")!="decoration" }.map {it.getLong("id")}
+            }
         val theme = startupTheme()
         wakeDevice()
         launchCapy(120_000).use { scenario ->
@@ -157,7 +162,12 @@ class AndroidSavedStateTest {
             for ((id,name) in workspaces) {
                 host.awaitMain("$name in the switcher",30_000,{brief(host)}) {findNode(hasTag("workspace-switch-$id"))!=null}
                 tap(hasTag("workspace-switch-$id"))
-                host.awaitMain("$name opens",60_000,{brief(host)}) {host.workspaceManager?.let {it.optString("id")==id && it.optBoolean("ready") && !it.optBoolean("busy")}==true}
+                val history = released.getJSONObject(id).getJSONObject("entity").getJSONObject("content").getJSONObject("history")
+                val current = toolbars(history.getJSONObject("revisions").getJSONObject(history.getString("current")).getJSONObject("layout"))
+                fun shown() = host.snapshot?.getJSONObject("state")?.getJSONObject("workspace")?.getJSONObject("layout")?.let {toolbars(it)}
+                host.awaitMain("$name opens with every released tile this build reads",60_000,{"$current != ${shown()}; ${brief(host)}"}) {
+                    host.workspaceManager?.let {it.optString("id")==id && it.optBoolean("ready") && !it.optBoolean("busy")}==true && shown()==current
+                }
                 quiet(name)
                 shot("released-$name-$theme")
             }

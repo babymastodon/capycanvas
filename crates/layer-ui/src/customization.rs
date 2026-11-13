@@ -303,7 +303,7 @@ impl PanelControl {
 pub struct ToolbarTile {
     pub id: u32,
     pub control: ToolbarControl,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::lenient::fields")]
     pub slider_style: crate::ToolbarSliderStyle,
 }
 
@@ -311,10 +311,13 @@ pub struct ToolbarTile {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PanelContent {
     Controls {
+        #[serde(default, deserialize_with = "crate::lenient::vec")]
         visible: Vec<PanelControl>,
     },
     Toolbar {
+        #[serde(default, deserialize_with = "crate::lenient::or_default")]
         name: Option<String>,
+        #[serde(default, deserialize_with = "crate::lenient::vec")]
         tiles: Vec<ToolbarTile>,
     },
 }
@@ -322,10 +325,12 @@ pub enum PanelContent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanelConfig {
     pub id: Panel,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub hide_tab: bool,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub tile_style: TileStyle,
     pub content: PanelContent,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not", deserialize_with = "crate::lenient::or_default")]
     pub zen: bool,
 }
 impl Panel {

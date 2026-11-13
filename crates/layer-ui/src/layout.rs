@@ -884,8 +884,10 @@ pub enum Axis {
 pub enum DockNode {
     Tabs {
         id: u32,
+        #[serde(default, deserialize_with = "crate::lenient::vec")]
         panels: Vec<Panel>,
         active: Panel,
+        #[serde(default, deserialize_with = "crate::lenient::or_default")]
         tab_style: crate::TabStyle,
     },
     Split {
@@ -983,7 +985,7 @@ impl DockNode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DockBand {
     /// Compact toolbar regions share a strip but align independently along it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::lenient::or_default")]
     pub alignment: Option<EdgeAlignment>,
     pub id: u32,
     pub edge: Edge,
@@ -998,11 +1000,14 @@ pub struct FloatingGroup {
     pub position: [f32; 2],
     pub width: f32,
     /// Width inherited on tear-off, retained when manually resizing.
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub default_width: Option<f32>,
     /// None sizes to active content; a preserved tear-off size or manual resize
     /// supplies an explicit height.
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub height: Option<f32>,
     /// Default-size cycle and flow direction for a standalone floating toolbar.
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub toolbar_layout: FloatingToolbarLayout,
 }
 
@@ -1074,24 +1079,33 @@ mod floating_drop_tests;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DockLayout {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::lenient::optional_vec")]
     pub phone: Option<Vec<ToolbarTile>>,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub header: crate::HeaderLayout,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub canvas_info: crate::CanvasInfoLayout,
     pub canvas_bar: bool,
     #[serde(skip)]
     pub header_presentation: crate::HeaderPresentation,
     /// Outermost first. Reordering changes corner ownership explicitly.
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub bands: Vec<DockBand>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub panels: Vec<PanelConfig>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub floating: Vec<FloatingGroup>,
     /// Collapsing preserves the underlying dock tree and its expanded width.
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub collapsed: Vec<CollapsedColumn>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub column_stacks: Vec<ColumnStack>,
     #[serde(skip)]
     pub column_scroll: Vec<(u32, f32)>,
     /// Adding tabs opts a group into natural width; manual width resize opts out.
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub fit_tab_groups: Vec<u32>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub fit_height_groups: Vec<u32>,
     #[serde(skip)]
     pub measurements: Vec<PanelMeasurement>,
@@ -1103,7 +1117,7 @@ pub struct DockLayout {
     /// Runtime native window-control clearance; the canvas viewport stays full size.
     #[serde(skip)]
     pub bottom_inset: f32,
-    #[serde(default, skip_serializing_if = "BubbleLayout::is_empty")]
+    #[serde(default, skip_serializing_if = "BubbleLayout::is_empty", deserialize_with = "crate::lenient::fields")]
     pub bubbles: BubbleLayout,
     next_tile_id: u32,
     next_id: u32,
@@ -2005,6 +2019,24 @@ impl DockLayout {
             splice_toolbar(tiles, next, ToolbarSplice::Remove(tile), false, None)?;
             splice_toolbar(tiles, next, ToolbarSplice::Place(before, source), true, None)
         })
+    }
+    pub fn retain_admitted(&mut self) {
+        for config in &mut self.panels {
+            let panel = config.id;
+            match &mut config.content {
+                PanelContent::Controls { visible } => {
+                    let mut seen = Vec::new();
+                    visible.retain(|control| crate::PanelControl::available(panel).contains(control) && !seen.contains(control) && { seen.push(*control); true });
+                }
+                PanelContent::Toolbar { tiles, .. } => tiles.retain(|tile| tile.control.validate_admission().is_ok()),
+            }
+        }
+        if let Some(tiles) = &mut self.phone {
+            tiles.retain(|tile| tile.control.validate_admission().is_ok()
+                && !matches!(tile.control, ToolbarControl::BrushSizeSlider | ToolbarControl::BrushStrengthSlider | ToolbarControl::ToolOptions { .. }));
+        }
+        self.header.retain_admitted();
+        self.bubbles.retain_admitted();
     }
     /// Visible panels occur exactly once; hidden panels retain their registry entry.
     /// globally unique IDs, finite dimensions, and valid active tabs/ratios.

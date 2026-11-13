@@ -21,6 +21,40 @@ pub(crate) fn restore_fields<T: DeserializeOwned + Serialize>(
     (valid(&kept).unwrap_or(defaults), dropped)
 }
 
+pub mod lenient {
+    use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+
+    pub fn items<T: DeserializeOwned>(value: Value) -> Vec<T> {
+        match value {
+            Value::Array(items) => items.into_iter().filter_map(|item| serde_json::from_value(item).ok()).collect(),
+            _ => Vec::new(),
+        }
+    }
+    pub fn vec<'de, D: Deserializer<'de>, T: DeserializeOwned>(deserializer: D) -> Result<Vec<T>, D::Error> {
+        Ok(items(Value::deserialize(deserializer)?))
+    }
+    pub fn optional_vec<'de, D: Deserializer<'de>, T: DeserializeOwned>(deserializer: D) -> Result<Option<Vec<T>>, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(value.is_array().then(|| items(value)))
+    }
+    pub fn map<'de, D: Deserializer<'de>, K: DeserializeOwned + Ord, V: DeserializeOwned>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error> {
+        Ok(match Value::deserialize(deserializer)? {
+            Value::Object(entries) => entries.into_iter()
+                .filter_map(|(key, value)| Some((serde_json::from_value(Value::String(key)).ok()?, serde_json::from_value(value).ok()?)))
+                .collect(),
+            _ => BTreeMap::new(),
+        })
+    }
+    pub fn or_default<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(deserializer: D) -> Result<T, D::Error> {
+        Ok(serde_json::from_value(Value::deserialize(deserializer)?).unwrap_or_default())
+    }
+    pub fn fields<'de, D: Deserializer<'de>, T: DeserializeOwned + Serialize + Default>(deserializer: D) -> Result<T, D::Error> {
+        Ok(super::restore_fields(Value::deserialize(deserializer)?, T::default, |_| true).0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{EditingState, Localizer, UiLanguage, WorkspaceWorkingState};

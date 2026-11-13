@@ -162,6 +162,30 @@ fn unreadable_workspaces_open_with_their_starting_layout_and_nothing_is_written(
     assert_eq!(web_content(&records, PAINT), database["items"][PAINT]["entity"]["content"]);
 }
 
+fn released_content(id: &str) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(RELEASE_1_0_12).unwrap()["items"][id]["entity"]["content"].clone()
+}
+fn released_layout(id: &str) -> layer_ui::DockLayout {
+    fn removed(tile: &serde_json::Value) -> bool {
+        matches!(tile["control"]["kind"].as_str(), Some("opacity" | "brush_opacity_slider")) || tile["control"]["command"] == "decoration"
+    }
+    fn retain(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Array(items) => {
+                items.retain(|item| !removed(item));
+                items.iter_mut().for_each(retain);
+            }
+            serde_json::Value::Object(fields) => fields.values_mut().for_each(retain),
+            _ => {}
+        }
+    }
+    let mut content = released_content(id);
+    retain(&mut content);
+    let mut entity = Entity { id: id.into(), metadata: Metadata::new(ItemKind::Workspace, "Released", 0), content: serde_json::from_value(content).unwrap(), working: Some(Default::default()) };
+    entity.resolve_phone().unwrap();
+    entity.capture().unwrap().history.layout().clone()
+}
+
 #[test]
 fn a_released_1_0_12_store_opens_every_workspace_without_asking() {
     let records = Records::new(RELEASE_1_0_12, &[]);
@@ -170,8 +194,26 @@ fn a_released_1_0_12_store_opens_every_workspace_without_asking() {
     assert!(notice(&host).is_none());
     for id in [SKETCH, PAINT, PHOTO] {
         switch(&mut controller, &mut host, WEB_NOW, id);
+        assert_eq!(stored_layout(&controller, id), released_layout(id), "{id} keeps every released value this build reads");
         assert_eq!(web_content(&records, id), original["items"][id]["entity"]["content"], "{id}");
     }
+    assert_ne!(released_layout(SKETCH), starting_layout(SKETCH, Platform::Web));
+}
+
+#[test]
+fn a_native_store_with_released_1_0_12_workspaces_keeps_their_layouts() {
+    let (directory, _) = native_store(false);
+    let sql = rusqlite::Connection::open(directory.join("workspaces.sqlite3")).unwrap();
+    for id in [SKETCH, PAINT] {
+        sql.execute("UPDATE items SET content=?2 WHERE id=?1", (id, released_content(id).to_string())).unwrap();
+    }
+    let (mut controller, mut host) = crate::controller_tests::start_native(&directory);
+    for id in [SKETCH, PAINT] {
+        switch(&mut controller, &mut host, 1000, id);
+        assert_eq!(stored_layout(&controller, id), released_layout(id), "{id}");
+    }
+    crate::controller_tests::close_native(controller, &mut host);
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

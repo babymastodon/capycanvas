@@ -209,6 +209,9 @@ checks portable saved values and private-only session fields.
 removes defaultable app-state options and adds unknown struct fields; required
 identities and structure still fail validation. Closed artwork records keep
 their strict package acceptance tests.
+`an_unreadable_saved_value_reads_as_if_it_were_absent` (workspace) replaces
+each released list element and field in turn with a value no build wrote and
+requires the same result as removing it.
 
 Inputs live in each crate's `tests/compat/<release>/`, written by that release's
 code and never edited or resaved. Expectations live separately under

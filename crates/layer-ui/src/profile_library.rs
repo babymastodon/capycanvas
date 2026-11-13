@@ -267,16 +267,6 @@ pub fn prepare_profile_import(
     Ok(entry)
 }
 
-/// Hidden ids as any build saved them; entries this build cannot read are dropped.
-fn saved_ids<'de, D: serde::Deserializer<'de>>(saved: D) -> Result<Vec<String>, D::Error> {
-    let saved = serde_json::Value::deserialize(saved)?;
-    Ok(saved
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|id| id.as_str().map(Into::into))
-        .collect())
-}
 /// The same stateless transport for Wasm workers and JNI. File paths never
 /// enter this contract; a Remove result can only name an app-owned object.
 #[derive(Deserialize)]
@@ -287,7 +277,7 @@ pub enum ProfileLibraryAction {
     Describe { profile: ColorProfile },
     Picker { purpose: ProfilePickerPurpose, document: Option<ColorProfile>, current: Option<ColorProfile>, saved: Vec<ProfilePickerSaved> },
     Visibility {
-        #[serde(deserialize_with = "saved_ids")]
+        #[serde(deserialize_with = "crate::lenient::vec")]
         hidden: Vec<String>,
         id: Option<String>,
         visible: Option<bool>,

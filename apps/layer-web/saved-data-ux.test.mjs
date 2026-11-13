@@ -103,6 +103,8 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
   const store1012=await readFile(new URL('../../crates/layer-workspace/tests/fixtures/web-store-1.0.12.json',import.meta.url),'utf8');
   const earlier=await readFile(new URL('../../crates/layer-workspace/tests/fixtures/web-store-1.0.15.json',import.meta.url),'utf8');
   const workspaces={sketch:'builtin:workspace:painter',paint:'builtin:workspace:illustrator',photo:'builtin:workspace:photographer'};
+  const toolbars=layout=>Object.fromEntries(layout.panels.filter(panel=>panel.content.kind==='toolbar').map(panel=>[panel.id,panel.content.tiles
+    .filter(tile=>!['opacity','brush_opacity_slider'].includes(tile.control.kind)&&tile.control.command!=='decoration').map(tile=>tile.id)]));
   const quiet=async step=>{
     const view=JSON.parse(await evaluate('layerApp.app.workspace_view()'));
     assert.equal(view.error,null,step);assert.equal(view.status,null,step);assert.equal(view.prompt,null,step);
@@ -119,6 +121,8 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
       await evaluate(`layerApp.app.workspace_input(JSON.stringify({type:'switch',id:${JSON.stringify(id)}}));null`);
       await wait(`JSON.parse(layerApp.app.workspace_view()).id===${JSON.stringify(id)}&&JSON.parse(layerApp.app.workspace_view()).ready&&!JSON.parse(layerApp.app.workspace_view()).busy`);
       await quiet(name);
+      const history=JSON.parse(store1012).items[id].entity.content.history;
+      assert.deepEqual(toolbars(await evaluate('layerApp.state().workspace.layout')),toolbars(history.revisions[history.current].layout),`${name} keeps every released tile this build reads`);
       await shot(`web-released-${name}-${theme}`);
     }
     await wait('!JSON.parse(layerApp.app.workspace_view()).dirty&&!JSON.parse(layerApp.app.workspace_view()).saving');

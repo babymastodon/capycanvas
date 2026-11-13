@@ -1482,9 +1482,9 @@ fn an_unreadable_toolbar_opens_with_its_name_and_the_default_tiles() {
     browser.prepare_delivery(&batch).unwrap();
     browser.execute(StoreRequest::Commit { batch }, 1_000_000).unwrap();
     let mut snapshot: serde_json::Value = serde_json::from_str(&browser.encoded().unwrap()).unwrap();
-    snapshot["items"][&id]["entity"]["content"]["definition"]["tiles"] = serde_json::json!("newer tiles");
+    snapshot["items"][&id]["entity"]["content"]["definition"] = serde_json::json!("newer definition");
     let mut browser = BrowserDatabase::decode(&snapshot.to_string()).unwrap();
-    f.store.connection.execute("UPDATE items SET content=?2 WHERE id=?1", (&id, r#"{"type":"toolbar","definition":{"name":"literal toolbar 🖌","tiles":"newer tiles"}}"#)).unwrap();
+    f.store.connection.execute("UPDATE items SET content=?2 WHERE id=?1", (&id, r#"{"type":"toolbar","definition":"newer definition"}"#)).unwrap();
     let StoreResponse::Entity(web) = browser.execute(StoreRequest::Load { id: id.clone() }, 1_000_000).unwrap() else { panic!() };
     let native = f.store.load(&id).unwrap();
     for stored in [*web, native] {
@@ -1493,5 +1493,34 @@ fn an_unreadable_toolbar_opens_with_its_name_and_the_default_tiles() {
         assert_eq!(definition.name, "literal toolbar 🖌");
         assert_eq!(definition.tiles.iter().map(|tile| tile.control).collect::<Vec<_>>(), layer_ui::TOOLBAR_CONTROLS);
         definition.validate().unwrap();
+    }
+}
+
+#[test]
+fn a_toolbar_drops_only_the_tiles_this_build_cannot_read() {
+    let mut f = Fixture::new();
+    let tile = |id: u32, control| layer_ui::ToolbarTile { slider_style: Default::default(), id, control };
+    let kept = vec![tile(1, layer_ui::ToolbarControl::Size { tenths: 120 }), tile(4, layer_ui::ToolbarControl::Command { command: layer_ui::CommandId::Undo })];
+    let entity = Entity::toolbar(ToolbarDefinition { name: "Released".into(), tiles: kept.clone(), tile_style: layer_ui::TileStyle::Large, hide_tab: true }, 1);
+    let id = entity.id.clone();
+    let mut browser = BrowserDatabase::default();
+    let batch = CommitBatch::prepare(f.owner.clone(), vec![create(entity)]).unwrap();
+    f.store.commit(batch.clone()).unwrap();
+    browser.prepare_delivery(&batch).unwrap();
+    browser.execute(StoreRequest::Commit { batch }, 1_000_000).unwrap();
+    let mut snapshot: serde_json::Value = serde_json::from_str(&browser.encoded().unwrap()).unwrap();
+    let mut definition = snapshot["items"][&id]["entity"]["content"]["definition"].clone();
+    let tiles = definition["tiles"].as_array_mut().unwrap();
+    tiles.insert(1, serde_json::json!({"id":2,"control":{"kind":"opacity"}}));
+    tiles.insert(2, serde_json::json!({"id":3,"control":{"kind":"brush","id":999999}}));
+    tiles.push(serde_json::json!({"id":5,"control":{"kind":"command","command":"decoration"},"future":true}));
+    definition["tile_style"] = "newer".into();
+    snapshot["items"][&id]["entity"]["content"]["definition"] = definition.clone();
+    let mut browser = BrowserDatabase::decode(&snapshot.to_string()).unwrap();
+    f.store.connection.execute("UPDATE items SET content=?2 WHERE id=?1", (&id, serde_json::json!({"type":"toolbar","definition":definition}).to_string())).unwrap();
+    let StoreResponse::Entity(web) = browser.execute(StoreRequest::Load { id: id.clone() }, 1_000_000).unwrap() else { panic!() };
+    for stored in [*web, f.store.load(&id).unwrap()] {
+        let ItemContent::Toolbar { definition } = stored.entity.content else { panic!() };
+        assert_eq!(definition, ToolbarDefinition { name: "Released".into(), tiles: kept.clone(), tile_style: layer_ui::TileStyle::Small, hide_tab: true });
     }
 }

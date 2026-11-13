@@ -181,6 +181,44 @@ fn saved_documents_tolerate_missing_and_unknown_fields() {
 }
 
 #[test]
+fn an_unreadable_saved_value_reads_as_if_it_were_absent() {
+    fn pointers(value: &Value, path: String, out: &mut Vec<(String, bool)>) {
+        match value {
+            Value::Array(items) => for (index, item) in items.iter().enumerate() {
+                let child = format!("{path}/{index}");
+                if !path.ends_with("/zones") { out.push((child.clone(), true)); }
+                pointers(item, child, out);
+            },
+            Value::Object(fields) => for (key, item) in fields {
+                let child = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+                out.push((child.clone(), false));
+                pointers(item, child, out);
+            },
+            _ => {}
+        }
+    }
+    let read = |value: Value| ItemContent::read(value).ok();
+    let mut failures = std::collections::BTreeSet::new();
+    let entities: Vec<Entity> = serde_json::from_slice(&std::fs::read(fixture_root().join("1.0.15/entities.json")).unwrap()).unwrap();
+    for entity in entities.iter().filter(|entity| !entity.metadata.builtin) {
+        let original = serde_json::to_value(&entity.content).unwrap();
+        let mut paths = Vec::new();
+        pointers(&original, String::new(), &mut paths);
+        for (pointer, element) in paths {
+            if pointer == "/type" { continue; }
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            let mut garbage = original.clone();
+            *garbage.pointer_mut(&pointer).unwrap() = serde_json::json!({"kind":"future","value":[1]});
+            let mut absent = original.clone();
+            let container = absent.pointer_mut(parent).unwrap();
+            if element { container.as_array_mut().unwrap().remove(key.parse().unwrap()); } else { container.as_object_mut().unwrap().remove(&key.replace("~1", "/").replace("~0", "~")); }
+            if read(garbage) != read(absent) { failures.insert(pointer.split('/').map(|part| if part.parse::<u64>().is_ok() || part.starts_with('r') && part[1..].parse::<u64>().is_ok() { "*" } else { part }).collect::<Vec<_>>().join("/")); }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
 fn release_fixtures_load_without_loss() {
     for entry in std::fs::read_dir(fixture_root()).unwrap() {
         let path = entry.unwrap().path();

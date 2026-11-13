@@ -182,9 +182,15 @@ pub struct HeaderEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeaderLayout {
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub size: HeaderSize,
+    #[serde(default, deserialize_with = "saved_zones")]
     pub zones: [Vec<HeaderEntry>; 3],
     next_id: u32,
+}
+fn saved_zones<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<[Vec<HeaderEntry>; 3], D::Error> {
+    let mut zones = crate::lenient::items::<serde_json::Value>(serde_json::Value::deserialize(deserializer)?).into_iter().map(crate::lenient::items);
+    Ok(std::array::from_fn(|_| zones.next().unwrap_or_default()))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -437,6 +443,14 @@ impl HeaderLayout {
                 .position(|e| e.id == id)
                 .map(|i| (zone, i))
         })
+    }
+    pub(crate) fn retain_admitted(&mut self) {
+        for zone in &mut self.zones {
+            zone.retain(|entry| match entry.item {
+                HeaderItem::Tool { control } => control.validate().is_ok() && !control.is_component(),
+                _ => true,
+            });
+        }
     }
     pub fn validate(&self) -> Result<(), String> {
         let entries: Vec<_> = self.entries().collect();

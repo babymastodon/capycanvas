@@ -2214,7 +2214,7 @@ fn release_fixtures_load_without_loss() {
 }
 
 #[test]
-fn saved_slots_alias_released_ids_and_open_unknown_layouts_without_resetting_storage() {
+fn saved_slots_alias_released_ids_and_drop_unknown_tiles_without_resetting_storage() {
     for slot in ["lasso_fill", "unknown_slot"] {
         let backend = Rc::new(Backend::default());
         let layout = layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web);
@@ -2231,9 +2231,23 @@ fn saved_slots_alias_released_ids_and_open_unknown_layouts_without_resetting_sto
         assert!(host.session.state().workspace_ready);
         assert_eq!(notice(&host), None);
         assert_eq!(controller.manager.current().unwrap().id, id, "{slot}");
-        assert_eq!(host.session.capture_workspace().unwrap().history.layout(), &layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web));
+        let mut expected = serde_json::to_value(layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web)).unwrap();
+        if slot == "unknown_slot" {
+            fn retain(value: &mut serde_json::Value) {
+                match value {
+                    serde_json::Value::Array(items) => {
+                        items.retain(|item| item["control"] != serde_json::json!({"kind":"tool_slot","slot":"fill"}));
+                        items.iter_mut().for_each(retain);
+                    }
+                    serde_json::Value::Object(fields) => fields.values_mut().for_each(retain),
+                    _ => {}
+                }
+            }
+            retain(&mut expected);
+        }
+        assert_eq!(serde_json::to_value(host.session.capture_workspace().unwrap().history.layout()).unwrap(), expected);
         let loaded = pollster::block_on(controller.manager.load(&id)).unwrap();
-        assert_eq!(loaded.entity.capture().unwrap().history.layout(), &layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web));
+        assert_eq!(serde_json::to_value(loaded.entity.capture().unwrap().history.layout()).unwrap(), expected);
         assert_eq!(serde_json::from_str::<layer_ui::ToolSlotId>("\"lasso_fill\"").unwrap(), layer_ui::ToolSlotId::Fill);
         assert_eq!(controller.manager.items().len(), DEFAULT_WORKSPACES.len() + 1);
         assert!(!controller.manager.in_memory());

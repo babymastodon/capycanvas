@@ -39,9 +39,10 @@ These rules cover tests, benchmark harnesses and tools as much as production cod
 - Data saved by 1.0.15 or later must survive upgrades: workspaces, toolbars,
   palettes, brush settings, preferences, export presets, drawings and recovery
   copies. Never rename, reuse or remove a saved key, enum name or ID, or re-save
-  a released fixture. App-state readers never ask the painter: an item whose
-  content can't be read opens with its fixed fallback, and reading never
-  writes. Follow the
+  a released fixture. App-state readers never ask the painter: they ignore
+  unknown fields, give a field they can't read its default, drop list elements
+  and map entries they can't read, and open an item whose content still can't
+  be read with its fixed fallback. Reading never writes. Follow the
   [saved-state rules](docs/ui/settings.md#saving-and-loading),
   [storage preservation](docs/internals/storage.md#workspace-version-copies) and
   [released fixture checks](docs/development/testing.md#saved-data-compatibility).

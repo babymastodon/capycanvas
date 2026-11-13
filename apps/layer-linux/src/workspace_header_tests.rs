@@ -4865,6 +4865,11 @@ fn native_released_workspaces_open_without_asking() {
         sql.execute("UPDATE items SET content=?2 WHERE id=?1",(id,released["items"][id]["entity"]["content"].to_string())).unwrap();
     }
     let stored = |sql: &rusqlite::Connection| WORKSPACES.map(|(id,_)| sql.query_row("SELECT content FROM items WHERE id=?1",[id],|row|row.get::<_,String>(0)).unwrap());
+    let toolbars = |layout: &serde_json::Value| layout["panels"].as_array().unwrap().iter().filter(|panel| panel["content"]["kind"] == "toolbar")
+        .map(|panel| (panel["id"].to_string(),panel["content"]["tiles"].as_array().unwrap().iter()
+            .filter(|tile| !matches!(tile["control"]["kind"].as_str(),Some("opacity" | "brush_opacity_slider")) && tile["control"]["command"] != "decoration")
+            .map(|tile| tile["id"].as_u64().unwrap()).collect::<Vec<_>>()))
+        .collect::<std::collections::BTreeMap<_,_>>();
     let before = stored(&sql);
     let mut d = Driver::managed("art.capycanvas.ReleasedWorkspaces");
     let quiet = |w: &Workspace, step: &str| {
@@ -4878,6 +4883,9 @@ fn native_released_workspaces_open_without_asking() {
         d.click_name(&format!("workspace-switch-{}",id.rsplit(':').next().unwrap()));
         until(|| {let view = d.w.workspaces.view(); view.id.as_deref() == Some(id) && view.ready && !view.busy},"the released workspace opens");
         quiet(&d.w,name);
+        let history = &released["items"][id]["entity"]["content"]["history"];
+        let current = &history["revisions"][history["current"].as_str().unwrap()]["layout"];
+        assert_eq!(toolbars(&serde_json::to_value(&state(&d.w).workspace.layout).unwrap()),toolbars(current),"{name} keeps every released tile this build reads");
         capture_store(&mut d,&format!("gtk-released-{name}-{theme}"));
     }
     until(|| !d.w.workspaces.view().dirty && !d.w.workspaces.view().saving,"opening saves nothing pending");

@@ -325,6 +325,7 @@ impl ItemKind {
 pub struct Metadata {
     pub kind: ItemKind,
     pub name: String,
+    #[serde(default, deserialize_with = "layer_ui::lenient::or_default")]
     pub description: String,
     /// Included workspaces cannot be renamed or deleted; their content is editable.
     pub builtin: bool,
@@ -376,8 +377,11 @@ impl Metadata {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolbarDefinition {
     pub name: String,
+    #[serde(default, deserialize_with = "layer_ui::lenient::vec")]
     pub tiles: Vec<ToolbarTile>,
+    #[serde(default, deserialize_with = "layer_ui::lenient::or_default")]
     pub tile_style: TileStyle,
+    #[serde(default, deserialize_with = "layer_ui::lenient::or_default")]
     pub hide_tab: bool,
 }
 impl ToolbarDefinition {
@@ -447,7 +451,14 @@ impl ItemContent {
         }
     }
     pub(crate) fn read(value: serde_json::Value) -> Result<Self, StoreError> {
-        let content: Self = serde_json::from_value(value)?;
+        let mut content: Self = serde_json::from_value(value)?;
+        match &mut content {
+            Self::Workspace { history, baseline } => {
+                history.retain_admitted();
+                baseline.retain_admitted();
+            }
+            Self::Toolbar { definition } => definition.tiles.retain(|tile| tile.control.validate_admission().is_ok()),
+        }
         content.validate()?;
         Ok(content)
     }
@@ -481,7 +492,10 @@ impl Entity {
         let content = content.unwrap_or_default();
         let fallback = match metadata.kind {
             ItemKind::Toolbar => Some(ItemContent::Toolbar { definition: ToolbarDefinition::fallback(&metadata.name) }),
-            ItemKind::Workspace if !is_default_item(&id) => serde_json::from_value(content["baseline"].clone()).ok().map(ItemContent::starting),
+            ItemKind::Workspace if !is_default_item(&id) => serde_json::from_value::<DockLayout>(content["baseline"].clone()).ok().map(|mut baseline| {
+                baseline.retain_admitted();
+                ItemContent::starting(baseline)
+            }),
             ItemKind::Workspace => None,
         };
         let working = (metadata.kind == ItemKind::Workspace).then(|| WorkspaceWorkingState::restore(working.unwrap_or_default()));
