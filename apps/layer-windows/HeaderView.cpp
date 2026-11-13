@@ -63,6 +63,7 @@ struct HeaderView::Impl:std::enable_shared_from_this<Impl>{
     std::shared_ptr<DrawingTabs> drawings;
     std::vector<std::pair<Primitives::ToggleButton,hstring>> workspaces;
     hstring switchActive,theme,bankKey,geometryKey,lastMeasurement,traceKey,placementKey;
+    std::vector<float> placementArrangement;
     J geometry,view,configuration,recoveryBounds;
     std::array<J,3> overflowBounds;
     std::vector<Button> overflow;
@@ -769,6 +770,13 @@ struct HeaderView::Impl:std::enable_shared_from_this<Impl>{
     }
     bool placementChanged(){
         if(!built||!root.XamlRoot())return false;
+        std::vector<float> arranged{float(root.XamlRoot().RasterizationScale()),float(editing),root.ActualSize().x,root.ActualSize().y};
+        for(auto const& children:{root.Children(),canvas.Children()})for(auto child:children){
+            auto offset=child.ActualOffset();auto size=child.ActualSize();
+            arranged.insert(arranged.end(),{offset.x,offset.y,size.x,size.y,float(child.Visibility()==Visibility::Visible)});
+        }
+        if(arranged==placementArrangement)return false;
+        placementArrangement=std::move(arranged);
         A regions;glass(regions,editing?capySurface.as<DependencyObject>():root.as<DependencyObject>(),root);
         float scale=float(root.XamlRoot().RasterizationScale());std::wstring key=regions.Stringify().c_str();
         for(auto r:drag(scale,uint32_t(std::lround(root.ActualWidth()*scale))))
