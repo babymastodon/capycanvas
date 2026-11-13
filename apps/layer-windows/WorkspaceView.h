@@ -33,6 +33,7 @@ public:
     void ResetNavigatorSurfaces();
     void SetCommit(std::function<void(std::string,bool,std::function<void()>)> commit);
     void CanvasContact(bool active);
+    void LaunchRevealed();
     void AttachOverlays(winrt::Microsoft::UI::Xaml::UIElement const&,std::function<void()>);
     winrt::Windows::Data::Json::JsonArray DrawerSources() const;
     winrt::Windows::Data::Json::JsonArray OverlayInputRegions(winrt::Microsoft::UI::Xaml::UIElement const&)const;

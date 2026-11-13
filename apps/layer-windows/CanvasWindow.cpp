@@ -243,6 +243,7 @@ void CanvasWindow::ArmLaunchCaption() {
     else{launchCaptionTimer.Interval(remaining);launchCaptionTimer.Start();}
 }
 void CanvasWindow::HideLaunchCover(bool animate) {
+    if(workspace)workspace->LaunchRevealed();
     CancelLaunchReveal();
     if(launchCaptionTimer)launchCaptionTimer.Stop();
     if(launchCaptionFade)launchCaptionFade.Stop();
