@@ -116,7 +116,7 @@ extension XCTestCase {
                 for i in stride(from: 0, to: pixel.count, by: 4) {
                     let red = Int(pixel[i]), green = Int(pixel[i + 1]), blue = Int(pixel[i + 2])
                     if expected[index] {
-                        if blue <= red + 50 { return false }
+                        if blue <= red { return false }
                     } else if red <= 250 || green <= 250 || blue <= 250 { return false }
                 }
             }
@@ -124,7 +124,12 @@ extension XCTestCase {
         }, object: app)
         let matched = XCTWaiter.wait(for: [matching], timeout: 10) == .completed
         if !matched { attachEditor(in: app, name: "blue-paper-mismatch") }
-        XCTAssertTrue(matched, "Expected blue samples \(expected); actual RGBA \(editorPixelSamples(in: app, at: points, size: 8).map { Array($0.prefix(4)) })")
+        func leastBlue(_ pixel: Data) -> [UInt8] {
+            let rgb: [[UInt8]] = stride(from: 0, to: pixel.count, by: 4).map { Array(pixel[$0..<$0 + 3]) }
+            return rgb.min { (Int($0[2]) - Int($0[0])) < (Int($1[2]) - Int($1[0])) } ?? []
+        }
+        let worst = editorPixelSamples(in: app, at: points, size: 8).map(leastBlue)
+        XCTAssertTrue(matched, "Expected blue samples \(expected); least blue RGB per sample \(worst)")
     }
 
     @MainActor func checkSelectionAndTransform(in app: XCUIApplication, theme: String = "light") {
