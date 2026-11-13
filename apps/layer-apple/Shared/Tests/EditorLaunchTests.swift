@@ -276,6 +276,8 @@ final class EditorLaunchTests: XCTestCase {
     @MainActor func testTitleBarToolDrawersDark() { checkTitleBarToolDrawers(in: ignoringSavedWindows(editorCaptureApplication()), theme: "dark") }
     @MainActor func testTitleBarDrawerBridges() { checkTitleBarToolDrawers(in: ignoringSavedWindows(editorCaptureApplication()), bridgesOnly: true) }
     @MainActor func testTitleBarDrawerBridgesDark() { checkTitleBarToolDrawers(in: ignoringSavedWindows(editorCaptureApplication()), theme: "dark", bridgesOnly: true) }
+    @MainActor func testHeaderBarDrawerCorners() { checkHeaderBarDrawerCorners(in: ignoringSavedWindows(editorCaptureApplication()), theme: "light") }
+    @MainActor func testHeaderBarDrawerCornersDark() { checkHeaderBarDrawerCorners(in: ignoringSavedWindows(editorCaptureApplication()), theme: "dark") }
 
     @MainActor func testOrdinaryPaperLibrary() async throws {
         try await checkOrdinaryPaperLibrary(in:editorCaptureApplication(),theme:"light")

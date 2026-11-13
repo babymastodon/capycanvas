@@ -318,6 +318,48 @@ extension XCTestCase {
         #endif
         XCTAssertFalse(app.staticTexts["Canvas error"].exists)
     }
+
+    @MainActor func checkHeaderBarDrawerCorners(in app: XCUIApplication, theme: String) {
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"preferences","action":{"type":"edit","id":"transparency","value":2}},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:painter"}},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"}]"#
+        app.launch()
+        let canvas = app.descendants(matching: .any)["canvas"].firstMatch
+        expectation(for: NSPredicate(format: "value == %@", "Canvas ready"), evaluatedWith: canvas)
+        waitForExpectations(timeout: 60)
+        waitForEditorInteraction(in: app)
+        let color = app.buttons["Brush color"], layers = app.buttons["Layers panel"]
+        let drawer = app.descendants(matching: .any)["tool-drawer"].firstMatch
+        XCTAssertTrue(color.waitForExistence(timeout: 10) && layers.exists)
+        XCTAssertEqual(color.frame.minY, layers.frame.minY, accuracy: 0.5, "Layers and Color share the Sketch title bar")
+        #if os(macOS)
+        let surface = app.windows.firstMatch.frame
+        #else
+        let surface = canvas.frame
+        #endif
+        func contrast() -> Int {
+            #if os(macOS)
+            workspaceViewport(in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65)).hover()
+            #endif
+            let tile = color.frame
+            let points = [CGPoint(x: tile.maxX - 1.5, y: tile.maxY - 1.5), CGPoint(x: tile.midX, y: tile.maxY - 1.5)].map {
+                CGPoint(x: ($0.x - surface.minX) / surface.width, y: ($0.y - surface.minY) / surface.height)
+            }
+            let samples = settledEditorPixels(capturing: { editorPixelSamples(in: app, at: points, size: 2) })
+            return zip(samples[0], samples[1]).enumerated().filter { $0.offset % 4 != 3 }.map { abs(Int($0.element.0) - Int($0.element.1)) }.max() ?? 0
+        }
+        XCTAssertGreaterThan(contrast(), 12, "The closed bar's end corner is round")
+        attachEditor(in: app, name: "header-bar-closed-" + theme)
+        workspaceActivate(color)
+        XCTAssertTrue(drawer.waitForExistence(timeout: 10))
+        XCTAssertLessThan(contrast(), 5, "The bar squares the corner its end tile's drawer joins")
+        attachEditor(in: app, name: "header-bar-end-drawer-" + theme)
+        workspaceActivate(layers)
+        XCTAssertTrue(drawer.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(contrast(), 12, "A middle tile's drawer leaves the bar's end corner round")
+        attachEditor(in: app, name: "header-bar-middle-drawer-" + theme)
+        workspaceActivate(layers)
+        XCTAssertTrue(drawer.waitForNonExistence(timeout: 10))
+        XCTAssertGreaterThan(contrast(), 12, "Closing the drawer keeps the bar round")
+    }
 }
 
 
