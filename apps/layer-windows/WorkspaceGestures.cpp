@@ -42,6 +42,7 @@ struct WorkspaceGestures::Impl:std::enable_shared_from_this<Impl>{
     NativeInput::PointerDeviceType hoverDevice=NativeInput::PointerDeviceType::Mouse;
     std::optional<Windows::Graphics::PointInt32> penScreen;
     uint64_t hoverTimestamp=0;
+    bool hoverContact=false;
     bool dragging=false,finishing=false,busy=false,dirty=false,releasing=false;
     bool needsHold=false,contextOnly=false,held=false,recognizing=false,ignoreClick=false;
     bool trace=GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0)!=0;
@@ -71,12 +72,12 @@ struct WorkspaceGestures::Impl:std::enable_shared_from_this<Impl>{
         auto xaml=root.XamlRoot();if(!xaml){penScreen.reset();return;}
         auto p=e.GetCurrentPoint(xaml.Content().as<UIElement>());
         if(p.Timestamp()<hoverTimestamp)return;
-        hoverTimestamp=p.Timestamp();hoverDevice=p.PointerDeviceType();penScreen.reset();
+        hoverTimestamp=p.Timestamp();hoverDevice=p.PointerDeviceType();hoverContact=!canceled&&p.IsInContact();penScreen.reset();
         if(hoverDevice!=NativeInput::PointerDeviceType::Pen||canceled||p.Properties().IsCanceled()||!p.Properties().IsInRange())return;
         if(auto coordinates=xaml.CoordinateConverter())penScreen=coordinates.ConvertLocalToScreen(p.Position());
     }
     UIElement hoverTab()const{
-        auto xaml=root.XamlRoot();if(!root.IsLoaded()||!xaml||data->popupCount||data->externalPopup)return nullptr;
+        auto xaml=root.XamlRoot();if(!root.IsLoaded()||!xaml||data->popupCount||data->externalPopup||(hoverContact&&!pointer))return nullptr;
         Windows::Graphics::PointInt32 screen{};
         if(hoverDevice==NativeInput::PointerDeviceType::Pen){if(!penScreen)return nullptr;screen=*penScreen;}
         else if(hoverDevice==NativeInput::PointerDeviceType::Mouse){POINT mouse{};if(!GetCursorPos(&mouse))return nullptr;screen={int32_t(mouse.x),int32_t(mouse.y)};}
