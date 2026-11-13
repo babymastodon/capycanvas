@@ -190,7 +190,7 @@ extension EditorLaunchTests {
         let app = editorTestApplication()
         app.launchEnvironment["CAPY_STORAGE_DIR"] = storage
         app.launchEnvironment["CAPY_PERSISTENCE_PROBE"] = "1"
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"}]"#
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}}]"#
         app.launch()
         let retry = app.buttons["recovery-retry"], later = app.buttons["recovery-later"]
         XCTAssertTrue(retry.waitForExistence(timeout: 60)); XCTAssertTrue(later.isHittable)
