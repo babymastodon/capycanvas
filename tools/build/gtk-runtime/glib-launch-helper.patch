@@ -1,0 +1,45 @@
+--- a/gio/gdesktopappinfo.c
++++ b/gio/gdesktopappinfo.c
+@@ -32,6 +32,7 @@
+ #define GLIB_DISABLE_DEPRECATION_WARNINGS
+ #endif
+ 
++#include <dlfcn.h>
+ #include <errno.h>
+ #include <string.h>
+ #include <unistd.h>
+@@ -161,6 +162,24 @@
+ static GMutex          desktop_file_dir_lock;
+ static const gchar    *gio_launch_desktop_path = NULL;
+ 
++static const gchar *
++gio_launch_desktop_beside_library (void)
++{
++  Dl_info info;
++  gchar *directory;
++  gchar *path;
++
++  if (!dladdr ((void *) gio_launch_desktop_beside_library, &info) || info.dli_fname == NULL)
++    return NULL;
++  directory = g_path_get_dirname (info.dli_fname);
++  path = g_build_filename (directory, "gio-launch-desktop", NULL);
++  g_free (directory);
++  if (g_file_test (path, G_FILE_TEST_IS_EXECUTABLE))
++    return path;
++  g_free (path);
++  return NULL;
++}
++
+ /* Monitor 'changed' signal handler {{{2 */
+ static void desktop_file_dir_reset (DesktopFileDir *dir);
+ 
+@@ -3111,6 +3130,9 @@
+           if (!is_setuid)
+             tmp = g_getenv ("GIO_LAUNCH_DESKTOP");
+ 
++          if (tmp == NULL)
++            tmp = gio_launch_desktop_beside_library ();
++
+           /* Allow build system to specify path to gio-launch-desktop */
+           if (tmp == NULL && g_file_test (GIO_LAUNCH_DESKTOP, G_FILE_TEST_IS_EXECUTABLE))
+             tmp = GIO_LAUNCH_DESKTOP;
