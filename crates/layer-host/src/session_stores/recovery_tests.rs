@@ -171,7 +171,7 @@ fn starting_three_times_shows_no_repeating_notice() {
             let notices: Vec<_> = damaged.map(|list| document_recovery_unavailable(&Localizer::shared(UiLanguage::English), &SessionManifest::parse(list).unwrap_err())).into_iter().collect();
             assert_eq!(starts[0].0.notices, notices, "{case}: first start");
             assert_eq!(notices.len(), usize::from(expected.notice), "{case}");
-            assert!(damaged.is_none_or(|list| starts[2].1.iter().any(|(name, bytes)| name.rsplit('/').next().unwrap().starts_with("preserved-") && bytes.as_deref() == Some(list))), "{case}: list bytes kept");
+            assert!(damaged.is_none_or(|list| starts[2].1.iter().any(|(name, bytes)| Path::new(name).file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("preserved-")) && bytes.as_deref() == Some(list))), "{case}: list bytes kept");
             for (later, _) in &starts[1..] { assert_eq!(*later, Start::default(), "{case}: later start"); }
             let changed: Vec<_> = starts[1].1.keys().chain(starts[2].1.keys()).filter(|name| starts[1].1.get(*name) != starts[2].1.get(*name)).collect();
             assert!(changed.is_empty(), "{case}: later starts change {changed:?}");
