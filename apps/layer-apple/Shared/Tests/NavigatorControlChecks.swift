@@ -2,7 +2,9 @@ import XCTest
 import ImageIO
 
 extension XCTestCase {
-    @MainActor func checkNavigatorAndDiagnostics(in app: XCUIApplication) {
+    @MainActor func checkNavigatorAndDiagnostics(in app: XCUIApplication, theme: String) {
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}}]"#
+        app.launch()
         func text(_ element: XCUIElement) -> String {
             if let value = element.value as? String, !value.isEmpty { return value }
             return element.label
@@ -70,8 +72,14 @@ extension XCTestCase {
         workspaceActivate(app.buttons["panel-tab-stats"])
         let cpu = app.staticTexts["stats-value-0"]
         XCTAssertTrue(cpu.waitForExistence(timeout: 10))
-        XCTAssertNotNil(text(cpu).rangeOfCharacter(from: .decimalDigits))
+        #if os(macOS)
+        for x in [0.5, 0.55] { workspaceViewport(in: app).coordinate(withNormalizedOffset: CGVector(dx: x, dy: 0.6)).hover() }
+        #endif
+        let sampled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in text(cpu).rangeOfCharacter(from: .decimalDigits) != nil }, object: cpu)
+        XCTAssertEqual(XCTWaiter.wait(for: [sampled], timeout: 10), .completed, "Diagnostics shows a sampled CPU time: \(text(cpu))")
         XCTAssertTrue(app.descendants(matching: .any)["renderer-memory-row-0"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["renderer-memory-heading"].firstMatch.exists)
+        attachEditor(in: app, name: "diagnostics-" + theme)
         workspaceActivate(app.buttons["panel-tab-navigator"])
         XCTAssertTrue(overview.waitForExistence(timeout: 10))
         expectation(for: NSPredicate(format: "value == %@", "Live preview"), evaluatedWith: overview)

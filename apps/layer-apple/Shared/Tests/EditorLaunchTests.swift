@@ -363,12 +363,8 @@ final class EditorLaunchTests: XCTestCase {
         checkPanelConfigurationAndLiveDrag(in: app)
     }
 
-    @MainActor func testNavigatorAndDiagnostics() throws {
-        let app = ignoringSavedWindows(editorTestApplication())
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"light"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}}]"#
-        app.launch()
-        checkNavigatorAndDiagnostics(in: app)
-    }
+    @MainActor func testNavigatorAndDiagnostics() throws { checkNavigatorAndDiagnostics(in: ignoringSavedWindows(editorTestApplication()), theme: "light") }
+    @MainActor func testNavigatorAndDiagnosticsDark() throws { checkNavigatorAndDiagnostics(in: ignoringSavedWindows(editorTestApplication()), theme: "dark") }
 
     @MainActor func testFilterArtworkAndHistory() throws { checkFilterArtworkAndHistory(in: ignoringSavedWindows(editorCaptureApplication())) }
     @MainActor func testFilterArtworkAndHistoryDark() throws { checkFilterArtworkAndHistory(in: ignoringSavedWindows(editorCaptureApplication()), theme: "dark") }
