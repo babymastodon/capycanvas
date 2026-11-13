@@ -5,6 +5,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutInfo
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.IntSize
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
@@ -26,6 +27,38 @@ class AndroidDrawerCompositionTest {
         host.awaitReady(compose=compose)
         host.drain(obj("type" to "set_theme","theme" to theme))
         compose.waitForIdle()
+    }
+
+    @Test fun headerBarCornersJoinOnlyTheirEndTileDrawer() {
+        val host=compose.activity.host
+        host.awaitReady(compose=compose)
+        assumeTrue("Requires the tablet header",host.snapshot!!.getJSONObject("layout").objectOrNull("phone")==null)
+        val original=compose.runOnIdle { host.snapshot!!.getJSONObject("state").getJSONObject("workspace").toString() }
+        val workspace=org.json.JSONObject(original)
+        val colors=org.json.JSONArray((1..3).map { obj("id" to it,"item" to obj("kind" to "tool","control" to obj("kind" to "color"))) })
+        workspace.getJSONObject("layout").getJSONObject("header").put("next_id",4).put("zones",org.json.JSONArray(listOf(colors,org.json.JSONArray(),org.json.JSONArray())))
+        host.drain(obj("type" to "restore_workspace","workspace" to workspace))
+        host.drain(obj("type" to "preferences","action" to obj("type" to "edit","id" to "transparency","value" to 2)))
+        val dock=checkNotNull(host.workspaceInteraction)
+        fun radii():List<Float>? {
+            val first=findTag("header-item-1")?.second?.boundsInRoot ?: return null
+            val last=findTag("header-item-3")?.second?.boundsInRoot ?: return null
+            val bar=Rect(first.left,first.top,last.right,last.bottom).translate(-host.surfaceOrigin)
+            return host.glassBoxesForTest.singleOrNull { box -> listOf(bar.left,bar.top,bar.width,bar.height).withIndex().all { (i,v) -> kotlin.math.abs(box[i]-v)<=1f } }?.slice(4..7)
+        }
+        val glass={ "${host.glassBoxesForTest.map { it.toList() }}" }
+        host.awaitMain("round header bar glass",30_000,glass,compose) { radii()?.all { it>0f }==true }
+        for((id,end) in listOf(3 to true,2 to false)) {
+            compose.onNodeWithTag("header-control-$id",useUnmergedTree=true).performClick()
+            host.awaitMain("header Color drawer $id at rest",30_000,{ "${dock.drawer}" },compose) {
+                dock.drawerSources.values.any { it.anchor?.optInt("id")==id && it.glass?.active==true }
+            }
+            val square=listOf(false,false,end,false)
+            host.awaitMain("tile $id squares only the joined bar corner",30_000,glass,compose) { radii()?.map { it==0f }==square }
+            host.drain(obj("type" to "customize","action" to obj("type" to "close_expanded")))
+            host.awaitMain("header bar glass rounds again",30_000,glass,compose) { dock.drawer==null && radii()?.all { it>0f }==true }
+        }
+        host.drain(obj("type" to "restore_workspace","workspace" to org.json.JSONObject(original)))
     }
 
     @Test fun phoneDrawerFacesShareTheirConnectionPaintAndJoinedCorners() {

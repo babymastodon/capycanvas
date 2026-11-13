@@ -23,6 +23,10 @@ import SwiftUI
     private var geometry: JSON { header.preview.isNull ? header.geometry : header.preview["geometry"] }
     private var radius: CGFloat { size["tile"].number / 2 }
     private var barred: Set<UInt64> { Set(geometry["bars"].array.flatMap { $0["items"].array.map(\.uint) }) }
+    private func drawerSources(in bar: JSON) -> [DrawerSource] {
+        let items = Set(bar["items"].array.map(\.uint))
+        return store.contentDrawers.sources.values.filter { $0.anchor["kind"].string == "header" && items.contains($0.anchor["id"].uint) }
+    }
     private func overflowInBar(_ zone: Int) -> Bool {
         geometry["bars"].array.contains { !$0["overflow"].isNull && $0["overflow"].uint == UInt64(zone) }
     }
@@ -80,8 +84,9 @@ import SwiftUI
                 }
             } else {
                 ForEach(geometry["bars"].array.indices, id: \.self) { index in
-                    let bounds = geometry["bars"][index]["bounds"]
-                    SquircleShape(radius).fill(palette.chromeSurface).modifier(GlassRegistration(shape: SquircleShape(radius)))
+                    let bar = geometry["bars"][index], bounds = bar["bounds"]
+                    let shape = SquircleShape(radius, square: DrawerSource.square(bounds.rect, sources: drawerSources(in: bar)))
+                    shape.fill(palette.chromeSurface).modifier(GlassRegistration(shape: shape))
                         .placed(bounds).allowsHitTesting(false).accessibilityHidden(true)
                         .animation(reduceMotion || header.preview.isNull ? nil : .easeOut(duration: 0.12), value: bounds.rect)
                 }

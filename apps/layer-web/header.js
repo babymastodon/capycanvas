@@ -334,7 +334,7 @@ export function createHeader({app, state, paintPair, workspace, element, button,
     }
     g.zones.forEach((b,i)=>{zones[i].hidden=!editing;place(zones[i],b);});
     while(bars.length<g.bars.length){const bar=element('div','header-bar');bar.setAttribute('aria-hidden','true');root.prepend(bar);bars.push(bar);}
-    bars.forEach((bar,i)=>{bar.hidden=!g.bars[i];if(g.bars[i])place(bar,g.bars[i].bounds);});
+    bars.forEach((bar,i)=>{bar.hidden=!g.bars[i];if(g.bars[i]){place(bar,g.bars[i].bounds);bar.dataset.headerBarItems=g.bars[i].items.join(' ');}else delete bar.dataset.headerBarItems;});
     const joined=new Set(g.bars.flatMap(b=>b.items));
     for(const [id,r] of records)r.root.classList.toggle('in-bar',joined.has(id));
     overflow.forEach((node,i)=>node.classList.toggle('in-bar',g.bars.some(b=>b.overflow===BigInt(i))));

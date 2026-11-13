@@ -2211,6 +2211,51 @@ fn native_header_spacing_visual() {
 }
 
 #[test]
+#[ignore = "isolated native-input.js --native-test=native_header_bar_drawer_corners"]
+fn native_header_bar_drawer_corners() {
+    let mut d = Driver::new("art.capycanvas.HeaderBarDrawerCorners");
+    use_transparency(&d.w, layer_ui::Transparency::Medium);
+    let painter = WorkspacePreset::Painter.layout(Platform::Gtk);
+    let mut tools = painter.header.entries().filter(|e| matches!(e.item, HeaderItem::Tool { .. })).cloned().collect::<Vec<_>>();
+    let color = tools.remove(tools.iter().position(|e| e.item == HeaderItem::Tool { control: ToolbarControl::Color }).unwrap());
+    for (zone, end) in [(vec![tools[0].clone(), color.clone()], true), (vec![tools[0].clone(), color.clone(), tools[1].clone()], false)] {
+        let mut layout = painter.clone();
+        layout.header.zones = [zone, Vec::new(), Vec::new()];
+        d.w.dispatch(UiAction::RestoreWorkspace { workspace: Box::new(WorkspaceState { layout, ..WorkspaceState::default() }) });
+        pump(250);
+        let tool = d.named(&d.header_tool(ToolbarControl::Color));
+        let t = tool.compute_bounds(&d.w.surface).unwrap();
+        let bar = widgets(d.w.header.root.upcast_ref())
+            .find(|w| w.has_css_class("header-bar") && w.is_child_visible() && w.compute_bounds(&d.w.surface).is_some_and(|b|
+                b.x() <= t.x() + 0.5 && b.x() + b.width() >= t.x() + t.width() - 0.5 && (b.y() - t.y()).abs() < 0.5))
+            .expect("Color shares a header bar");
+        let radii = |w: &Workspace| {
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(&bar)).snapshot(&snapshot, bar.width() as f64, bar.height() as f64);
+            let mut regions = Vec::new();
+            crate::glass::collect(&snapshot.to_node().unwrap(), &state(w).palette.glass.surfaces(), &mut regions);
+            assert_eq!(regions.len(), 1, "header bar glass: {regions:?}");
+            regions[0].radii
+        };
+        assert!(radii(&d.w).iter().all(|r| *r > 0.), "closed bar is round");
+        d.click(&tool);
+        pump(100);
+        let b = bar.compute_bounds(&d.w.surface).unwrap();
+        let joined = d.w.drawer.placement().unwrap().source_corners(Bounds { x: b.x(), y: b.y(), width: b.width(), height: b.height() });
+        assert_eq!(joined.contains(&true), end, "only a bar end joins its drawer: {joined:?}");
+        let open = radii(&d.w);
+        for (corner, (radius, joined)) in open.into_iter().zip(joined).enumerate() {
+            assert_eq!(radius == 0., joined, "bar corner {corner}: radius {radius}, joined {joined}");
+        }
+        d.click(&tool);
+        wait_for_drawer_close(&d.w);
+        pump(100);
+        assert!(radii(&d.w).iter().all(|r| *r > 0.), "closed bar is round again");
+    }
+    d.finish();
+}
+
+#[test]
 #[ignore = "isolated native-input.js --native-test=native_drawer_dismissal_input"]
 fn native_drawer_dismissal_input() {
     fn contact(d: &mut Driver, point: [f32; 2], touch: bool) {

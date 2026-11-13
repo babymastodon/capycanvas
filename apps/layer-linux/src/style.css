@@ -164,10 +164,10 @@ button.flat.unavailable-tool > * { color: alpha(currentColor, .3); }
 .toolbar-controls button.drawer-origin-bottom, .collapsed-column button.drawer-origin-bottom, .phone-frame button.drawer-origin-bottom, .zen-capy.phone-capy.drawer-origin-bottom { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .toolbar-controls button.drawer-origin-left, .collapsed-column button.drawer-origin-left, .phone-frame button.drawer-origin-left, .zen-capy.phone-capy.drawer-origin-left { border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .toolbar-controls button.drawer-origin-right, .collapsed-column button.drawer-origin-right, .phone-frame button.drawer-origin-right, .zen-capy.phone-capy.drawer-origin-right { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.drawer-shadow.join-nw, .drawer-source-nw { border-top-left-radius: 0; }
-.drawer-shadow.join-ne, .drawer-source-ne { border-top-right-radius: 0; }
-.drawer-shadow.join-se, .drawer-source-se { border-bottom-right-radius: 0; }
-.drawer-shadow.join-sw, .drawer-source-sw { border-bottom-left-radius: 0; }
+.drawer-shadow.join-nw, .drawer-source-nw, .window-bar .header-bar.drawer-source-nw { border-top-left-radius: 0; }
+.drawer-shadow.join-ne, .drawer-source-ne, .window-bar .header-bar.drawer-source-ne { border-top-right-radius: 0; }
+.drawer-shadow.join-se, .drawer-source-se, .window-bar .header-bar.drawer-source-se { border-bottom-right-radius: 0; }
+.drawer-shadow.join-sw, .drawer-source-sw, .window-bar .header-bar.drawer-source-sw { border-bottom-left-radius: 0; }
 .toolbar-divider { padding: 0; min-width: 0; min-height: 0; background: transparent; }
 .toolbar-divider separator { min-width: 1px; min-height: 1px; margin: 0; }
 .content-drawer > scrolledwindow + scrolledwindow { border-left: 1px solid alpha(var(--window-fg-color), .12); }

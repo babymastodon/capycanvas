@@ -79,7 +79,7 @@ export function tabHover(tab, presentation) {
   tab.style.setProperty('--hover-left-foot',hoverFeet[0]);
   tab.style.setProperty('--hover-right-foot',hoverFeet[1]);
 }
-export function createWorkspaceChrome({app,state,workspace,element,button,icon,place,dispatch,customization,editor,panelFrame,draggable,grip,contentPanel,tabLabel,releaseTabs,frameInterval}) {
+export function createWorkspaceChrome({app,state,workspace,element,button,icon,place,dispatch,customization,editor,panelFrame,draggable,grip,contentPanel,tabLabel,releaseTabs,frameInterval,queueGlass}) {
   const columns=new Map(),drawers=new Map(),markedSources=new Set(),catalog=liveCopy(app,"catalog");
   let resolved,animating=false,tiles=[],previousAnimationFrame=null;
   const send=action=>dispatch({type:"customize",action});
@@ -179,7 +179,12 @@ export function createWorkspaceChrome({app,state,workspace,element,button,icon,p
     source.dataset.drawerFacing=direction;
     markedSources.add(source);
     const a=source.getBoundingClientRect(),anchor={x:a.x,y:a.y,width:a.width,height:a.height};
-    for(let node=source.parentElement;node&&node!==workspace;node=node.parentElement) {
+    const containers=[];
+    for(let node=source.parentElement;node&&node!==workspace;node=node.parentElement)containers.push(node);
+    const item=source.closest('[data-header-item]')?.dataset.headerItem;
+    const bar=item&&source.closest('#header')?.querySelector(`.header-bar[data-header-bar-items~="${item}"]`);
+    if(bar)containers.push(bar);
+    for(const node of containers) {
       const b=node.getBoundingClientRect();
       const corners=app.toolbar_ui({type:'drawer_source_corners',anchor,direction,container:{x:b.x,y:b.y,width:b.width,height:b.height}});
       const square=corners.flatMap((joined,index)=>joined?[index]:[]);
@@ -371,6 +376,7 @@ export function createWorkspaceChrome({app,state,workspace,element,button,icon,p
     dispatch({type:"measure_drawer_tiles",measurements});
     measureColumnDrawers();
     editor.queuePositions();
+    queueGlass();
     if(more&&!animating){animating=true;requestAnimationFrame(animate);}
     previousAnimationFrame=animating?now:null;
   }

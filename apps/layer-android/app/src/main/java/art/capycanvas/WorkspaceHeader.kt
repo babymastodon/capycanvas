@@ -147,7 +147,14 @@ private fun CanvasHost.primaryMenu(open: (JSONObject?) -> Unit) =
         val placements = geometry?.array("items")?.objects()?.associateBy { it.getInt("id") } ?: emptyMap()
         val bars = geometry?.optJSONArray("bars")?.objects() ?: emptyList()
         val joined = bars.flatMap { bar -> bar.array("items").values().map { (it as Number).toInt() } }.toSet()
-        bars.forEach { bar -> Box(Modifier.placed(bar.getJSONObject("bounds"), density).glass(TileShape, colors.headerSurface)) }
+        bars.forEach { bar ->
+            val bounds = bar.getJSONObject("bounds")
+            val members = bar.array("items").values().map { (it as Number).toInt() }
+            val sources = input.dock.drawerSources.values.filter { it.anchor?.optString("kind") == "header" && (it.anchor?.optInt("id", -1) ?: -1) in members }
+            val radius = size.number("tile") / 2
+            Box(Modifier.placed(bounds, density).glass(input.dock.drawerContainerShape(bounds, radius, sources = sources), colors.headerSurface,
+                nativeShape = { input.dock.drawerContainerShape(bounds, radius, sources = sources.filter { it.glass?.active == true }) }))
+        }
         if (editing) geometry?.array("zones")?.objects()?.forEachIndexed { index, zone ->
             val active = input.preview?.optJSONArray("target")?.optString(0) == listOf("left", "center", "right")[index]
             Box(Modifier.placed(zone, density).border(1.dp, colors.divider, ControlShape)

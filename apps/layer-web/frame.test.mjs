@@ -798,7 +798,7 @@ test('drawer plans follow exact native tile facts and retire missing sources',()
   const context={drawers,markedSources:new Set(),tiles:[structuredClone(native)],animating:false,catalog:{panel_expansion_ms:200},previousAnimationFrame:null,frameInterval:()=>16,
     workspace:{clientWidth:1200,clientHeight:900,querySelectorAll:()=>[]},
     app:{drawer_measure(){plans++;return{measure:context.tiles.length?{placement:{columns:[bounds]}}:null,toolbars:[]};},drawer(){placements++;return{placement:{bounds,columns:[bounds],direction:'right'},connection:null};}},
-    contentHeight:()=>120,matchMedia:()=>({matches:false}),place(){},dispose(){disposed++;},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},
+    contentHeight:()=>120,matchMedia:()=>({matches:false}),place(){},dispose(){disposed++;},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},queueGlass(){},
     requestAnimationFrame(){assert.fail('A completed drawer does not schedule another callback');}};
   const start=chrome.indexOf('  function animate('),end=chrome.indexOf('  workspace.addEventListener("scroll"',start);
   assert.ok(start>=0&&end>start);runInNewContext(chrome.slice(start,end)+'\nglobalThis.step=()=>animate(200);',context);
@@ -841,7 +841,7 @@ test('drawer ticks clear owned marks without scanning the workspace',()=>{
     animating:true,previousAnimationFrame:null,frameInterval:()=>16,catalog:{panel_expansion_ms:200},
     getComputedStyle:()=>({borderTopLeftRadius:'8px',borderTopRightRadius:'8px',borderBottomRightRadius:'8px',borderBottomLeftRadius:'8px'}),
     app:{toolbar_ui(request){assert.equal(request.type,'drawer_source_corners');return[false,true,true,false];},drawer_measure:()=>({measure:{placement},toolbars:[]}),drawer:()=>({placement,connection:null})},
-    matchMedia:()=>({matches:false}),place(){},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},requestAnimationFrame(){}};
+    matchMedia:()=>({matches:false}),place(){},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},queueGlass(){},requestAnimationFrame(){}};
   const start=chrome.indexOf('  function markSource('),end=chrome.indexOf('  workspace.addEventListener("scroll"',start);
   runInNewContext(chrome.slice(start,end)+'\nglobalThis.mark=markSource;globalThis.tick=animate;',context);
   for(const time of [100,116]){
@@ -866,7 +866,7 @@ test('drawer progress follows frame deltas through delayed callbacks, close and 
     const context={drawers:new Map([[46,record]]),markedSources:new Set(),tiles:[],animating:true,previousAnimationFrame:null,catalog:{panel_expansion_ms:200},frameInterval:()=>16,entryTime:101.6,
       performance:{now:()=>context.entryTime},workspace:{clientWidth:1200,clientHeight:900,querySelectorAll:()=>[],querySelector:()=>null},
       app:{drawer_measure:()=>({measure:{placement:{columns:[bounds]}},toolbars:[]}),drawer(query){queries.push(query);const width=bounds.width*(query.closing?1-query.progress:Math.max(0,query.progress)),placement={...bounds,width};return{placement:{bounds:placement,columns:[placement],direction:'right'},connection:null};}},
-      contentHeight:()=>120,matchMedia:()=>({matches:false}),place:(node,box)=>Object.assign(node.style,box),dispose(){},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},requestAnimationFrame:callback=>callbacks.push(callback)};
+      contentHeight:()=>120,matchMedia:()=>({matches:false}),place:(node,box)=>Object.assign(node.style,box),dispose(){},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},queueGlass(){},requestAnimationFrame:callback=>callbacks.push(callback)};
     const start=chrome.indexOf('  function animate('),end=chrome.indexOf('  workspace.addEventListener("scroll"',start);
     assert.ok(start>=0&&end>start);runInNewContext(chrome.slice(start,end)+'\nglobalThis.onFrame=animate;',context);
     return{context,record,root,queries,callbacks,bounds};

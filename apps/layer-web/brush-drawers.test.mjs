@@ -49,7 +49,57 @@ export async function checkBrushDrawers({call, evaluate, settle}) {
     await writeFile(`artifacts/brush-sculpt-web/${name}.png`,Buffer.from(shot.data,'base64'));
     await writeDrawerAudit(evaluate,`artifacts/brush-sculpt-web/${name}.allocations.json`,name);
   };
+  const headerBarCorners = async () => {
+    const saved = await evaluate('({workspace:layerApp.app.workspace_persistence(),transparency:layerApp.state().settings.transparency})');
+    await evaluate('(()=>{const set=layerApp.app.set_glass;window.headerBarGlass={set,boxes:[]};layerApp.app.set_glass=function(boxes,...rest){headerBarGlass.boxes=Array.from(boxes);return set.call(this,boxes,...rest)};})()');
+    const levels = ['off','low','medium','high'];
+    await send({type:'preferences',action:{type:'edit',id:'transparency',value:levels.indexOf('medium')}});
+    const corners = selector => evaluate(`(()=>{
+      const source=document.querySelector(${JSON.stringify(selector)}),a=source.getBoundingClientRect();
+      const bar=[...document.querySelectorAll('#header .header-bar:not([hidden])')].find(node=>{const b=node.getBoundingClientRect();return b.x<=a.x+.5&&b.right>=a.right-.5&&Math.abs(b.y-a.y)<.5});
+      const b=bar.getBoundingClientRect(),c=layerApp.canvas.getBoundingClientRect(),boxes=headerBarGlass.boxes;
+      const box=Array.from({length:boxes.length/9},(_,i)=>boxes.slice(i*9,i*9+9)).find(r=>[r[0]+c.x-b.x,r[1]+c.y-b.y,r[2]-b.width,r[3]-b.height].every(v=>Math.abs(v)<.5));
+      const rect=r=>({x:r.x,y:r.y,width:r.width,height:r.height}),facing=source.dataset.drawerFacing;
+      return {
+        css:['borderTopLeftRadius','borderTopRightRadius','borderBottomRightRadius','borderBottomLeftRadius'].map(key=>parseFloat(getComputedStyle(bar)[key])),
+        glass:box?.slice(4,8)??null,
+        joined:facing?layerApp.app.toolbar_ui({type:'drawer_source_corners',anchor:rect(a),direction:facing,container:rect(b)}):[false,false,false,false],
+      };
+    })()`);
+    try {
+      for(const end of [true,false]) {
+        await evaluate(`(()=>{
+          const workspace=layerApp.app.workspace_persistence(),h=workspace.layout.header;
+          const tool=control=>({id:h.next_id++,item:{kind:'tool',control}}),color=tool({kind:'color'});
+          window.headerBarColor=color.id;
+          h.zones=[[tool({kind:'command',command:'pencil'}),color,...(${end}?[]:[tool({kind:'command',command:'eraser'})])],[],[]];
+          layerApp.dispatch({type:'restore_workspace',workspace});
+        })()`);
+        await settle(); await pause();
+        const source=`[data-header-item="${await evaluate('headerBarColor')}"] .header-tool`;
+        const closed=await corners(source);
+        assert.ok(closed.css.every(r=>r>0),`closed bar is round: ${closed.css}`);
+        assert.deepEqual(closed.glass,closed.css,'closed bar glass follows its corners');
+        await contact(source);
+        assert.ok(await drawer(),'header Color drawer opens');
+        const open=await corners(source);
+        assert.equal(open.joined.includes(true),end,`only a bar end joins its drawer: ${open.joined}`);
+        open.joined.forEach((joined,i)=>assert.equal(open.css[i]===0,joined,`bar corner ${i}: radius ${open.css[i]}, joined ${joined}`));
+        assert.deepEqual(open.glass,open.css,'open bar glass follows its corners');
+        await contact(source);
+        assert.equal(await drawer(),undefined);
+        const reclosed=await corners(source);
+        assert.deepEqual(reclosed.css,closed.css,'closing restores the round bar');
+        assert.deepEqual(reclosed.glass,closed.css,'closing restores the round bar glass');
+      }
+    } finally {
+      await evaluate('layerApp.app.set_glass=headerBarGlass.set;delete window.headerBarGlass;delete window.headerBarColor');
+      await send({type:'restore_workspace',workspace:saved.workspace});
+      await send({type:'preferences',action:{type:'edit',id:'transparency',value:levels.indexOf(saved.transparency)}});
+    }
+  };
   try {
+    await headerBarCorners();
     await send({type:'invoke',command:'drawing_brush'});
     await contact(header('drawing_brush'));
     await check('brush_sets');

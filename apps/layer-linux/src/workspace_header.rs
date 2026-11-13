@@ -1105,6 +1105,10 @@ impl Header {
             .find(|i| i.entry.id == id && i.root.is_child_visible())
             .and_then(|i| i.button.clone())
     }
+    pub fn bar_holding(&self, id: u32) -> Option<gtk::Widget> {
+        let index = self.geometry.borrow().bars.iter().position(|bar| bar.items.contains(&id))?;
+        self.bars.borrow().get(index).map(|bar| bar.clone().upcast())
+    }
     pub fn mark_drawer_origin(&self, origin: Option<(u32, Edge)>) {
         for item in self.items.borrow().iter() {
             if let Some(button) = &item.button {

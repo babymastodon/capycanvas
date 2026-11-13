@@ -2001,7 +2001,7 @@ try {
   customization = createCustomization({ app, rasterWorker, catalog, state: () => state, paintPair: () => paintPairView, workspace, panels, groups,
     element, button, icon,dropdown, numberField, panelFrame,
     dispatch, draggable, grip, place, updateZen, editor });
-  workspaceChrome = createWorkspaceChrome({app,frameInterval:()=>displayInterval,state:()=>state,workspace,element,button,icon,place,dispatch,customization,editor,panelFrame,panels,draggable,grip,contentPanel,tabLabel,releaseTabs});
+  workspaceChrome = createWorkspaceChrome({app,frameInterval:()=>displayInterval,state:()=>state,workspace,element,button,icon,place,dispatch,customization,editor,panelFrame,panels,draggable,grip,contentPanel,tabLabel,releaseTabs,queueGlass:()=>glass?.queue()});
   bubbles = createBubbles({app,workspace,element,button,icon,state:()=>state,dispatch,applyChange,wake,glassChanged:()=>glass?.queueBubbles(),customization,contentPanel,rasterWorker,asset,cancelWorkspace:()=>endWorkspaceGesture(null,true),viewport:()=>workspaceViewport,leaveCanvas:()=>cursorInput(null)});
   panelVectors=createPanelVectors({workspace,groups,place,
     project:metadata=>rasterWorker({operation:'panel-vectors',metadata,buffers:[]}),
