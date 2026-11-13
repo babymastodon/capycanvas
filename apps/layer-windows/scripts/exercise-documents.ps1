@@ -783,6 +783,7 @@ function Set-InkColor([string[]]$Channels) {
         (Control "edit-color-0-$i").GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
         $entry=Control "edit-color-0-$i-entry";$entry.SetFocus()
         $entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($channels[$i])
+        Wait-Until {$entry.Current.HasKeyboardFocus} 'Controlled ink entry did not take keyboard focus'
         [CapyRowPointer]::Key([uint32]$review.Id,0x0D)
         Wait-Until {!(Find-Id "edit-color-0-$i-entry")} 'Controlled ink value did not commit'
     }
