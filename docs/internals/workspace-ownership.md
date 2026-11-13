@@ -96,9 +96,11 @@ blocked upgrades and worker failures.
 
 Editing state written by 1.0.15 is converted on read; unreadable editing and
 working-state fields use their defaults. App-state documents accept unknown
-option fields. Discarded editing fields raise the palettes-and-brush-settings
-notice once per start. Creating a workspace because none could be read raises
-the shared update notice once.
+option fields. Neither a discarded field nor a workspace created because none
+could be read raises a notice: startup notices report only storage that was
+set aside or can't be written, and
+`recovery_tests::starting_three_times_shows_no_repeating_notice` checks that a
+later start on the same storage is quiet.
 Readable documents are not rejected for their version number.
 `WorkspaceInput::Focus` and resume reload editing state on the storage worker;
 unchanged paths adopt the stored values while local changes made during the read

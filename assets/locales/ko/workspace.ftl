@@ -672,8 +672,6 @@ workspace-storage-newer-notice = 작업 영역이 더 새로운 버전의 { comm
 workspace-storage-unavailable-notice = { common-app-name }에서 저장된 작업 영역을 열 수 없습니다. 작업 영역, 팔레트 및 브러시 설정의 변경 사항을 저장하려면 { common-app-name }를 다시 시작하세요.
 workspace-storage-damaged-notice = 저장된 작업 영역이 손상되었습니다. { common-app-name }에서 새 작업 영역으로 시작했습니다.
 workspace-storage-restored-notice = 저장된 작업 영역이 손상되었습니다. { common-app-name }에서 이전 사본을 복원했습니다.
-workspace-editing-unreadable-notice = 일부 팔레트 또는 브러시 설정은 이 버전의 { common-app-name }에서 열 수 없습니다. 열려면 { common-app-name }를 업데이트하세요.
-workspace-created-unreadable-notice = 이 버전의 { common-app-name }에서는 저장된 작업 영역을 열 수 없습니다. 열려면 { common-app-name }를 업데이트하세요.
 
 
 diagnostics-memory-title = 메모리

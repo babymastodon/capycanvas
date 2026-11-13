@@ -643,8 +643,6 @@ workspace-storage-newer-notice = Các không gian làm việc của bạn đã �
 workspace-storage-unavailable-notice = { common-app-name } không thể mở các không gian làm việc đã lưu của bạn. Hãy khởi động lại { common-app-name } để lưu thay đổi đối với không gian làm việc, bảng màu và thiết lập cọ.
 workspace-storage-damaged-notice = Các không gian làm việc đã lưu của bạn bị hỏng. { common-app-name } đã bắt đầu với các không gian làm việc mới.
 workspace-storage-restored-notice = Các không gian làm việc đã lưu của bạn bị hỏng. { common-app-name } đã khôi phục một bản sao trước đó.
-workspace-editing-unreadable-notice = Một số bảng màu hoặc thiết lập cọ không thể mở trong phiên bản { common-app-name } này. Hãy cập nhật { common-app-name } để mở chúng.
-workspace-created-unreadable-notice = Phiên bản { common-app-name } này không thể mở các không gian làm việc đã lưu của bạn. Hãy cập nhật { common-app-name } để mở chúng.
 
 
 diagnostics-memory-title = Bộ nhớ

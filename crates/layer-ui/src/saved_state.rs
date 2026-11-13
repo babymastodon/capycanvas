@@ -5,20 +5,19 @@ pub(crate) fn restore_fields<T: DeserializeOwned + Serialize>(
     value: Value,
     defaults: impl FnOnce() -> T,
     validate: impl Fn(&T) -> bool,
-) -> (T, bool) {
+) -> T {
     let valid = |value: &Value| serde_json::from_value::<T>(value.clone()).ok().filter(&validate);
-    if let Some(restored) = valid(&value) { return (restored, false); }
-    let mut dropped = !value.is_object();
+    if let Some(restored) = valid(&value) { return restored; }
     let defaults = defaults();
     let mut kept = serde_json::to_value(&defaults).unwrap();
     if let Value::Object(fields) = value {
         for (key, value) in fields {
             let mut candidate = kept.clone();
             candidate[key] = value;
-            if valid(&candidate).is_some() { kept = candidate; } else { dropped = true; }
+            if valid(&candidate).is_some() { kept = candidate; }
         }
     }
-    (valid(&kept).unwrap_or(defaults), dropped)
+    valid(&kept).unwrap_or(defaults)
 }
 
 pub mod lenient {
@@ -51,7 +50,7 @@ pub mod lenient {
         Ok(serde_json::from_value(Value::deserialize(deserializer)?).unwrap_or_default())
     }
     pub fn fields<'de, D: Deserializer<'de>, T: DeserializeOwned + Serialize + Default>(deserializer: D) -> Result<T, D::Error> {
-        Ok(super::restore_fields(Value::deserialize(deserializer)?, T::default, |_| true).0)
+        Ok(super::restore_fields(Value::deserialize(deserializer)?, T::default, |_| true))
     }
 }
 
@@ -59,20 +58,16 @@ pub mod lenient {
 mod tests {
     use crate::{EditingState, Localizer, UiLanguage, WorkspaceWorkingState};
     #[test]
-    fn editing_restore_reports_unreadable_fields_and_accepts_missing_or_unknown_options() {
+    fn editing_restore_accepts_missing_unknown_and_unreadable_options() {
         let english = Localizer::shared(UiLanguage::English);
         let original = EditingState::default();
         let mut value = serde_json::to_value(&original).unwrap();
         value["future_option"] = true.into();
         value.as_object_mut().unwrap().remove("preset");
-        let (restored,dropped) = EditingState::restore_with_report(&value.to_string(),&english);
-        assert_eq!(restored,original);
-        assert!(!dropped);
+        assert_eq!(EditingState::restore(&value.to_string(),&english),original);
         value["color_library"]["palettes"] = "unreadable".into();
-        let (restored,dropped) = EditingState::restore_with_report(&value.to_string(),&english);
-        assert_eq!(restored,original);
-        assert!(dropped);
-        assert!(EditingState::restore_with_report("invalid JSON",&english).1);
+        assert_eq!(EditingState::restore(&value.to_string(),&english),original);
+        assert_eq!(EditingState::restore("invalid JSON",&english),original);
     }
     #[test]
     fn saved_documents_tolerate_missing_and_unknown_fields() {

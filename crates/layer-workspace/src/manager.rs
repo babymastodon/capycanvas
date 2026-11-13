@@ -11,8 +11,6 @@ struct PendingSave {
 }
 #[derive(Default)]
 struct State {
-    editing_dropped: bool,
-    startup_created: bool,
     restored_copy: bool,
     editing: Option<Box<layer_ui::EditingState>>,
     saved_editing: Option<Box<layer_ui::EditingState>>,
@@ -184,13 +182,10 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
         }
     }
     pub fn editing(&self) -> Option<Box<layer_ui::EditingState>> { self.state.borrow().editing.clone() }
-    pub(crate) fn editing_dropped(&self) -> bool { self.state.borrow().editing_dropped }
-    pub(crate) fn startup_created(&self) -> bool { self.state.borrow().startup_created }
     pub(crate) fn restored_copy(&self) -> bool { self.state.borrow().restored_copy }
     pub async fn load_editing(&self) -> Result<()> {
-        if let StoreResponse::Editing {state:editing,dropped} = self.execute(StoreRequest::Editing {language:self.localization().language()}).await? {
+        if let StoreResponse::Editing(editing) = self.execute(StoreRequest::Editing {language:self.localization().language()}).await? {
             let mut state = self.state.borrow_mut();
-            state.editing_dropped = dropped;
             state.saved_editing = editing.clone();
             state.editing = editing;
         }
@@ -526,9 +521,7 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
         if occupied { return Err(crate::store_rules::owned_elsewhere()); }
         let source = Entity::included_workspace(self.initial_id(),self.platform,self.tablet.get(),now).unwrap();
         let name = self.display_name(&source.id,&source.metadata);
-        let incoming = self.create_from_snapshot(source,&name,true,now).await?;
-        self.state.borrow_mut().startup_created = true;
-        Ok(incoming)
+        self.create_from_snapshot(source,&name,true,now).await
     }
 
     async fn ensure_defaults(&self, now: u64) -> Result<()> {

@@ -2293,27 +2293,6 @@ fn notice(host: &layer_host::NativeHost) -> Option<String> {
     host.session.state().notice.as_ref().map(|n| n.text.clone())
 }
 #[test]
-fn unreadable_editing_fields_raise_one_notice_per_start() {
-    for damaged in [false,true] {
-        let backend = Rc::new(Backend::default());
-        let mut editing = serde_json::to_value(layer_ui::EditingState::default()).unwrap();
-        if damaged { editing["preset"] = "unreadable".into(); }
-        let mut stored = serde_json::from_str::<serde_json::Value>(&backend.database.borrow().encoded().unwrap()).unwrap();
-        stored["editing"] = editing.to_string().into();
-        *backend.database.borrow_mut() = BrowserDatabase::decode(&stored.to_string()).unwrap();
-        let (mut controller,mut host) = start(Store(backend),Platform::Web);
-        assert_started(&controller,&mut host,"editing notice");
-        assert_eq!(notice(&host).as_deref(),damaged.then_some("Some palettes or brush settings can't be opened in this version of Capy Canvas. Update Capy Canvas to open them."));
-        if let Some(notice) = host.session.state().notice.clone() {
-            for _ in 0..4 { controller.tick(&mut host.session,2000); }
-            assert_eq!(host.session.state().notice.as_ref().unwrap().id,notice.id);
-            host.session.dispatch(UiAction::Notice {id:notice.id,accept:false,action:None}).unwrap();
-            controller.tick(&mut host.session,3000);
-            assert!(host.session.state().notice.is_none());
-        }
-    }
-}
-#[test]
 fn startup_notices_survive_initial_drawing_recovery_without_reappearing_after_dismissal() {
     let (mut controller,mut host) = start(FaultyStore::failing(0,false,ErrorKind::Unavailable),Platform::Web);
     let notice = host.session.state().notice.clone().unwrap();

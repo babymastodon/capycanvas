@@ -407,8 +407,7 @@ and use defaults for fields they cannot read:
   field this build reads and validates is kept, and every other field keeps its
   default. Loading does not rewrite the saved copy; the next change replaces it.
 - Editing: the existing storage worker restores fields with the window's
-  language and reports discarded fields before workspace adoption. A discarded
-  field raises the shared palettes-and-brush-settings notice once per start. Saves merge
+  language before workspace adoption, without a notice. Saves merge
   changed JSON paths, so painting history does not replace another window's
   palettes and different brushes keep independent overrides. Unchanged unreadable
   fields stay stored. On focus or resume, the worker reloads editing state and
@@ -425,7 +424,7 @@ and use defaults for fields they cannot read:
   its name with the default tools. Opening writes nothing; the next save
   replaces the stored content. An item whose name or kind can't be read is left
   out of the list and kept. When no workspace can be listed, startup creates
-  a new workspace from the included layout and raises the shared update notice.
+  a new workspace from the included layout, without a notice.
   Only damaged storage (SQLite corruption, a Web store that can't be decoded,
   or an older store schema) is set aside, and its newest readable version copy
   takes its place with a notice and no question; see

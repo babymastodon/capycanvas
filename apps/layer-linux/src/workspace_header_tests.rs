@@ -1553,7 +1553,7 @@ fn native_unreadable_workspace_storage_input() {
     let manager = d.w.workspaces.manager().unwrap();
     assert!(manager.error().is_none());
     assert!(!manager.in_memory());
-    assert_eq!(state(&d.w).notice.as_ref().unwrap().text,"This version of Capy Canvas can't open your saved workspaces. Update Capy Canvas to open them.");
+    assert!(state(&d.w).notice.is_none(), "{:?}", state(&d.w).notice);
     assert!(d.w.area.is_mapped());
     assert_eq!(state(&d.w).settings.pan_speed, 2.0);
     assert_eq!(state(&d.w).settings.zoom_speed, 1.0);
@@ -4781,24 +4781,9 @@ fn native_saved_data_messages_input() {
         match fixture_case.as_str() {
             "damaged" => std::fs::write(&path,b"damaged SQLite store").unwrap(),
             "unavailable" => std::fs::create_dir(&path).unwrap(),
-            "newer" | "editing" => {
+            "newer" => {
                 std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/layer-workspace/tests/compat/1.0.15/workspaces.sqlite3"),&path).unwrap();
-                let sql = rusqlite::Connection::open(std::fs::canonicalize(&path).unwrap()).unwrap();
-                if fixture_case=="newer" {sql.pragma_update(None,"user_version",layer_workspace::SCHEMA_VERSION+1).unwrap();}
-                else {
-                    let text: String = sql.query_row("SELECT json FROM editing",[],|row|row.get(0)).unwrap();
-                    let mut editing: serde_json::Value = serde_json::from_str(&text).unwrap();
-                    editing["preset"] = "unreadable".into();
-                    sql.execute("UPDATE editing SET json=?1",[editing.to_string()]).unwrap();
-                }
-            },
-            "workspace" => {
-                {
-                    let manager = layer_workspace::WorkspaceManager::new(layer_workspace::StoreWorker::shared(&directory).unwrap(),Platform::Gtk);
-                    pollster::block_on(manager.initialize(1000)).unwrap();
-                }
-                let sql = rusqlite::Connection::open(std::fs::canonicalize(&path).unwrap()).unwrap();
-                sql.execute("UPDATE items SET metadata='{}' WHERE kind='workspace'",[]).unwrap();
+                rusqlite::Connection::open(std::fs::canonicalize(&path).unwrap()).unwrap().pragma_update(None,"user_version",layer_workspace::SCHEMA_VERSION+1).unwrap();
             },
             "drawing-unsupported" | "drawing-damaged" => {},
             _ => panic!("unknown saved-data case"),
@@ -4820,8 +4805,6 @@ fn native_saved_data_messages_input() {
         "newer" => M::WORKSPACE_STORAGE_NEWER_NOTICE,
         "unavailable" => M::WORKSPACE_STORAGE_UNAVAILABLE_NOTICE,
         "damaged" => M::WORKSPACE_STORAGE_DAMAGED_NOTICE,
-        "editing" => M::WORKSPACE_EDITING_UNREADABLE_NOTICE,
-        "workspace" => M::WORKSPACE_CREATED_UNREADABLE_NOTICE,
         "drawing-unsupported" => M::DOCUMENTS_PACKAGE_UNSUPPORTED_BODY,
         "drawing-damaged" => M::DOCUMENTS_PACKAGE_DAMAGED_BODY,
         _ => unreachable!(),

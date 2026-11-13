@@ -646,8 +646,6 @@ workspace-storage-newer-notice = Çalışma alanlarınız { common-app-name } uy
 workspace-storage-unavailable-notice = { common-app-name } kaydedilmiş çalışma alanlarınızı açamıyor. Çalışma alanları, paletler ve fırça ayarlarındaki değişiklikleri kaydetmek için { common-app-name } uygulamasını yeniden başlatın.
 workspace-storage-damaged-notice = Kaydedilmiş çalışma alanlarınız hasar görmüş. { common-app-name } yeni çalışma alanlarıyla başladı.
 workspace-storage-restored-notice = Kaydedilmiş çalışma alanlarınız hasar görmüş. { common-app-name } önceki bir kopyayı geri yükledi.
-workspace-editing-unreadable-notice = Bazı paletler veya fırça ayarları { common-app-name } uygulamasının bu sürümünde açılamıyor. Bunları açmak için { common-app-name } uygulamasını güncelleyin.
-workspace-created-unreadable-notice = { common-app-name } uygulamasının bu sürümü kaydedilmiş çalışma alanlarınızı açamıyor. Bunları açmak için { common-app-name } uygulamasını güncelleyin.
 
 
 diagnostics-memory-title = Bellek

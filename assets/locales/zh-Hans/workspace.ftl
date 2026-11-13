@@ -672,8 +672,6 @@ workspace-storage-newer-notice = 您的工作区由更新版本的{ common-app-n
 workspace-storage-unavailable-notice = { common-app-name }无法打开您保存的工作区。请重新启动{ common-app-name }，以保存对工作区、调色板和画笔设置的更改。
 workspace-storage-damaged-notice = 您保存的工作区已损坏。{ common-app-name }已创建新的工作区并启动。
 workspace-storage-restored-notice = 您保存的工作区已损坏。{ common-app-name }已恢复之前的副本。
-workspace-editing-unreadable-notice = 此版本的{ common-app-name }无法打开部分调色板或画笔设置。请更新{ common-app-name }以打开它们。
-workspace-created-unreadable-notice = 此版本的{ common-app-name }无法打开您保存的工作区。请更新{ common-app-name }以打开它们。
 
 
 diagnostics-memory-title = 内存

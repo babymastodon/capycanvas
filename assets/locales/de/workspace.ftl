@@ -649,8 +649,6 @@ workspace-storage-newer-notice = Deine Arbeitsbereiche wurden mit einer neueren 
 workspace-storage-unavailable-notice = { common-app-name } kann deine gespeicherten Arbeitsbereiche nicht öffnen. Starte { common-app-name } neu, um Änderungen an Arbeitsbereichen, Paletten und Pinseleinstellungen zu speichern.
 workspace-storage-damaged-notice = Deine gespeicherten Arbeitsbereiche waren beschädigt. { common-app-name } hat neue angelegt.
 workspace-storage-restored-notice = Deine gespeicherten Arbeitsbereiche waren beschädigt. { common-app-name } hat eine frühere Kopie wiederhergestellt.
-workspace-editing-unreadable-notice = Einige Paletten oder Pinseleinstellungen können in dieser Version von { common-app-name } nicht geöffnet werden. Aktualisiere { common-app-name }, um sie zu öffnen.
-workspace-created-unreadable-notice = Diese Version von { common-app-name } kann deine gespeicherten Arbeitsbereiche nicht öffnen. Aktualisiere { common-app-name }, um sie zu öffnen.
 
 
 diagnostics-memory-title = Speicher

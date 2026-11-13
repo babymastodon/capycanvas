@@ -27,9 +27,8 @@ temp folder when the process that owns the installation starts; Apple clears the
 app's `tmp` itself.
 
 The workspace store holds the painter's palettes and custom workspaces. Its
-worker restores editing fields with the window's language and reports discarded
-fields before returning them. Startup shows the shared palettes-and-brush-settings
-notice once when any field was discarded.
+worker restores editing fields with the window's language before returning
+them; a field it can't read takes its default without a notice.
 Saves merge only this window's changed JSON paths, keeping other windows' brush
 overrides and palettes and unchanged unreadable fields; see
 [editing saves](workspace-ownership.md).
@@ -38,7 +37,7 @@ A workspace or toolbar whose content can't be read opens with its fallback (see
 nothing, and the next save replaces the stored content. Rows whose metadata
 can't be read and unreadable pending deliveries stay in place, left out of the
 list. When no workspace can be listed, startup creates a new workspace from the
-included layout and shows the shared update notice. SQLite corruption,
+included layout. SQLite corruption,
 not-a-database errors and an older `user_version` rename the database and its
 existing WAL/SHM sidecars to `workspaces.damaged.<uuid>.sqlite3` and matching
 sidecar names. A Web store that isn't valid JSON, or doesn't decode at the

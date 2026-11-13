@@ -8,8 +8,6 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
     newer:"Your workspaces were saved by a newer version of Capy Canvas. Update Capy Canvas to save changes to workspaces, palettes and brush settings.",
     unavailable:"Capy Canvas can't open your saved workspaces. Restart Capy Canvas to save changes to workspaces, palettes and brush settings.",
     damaged:"Your saved workspaces were damaged. Capy Canvas started new ones.",
-    editing:"Some palettes or brush settings can't be opened in this version of Capy Canvas. Update Capy Canvas to open them.",
-    workspace:"This version of Capy Canvas can't open your saved workspaces. Update Capy Canvas to open them.",
     'drawing-unsupported':"It has layers or settings that this version of Capy Canvas can't edit.",
     'drawing-damaged':"Part of this file is damaged.",
   };
@@ -26,7 +24,6 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
     const {data}=await call('Page.captureScreenshot',{format:'png'});
     await writeFile(`${output}/${name}.png`,Buffer.from(data,'base64'));
   };
-  const template=JSON.parse(await readFile(new URL('../../crates/layer-workspace/tests/compat/1.0.15/editing.json',import.meta.url),'utf8'));
   await ready();
   const baseline=await storage("const read=store.get('database');read.onsuccess=()=>{result=read.result.snapshot;};");
   const evidence=[];
@@ -35,8 +32,6 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
       await wait('!JSON.parse(layerApp.app.workspace_view()).dirty&&!JSON.parse(layerApp.app.workspace_view()).saving&&!layerApp.documents.busy()&&!document.querySelector("dialog[open]")');
       const database=JSON.parse(baseline);
       if(kind==='newer')database.schema++;
-      if(kind==='editing'){const editing=structuredClone(template);editing.preset='unreadable';database.editing=JSON.stringify(editing);}
-      if(kind==='workspace')for(const record of Object.values(database.items)){if(record.entity.metadata.kind==='workspace'){record.entity.metadata='newer';record.claim=null;}}
       const stored=JSON.stringify(database);
       await storage(`store.clear();store.put({id:'database',snapshot:${JSON.stringify(kind==='damaged'?stored.slice(0,stored.length>>1):stored)}});`);
       await evaluate(`localStorage.setItem('layer.preferences.v1',JSON.stringify({...layerApp.state().settings,language:{Explicit:'en'},theme:${JSON.stringify(theme)}}))`);
@@ -133,5 +128,5 @@ export async function checkSavedDataUx({call,evaluate,reload,settle}) {
     evidence.push({name,source:'1.0.15 IndexedDB store cut to half its length, with a readable older copy and an unreadable newer copy'});
   }
   await writeFile(`${output}/web-messages.json`,JSON.stringify(evidence,null,2));
-  console.log('PASS saved-data messages: all approved messages, the released 1.0.12 workspaces and the damaged store replaced by its newest readable copy in both themes; real newer schema, truncated store, discarded editing, unreadable workspaces and package readers');
+  console.log('PASS saved-data messages: all approved messages, the released 1.0.12 workspaces and the damaged store replaced by its newest readable copy in both themes; real newer schema, truncated store and package readers');
 }

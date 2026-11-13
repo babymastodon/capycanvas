@@ -131,9 +131,7 @@ impl SqliteStore {
             }
             StoreRequest::Editing { language } => {
                 let json: Option<String> = self.connection.query_row("SELECT json FROM editing WHERE id=1", [], |r| r.get(0)).optional()?;
-                let (state, dropped) = json.map(|json|layer_ui::EditingState::restore_with_report(&json,&layer_ui::Localizer::shared(language)))
-                    .map_or((None,false), |(state,dropped)|(Some(Box::new(state)),dropped));
-                Ok(StoreResponse::Editing {state,dropped})
+                Ok(StoreResponse::Editing(json.map(|json| Box::new(layer_ui::EditingState::restore(&json, &layer_ui::Localizer::shared(language))))))
             }
             StoreRequest::SetAside => Err(StoreError::new(ErrorKind::Unavailable,"Only a damaged database can be set aside.")),
             StoreRequest::Switcher => self

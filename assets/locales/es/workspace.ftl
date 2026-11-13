@@ -649,8 +649,6 @@ workspace-storage-newer-notice = Tus espacios de trabajo se guardaron con una ve
 workspace-storage-unavailable-notice = { common-app-name } no puede abrir tus espacios de trabajo guardados. Reinicia { common-app-name } para guardar los cambios en los espacios de trabajo, las paletas y los ajustes de pincel.
 workspace-storage-damaged-notice = Tus espacios de trabajo guardados estaban dañados. { common-app-name } ha iniciado otros nuevos.
 workspace-storage-restored-notice = Tus espacios de trabajo guardados estaban dañados. { common-app-name } ha restaurado una copia anterior.
-workspace-editing-unreadable-notice = Algunas paletas o ajustes de pincel no se pueden abrir en esta versión de { common-app-name }. Actualiza { common-app-name } para abrirlos.
-workspace-created-unreadable-notice = Esta versión de { common-app-name } no puede abrir tus espacios de trabajo guardados. Actualiza { common-app-name } para abrirlos.
 
 
 diagnostics-memory-title = Memoria

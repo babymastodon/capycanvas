@@ -634,8 +634,6 @@ workspace-storage-newer-notice = พื้นที่ทำงานของ�
 workspace-storage-unavailable-notice = { common-app-name } เปิดพื้นที่ทำงานที่บันทึกไว้ของคุณไม่ได้ โปรดเริ่ม { common-app-name } ใหม่เพื่อบันทึกการเปลี่ยนแปลงพื้นที่ทำงาน จานสี และการตั้งค่าพู่กัน
 workspace-storage-damaged-notice = พื้นที่ทำงานที่บันทึกไว้ของคุณเสียหาย { common-app-name } เริ่มต้นด้วยพื้นที่ทำงานใหม่แล้ว
 workspace-storage-restored-notice = พื้นที่ทำงานที่บันทึกไว้ของคุณเสียหาย { common-app-name } กู้คืนสำเนาก่อนหน้าแล้ว
-workspace-editing-unreadable-notice = จานสีหรือการตั้งค่าพู่กันบางรายการเปิดใน { common-app-name } เวอร์ชันนี้ไม่ได้ โปรดอัปเดต { common-app-name } เพื่อเปิดรายการเหล่านี้
-workspace-created-unreadable-notice = { common-app-name } เวอร์ชันนี้เปิดพื้นที่ทำงานที่บันทึกไว้ของคุณไม่ได้ โปรดอัปเดต { common-app-name } เพื่อเปิดพื้นที่ทำงานเหล่านี้
 
 
 diagnostics-memory-title = หน่วยความจำ

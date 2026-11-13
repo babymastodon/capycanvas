@@ -427,7 +427,7 @@ impl StoreRequest {
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum StoreResponse {
     SetAside { restored: bool },
-    Editing { state: Option<Box<layer_ui::EditingState>>, dropped: bool },
+    Editing(Option<Box<layer_ui::EditingState>>),
     Switcher(Option<Vec<String>>),
     WorkspaceOrder(Option<Vec<String>>),
     List(Vec<ItemSummary>),

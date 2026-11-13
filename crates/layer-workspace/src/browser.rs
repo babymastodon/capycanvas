@@ -197,11 +197,8 @@ impl BrowserDatabase {
     fn apply(&mut self, request: StoreRequest, now: u64) -> Result<StoreResponse> {
         use StoreRequest::*;
         Ok(match request {
-            Editing { language } => {
-                let (state,dropped) = self.editing.as_ref().map(|json|layer_ui::EditingState::restore_with_report(json,&layer_ui::Localizer::shared(language)))
-                    .map_or((None,false), |(state,dropped)|(Some(Box::new(state)),dropped));
-                StoreResponse::Editing {state,dropped}
-            }
+            Editing { language } => StoreResponse::Editing(self.editing.as_ref()
+                .map(|json| Box::new(layer_ui::EditingState::restore(json, &layer_ui::Localizer::shared(language))))),
             Switcher => StoreResponse::Switcher(self.switcher.clone().and_then(manager::readable_ids)),
             WorkspaceOrder => StoreResponse::WorkspaceOrder(self.workspace_order.clone().and_then(manager::readable_ids)),
             UpdateSwitcher { expected, ids } => {

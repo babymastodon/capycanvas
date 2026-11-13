@@ -672,8 +672,6 @@ workspace-storage-newer-notice = ワークスペースは、新しいバージ�
 workspace-storage-unavailable-notice = { common-app-name }は保存されたワークスペースを開けません。ワークスペース、パレット、ブラシ設定の変更を保存するには、{ common-app-name }を再起動してください。
 workspace-storage-damaged-notice = 保存されたワークスペースが破損していました。{ common-app-name }は新しいワークスペースで起動しました。
 workspace-storage-restored-notice = 保存されたワークスペースが破損していました。{ common-app-name }は以前のコピーを復元しました。
-workspace-editing-unreadable-notice = 一部のパレットやブラシ設定は、このバージョンの{ common-app-name }では開けません。開くには、{ common-app-name }を更新してください。
-workspace-created-unreadable-notice = このバージョンの{ common-app-name }では、保存されたワークスペースを開けません。開くには、{ common-app-name }を更新してください。
 
 
 diagnostics-memory-title = メモリ

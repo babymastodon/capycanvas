@@ -28,7 +28,6 @@ pub struct SavedDataReport {
     pub stores: BTreeMap<String, SavedStoreReport>,
     pub startup: String,
     pub notices: Vec<String>,
-    pub editing_dropped: bool,
     pub sessions: Vec<SavedSessionReport>,
 }
 
@@ -141,7 +140,7 @@ fn sessions(root: &Path) -> std::result::Result<Vec<SavedSessionReport>, String>
 
 pub fn check_saved_data(roots: &StorageRoots) -> SavedDataReport {
     let mut report = SavedDataReport { stores: BTreeMap::new(), startup: "stored".into(),
-        notices: Vec::new(), editing_dropped: false, sessions: Vec::new() };
+        notices: Vec::new(), sessions: Vec::new() };
     let settings = read(&roots.settings(), Settings::MAX_FILE_BYTES).and_then(|bytes| bytes.map(|bytes| {
         String::from_utf8(bytes).map(|saved| Settings::restore(&saved)).map_err(|error| error.to_string())
     }).transpose());
@@ -162,9 +161,8 @@ pub fn check_saved_data(roots: &StorageRoots) -> SavedDataReport {
             .map_err(|error| error.to_string())?, Platform::Gtk, crate::sqlite::SystemClock.now_ms(), Localizer::shared(UiLanguage::English),
             Arc::new(move || { let _ = sender.send(()); }));
         let adopted = advance(&mut controller, &mut host, &wake, false);
-        report.editing_dropped = controller.manager.editing_dropped();
-        if let Some(WorkspaceNotice { copy: WorkspaceNoticeCopy::Messages(ids), .. }) = &controller.notice {
-            report.notices = ids.iter().map(|id| id.key().into()).collect();
+        if let Some(WorkspaceNotice { copy: WorkspaceNoticeCopy::Startup(notice), .. }) = &controller.notice {
+            report.notices = vec![notice.message().key().into()];
         }
         report.startup = if controller.manager.in_memory() { "in memory" }
             else if controller.startup == Some(Startup::SetAside)
@@ -230,7 +228,6 @@ mod tests {
         let report = check_saved_data(&roots);
         assert_eq!(report.startup, "stored", "{report:?}");
         assert!(report.notices.is_empty(), "{report:?}");
-        assert!(!report.editing_dropped, "{report:?}");
         assert!(report.stores.values().all(|store| store.loaded), "{report:?}");
         assert_eq!(report.sessions.len(), 2);
         assert!(report.sessions.iter().all(|session| session.loaded), "{report:?}");

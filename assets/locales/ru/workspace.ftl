@@ -652,8 +652,6 @@ workspace-storage-newer-notice = Ваши рабочие пространств�
 workspace-storage-unavailable-notice = { common-app-name } не может открыть сохранённые рабочие пространства. Перезапустите { common-app-name }, чтобы сохранять изменения рабочих пространств, палитр и настроек кистей.
 workspace-storage-damaged-notice = Сохранённые рабочие пространства были повреждены. { common-app-name } создал новые.
 workspace-storage-restored-notice = Сохранённые рабочие пространства были повреждены. { common-app-name } восстановил более раннюю копию.
-workspace-editing-unreadable-notice = Некоторые палитры или настройки кистей нельзя открыть в этой версии { common-app-name }. Обновите { common-app-name }, чтобы открыть их.
-workspace-created-unreadable-notice = Эта версия { common-app-name } не может открыть сохранённые рабочие пространства. Обновите { common-app-name }, чтобы открыть их.
 
 
 diagnostics-memory-title = Память

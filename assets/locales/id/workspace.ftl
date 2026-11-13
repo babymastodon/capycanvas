@@ -1223,8 +1223,6 @@ workspace-storage-newer-notice = Ruang kerja Anda disimpan oleh versi { common-a
 workspace-storage-unavailable-notice = { common-app-name } tidak dapat membuka ruang kerja tersimpan Anda. Mulai ulang { common-app-name } untuk menyimpan perubahan pada ruang kerja, palet, dan pengaturan kuas.
 workspace-storage-damaged-notice = Ruang kerja tersimpan Anda rusak. { common-app-name } memulai ruang kerja baru.
 workspace-storage-restored-notice = Ruang kerja tersimpan Anda rusak. { common-app-name } memulihkan salinan sebelumnya.
-workspace-editing-unreadable-notice = Beberapa palet atau pengaturan kuas tidak dapat dibuka dalam versi { common-app-name } ini. Perbarui { common-app-name } untuk membukanya.
-workspace-created-unreadable-notice = Versi { common-app-name } ini tidak dapat membuka ruang kerja tersimpan Anda. Perbarui { common-app-name } untuk membukanya.
 
 
 diagnostics-memory-title = Memori

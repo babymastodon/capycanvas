@@ -649,8 +649,6 @@ workspace-storage-newer-notice = Your workspaces were saved by a newer version o
 workspace-storage-unavailable-notice = { common-app-name } can't open your saved workspaces. Restart { common-app-name } to save changes to workspaces, palettes and brush settings.
 workspace-storage-damaged-notice = Your saved workspaces were damaged. { common-app-name } started new ones.
 workspace-storage-restored-notice = Your saved workspaces were damaged. { common-app-name } restored an earlier copy.
-workspace-editing-unreadable-notice = Some palettes or brush settings can't be opened in this version of { common-app-name }. Update { common-app-name } to open them.
-workspace-created-unreadable-notice = This version of { common-app-name } can't open your saved workspaces. Update { common-app-name } to open them.
 
 
 diagnostics-memory-title = Memory

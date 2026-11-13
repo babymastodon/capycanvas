@@ -272,7 +272,7 @@ impl ExportPresets {
             profiles: serde_json::from_value(value["profiles"].clone()).unwrap_or_default(),
             destinations: Default::default(), named: Vec::new(),
         };
-        let (metadata, _) = crate::saved_state::restore_fields(value, || defaults,
+        let metadata = crate::saved_state::restore_fields(value, || defaults,
             |metadata| Self::decode_metadata(metadata.clone(), &payloads).is_ok());
         Self::decode_metadata(metadata, &payloads).unwrap_or_default()
     }

@@ -15,6 +15,7 @@ struct Records {
     records: RefCell<BTreeMap<String, String>>,
     marker: RefCell<Option<VersionMarker>>,
     checked: Cell<bool>,
+    unavailable: Cell<bool>,
 }
 impl Records {
     fn new(database: &str, copies: &[(&str, &str)]) -> Rc<Self> {
@@ -40,6 +41,7 @@ struct WebStore(Rc<Records>);
 impl WorkspaceStore for WebStore {
     async fn execute(&self, request: StoreRequest) -> Result<StoreResponse, StoreError> {
         let records = &self.0;
+        if records.unavailable.get() { return Err(StoreError::new(ErrorKind::Unavailable, "IndexedDB is unavailable")); }
         let protect = !records.checked.get() || request.needs_snapshots()
             || matches!(request, StoreRequest::Reopen | StoreRequest::Adopted);
         let snapshot = records.records.borrow().get("database").cloned();
@@ -76,6 +78,13 @@ impl WorkspaceStore for WebStore {
 
 fn copy_id(version: &str) -> String {
     format!("snapshot:{}", snapshots::name(version))
+}
+fn reload(records: &Records) {
+    records.checked.set(false);
+    let stored = records.records.borrow().get("database").and_then(|text| BrowserDatabase::decode(text).ok());
+    if let Some(mut database) = stored && database.release_unlocked(&[], WEB_NOW) {
+        records.records.borrow_mut().insert("database".into(), database.encoded().unwrap());
+    }
 }
 fn start_web(records: &Rc<Records>) -> (WorkspaceController<WebStore>, layer_host::NativeHost) {
     let mut host = layer_host::NativeHost::new(Platform::Web).unwrap();
@@ -348,5 +357,122 @@ fn a_damaged_native_store_installs_its_newest_readable_copy_once() {
         assert_eq!(notice(&host), None);
         crate::controller_tests::close_native(controller, &mut host);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Saved { Released1012, UnreadableEditingEntries, UnreadableEditing, UnreadableContent, UnreadableMetadata, Truncated { copy: bool }, Newer, Unavailable }
+const STARTS: [(Saved, Option<StartupNotice>); 9] = [
+    (Saved::Released1012, None),
+    (Saved::UnreadableEditingEntries, None),
+    (Saved::UnreadableEditing, None),
+    (Saved::UnreadableContent, None),
+    (Saved::UnreadableMetadata, None),
+    (Saved::Truncated { copy: true }, Some(StartupNotice::Restored)),
+    (Saved::Truncated { copy: false }, Some(StartupNotice::Damaged)),
+    (Saved::Newer, Some(StartupNotice::Newer)),
+    (Saved::Unavailable, Some(StartupNotice::Unavailable)),
+];
+fn repeats(notice: StartupNotice) -> bool {
+    match notice {
+        StartupNotice::Restored | StartupNotice::Damaged => false,
+        StartupNotice::Newer | StartupNotice::Unavailable => true,
+    }
+}
+fn with_unreadable_entries(editing: &str) -> String {
+    let mut editing: serde_json::Value = serde_json::from_str(editing).unwrap();
+    editing["color_library"]["palettes"].as_array_mut().unwrap().push(serde_json::json!({"id": "future", "swatches": 3}));
+    editing["tool_slots"]["choices"]["future_slot"] = serde_json::json!({"kind": "future"});
+    editing.to_string()
+}
+fn web_records(saved: Saved) -> Rc<Records> {
+    let mut database: serde_json::Value = serde_json::from_str(RELEASE_1_0_15).unwrap();
+    let workspaces = |database: &mut serde_json::Value, field: &str| for record in database["items"].as_object_mut().unwrap().values_mut() {
+        if record["entity"]["metadata"]["kind"] == "workspace" { record["entity"][field] = "{not json".into(); }
+    };
+    let (truncated, earlier) = (&RELEASE_1_0_15[..RELEASE_1_0_15.len() / 2], copy_id("1.0.14"));
+    match saved {
+        Saved::Released1012 => return Records::new(RELEASE_1_0_12, &[]),
+        Saved::Truncated { copy } => return Records::new(truncated, &[(earlier.as_str(), RELEASE_1_0_15)][..usize::from(copy)]),
+        Saved::UnreadableEditingEntries => database["editing"] = with_unreadable_entries(database["editing"].as_str().unwrap()).into(),
+        Saved::UnreadableEditing => database["editing"] = "{not json".into(),
+        Saved::UnreadableContent => workspaces(&mut database, "content"),
+        Saved::UnreadableMetadata => workspaces(&mut database, "metadata"),
+        Saved::Newer => database["schema"] = (database["schema"].as_u64().unwrap() + 1).into(),
+        Saved::Unavailable => {},
+    };
+    let records = Records::new(&database.to_string(), &[]);
+    records.unavailable.set(matches!(saved, Saved::Unavailable));
+    records
+}
+fn native_directory(saved: Saved) -> std::path::PathBuf {
+    if let Saved::Unavailable = saved {
+        let path = crate::test_support::temp_dir("workspace-recovery");
+        std::fs::write(&path, b"not a directory").unwrap();
+        return path;
+    }
+    let (directory, _) = native_store(matches!(saved, Saved::Truncated { copy: true }));
+    let path = directory.join("workspaces.sqlite3");
+    let sql = rusqlite::Connection::open(&path).unwrap();
+    match saved {
+        Saved::Released1012 => for id in [SKETCH, PAINT, PHOTO] {
+            sql.execute("UPDATE items SET content=?2 WHERE id=?1", (id, released_content(id).to_string())).unwrap();
+        },
+        Saved::UnreadableEditingEntries => {
+            let editing: String = sql.query_row("SELECT json FROM editing", [], |row| row.get(0)).unwrap();
+            sql.execute("UPDATE editing SET json=?1", [with_unreadable_entries(&editing)]).unwrap();
+        },
+        Saved::UnreadableEditing => { sql.execute("UPDATE editing SET json='{not json'", []).unwrap(); },
+        Saved::UnreadableContent => { sql.execute("UPDATE items SET content='{not json' WHERE kind='workspace'", []).unwrap(); },
+        Saved::UnreadableMetadata => { sql.execute("UPDATE items SET metadata='{not json' WHERE kind='workspace'", []).unwrap(); },
+        Saved::Newer => sql.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap(),
+        Saved::Truncated { .. } => { drop(sql); std::fs::write(&path, b"damaged SQLite store").unwrap(); },
+        Saved::Unavailable => unreachable!(),
+    }
+    directory
+}
+#[derive(Debug, PartialEq)]
+struct Start { notice: Option<String>, items: Vec<String>, stored: Vec<String> }
+fn three_starts<S: WorkspaceStore + 'static>(now: u64, start: impl Fn() -> (WorkspaceController<S>, layer_host::NativeHost),
+    close: impl Fn(WorkspaceController<S>, &mut layer_host::NativeHost), stored: impl Fn() -> Vec<String>) -> Vec<Start> {
+    (0..3).map(|_| {
+        let (mut controller, mut host) = start();
+        settle(&mut controller, &mut host, now, |c| c.view.ready && !c.view.busy);
+        quiet_start(&controller);
+        let mut items: Vec<_> = controller.manager.items().into_iter().map(|item| item.id).collect();
+        items.sort();
+        let notice = notice(&host);
+        close(controller, &mut host);
+        Start { notice, items, stored: stored() }
+    }).collect()
+}
+
+#[test]
+fn starting_three_times_shows_no_repeating_notice() {
+    for notice in [StartupNotice::Restored, StartupNotice::Damaged, StartupNotice::Newer, StartupNotice::Unavailable] {
+        assert!(STARTS.iter().any(|(_, expected)| *expected == Some(notice)), "{notice:?} needs a saved-data case");
+    }
+    let english = Localizer::shared(UiLanguage::English);
+    for (saved, expected) in STARTS {
+        let records = web_records(saved);
+        let web = three_starts(WEB_NOW, || { reload(&records); start_web(&records) }, |controller, _| drop(controller),
+            || records.records.borrow().keys().cloned().collect());
+        let directory = native_directory(saved);
+        let native = three_starts(1000, || crate::controller_tests::start_native(&directory), crate::controller_tests::close_native,
+            || std::fs::read_dir(&directory).map_or(Vec::new(), |entries| {
+                let mut names: Vec<_> = entries.map(|entry| entry.unwrap().file_name().into_string().unwrap()).filter(|name| !name.ends_with("-wal") && !name.ends_with("-shm")).collect();
+                names.sort();
+                names
+            }));
+        let first = expected.map(|notice| english.text(notice.message()).to_string());
+        let later = if expected.is_some_and(repeats) { first.clone() } else { None };
+        for (store, starts) in [("web", web), ("native", native)] {
+            assert_eq!(starts[0].notice, first, "{store} {saved:?}: first start");
+            for start in &starts[1..] {
+                assert_eq!(start.notice, later, "{store} {saved:?}: later start");
+                assert_eq!((&start.items, &start.stored), (&starts[0].items, &starts[0].stored), "{store} {saved:?}: later starts change nothing");
+            }
+        }
+        if directory.is_dir() { std::fs::remove_dir_all(&directory).unwrap(); } else { std::fs::remove_file(&directory).unwrap(); }
     }
 }
