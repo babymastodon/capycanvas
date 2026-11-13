@@ -20,6 +20,7 @@ common-learn-more = 詳細を見る
 common-quit = 終了
 
 common-action-failed = この操作を完了できませんでした
+common-clipboard-failed = クリップボードを使用できませんでした。もう一度お試しください。
 
 common-editor-closed = 編集画面は閉じられました
 

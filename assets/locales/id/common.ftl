@@ -24,6 +24,7 @@ common-learn-more = Pelajari Lebih Lanjut
 common-quit = Keluar
 
 common-action-failed = Tidak dapat menyelesaikan tindakan ini
+common-clipboard-failed = Papan klip tidak dapat digunakan. Coba lagi.
 
 common-editor-closed = Editor telah ditutup
 

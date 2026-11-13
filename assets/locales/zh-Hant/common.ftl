@@ -20,6 +20,7 @@ common-learn-more = 瞭解詳情
 common-quit = 結束
 
 common-action-failed = 無法完成此操作
+common-clipboard-failed = 無法使用剪貼簿。請重試。
 
 common-editor-closed = 編輯器已關閉
 

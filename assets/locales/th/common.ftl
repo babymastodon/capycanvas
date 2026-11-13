@@ -15,6 +15,7 @@ common-x11-unsupported-body = หากต้องการใช้ { common-a
 common-learn-more = ดูข้อมูลเพิ่มเติม
 common-quit = ออก
 common-action-failed = ทำการกระทำนี้ไม่สำเร็จ
+common-clipboard-failed = ใช้คลิปบอร์ดไม่ได้ ลองอีกครั้ง
 common-editor-closed = ตัวแก้ไขปิดแล้ว
 common-cannot-open-file = เปิดไฟล์ไม่ได้
 common-open-file-failed = เปิด “{ $name }” ไม่ได้

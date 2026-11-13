@@ -15,6 +15,7 @@ common-x11-unsupported-body = Melde dich ab, wähle auf dem Anmeldebildschirm ei
 common-learn-more = Mehr erfahren
 common-quit = Beenden
 common-action-failed = Diese Aktion konnte nicht abgeschlossen werden
+common-clipboard-failed = Die Zwischenablage konnte nicht verwendet werden. Erneut versuchen.
 common-editor-closed = Der Editor wurde geschlossen
 common-cannot-open-file = Datei kann nicht geöffnet werden
 common-open-file-failed = „{ $name }“ konnte nicht geöffnet werden.

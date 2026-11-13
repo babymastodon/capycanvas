@@ -15,6 +15,7 @@ common-x11-unsupported-body = Hãy đăng xuất, chọn phiên Wayland ở màn
 common-learn-more = Tìm hiểu thêm
 common-quit = Thoát
 common-action-failed = Không thể hoàn tất thao tác này
+common-clipboard-failed = Không thể dùng bảng nhớ tạm. Hãy thử lại.
 common-editor-closed = Trình chỉnh sửa đã đóng
 common-cannot-open-file = Không thể mở tệp
 common-open-file-failed = Không thể mở “{ $name }”.

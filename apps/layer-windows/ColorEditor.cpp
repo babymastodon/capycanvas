@@ -345,7 +345,8 @@ struct Editor:std::enable_shared_from_this<Editor>{
         AutomationProperties::SetAutomationId(node,id);tooltip(node,copy(L"copy"));
         node.Click([weak,text,owner=make_weak(node)](auto&&,auto&&){
             auto self=weak.lock();auto node=owner.get();if(!self||!node)return;
-            copyText(text());node.Content(icon(L"check",self->data->theme()));
+            if(!copyText(text())){self->clipboardFailed();return;}
+            node.Content(icon(L"check",self->data->theme()));
             auto done=self->copy(L"copied");AutomationProperties::SetName(node,done);tooltip(node,done);
             auto timer=node.DispatcherQueue().CreateTimer();timer.IsRepeating(false);timer.Interval(std::chrono::milliseconds(1200));
             timer.Tick([weak,owner](auto&& sender,auto&&){
@@ -646,16 +647,18 @@ struct Editor:std::enable_shared_from_this<Editor>{
         if(!control||(e.Key()!=VirtualKey::C&&e.Key()!=VirtualKey::V))return;
         if(auto focused=FocusManager::GetFocusedElement(body.XamlRoot());focused&&focused.try_as<TextBox>())return;
         e.Handled(true);
-        if(e.Key()==VirtualKey::C){copyText(str(view,L"hex"));return;}
-        auto content=winrt::Windows::ApplicationModel::DataTransfer::Clipboard::GetContent();
-        if(!content.Contains(winrt::Windows::ApplicationModel::DataTransfer::StandardDataFormats::Text()))return;
+        if(e.Key()==VirtualKey::C){if(!copyText(str(view,L"hex")))clipboardFailed();return;}
         auto weak=weak_from_this();
-        content.GetTextAsync().Completed([weak,dispatcher=body.DispatcherQueue()](auto const& operation,auto status){
-            if(status!=winrt::Windows::Foundation::AsyncStatus::Completed)return;
-            auto text=operation.GetResults();
-            dispatcher.TryEnqueue([weak,text]{if(auto self=weak.lock();self&&!self->finished)self->act(O({{L"op",S(L"text")},{L"text",S(text)}}));});
-        });
+        try{
+            auto content=winrt::Windows::ApplicationModel::DataTransfer::Clipboard::GetContent();
+            if(!content.Contains(winrt::Windows::ApplicationModel::DataTransfer::StandardDataFormats::Text()))return;
+            content.GetTextAsync().Completed([weak,dispatcher=body.DispatcherQueue()](auto const& operation,auto status){
+                auto completed=status==winrt::Windows::Foundation::AsyncStatus::Completed;auto text=completed?operation.GetResults():hstring{};
+                dispatcher.TryEnqueue([weak,completed,text]{if(auto self=weak.lock();self&&!self->finished){if(completed)self->act(O({{L"op",S(L"text")},{L"text",S(text)}}));else self->clipboardFailed();}});
+            });
+        }catch(hresult_error const&){clipboardFailed();}
     }
+    void clipboardFailed(){act(O({{L"op",S(L"clipboard_failed")}}));}
     void closingRequested(ContentDialogClosingEventArgs const& e){
         if(closing)return;
         if(auto f=editingField()){e.Cancel(true);end(f,true);return;}

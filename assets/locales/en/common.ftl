@@ -15,6 +15,7 @@ common-x11-unsupported-body = Log out, choose a Wayland session on the login scr
 common-learn-more = Learn More
 common-quit = Quit
 common-action-failed = Could not complete this action
+common-clipboard-failed = Could not use the clipboard. Try again.
 common-editor-closed = The editor has closed
 common-cannot-open-file = Cannot open file
 common-open-file-failed = Could not open “{ $name }”.

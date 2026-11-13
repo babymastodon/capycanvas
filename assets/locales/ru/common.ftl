@@ -15,6 +15,7 @@ common-x11-unsupported-body = Выйдите из системы, выберит
 common-learn-more = Подробнее
 common-quit = Выйти
 common-action-failed = Не удалось выполнить действие
+common-clipboard-failed = Не удалось использовать буфер обмена. Повторите попытку.
 common-editor-closed = Редактор закрыт
 common-cannot-open-file = Не удаётся открыть файл
 common-open-file-failed = Не удалось открыть «{ $name }».

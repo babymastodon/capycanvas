@@ -44,6 +44,12 @@ function Choose-Form([int]$Row,[string]$Form){
     else{$item.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()}
 }
 function Clipboard-Text{Sta {[Windows.Forms.Clipboard]::GetText()}}
+if(!('ClipboardLock' -as [type])){Add-Type -TypeDefinition 'public static class ClipboardLock{[System.Runtime.InteropServices.DllImport("user32.dll")]public static extern bool OpenClipboard(System.IntPtr owner);[System.Runtime.InteropServices.DllImport("user32.dll")]public static extern bool CloseClipboard();}'}
+function Busy-Clipboard([scriptblock]$Action){
+    if(![ClipboardLock]::OpenClipboard([IntPtr]::Zero)){throw 'The fixture could not hold the clipboard open'}
+    try{& $Action}finally{[ClipboardLock]::CloseClipboard()|Out-Null}
+}
+function Clipboard-Refusal{$refusal=Find 'edit-color-error' -Within $editorFrame;$refusal -and !$refusal.Current.IsOffscreen -and $refusal.Current.Name -eq 'Could not use the clipboard. Try again.'}
 function Paste([string]$Text){
     Sta {param($value)[Windows.Forms.Clipboard]::SetText($value)} @($Text)
     (Control 'edit-color-current').SetFocus()
@@ -204,6 +210,9 @@ try {
     if(((Row 0) -join ',') -ne '202,75,53'){throw 'Pasted color did not update the RGB row'}
     Invoke 'edit-color-copy-0';Wait-Until {(Clipboard-Text) -eq 'rgb(202 75 53)'} 'RGB copy did not use the standard notation'
     Invoke 'edit-color-hex-copy';Wait-Until {(Clipboard-Text) -eq '#CA4B35'} 'Hex copy did not copy the hex'
+    Busy-Clipboard {Invoke 'edit-color-copy-0';Wait-Until {(Clipboard-Refusal) -and (Shown 'edit-color-hex') -eq '#CA4B35'} 'A busy clipboard did not refuse the Edit Color copy'}
+    Paste '#CA4B35'
+    Wait-Until {!(Clipboard-Refusal) -and (Shown 'edit-color-hex') -eq '#CA4B35'} 'The clipboard refusal stayed after a later paste succeeded'
     if(!(Same (Foreground) $white)){throw 'Editing the draft changed the paint'}
     $artwork=Artwork-Identity
     Sta {[Windows.Forms.Clipboard]::SetText('native clipboard sentinel')}

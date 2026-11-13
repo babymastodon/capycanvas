@@ -15,6 +15,7 @@ common-x11-unsupported-body = Oturumu kapatın, giriş ekranında bir Wayland ot
 common-learn-more = Daha Fazla Bilgi
 common-quit = Çık
 common-action-failed = Bu eylem tamamlanamadı
+common-clipboard-failed = Pano kullanılamadı. Tekrar deneyin.
 common-editor-closed = Düzenleyici kapandı
 common-cannot-open-file = Dosya açılamıyor
 common-open-file-failed = “{ $name }” açılamadı.

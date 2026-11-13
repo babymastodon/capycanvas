@@ -15,6 +15,7 @@ common-x11-unsupported-body = Déconnectez-vous, choisissez une session Wayland 
 common-learn-more = En savoir plus
 common-quit = Quitter
 common-action-failed = Impossible de terminer cette action
+common-clipboard-failed = Impossible d’utiliser le presse-papiers. Réessayer.
 common-editor-closed = L’éditeur a été fermé
 common-cannot-open-file = Impossible d’ouvrir le fichier
 common-open-file-failed = Impossible d’ouvrir « { $name } ».
