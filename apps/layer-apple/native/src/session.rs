@@ -1,7 +1,7 @@
 use super::*;
-use layer_core::package::session_store::{SessionLease, collect_unreferenced_stores, preserve_directory, restore_error, set_restore_error, sync_directory};
+use layer_core::package::session_store::{SessionLease, collect_unreferenced_stores, preserve, restore_error, set_restore_error, sync_directory};
 use layer_host::{open::OpenEnvironment,session_stores::{SessionStores,StoreResult}};
-use layer_ui::session_recovery::{SessionCapture, SessionDrawing, SessionManifest, SessionReadError, SessionRestore};
+use layer_ui::session_recovery::{ClaimedManifest, SessionCapture, SessionDrawing, SessionManifest, SessionReadError, SessionRestore};
 use std::{collections::BTreeMap, path::{Component, Path, PathBuf}, sync::{Arc, Mutex, atomic::AtomicBool}};
 
 pub(crate) struct WindowDisk {
@@ -55,14 +55,10 @@ fn claim(mut open: SessionOpen) -> Result<(PathBuf, SessionLease, Option<String>
     open.sessions = layer_core::package::session_store::import_session_directories(&open.sessions, "window.json", ".lock")?;
     let own = open.sessions.join(&open.scene);
     let lease = SessionLease::claim(&own)?.ok_or("This editing session is already open")?;
-    match has_drawings(&own) {
-        Err(SessionReadError::Invalid(error)) => {
-            let preserved = preserve_directory(&own)?;
-            let owner = SessionLease::claim(&own)?.ok_or("This editing session is already open")?;
-            return Ok((own, owner, Some(format!("Could not read the saved drawing list: {error}\nOriginal files preserved at {}", preserved.display()))));
-        }
-        Err(error) => return Err(error.to_string()),
-        Ok(drawings) if !open.adopt || drawings => return Ok((own, lease, None)),
+    match SessionManifest::read_claimed(&own.join("window.json"))? {
+        ClaimedManifest::SetAside { error, preserved } => return Ok((own, lease, Some(format!("Could not read the saved drawing list: {error}\nOriginal files preserved at {}", preserved.display())))),
+        ClaimedManifest::Ready(manifest) if !manifest.drawings.is_empty() => return Ok((own, lease, None)),
+        _ if !open.adopt => return Ok((own, lease, None)),
         _ => {}
     }
     let mut candidates = Vec::new();
@@ -76,7 +72,7 @@ fn claim(mut open: SessionOpen) -> Result<(PathBuf, SessionLease, Option<String>
     for (_, candidate) in candidates {
         if !has_drawings(&candidate).unwrap_or(false) { continue; }
         let Ok(Some(adopted)) = SessionLease::claim(&candidate) else { continue };
-        preserve_directory(&own)?;
+        preserve(&own)?;
         std::fs::rename(&candidate, &own).map_err(|e| e.to_string())?;
         sync_directory(&open.sessions)?;
         return Ok((own, adopted, None));

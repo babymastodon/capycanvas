@@ -1,7 +1,7 @@
 use crate::android::{error, fail, or_throw, read};
 use jni::{JNIEnv, JavaVM, objects::{GlobalRef, JClass, JString, JValue}, sys::{jboolean, jlong}};
 use layer_host::{Renderer, open::OpenEnvironment,session_stores::{SessionStores,StoreResult}};
-use layer_ui::{UiSession, session_recovery::{SessionCapture, SessionManifest, SessionRestore}};
+use layer_ui::{UiSession, session_recovery::{ClaimedManifest, SessionCapture, SessionManifest, SessionRestore}};
 use std::{path::Path, sync::atomic::AtomicBool};
 use std::time::{Duration, Instant};
 use std::{fs::File, os::fd::FromRawFd};
@@ -343,6 +343,18 @@ pub extern "system" fn Java_art_capycanvas_Native_sessionManifestRead(mut env: J
     crate::jni_entry!(env, {
     let result = read(&mut env, &path).and_then(|path| SessionManifest::read(Path::new(&path)).map_err(error))
         .and_then(|manifest| serde_json::to_string(&manifest).map_err(error));
+    crate::android::string(&mut env, result)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_art_capycanvas_Native_sessionManifestClaim(mut env: JNIEnv, _: JClass, path: JString) -> jni::sys::jstring {
+    crate::jni_entry!(env, {
+    let result = read(&mut env, &path).and_then(|path| SessionManifest::read_claimed(Path::new(&path))).and_then(|claimed| serde_json::to_string(&match claimed {
+        ClaimedManifest::Ready(manifest) => serde_json::json!({"manifest": manifest}),
+        ClaimedManifest::SetAside { error, .. } => serde_json::json!({"set_aside": error}),
+        ClaimedManifest::Missing => serde_json::json!({}),
+    }).map_err(error));
     crate::android::string(&mut env, result)
     })
 }

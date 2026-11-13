@@ -125,6 +125,7 @@ internal object Native {
     @JvmStatic external fun documentReleasePreparedClose(handle: Long, job: Long)
     @JvmStatic external fun sessionFree(task: Long)
     @JvmStatic external fun sessionManifestRead(path: String): String
+    @JvmStatic external fun sessionManifestClaim(path: String): String
     @JvmStatic external fun sessionManifestWrite(path: String, value: String): String
     @JvmStatic external fun sessionManifestUpdate(state: String, event: String): String
     @JvmStatic external fun sessionCollect(directory: String, keys: String)

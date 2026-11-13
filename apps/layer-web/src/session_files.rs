@@ -15,6 +15,10 @@ impl WebSessionWindow {
         let store=self.store.clone();
         future_to_promise(async move {serialize(&SessionManifest::read_index(&store).await.map_err(js)?)})
     }
+    pub fn set_aside(&self)->js_sys::Promise {
+        let store=self.store.clone();
+        future_to_promise(async move {store.set_aside().await.map_err(js)?;Ok(JsValue::UNDEFINED)})
+    }
     pub fn publish(&self,manifest:JsValue)->Result<js_sys::Promise,JsValue> {
         let manifest:SessionManifest=serde_wasm_bindgen::from_value(manifest).map_err(js)?;manifest.validate().map_err(js)?;
         let store=self.store.clone();

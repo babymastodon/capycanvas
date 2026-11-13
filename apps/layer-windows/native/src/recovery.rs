@@ -8,7 +8,7 @@ use layer_host::{
 use layer_ui::{
     DestinationFingerprint, UiSession,
     session_recovery::{
-        SessionCapture, SessionDrawing, SessionManifest, SessionRestore, SessionRestoreAttempt, SessionStamp,
+        ClaimedManifest, SessionCapture, SessionDrawing, SessionManifest, SessionRestore, SessionRestoreAttempt, SessionStamp,
     },
 };
 use serde::Deserialize;
@@ -95,6 +95,7 @@ impl Storage {
         }
         let mut claimed = None;
         let mut others = 0;
+        let mut notices = Vec::new();
         for (_, directory) in candidates {
             let Some(lease) = OwnerLock::claim(&directory.join("owner.lock"))? else {
                 continue;
@@ -104,10 +105,11 @@ impl Storage {
                 others += usize::from(matches!(SessionManifest::read(&path), Ok(Some(manifest)) if !manifest.drawings.is_empty()));
                 continue;
             }
-            let Some(manifest)=SessionManifest::read(&path)? else {continue};
-            if manifest.drawings.is_empty() {
-                continue;
-            }
+            let manifest = match SessionManifest::read_claimed(&path)? {
+                ClaimedManifest::Ready(manifest) if !manifest.drawings.is_empty() => manifest,
+                ClaimedManifest::SetAside { error, .. } => { notices.push(error); continue; }
+                _ => continue,
+            };
             let mut storage = Self {
                 stores:SessionStores::native(directory.clone(),Arc::new(||{})),
                 directory,
@@ -122,7 +124,8 @@ impl Storage {
             storage.collect(&AtomicBool::new(false));
             claimed = Some(storage);
         }
-        Ok((match claimed {Some(storage)=>storage,None=>Self::create(session_root)?},others))
+        let mut storage=match claimed {Some(storage)=>storage,None=>Self::create(session_root)?};
+        storage.warnings.extend(notices);Ok((storage,others))
     }
     fn publish(
         &mut self,
@@ -947,7 +950,11 @@ mod tests {
         let manifest=SessionManifest::default().reconcile(vec![SessionDrawing{id:1,key:"drawing".into()}],1,true).unwrap();storage.publish(manifest,&cancel).unwrap();
         let interrupted=storage.manifest.begin_restore(1).unwrap();storage.publish(interrupted,&cancel).unwrap();let directory=storage.directory.clone();drop(storage);
         let restored=Storage::open(&root.path).unwrap().0;assert_eq!(restored.manifest.blocked,[1]);assert!(restored.manifest.restoring.is_empty());drop(restored);
-        fs::write(directory.join("session.json"),b"incomplete membership").unwrap();assert!(Storage::open(&root.path).is_err());assert_eq!(fs::read(directory.join("session.json")).unwrap(),b"incomplete membership");
+        fs::write(directory.join("session.json"),b"incomplete membership").unwrap();
+        let reopened=Storage::open(&root.path).unwrap().0;assert_eq!(reopened.warnings.len(),1);assert_ne!(reopened.directory,directory);drop(reopened);
+        assert!(Storage::open(&root.path).unwrap().0.warnings.is_empty());
+        assert!(fs::read_dir(&directory).unwrap().any(|entry|entry.unwrap().file_name().to_string_lossy().starts_with("preserved-")));
+        assert!(fs::read_dir(&directory).unwrap().any(|entry|fs::read(entry.unwrap().path()).is_ok_and(|bytes|bytes==b"incomplete membership")));
     }
     #[test]
     fn an_unreadable_drawing_waits_for_a_choice_while_the_others_reopen() {
@@ -1028,11 +1035,10 @@ mod tests {
         let retry=storage.begin_restore(1,true,&cancel).unwrap();
         assert!(storage.read(&SessionDrawing{id:1,key:"first".into()},Default::default(),&cancel).is_ok());
         let membership=fs::read(directory.join("session.json")).unwrap();
-        fs::write(directory.join("session.json"),b"unreadable membership").unwrap();
+        fs::remove_file(directory.join("session.json")).unwrap();fs::create_dir(directory.join("session.json")).unwrap();
         assert!(storage.complete_restores(&[(retry,Ok(()))],&[(1,7)],&cancel).is_err());
         assert_eq!(restore_error(&directory.join("first")).unwrap().as_deref(),Some("first restore cause"));
-        assert_eq!(fs::read(directory.join("session.json")).unwrap(),b"unreadable membership");
-        fs::write(directory.join("session.json"),membership).unwrap();
+        fs::remove_dir(directory.join("session.json")).unwrap();fs::write(directory.join("session.json"),membership).unwrap();
         storage.complete_restores(&[(retry,Ok(()))],&[(1,7)],&cancel).unwrap();
         assert_eq!(storage.manifest.drawings,[SessionDrawing{id:7,key:"first".into()},SessionDrawing{id:2,key:"second".into()}]);assert_eq!(storage.manifest.blocked,[2]);
         assert_eq!(restore_error(&directory.join("first")).unwrap(),None);

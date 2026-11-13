@@ -3,7 +3,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use layer_core::{package::session_store::{DrawingStore, OwnerLock}, ProjectLimits};
 use layer_host::session_stores::{SessionStores,StoreResult};
-use layer_ui::{recovery::{RecoveryState, RecoveryEvent, RecoveryWork, RecoveryWorkKind}, session_recovery::{SessionCapture, SessionRestore, SessionManifest, SessionDrawing}};
+use layer_ui::{recovery::{RecoveryState, RecoveryEvent, RecoveryWork, RecoveryWorkKind}, session_recovery::{ClaimedManifest, SessionCapture, SessionRestore, SessionManifest, SessionDrawing}};
 use std::{cell::{Cell, RefCell}, path::PathBuf, rc::Rc, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 
 fn directory() -> PathBuf {
@@ -311,22 +311,25 @@ pub(crate) fn install(w:&Rc<Workspace>) {
 }
 
 struct ClaimedWindow { path: PathBuf, manifest: SessionManifest, lease: OwnerLock }
-fn abandoned() -> Result<Vec<ClaimedWindow>,String> {
+fn abandoned() -> Result<(Vec<ClaimedWindow>,Vec<String>),String> {
     let root=crate::storage::sessions().map(PathBuf::from).ok_or("Session storage is unavailable")?;
     let dir=layer_core::package::session_store::import_session_directories(&root,".json",".lock")?;
     let _gate=storage_gate(&dir)?;
     let mut paths=std::fs::read_dir(&dir).map_err(|e|e.to_string())?.flatten().map(|entry|entry.path()).filter(|path|path.extension().is_some_and(|e|e=="json")).collect::<Vec<_>>();
     paths.sort();
-    let mut result=Vec::new();
+    let mut result=Vec::new();let mut notices=Vec::new();
     for path in paths {
         let lease=match OwnerLock::claim(&path.with_extension("lock")) {Ok(Some(lease))=>lease,Ok(None)=>continue,Err(error)=>{eprintln!("Saved session claim failed: {error}");continue;}};
-        let bytes=match layer_core::package::session_store::read_bounded(&path,1024*1024) {Ok(bytes)=>bytes,Err(error)=>{eprintln!("Saved session read failed; copy retained: {error}");continue;}};
-        let manifest:SessionManifest=match serde_json::from_slice(&bytes) {Ok(manifest)=>manifest,Err(error)=>{eprintln!("Cannot read saved session; copy retained: {error}");continue;}};
-        if let Err(error)=manifest.validate() {eprintln!("Saved session validation failed; copy retained: {error}");continue;}
+        let manifest=match SessionManifest::read_claimed(&path) {
+            Ok(ClaimedManifest::Ready(manifest))=>manifest,
+            Ok(ClaimedManifest::SetAside {error,..})=>{notices.push(error);continue;},
+            Ok(ClaimedManifest::Missing)=>continue,
+            Err(error)=>{eprintln!("Saved session read failed; copy retained: {error}");continue;},
+        };
         if manifest.drawings.is_empty() {std::fs::remove_file(&path).map_err(|e|e.to_string())?;continue;}
         result.push(ClaimedWindow {path,manifest,lease});
     }
-    Ok(result)
+    Ok((result,notices))
 }
 pub(crate) fn restore_stale(w:&Rc<Workspace>,app:&adw::Application,active:&Rc<RefCell<Vec<Rc<Workspace>>>>) {
     if !enabled() {return;}
@@ -340,7 +343,8 @@ pub(crate) fn restore_stale(w:&Rc<Workspace>,app:&adw::Application,active:&Rc<Re
         let startup=w.gpu.borrow().as_ref().map(|gpu|gpu.session.session_stamp());
         let result=gio::spawn_blocking(abandoned).await.map_err(|e|format!("Session reader stopped: {e:?}")).and_then(|r|r);
         match result {
-            Ok(claims)=>{
+            Ok((claims,notices))=>{
+                for notice in notices {w.changed(Err(layer_ui::document_recovery_unavailable(&w.localization(),&notice)));}
                 for (index,claim) in claims.into_iter().enumerate() {
                     let window=if index==0 {w.clone()} else {
                         crate::open_workspace_ready(&app,&active,None,None,w.localization());

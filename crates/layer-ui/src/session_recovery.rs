@@ -405,6 +405,14 @@ impl SessionManifest {
         Self::parse(&bytes).map(Some).map_err(SessionReadError::Invalid)
     }
     #[cfg(not(target_arch="wasm32"))]
+    pub fn read_claimed(path:&std::path::Path)->Result<ClaimedManifest,String> {
+        match Self::read(path) {
+            Ok(manifest)=>Ok(manifest.map_or(ClaimedManifest::Missing,ClaimedManifest::Ready)),
+            Err(SessionReadError::Invalid(error))=>Ok(ClaimedManifest::SetAside {error,preserved:layer_core::package::session_store::preserve(path)?}),
+            Err(error)=>Err(error.to_string()),
+        }
+    }
+    #[cfg(not(target_arch="wasm32"))]
     pub fn publish(&self,path:&std::path::Path)->Result<(),String> {
         self.publish_checked(path).map_err(|failure|failure.error)
     }
@@ -413,7 +421,7 @@ impl SessionManifest {
         use layer_core::package::session_store::{AtomicReplaceError,atomic_replace_checked,sync_directory};
         let unpublished=|error:String|AtomicReplaceError{published:false,error};
         self.validate().map_err(unpublished)?;
-        if let Some(previous)=Self::read(path).map_err(|error|unpublished(error.to_string()))? {
+        if let ClaimedManifest::Ready(previous)=Self::read_claimed(path).map_err(unpublished)? {
             if previous==*self {
                 let parent=path.parent().ok_or_else(||unpublished("Session has no parent directory".into()))?;
                 return sync_directory(parent).map_err(|error|AtomicReplaceError{published:true,error});
@@ -429,6 +437,8 @@ impl SessionManifest {
 #[cfg(not(target_arch="wasm32"))]
 #[derive(Debug)]
 pub enum SessionReadError { Io(std::io::Error), Invalid(String) }
+#[cfg(not(target_arch="wasm32"))]
+pub enum ClaimedManifest { Missing, Ready(SessionManifest), SetAside { error: String, preserved: std::path::PathBuf } }
 #[cfg(not(target_arch="wasm32"))]
 impl std::fmt::Display for SessionReadError {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
@@ -941,12 +951,14 @@ pub(crate) mod tests {
     }
     #[cfg(not(target_arch="wasm32"))]
     #[test]
-    fn durable_membership_rejects_stale_publication_and_preserves_unreadable_index() {
+    fn durable_membership_rejects_stale_publication_and_sets_an_unreadable_index_aside() {
         let root=std::env::temp_dir().join(format!("capy-session-ui-{}",layer_core::PortableId::random()));std::fs::create_dir(&root).unwrap();let path=root.join("session.json");
         let original=manifest();original.publish(&path).unwrap();let closed=original.remove(7).unwrap();closed.publish(&path).unwrap();
         assert!(!original.publish_checked(&path).unwrap_err().published);assert_eq!(SessionManifest::read(&path).unwrap().unwrap(),closed);
         closed.publish_checked(&path).unwrap();
-        std::fs::write(&path,b"incomplete session").unwrap();assert!(closed.publish(&path).is_err());assert_eq!(std::fs::read(&path).unwrap(),b"incomplete session");
+        std::fs::write(&path,b"incomplete session").unwrap();closed.publish(&path).unwrap();assert_eq!(SessionManifest::read(&path).unwrap().unwrap(),closed);
+        assert!(std::fs::read_dir(&root).unwrap().any(|entry|entry.unwrap().file_name().to_string_lossy().starts_with("preserved-")));
+        assert!(std::fs::read_dir(&root).unwrap().any(|entry|std::fs::read(entry.unwrap().path()).is_ok_and(|bytes|bytes==b"incomplete session")));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

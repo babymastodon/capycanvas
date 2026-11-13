@@ -172,7 +172,7 @@ pub(super) fn relocate_entry(source: &Path, destination: &Path) -> Result<(), St
     sync_directory(destination.parent().ok_or("Session has no destination directory")?)?;
     sync_directory(source.parent().ok_or("Session has no parent directory")?)
 }
-pub fn preserve_directory(path: &Path) -> Result<PathBuf, String> {
+pub fn preserve(path: &Path) -> Result<PathBuf, String> {
     let parent = path.parent().ok_or("Session has no parent directory")?;
     let preserved = parent.join(format!("preserved-{}", PortableId::random()));
     fs::rename(path, &preserved).map_err(|e| e.to_string())?;

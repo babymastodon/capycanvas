@@ -17,8 +17,13 @@ impl MetadataStore {
         Ok((head.current.clone(),self.generation(&head.current).await?))
     }
     pub async fn read(&self)->Result<Option<Vec<u8>>,String> {
+        if io::marker(&*self.io,".damaged").await? {return Ok(None);}
         let Some(head)=head::read(&*self.io).await? else {return Ok(None);};
         self.current(&head.head).await.map(|(_,bytes)|Some(bytes))
+    }
+    pub async fn set_aside(&self)->Result<(),String> {
+        if io::marker(&*self.io,".damaged").await? {return Ok(());}
+        io::create(&*self.io,".damaged",b"",&AtomicBool::new(false)).await
     }
     pub async fn publish(&self,bytes:&[u8])->Result<(),String> {
         if bytes.len() as u64>self.limit {return Err("Saved session is too large".into());}
@@ -62,6 +67,22 @@ mod tests {
             assert_eq!(current.head.current.id,second.head.current.id);assert_eq!(current.head.previous.unwrap().id,first.head.current.id);
             assert!(store.publish(&[0;1025]).await.is_err());
         });
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_set_aside_index_reads_as_absent_and_keeps_its_bytes() {
+        let root=std::env::temp_dir().join(format!("capy-metadata-{}",PortableId::random()));
+        let io=Arc::new(crate::package::store_io::NativeTransport::new(root.clone()));
+        let store=MetadataStore::new(io.clone(),1024);
+        let name=pollster::block_on(async {
+            store.publish(b"index").await.unwrap();
+            let name=format!("generations/{}.json",head::read(&*io).await.unwrap().unwrap().head.current.id);
+            let file=io.open(&name,FileAccess::Write).await.unwrap();file.write_at(0,b"broken").await.unwrap();file.flush().await.unwrap();
+            assert!(store.read().await.is_err());
+            for _ in 0..3 {store.set_aside().await.unwrap();assert_eq!(store.read().await.unwrap(),None);}
+            name
+        });
+        assert_eq!(std::fs::read(root.join(name)).unwrap(),b"broken");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

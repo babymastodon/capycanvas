@@ -1,26 +1,30 @@
 use super::*;
 use layer_core::package::session_store::{NativeStoreOpener, OwnerLock, SessionStore, collect_unreferenced_stores, import_session_directories, packed_sessions};
-use layer_ui::session_recovery::{SessionDrawing, SessionManifest};
+use layer_ui::{Localizer, UiLanguage, document_recovery_unavailable, session_recovery::{ClaimedManifest, SessionDrawing, SessionManifest}};
 use std::{collections::{BTreeMap, BTreeSet}, path::Path};
 
 #[derive(Clone, Copy, Debug)]
 enum Layout { Flat, Window }
 #[derive(Clone, Copy, Debug)]
-enum Saved { TornIntentUnused, ForeignRetired, TornIntentListed, UnreadableDrawing, BrokenDrawing }
+enum Saved { TornIntentUnused, ForeignRetired, TornIntentListed, UnreadableDrawing, BrokenDrawing, UnparsableList, InvalidList }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Store { Retired, Unchanged }
-struct Expected { prompt: bool, listed: bool, target: &'static str, store: Store }
-const STARTS: [(Saved, Expected); 5] = [
-    (Saved::TornIntentUnused, Expected { prompt: false, listed: true, target: "unused", store: Store::Retired }),
-    (Saved::ForeignRetired, Expected { prompt: false, listed: true, target: "unused", store: Store::Unchanged }),
-    (Saved::TornIntentListed, Expected { prompt: false, listed: true, target: "listed", store: Store::Unchanged }),
-    (Saved::UnreadableDrawing, Expected { prompt: true, listed: false, target: "listed", store: Store::Retired }),
-    (Saved::BrokenDrawing, Expected { prompt: true, listed: false, target: "listed", store: Store::Unchanged }),
+struct Expected { notice: bool, prompt: bool, listed: bool, target: &'static str, store: Store }
+const STARTS: [(Saved, Expected); 7] = [
+    (Saved::TornIntentUnused, Expected { notice: false, prompt: false, listed: true, target: "unused", store: Store::Retired }),
+    (Saved::ForeignRetired, Expected { notice: false, prompt: false, listed: true, target: "unused", store: Store::Unchanged }),
+    (Saved::TornIntentListed, Expected { notice: false, prompt: false, listed: true, target: "listed", store: Store::Unchanged }),
+    (Saved::UnreadableDrawing, Expected { notice: false, prompt: true, listed: false, target: "listed", store: Store::Retired }),
+    (Saved::BrokenDrawing, Expected { notice: false, prompt: true, listed: false, target: "listed", store: Store::Unchanged }),
+    (Saved::UnparsableList, Expected { notice: true, prompt: false, listed: false, target: "listed", store: Store::Unchanged }),
+    (Saved::InvalidList, Expected { notice: true, prompt: false, listed: false, target: "listed", store: Store::Unchanged }),
 ];
+const UNPARSABLE: &[u8] = b"{not json";
+const INVALID: &[u8] = br#"{"generation":1,"drawings":[{"id":1,"key":"listed"},{"id":1,"key":"other"}],"active":1,"clean_exit":false,"restoring":[],"blocked":[]}"#;
 
 type Files = BTreeMap<String, Option<Vec<u8>>>;
 #[derive(Debug, Default, PartialEq)]
-struct Start { prompts: Vec<String>, errors: Vec<String> }
+struct Start { notices: Vec<String>, prompts: Vec<String>, errors: Vec<String> }
 
 impl Layout {
     fn names(self) -> (&'static str, &'static str) {
@@ -77,6 +81,8 @@ fn seed(root: &Path, layout: Layout, saved: Saved) {
         Saved::TornIntentListed => std::fs::write(stores.join("listed/.retiring"), b"").unwrap(),
         Saved::UnreadableDrawing => for name in ["head.0", "head.1"] { std::fs::write(stores.join("listed").join(name), b"invalid head").unwrap(); },
         Saved::BrokenDrawing => { std::fs::remove_dir_all(stores.join("listed/generations")).unwrap(); std::fs::write(stores.join("listed/generations"), b"not a directory").unwrap(); }
+        Saved::UnparsableList => std::fs::write(layout.manifest(&packed), UNPARSABLE).unwrap(),
+        Saved::InvalidList => std::fs::write(layout.manifest(&packed), INVALID).unwrap(),
     }
 }
 fn blocked(manifest: &SessionManifest, blocked: bool) -> Vec<SessionDrawing> {
@@ -89,7 +95,12 @@ fn start(root: &Path, layout: Layout) -> Start {
     let packed = match import_session_directories(root, manifest_name, lock_name) { Ok(packed) => packed, Err(error) => { start.errors.push(error); return start; } };
     for (path, lock, directory) in layout.windows(&packed) {
         let Some(_lease) = OwnerLock::claim(&lock).unwrap() else { continue };
-        let saved = match SessionManifest::read(&path) { Ok(Some(saved)) => saved, Ok(None) => continue, Err(error) => { start.errors.push(error.to_string()); continue; } };
+        let saved = match SessionManifest::read_claimed(&path) {
+            Ok(ClaimedManifest::Ready(saved)) => saved,
+            Ok(ClaimedManifest::SetAside { error, .. }) => { start.notices.push(document_recovery_unavailable(&Localizer::shared(UiLanguage::English), &error)); continue; }
+            Ok(ClaimedManifest::Missing) => continue,
+            Err(error) => { start.errors.push(error); continue; }
+        };
         let stores = SessionStores::with_opener(directory.clone(), Arc::new(NativeStoreOpener), Arc::new(|work: StoreWork| work.run()), Arc::new(|| {}), native_now_ms, CompactionActivity::default());
         let mut manifest = saved.recover_interrupted().unwrap();
         manifest.publish(&path).unwrap();
@@ -138,10 +149,15 @@ fn starting_three_times_shows_no_repeating_notice() {
             seed(&root, layout, saved);
             let target = layout.stores(&root.join("packed")).join(expected.target);
             let seeded = files(&root, &target);
+            let list = std::fs::read(layout.manifest(&root.join("packed"))).unwrap();
             let starts: Vec<_> = (0..3).map(|_| (start(&root, layout), files(&root, &root))).collect();
             let case = format!("{saved:?} {layout:?}");
             assert_eq!(starts[0].0.prompts.len(), usize::from(expected.prompt), "{case}: first start {:?}", starts[0].0);
             assert!(starts[0].0.errors.is_empty(), "{case}: first start {:?}", starts[0].0);
+            let notices: Vec<_> = SessionManifest::parse(&list).err().map(|detail| document_recovery_unavailable(&Localizer::shared(UiLanguage::English), &detail)).into_iter().collect();
+            assert_eq!(starts[0].0.notices, notices, "{case}: first start");
+            assert_eq!(notices.len(), usize::from(expected.notice), "{case}");
+            assert!(!expected.notice || starts[2].1.iter().any(|(name, bytes)| name.rsplit('/').next().unwrap().starts_with("preserved-") && bytes.as_deref() == Some(&list[..])), "{case}: list bytes kept");
             for (later, _) in &starts[1..] { assert_eq!(*later, Start::default(), "{case}: later start"); }
             let changed: Vec<_> = starts[1].1.keys().chain(starts[2].1.keys()).filter(|name| starts[1].1.get(*name) != starts[2].1.get(*name)).collect();
             assert!(changed.is_empty(), "{case}: later starts change {changed:?}");

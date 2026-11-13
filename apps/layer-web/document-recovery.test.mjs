@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createDocumentRecovery} from './document-recovery.js';
 
-function fixture(t,{blocked=false,destinationError}={}) {
+function fixture(t,{blocked=false,destinationError,damaged=false}={}) {
   const previous={document:globalThis.document,window:globalThis.window};
   globalThis.document={addEventListener(){},hidden:false};globalThis.window={addEventListener(){}};
   t.after(()=>{globalThis.document=previous.document;globalThis.window=previous.window;});
@@ -18,7 +18,8 @@ function fixture(t,{blocked=false,destinationError}={}) {
       assert.ok(manifest.drawings.some(drawing=>drawing.key==='saved-drawing'));destinationDurable=true;
     }
   }};
-  const origin={async read(){operations.push('source_read');return structuredClone(stored);},async publish(next){
+  const origin={async read(){operations.push('source_read');if(damaged)throw Error('Saved session metadata checksum failed');return structuredClone(stored);},
+    async set_aside(){operations.push('set_aside');damaged=false;stored=null;},async publish(next){
     operations.push('source_publish');
     if(!next.drawings.some(drawing=>drawing.key==='saved-drawing'))assert.equal(destinationDurable,true,'Source membership can disappear only after durable destination publication');
     stored=structuredClone(next);
@@ -42,10 +43,10 @@ function fixture(t,{blocked=false,destinationError}={}) {
       }
       return next;
     }};
-  const recovery=createDocumentRecovery({app,failed:async()=>null,message:reader=>messages.push(reader()),restore:async()=>{
+  const load=()=>createDocumentRecovery({app,failed:async()=>null,message:reader=>messages.push(reader()),restore:async()=>{
     assert.equal(blocked,false,'Dismissal cannot restore');operations.push('adopt');adopted=9;tabs.push({id:9,uri:null,modified:true});return adopted;
   }});
-  return {recovery,events,operations,messages,stored:()=>stored,destinationDurable:()=>destinationDurable,freed:()=>freed};
+  return {recovery:load(),load,events,operations,messages,stored:()=>stored,destinationDurable:()=>destinationDurable,freed:()=>freed};
 }
 
 test('dismissing a failed drawing leaves its blocked checkpoint available without retrying or discarding',async t=>{
@@ -54,6 +55,13 @@ test('dismissing a failed drawing leaves its blocked checkpoint available withou
   assert.equal(f.operations.filter(operation=>operation==='import_legacy').length,1);assert.deepEqual(f.messages,[]);
   assert.equal(f.operations.includes('adopt'),false);assert.equal(f.operations.includes('retire'),false);
   assert.deepEqual(f.stored().drawings,[{id:1,key:'saved-drawing'}]);assert.deepEqual(f.stored().blocked,[1]);assert.equal(f.freed(),1);
+});
+
+test('an unreadable drawing list is set aside by the load that finds it and later loads stay silent',async t=>{
+  const f=fixture(t,{damaged:true});
+  for(const recovery of [f.recovery,f.load(),f.load()])await recovery.start();
+  assert.deepEqual(f.messages,['Error: Saved session metadata checksum failed']);
+  assert.equal(f.operations.filter(operation=>operation==='set_aside').length,1);assert.equal(f.freed(),3);
 });
 
 test('adoption followed by destination publication failure preserves source membership without marking the drawing failed',async t=>{

@@ -17,9 +17,12 @@ preserve the failed copies. Recovery never substitutes an empty drawing for a
 failed restore. Retrying a failed drawing appends it without replacing work begun
 since launch.
 
-On Apple, an invalid drawing list preserves its entire directory before a fresh
-session is created. Missing membership does not authorize deletion of drawing
-heads. A temporary read or permission failure stays retryable in place. Known
+A drawing list that can't be parsed or validated is set aside by the window that
+claims it, once: native hosts rename it to `preserved-<id>` beside it and the web
+marks its folder `.damaged`. That start shows one "Recovery unavailable" notice
+and later starts read past it; its drawings' stores stay on disk. Missing
+membership does not authorize deletion of drawing heads. A temporary read or
+permission failure stays retryable in place. Known
 per-drawing failures are recorded separately from authored data, so the next
 restart can show the original cause. Dismissing a warning changes its visibility,
 not its stored drawing or recovery status.

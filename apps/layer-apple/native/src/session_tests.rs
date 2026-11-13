@@ -781,10 +781,12 @@ fn apple_invalid_window_membership_preserves_all_files_and_allows_new_checkpoint
                 _ => {},
             }
             let bytes = if corruption == "truncated" { b"{\"generation\":".to_vec() } else { serde_json::to_vec(&manifest).unwrap() };
-            std::fs::write(&index, bytes).unwrap();
-            let preserved = stored_files(&path);
+            std::fs::write(&index, &bytes).unwrap();
+            let mut preserved = stored_files(&path);
+            preserved.remove(Path::new("window.json"));
             let fresh = launch_observed(platform, &path, None, true);
             assert_stored_files_preserved(&sessions, &preserved);
+            assert!(std::fs::read_dir(&path).unwrap().map(|entry| entry.unwrap().path()).any(|list| list.file_name().unwrap().to_string_lossy().starts_with("preserved-") && std::fs::read(list).unwrap() == bytes));
             assert!(!fresh.borrow().host.session.engine().can_undo());
             fresh.stroke(); fresh.draw_until_idle();
             let pixels = fresh.pixels();
