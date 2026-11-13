@@ -580,9 +580,9 @@ fn property_edits_and_gestures_preserve_exact_metal_history_on_both_platforms() 
             app.borrow().host.session.renderer_mut().0 = Some(
                 native_renderer(),
             );
-            app.draw_frame();
+            app.draw_until_idle();
             app.stroke();
-            app.draw_frame();
+            app.draw_until_idle();
             if target == "paper" {
                 let document = &app.document();
                 let paper = layer_core::paper::paper_occurrence(document.scene(), None).unwrap();
@@ -591,7 +591,7 @@ fn property_edits_and_gestures_preserve_exact_metal_history_on_both_platforms() 
             } else if target != "paint" {
                 app.action(json!({"type":"effect","action":{"op":"insert","effect":target}}));
             }
-            app.draw_frame();
+            app.draw_until_idle();
             let key = match target {
                 "gaussian_blur" => "sigma",
                 "split_tone" => "shadows",
@@ -694,9 +694,9 @@ fn document_edits_keep_filter_previews_and_publish_an_owned_atlas() {
     for platform in [0, 1] {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 = Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let filter = install_example_filter(&app);
         let query = json!({"type":"filter_previews", "filters":[filter]});
         let first = app.request(2, query.clone()).unwrap();
@@ -752,9 +752,9 @@ fn filter_preview_abi_keeps_owned_pixels_after_editor_teardown_without_document_
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let filter = install_example_filter(&app);
         let before = app.pixels();
         let revision = app.borrow().host.session.filter_preview_revision();
@@ -865,9 +865,9 @@ fn project_jobs_save_specific_revisions_and_adopt_only_unchanged_editors() {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let original_pixels = app.pixels();
         let original = app.document().clone();
         let save = ProjectJob::new(&app, false);
@@ -1014,9 +1014,9 @@ fn project_cancellation_and_invalid_input_preserve_live_artwork() {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let before = app.pixels();
         let save = ProjectJob::new(&app, false);
         unsafe { capy_project_cancel(save.0) };
@@ -1543,7 +1543,7 @@ fn apple_raster_project_preserves_exact_pixels_in_a_fresh_gpu_session() {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         let paper = app.pixels();
         let pixels: Vec<u8> = (0..64 * 64)
             .flat_map(|i| {
@@ -1619,7 +1619,7 @@ fn apple_raster_project_preserves_exact_pixels_in_a_fresh_gpu_session() {
         );
         restored.action(json!({"type":"set_color","rgba":[1,0,0,1]}));
         restored.stroke();
-        restored.draw_frame();
+        restored.draw_until_idle();
         assert!(
             restored.pixels() != expected,
             "Reopened artwork remains editable"
@@ -2038,9 +2038,9 @@ fn apple_color_actions_change_real_paint_and_transparent_eraser_pixels() {
             Some(native_renderer());
         app.action(json!({"type":"set_color","rgba":[1,0,0,1]}));
         let brush = app.state()["brush"].clone();
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let painted = app.pixels();
         let reds = |pixels: &[u8]| {
             pixels
@@ -2056,7 +2056,7 @@ fn apple_color_actions_change_real_paint_and_transparent_eraser_pixels() {
         assert_eq!(app.state()["brush"]["preset"], brush["preset"]);
         assert_eq!(app.state()["brush"]["diameter"], brush["diameter"]);
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         assert!(
             reds(&app.pixels()) < reds(&painted),
             "Transparent paint must erase with the current tip"

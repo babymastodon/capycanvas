@@ -351,7 +351,7 @@ fn apple_drawer_dismissal_consumes_the_entire_canvas_contact_then_allows_paintin
         );
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         let paper = app.pixels();
         app.action(json!({"type":"activate_tile","panel":"toolbar","tile":1}));
         if app.state()["customization"]["drawer"].is_null() {
@@ -408,10 +408,10 @@ fn apple_drawer_dismissal_consumes_the_entire_canvas_contact_then_allows_paintin
         assert!(app.borrow().dismissed_contacts.is_empty());
         assert_eq!(unsafe { capy_apple_resize(app.0, 1200, 900, 1.) }, 0);
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         assert_ne!(app.pixels(), paper);
         app.invoke("undo");
-        app.draw_frame();
+        app.draw_until_idle();
         assert_eq!(app.pixels(), paper);
     }
 }
