@@ -804,7 +804,12 @@ extension XCTestCase {
         XCTAssertTrue(app.staticTexts["This drawing can be viewed, but cannot be edited."].exists)
         XCTAssertTrue(app.staticTexts["It has layers or settings that this version of Capy Canvas can't edit."].exists)
         XCTAssertFalse(app.buttons["export-package-preview"].exists)
+        #if os(macOS)
+        XCTAssertTrue(app.sheets.firstMatch.buttons["copy-original-package"].exists,
+            "The preserved package must be a window-modal sheet that keeps input from the editable canvas")
+        #else
         XCTAssertFalse(canvas.isHittable, "The preserved package must not expose editable canvas input")
+        #endif
         app.typeKey("z", modifierFlags: .command)
         XCTAssertTrue(copy.exists)
         attachEditor(in: app, name: "preserved-unsupported-read-only-" + theme)
