@@ -274,6 +274,7 @@ fun CanvasHost.importImage(file: File) {
         } }
         try {
             Native.imageImportRead(task, ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).detachFd(), file.name)
+            Native.imageImportPrepare(task)
             runBlocking { withNative { Native.imageImportAdopt(it, task) } }
         } finally { Native.imageImportFree(task); Native.captureFree(control) }
         instrumentation.runOnMainSync { documentChanged() }
