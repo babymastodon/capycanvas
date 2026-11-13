@@ -570,7 +570,7 @@ function Navigation-Shortcut([string]$Id,[string]$Label,[uint16]$Key,[switch]$Re
   Wait-Until {(Model).preferences.capture.chord -and (Control 'confirm-shortcut').Current.IsEnabled} "$Label shortcut was not captured"
   Invoke-Id 'confirm-shortcut';Wait-Until {!(Model).preferences.capture} "$Label shortcut did not commit"
  }
- Invoke-Id 'shortcut-editor-close';Invoke-Id 'CloseButton';Wait-Until {!(Model).preferences} 'Shortcut Preferences did not close'
+ Invoke-Id 'shortcut-editor-close';Invoke-Id 'CloseButton';Wait-Until {$canvas=Find 'drawing-canvas';!(Model).preferences -and $canvas -and $canvas.Current.IsEnabled} 'Shortcut Preferences did not close'
 }
 function Navigation-DrawingsPopup([string]$Name,[uint16[]]$Modifiers,[uint16]$Key) {
  Navigation-Focus;$before=Navigation-PaintState;$tabs=(Model).windows_tabs|Select-Object selected,@{n='ids';e={@($_.tabs.id)}}|ConvertTo-Json -Compress

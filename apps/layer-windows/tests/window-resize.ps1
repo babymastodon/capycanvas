@@ -81,3 +81,20 @@ Set-ResizeSnapshot 144
 [CapyResizeNative]::Owner=8
 if(& $predicate){throw 'Resize accepted another process canvas'}
 'Native resize acknowledgement geometry and ownership: passed'
+
+$navigation=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-zoom-readout.ps1'),[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Zoom fixture does not parse'}
+$shortcut=$navigation.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Navigation-Shortcut'},$true)
+$release=@($shortcut.Body.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-Until'},$true))[-1]
+$released=$release.CommandElements[1].ScriptBlock.GetScriptBlock()
+function Model {@{preferences=$script:shortcutPreferences}}
+function Find([string]$Id){if($Id -cne 'drawing-canvas'){throw 'Shortcut release queried another control'};$script:shortcutCanvas}
+$shortcutPreferences=$null;$shortcutCanvas=[pscustomobject]@{Current=[pscustomobject]@{IsEnabled=$false}}
+if(& $released){throw 'Shortcut Preferences acknowledged closure before the native canvas was enabled'}
+$shortcutCanvas=$null
+if(& $released){throw 'Shortcut Preferences acknowledged closure without a native canvas'}
+$shortcutCanvas=[pscustomobject]@{Current=[pscustomobject]@{IsEnabled=$true}};$shortcutPreferences=@{page='shortcuts'}
+if(& $released){throw 'Shortcut Preferences acknowledged closure while the model was open'}
+$shortcutPreferences=$null
+if(!(& $released)){throw 'Shortcut Preferences did not acknowledge a closed model and enabled native canvas'}
+'Shortcut Preferences native canvas release: passed'
