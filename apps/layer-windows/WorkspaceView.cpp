@@ -147,7 +147,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
     NativeLayoutInput sourceInput,layoutInput,resolvedInput,metricInput;
     CanvasModelInputs paletteInputs,configurationInputs,searchInputs,barInputs,pressureInputs,noticeInputs,popupInputs,requestInputs,previewInputs,drawerInputs,bubbleInputs,gestureInputs,cameraInputs;
     J panelMetricContext;hstring panelMetricKey,panelBodyMetricKey;
-    J resolvedLayout;
+    J resolvedLayout;std::string resolvedReply;
     float viewportWidth=0,viewportHeight=0,resolvedWidth=0,resolvedHeight=0;
     uint64_t panelLayoutRevision=0,panelQueryLayoutRevision=0;
     J panelBridgeFrame;std::string panelBridgeReply;
@@ -460,12 +460,18 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
             data->Patch({L"layout"},resolvedLayout);return false;
         }
         auto result=capy_layout_resolve(layoutInput.get(),viewportWidth,viewportHeight);
-        NativeString reply(result,capy_string_free);J packet;
-        if(!reply||!J::TryParse(to_hstring(reply.get()),packet)||!object(packet,L"result").Size())
-            throw hresult_invalid_argument(L"Workspace layout resolution failed: "+str(packet,L"error"));
-        resolvedLayout=object(packet,L"result");resolvedInput=layoutInput;resolvedWidth=viewportWidth;resolvedHeight=viewportHeight;
-        data->Patch({L"layout"},resolvedLayout);++panelLayoutRevision;
-        return true;
+        NativeString reply(result,capy_string_free);
+        bool same=reply&&resolvedReply==reply.get();
+        if(!same){
+            J packet;
+            if(!reply||!J::TryParse(to_hstring(reply.get()),packet)||!object(packet,L"result").Size())
+                throw hresult_invalid_argument(L"Workspace layout resolution failed: "+str(packet,L"error"));
+            resolvedLayout=object(packet,L"result");resolvedReply=reply.get();
+        }
+        resolvedInput=layoutInput;resolvedWidth=viewportWidth;resolvedHeight=viewportHeight;
+        data->Patch({L"layout"},resolvedLayout);
+        if(same)return false;
+        ++panelLayoutRevision;return true;
     }
     void resize(float width,float height){
         if(!std::isfinite(width)||!std::isfinite(height)||width<=0||height<=0)return;
@@ -567,7 +573,8 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
         data->updating=true;
         struct Reset {bool& value;~Reset(){value=false;}} reset{data->updating};
         auto model=reflow?data->model:snapshot;
-        if(sourceInput.get()!=preparedInput.get()){sourceInput=preparedInput;layoutInput=std::move(preparedInput);lastMeasurements=L"";}
+        bool inputChanged=sourceInput.get()!=preparedInput.get();
+        if(inputChanged){sourceInput=preparedInput;layoutInput=std::move(preparedInput);lastMeasurements=L"";}
         if(full){
         if(previousGpu>0&&num(model,L"windows_gpu_generation")!=previousGpu){
             data->chromeFrames->Reset();publishedBridgeGroups.clear();publishedColumns.clear();
@@ -596,7 +603,7 @@ struct WorkspaceView::Impl : std::enable_shared_from_this<Impl> {
                 data->apply(group.iconInputs,[&]{for(auto const& update:group.paintIcons)update();});
             }
             applyState(false);
-            applyOverlays(false);
+            applyOverlays(inputChanged);
         }
         if(full&&layoutChanged&&needsPanelMeasurements())preparePanels();
         data->updating=false;
