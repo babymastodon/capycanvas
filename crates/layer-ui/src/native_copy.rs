@@ -537,7 +537,6 @@ copy_struct! { RecoveryCopy {
     workspace_not_saved_help: NATIVE_DIALOG_WORKSPACE_NOT_SAVED_HELP,
     workspace_not_opened_help: NATIVE_DIALOG_WORKSPACE_NOT_OPENED_HELP,
     preferences_not_saved_help: NATIVE_DIALOG_PREFERENCES_NOT_SAVED_HELP,
-    save_as_new_workspace: WORKSPACE_ACTION_SAVE_AS_NEW_WORKSPACE,
     export_backup: NATIVE_DIALOG_EXPORT_BACKUP,
     workspace_backup: NATIVE_DIALOG_WORKSPACE_BACKUP,
     workspace_database: NATIVE_DIALOG_WORKSPACE_DATABASE,
