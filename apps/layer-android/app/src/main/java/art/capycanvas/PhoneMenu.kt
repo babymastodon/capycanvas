@@ -275,7 +275,7 @@ private fun Modifier.menuGestures(input: PhoneMenuInteraction, width: Float, rtl
         input.list = geometry.getJSONObject("list").let { Rect(it.number("x")*density,it.number("y")*density,(it.number("x")+it.number("width"))*density,(it.number("y")+it.number("height"))*density) }
     }
     Box(Modifier.fillMaxSize(), contentAlignment = AbsoluteAlignment.TopLeft) {
-        DrawerChrome(rememberUpdatedState(frame),dock,true,false,220,glass)
+        DrawerChrome(rememberUpdatedState(frame),dock,true,false,220,glass,obj("kind" to "phone","anchor" to obj("kind" to "capy")))
         Box(Modifier.placedAbsolute(bounds, density).zIndex(220f).testTag("phone-menu").chromeRegion(dock)
             .clip(panelShape).background(colors.drawerFill(glass.presented),panelShape)
             .semantics { paneTitle = page.getString("title") }

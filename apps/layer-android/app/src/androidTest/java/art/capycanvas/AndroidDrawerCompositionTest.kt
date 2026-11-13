@@ -203,6 +203,62 @@ class AndroidDrawerCompositionTest {
         }
     }
 
+    @Test fun phoneDrawerShadowStaysOutsideJoinedFacesOverSurround() {
+        val host = compose.activity.host
+        host.awaitReady(compose = compose)
+        assumeTrue("Requires the native phone layout", host.snapshot!!.getJSONObject("layout").objectOrNull("phone") != null)
+        host.awaitMain("launch reveal removed", 30_000, { "" }, compose) { findTag("launch-splash") == null }
+        host.awaitMain("Drawing accepts input", 30_000, { "" }, compose) { !host.documentInputBlocked }
+        host.drain(obj("type" to "select_brush", "id" to host.snapshot!!.getJSONObject("state").getJSONObject("brush").getInt("preset")))
+        host.awaitReady(compose = compose)
+        val activity = compose.activity
+        val original = activity.requestedOrientation
+        val failures = mutableListOf<String>()
+        try {
+            for (orientation in listOf(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)) {
+                compose.runOnUiThread { activity.requestedOrientation = orientation }
+                host.awaitMain("phone orientation", 30_000, { "" }, compose) {
+                    (host.snapshot!!.getJSONObject("layout").array("viewport").let { it.getDouble(0) < it.getDouble(1) }) ==
+                        (orientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+                }
+                host.frameGlassBackdrop(compose)
+                val dock = checkNotNull(host.workspaceInteraction)
+                val tiles = host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
+                val selected = host.snapshot!!.array("phone_tools").objects().indexOfFirst { it.optBoolean("selected") }
+                assertTrue("Painter has a selected tool", selected >= 0)
+                val backdrop = "surround"
+                for ((level, value) in listOf("high" to 3)) {
+                    host.drain(obj("type" to "preferences", "action" to obj("type" to "edit", "id" to "transparency", "value" to value)))
+                    compose.waitForIdle()
+                    assertEquals(level, host.snapshot!!.getJSONObject("state").getJSONObject("settings").getString("transparency"))
+                    screenshot("validation/drawer-faces/$backdrop-$orientation-$level-backdrop.png")
+                    for ((family, action) in listOf("capy" to obj("kind" to "capy"), "settings" to obj("kind" to "tool_settings"),
+                        "selected" to obj("kind" to "tool", "tile" to tiles[selected].getInt("id")))) {
+                        fun frame() = if (family == "capy") dock.phone?.menu?.frame else dock.drawer
+                        host.drain(obj("type" to "phone", "action" to action))
+                        compose.mainClock.advanceTimeBy(400)
+                        host.awaitMain("$family glass presented", 30_000, { "frame=${frame()}; sources=${dock.drawerSources.values.map { it.anchor.toString() to it.presented }}" }, compose) {
+                            frame()?.objectOrNull("connection") != null && dock.anchorSource(obj("kind" to "phone", "anchor" to when (family) {
+                                "capy" -> obj("kind" to "capy")
+                                "settings" -> obj("kind" to "tool_settings")
+                                else -> obj("kind" to "tool", "id" to tiles[selected].getInt("id"))
+                            }))?.presented == true
+                        }
+                        compose.waitForIdle()
+                        host.captureDrawerGlass("$backdrop-$orientation-$level-$family", compose.runOnIdle { checkNotNull(frame()).copy() }, failures)
+                        host.drain(if (family == "capy") obj("type" to "phone", "action" to obj("kind" to "capy"))
+                            else obj("type" to "customize", "action" to obj("type" to "close_expanded")))
+                        compose.mainClock.advanceTimeBy(400)
+                        host.awaitMain("$family closed", 30_000, { "" }, compose) { frame() == null }
+                    }
+                }
+            }
+            assertTrue(failures.joinToString("\n"), failures.isEmpty())
+        } finally {
+            compose.runOnUiThread { activity.requestedOrientation = original }
+        }
+    }
+
     @Test fun closedPhoneDrawerFamiliesRetainFrozenBodiesWithoutInputOrGlass() {
         val host=compose.activity.host
         host.awaitReady(compose=compose)

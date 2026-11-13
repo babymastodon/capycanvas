@@ -18,6 +18,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
+import androidx.compose.ui.graphics.addOutline
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.layout.boundsInRoot
@@ -45,8 +47,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import kotlin.math.roundToInt
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.launch
@@ -57,6 +61,28 @@ private fun JSONObject.relativeTo(parent: JSONObject) = JSONObject(toString())
 internal fun drawerButtonShape(direction: String?): SquircleShape {
     fun corner(vararg joined: String) = CornerSize(if (direction in joined) 0 else 50)
     return SquircleShape(corner("top", "left"), corner("top", "right"), corner("bottom", "right"), corner("bottom", "left"))
+}
+
+internal data class DrawerFace(val bounds: Rect, val direction: String) {
+    fun outline(density: Density, layoutDirection: LayoutDirection) = Path().apply {
+        addOutline(drawerButtonShape(direction).createOutline(bounds.size, layoutDirection, density))
+        translate(bounds.topLeft)
+    }
+}
+
+private fun DockInteraction.drawerFace(anchor: JSONObject, placement: JSONObject, layoutDirection: LayoutDirection): DrawerFace? {
+    val bounds = when (anchor.getString("kind")) {
+        "phone" -> phone?.faces?.firstOrNull { it.anchor.toString() == anchor.getJSONObject("anchor").toString() }?.bounds(density) ?: return null
+        else -> {
+            val visual = if (anchor.getString("kind") == "header") host.snapshot?.objectOrNull("header_presentation")?.array("items")?.objects()
+                ?.firstOrNull { it.getInt("id") == anchor.getInt("id") }?.getJSONObject("bounds") ?: placement.getJSONObject("anchor") else placement.getJSONObject("anchor")
+            val x = (visual.number("x") * density).roundToInt().toFloat(); val y = (visual.number("y") * density).roundToInt().toFloat()
+            val width = (visual.number("width") * density).roundToInt(); val height = (visual.number("height") * density).roundToInt()
+            if (anchor.getString("kind") == "header" && layoutDirection == LayoutDirection.Rtl) Rect(this.bounds.width - x - width, y, this.bounds.width - x, y + height)
+            else Rect(x, y, x + width, y + height)
+        }
+    }
+    return DrawerFace(bounds, placement.getString("direction"))
 }
 
 internal fun Palette.drawerFill(presented: Boolean) = if(presented)onGlass.panelFill else panel
@@ -312,7 +338,7 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean, val
                 customization.array("column_drawers").objects().any { drawer -> drawer.array("columns").values().any { panel in (it as JSONArray).values() } }
             }
             CompositionLocalProvider(LocalWorkspaceZ provides entry.z,LocalPalette provides LocalPalette.current.onGlass) {
-                if(entry.visible.value)DrawerChrome(entry.geometry,dock,phone,nested,entry.z,glass)
+                if(entry.visible.value)DrawerChrome(entry.geometry,dock,phone,nested,entry.z,glass,entry.model.getJSONObject("anchor"))
             }
             val placeContent=entry.active && entry.prepared.value!=null
             Layout(modifier=Modifier.zIndex(entry.z.toFloat()),content={
@@ -618,14 +644,20 @@ private class DrawerContentState(var model: JSONObject, val retain: Boolean, val
     }
 }
 
-@Composable internal fun DrawerChrome(geometry: State<JSONObject?>, dock: DockInteraction, absolute: Boolean, nested: Boolean, z: Int, glass: DrawerGlass) {
+@Composable internal fun DrawerChrome(geometry: State<JSONObject?>, dock: DockInteraction, absolute: Boolean, nested: Boolean, z: Int, glass: DrawerGlass, anchor: JSONObject) {
     val frame=geometry.value ?: return
     val placement=frame.getJSONObject("placement")
     val bounds=placement.getJSONObject("bounds")
     val connection=frame.objectOrNull("connection")
+    val density=LocalDensity.current
+    val layoutDirection=LocalLayoutDirection.current
     val shape=dock.drawerContainerShape(bounds,joined=connection?.array("square_corners"))
     val cut=connection?.let { bridgeOutline(it,dock.density).apply {
         translate((it.getJSONObject("bounds").rect().topLeft-bounds.rect().topLeft)*dock.density)
+        dock.drawerFace(anchor,placement,layoutDirection)?.outline(density,layoutDirection)?.let { face ->
+            face.translate(-Offset((bounds.number("x")*dock.density).roundToInt().toFloat(),(bounds.number("y")*dock.density).roundToInt().toFloat()))
+            op(this,face,PathOperation.Union)
+        }
     } }
     Box((if(absolute)Modifier.placedAbsolute(bounds,dock.density) else Modifier.placed(bounds,dock.density))
         .zIndex(if(nested)199f else 99f)
