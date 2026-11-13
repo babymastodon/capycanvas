@@ -672,7 +672,17 @@ function Model{
     if($model){$script:CapyTrace.model=$model}
     if($script:CapyTrace.process -eq $review.Id){$script:CapyTrace.model}
 }
-function Review-Ready($View=(Model)){$View.brush_ready -and $View.windows_workspace.ready -and !$View.launch.visible}
+function Review-Ready($View=(Model),[long]$WindowHandle){
+    if(!($View.brush_ready -and $View.windows_workspace.ready -and !$View.launch.visible)){return $false}
+    $windows=@(Owned-ProcessWindows $review $WindowHandle)
+    $cover=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'launch-splash')
+    $windows.Count -gt 0 -and !@($windows|Where-Object {$splash=$_.Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cover);$splash -and !$splash.Current.IsOffscreen}).Count
+}
+function Input-Ready($View=(Model),[long]$WindowHandle){
+    if(!(Review-Ready $View $WindowHandle)){return $false}
+    $canvas=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'drawing-canvas')
+    !@(Owned-ProcessWindows $review $WindowHandle|Where-Object {$surface=$_.Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$canvas);!$surface -or !$surface.Current.IsEnabled}).Count
+}
 function Set-CapyTransparency([ValidateSet('off','low','medium','high')][string]$Value){
     $opened=!(Model).preferences
     if($opened){

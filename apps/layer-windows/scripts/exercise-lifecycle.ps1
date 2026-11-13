@@ -91,7 +91,7 @@ try {
             Check-Closed
             continue
         }
-        Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready} 'Review did not start' 45
+        Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready)} 'Review did not start' 45
         if(!(Model).windows_isolated_settings){throw 'Lifecycle review requires an isolated profile'}
         $root=$native.window.Root;$handle=$native.window.Handle
         if($scenario -eq 'warming'){

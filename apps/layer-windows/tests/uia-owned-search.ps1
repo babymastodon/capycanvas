@@ -125,7 +125,7 @@ namespace CapyOwnedSearchTest {
  public class Review{public int Id=33;public IntPtr MainWindowHandle=new IntPtr(132146);public bool HasExited=false;public int ExitCode=0;public void Refresh(){}public bool CloseMainWindow(){return Driver.PostMessage(MainWindowHandle,0x0010,UIntPtr.Zero,IntPtr.Zero);}}
 }
 '@
-foreach($name in @('Test-CapySearchItem','Find','Control','Wait-Scale','Wait-Until','Invoke','Review-Ready')){
+foreach($name in @('Test-CapySearchItem','Find','Control','Wait-Scale','Wait-Until','Invoke','Review-Ready','Input-Ready')){
     $fn=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}.GetNewClosure(),$true))
     if($fn.Count -ne 1){throw 'Missing actual UIA helper'}
     . ([scriptblock]::Create($fn[0].Extent.Text.Replace('System.Windows.Automation.','CapyOwnedSearchTest.')))
@@ -364,7 +364,7 @@ if($ready.Count -ne 1 -or $statements[$ready[0]+1].Left.Extent.Text -ne '$script
     [CapyOwnedSearchTest.AutomationElement]::RootElement.Children.Clear()
     foreach($window in @($overlay,$drawing)){[CapyOwnedSearchTest.AutomationElement]::RootElement.Children.Add($window)}
     $script:root=$overlay;$script:persistenceResolutions=0;$script:persistenceWaitSeconds=$null;$script:persistenceInsideWait=$false;$actualWait=${function:Wait-Until}
-    function Model{[pscustomobject]@{brush_ready=$true}}
+    function Model{[pscustomobject]@{brush_ready=$true;windows_workspace=[pscustomobject]@{ready=$true}}}
     function Owned-DrawingWindow($Process){if($Process -ne $review -or !$script:persistenceInsideWait){throw 'Persistence resolved outside its readiness wait or for a different process'};$script:persistenceResolutions++;[pscustomobject]@{Root=$drawing;Handle=$drawing.NativeWindowHandle}}
     function Wait-Until([scriptblock]$Condition,[string]$Message,[int]$Seconds){$script:persistenceWaitSeconds=$Seconds;$script:persistenceInsideWait=$true;try{& $actualWait $Condition $Message $Seconds}finally{$script:persistenceInsideWait=$false}}
     $startup=@();$index=$ready[0]
@@ -1556,6 +1556,10 @@ public static class CapyImageDragPacingTest {
     }
     $review=@{Id=33};$directory='owned-registry';$window=@{id=9;hwnd=77};$seen=@{reads=0;polls=0}
     function Model($Window){@{brush_ready=$true;windows_workspace=@{ready=$true}}}
+    function Owned-ProcessWindows($Process,$WindowHandle){
+        if($Process.Id-ne33-or$WindowHandle-ne77){throw 'Review readiness queried another window'}
+        @{Root=[CapyOwnedSearchTest.Node]::new('owned-root',33,0,0)}
+    }
     function Owned-DrawingWindow($Process,$WindowHandle,$TraceDirectory){
         if($Process.Id-ne33-or$WindowHandle-ne77-or$TraceDirectory-ne'owned-registry'){throw 'Ready queried another window registry'}
         $seen.reads++;if($seen.reads-ge3){@{Root='owned-root'}}
@@ -1566,10 +1570,42 @@ public static class CapyImageDragPacingTest {
 }
 
 & {
-    function Model{[pscustomobject]@{brush_ready=$true;windows_workspace=[pscustomobject]@{ready=$true};launch=[pscustomobject]@{visible=$script:launchVisible}}}
-    $script:launchVisible=$true;if(Review-Ready){throw 'Review readiness admitted input while the launch splash disables the drawing canvas'}
-    $script:launchVisible=$false;if(!(Review-Ready)){throw 'Review readiness rejected a finished launch'}
-    'Review readiness waits for the launch splash that disables the drawing canvas.'
+    $tokens=$null;$errors=$null
+    $documents=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-documents.ps1'),[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw ($errors|Out-String)}
+    $admissions=[ordered]@{'Review-Ready'=@{wait={Review-Ready};admit='review'};'Input-Ready'=@{wait={Input-Ready};admit='input'}}
+    foreach($message in 'Light review did not start','Canvas startup did not finish','Session did not reopen','Untitled canvas did not finish starting'){
+        $wait=@($documents.FindAll({param($n)$n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Wait-Until' -and $n.CommandElements.Count -ge 3 -and $n.CommandElements[2].Value -ceq $message}.GetNewClosure(),$true))
+        if($wait.Count -ne 1){throw "Missing actual documents startup admission: $message"}
+        $admissions[$message]=@{wait=$wait[0].CommandElements[1].ScriptBlock.GetScriptBlock();admit='input'}
+    }
+    function Model{[pscustomobject]@{brush_ready=$true;windows_workspace=[pscustomobject]@{ready=$state.workspace};launch=[pscustomobject]@{visible=$state.launch};state=[pscustomobject]@{theme='light'};windows_recovery=[pscustomobject]@{busy=$false;restoring=$false}}}
+    function Owned-ProcessWindows($Process){if($Process.Id -ne 33){throw 'Review readiness queried another process'};foreach($window in $state.windows){[pscustomobject]@{Root=$window;Handle=$window.NativeWindowHandle}}}
+    function Drawing([bool]$Cover,[bool]$Offscreen,[bool]$Enabled){
+        $window=[CapyOwnedSearchTest.Node]::new('drawing-window',33,209,197)
+        if($Cover){$splash=[CapyOwnedSearchTest.Node]::new('launch-splash',33,209,197);$splash.IsOffscreen=$Offscreen;$window.Children.Add($splash)}
+        $canvas=[CapyOwnedSearchTest.Node]::new('drawing-canvas',33,209,240);$canvas.Enabled=$Enabled;$window.Children.Add($canvas)
+        $window
+    }
+    $ready=Drawing $false $false $true
+    $failures=[Collections.Generic.List[string]]::new()
+    foreach($state in @(
+        @{name='brush ready while the workspace is unready';workspace=$false;launch=$false;windows=@($ready);review=$false;input=$false},
+        @{name='shared ready while the launch is visible';workspace=$true;launch=$true;windows=@(Drawing $true $false $false);review=$false;input=$false},
+        @{name='shared launch hidden while the native cover takes clicks';workspace=$true;launch=$false;windows=@(Drawing $true $false $true);review=$false;input=$false},
+        @{name='a modal prompt disables the native drawing canvas';workspace=$true;launch=$false;windows=@(Drawing $false $false $false);review=$true;input=$false},
+        @{name='another owned window still covered';workspace=$true;launch=$false;windows=@($ready,(Drawing $true $false $true));review=$false;input=$false},
+        @{name='no registered drawing window';workspace=$true;launch=$false;windows=@();review=$false;input=$false},
+        @{name='offscreen native cover';workspace=$true;launch=$false;windows=@(Drawing $true $true $true);review=$true;input=$true},
+        @{name='every clause met';workspace=$true;launch=$false;windows=@($ready);review=$true;input=$true}
+    )){
+        foreach($admission in $admissions.GetEnumerator()){
+            $admit=$state[$admission.Value.admit]
+            if([bool](& $admission.Value.wait) -ne $admit){$failures.Add("$($admission.Key) $(if($admit){'rejected'}else{'admitted'}) $($state.name)")}
+        }
+    }
+    if($failures.Count){throw ($failures -join [Environment]::NewLine)}
+    'Review readiness waits for shared brush and workspace readiness, the shared launch, a registered drawing window and the native launch cover; input admission and the documents startups also wait for the enabled native drawing canvas.'
 }
 
 & {
@@ -2428,6 +2464,11 @@ public static class CapyCaptionOriginTest {
     $peer=@{id=202;hwnd=202};$review=[CapyOwnedSearchTest.Review]::new();$run='clipboard-handoff'
     $script:root=$sourceRoot;$script:drawingWindow=$sourceHandle;$script:clipboardHandoffTicks=0
     function Model{@{brush_ready=$true;windows_workspace=@{ready=$true;busy=$false}}}
+    $peerRoot.Children.Add([CapyOwnedSearchTest.Node]::new('drawing-canvas',33,210,210))
+    function Owned-ProcessWindows($Process,[long]$WindowHandle){
+        if($Process.Id-ne33-or$WindowHandle-ne202){throw 'Clipboard readiness requested another owned window'}
+        @{Root=$peerRoot;Handle=$peerHandle}
+    }
     function Owned-DrawingWindow($Process,[long]$WindowHandle){
         if($Process.Id-ne33-or$WindowHandle-ne202){throw 'Clipboard handoff requested another owned window'}
         if($script:clipboardHandoffTicks-ge3){@{Root=$peerRoot;Handle=$peerHandle}}

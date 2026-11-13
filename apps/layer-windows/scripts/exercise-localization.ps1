@@ -105,7 +105,7 @@ function Focus-Canvas{
   [System.Windows.Automation.AutomationElement]::FocusedElement.Current.AutomationId -eq 'drawing-canvas'
  } 'Drawing canvas did not regain native keyboard focus' 30
 }
-function Ready($Window){Wait-Until {Review-Ready (Model $Window)} 'Window did not prepare' 120}
+function Ready($Window){Wait-Until {Review-Ready (Model $Window) $Window.hwnd} 'Window did not prepare' 120}
 function Close-OwnedLocalizationWindows{
  $snapshot=Read-Snapshot (Join-Path $run "windows-$($review.Id).json")
  $windows=@($snapshot.windows)

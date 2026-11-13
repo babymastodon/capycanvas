@@ -90,7 +90,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/navigator-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned Navigator review $($review.Id)"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready} 'Review did not start' 45
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready)} 'Review did not start' 45
     if(!(Model).windows_isolated_settings){throw 'Navigator fixture requires an isolated profile'}
     [CapyNavigatorCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     $root=$native.window.Root;$drawingWindow=$native.window.Handle

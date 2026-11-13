@@ -680,7 +680,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/effects-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned effects review $($review.Id)"
     $owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Model).brush_ready} 'Review did not start' 45
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Review-Ready)} 'Review did not start' 45
     $root=$owned.window.Root;$drawingWindow=$owned.window.Handle
     Use-PaintWorkspace
     [CapyEffectsCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null

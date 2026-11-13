@@ -116,7 +116,7 @@ function Start-Review([switch]$Maximized){
     $script:stderr=Join-Path $run "stderr-$launch.log"
     $script:review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle;$owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Model).brush_ready} 'Tilt review did not start' 45
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Review-Ready)} 'Tilt review did not start' 45
     $script:root=$owned.window.Root;$script:drawingWindow=$owned.window.Handle
     if($Maximized){Maximize-DrawingWindow}
     Use-PaintWorkspace

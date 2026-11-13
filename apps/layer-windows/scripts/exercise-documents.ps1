@@ -1075,7 +1075,7 @@ function Test-LightNewDrawing {
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/document-ui-review.pid'),[string]$review.Id)
     Write-Output "Light New drawing review process $($review.Id)"
     Bind-ReviewWindow 'No light review window'
-    Wait-Until {$model=Model;$model.brush_ready -and $model.state.theme -eq 'light'} 'Light review did not start' 45
+    Wait-Until {$model=Model;(Input-Ready $model) -and $model.state.theme -eq 'light'} 'Light review did not start' 45
     if($Journey -eq 'paper-color'){Test-PaperColorReopen}elseif($Journey -eq 'new-drawing-problem'){Test-NewDrawingProblem 'light'}else{New-Journey 'light'}
     if($Journey -eq 'new-drawing'){Test-PhotoPaper}
     if($Journey -eq 'full'){Color-Workflows}
@@ -1083,7 +1083,7 @@ function Test-LightNewDrawing {
     if((Get-Item -LiteralPath $stderr).Length){throw 'Light native review reported stderr'}
 }
 Bind-ReviewWindow 'No review window'
-Wait-Until {(Model).brush_ready} 'Canvas startup did not finish' 45
+Wait-Until {Input-Ready} 'Canvas startup did not finish' 45
 if(!(Model).windows_isolated_settings){throw 'Review must use an isolated profile'}
 if($focusedGpu -or $nativeWriteback){
     $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
@@ -1754,7 +1754,7 @@ $stderr=Join-Path $run 'reopened.stderr.log'
 $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
 $null=$review.Handle
 Bind-ReviewWindow 'No restarted review window'
-Wait-Until {(Model).brush_ready -and !(Model).windows_recovery.busy -and !(Model).windows_recovery.restoring} 'Session did not reopen' 120
+Wait-Until {(Input-Ready) -and !(Model).windows_recovery.busy -and !(Model).windows_recovery.restoring} 'Session did not reopen' 120
 if(@((Model).state.tabs|Where-Object active)[0].id -ne $reopenedDrawing){throw 'Session reopened a different drawing'}
 if((Model).state.settings.dark_base -ne '#223344' -or !(Model).state.document_file.modified){throw 'Window close lost the focused Preferences draft or unsaved drawing'}
 Request-Close;Wait-Closed 'Restarted session close did not finish'
@@ -1766,7 +1766,7 @@ $null=$review.Handle
 [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/document-ui-review.pid'),[string]$review.Id)
 Write-Output "Untitled close review process $($review.Id)"
 Bind-ReviewWindow 'No untitled review window'
-Wait-Until {(Model).brush_ready} 'Untitled canvas did not finish starting' 45
+Wait-Until {Input-Ready} 'Untitled canvas did not finish starting' 45
 Test-UntitledClose
 if(!$RecoverGpu -and !$FailGpu){
     Test-LightNewDrawing

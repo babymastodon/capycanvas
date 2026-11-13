@@ -53,7 +53,7 @@ function Cross-Window-Clip{
  try{
   $script:CapyStateFile=Join-Path $run ("ui-state-"+$review.Id+"-"+$peer.id+".json")
   $native=@{window=$null}
-  Wait-Until {$native.window=Owned-DrawingWindow $review ([long]$peer.hwnd);$native.window -and (Review-Ready) -and !(Model).windows_workspace.busy} 'The clipboard destination window did not become ready' 90
+  Wait-Until {$native.window=Owned-DrawingWindow $review ([long]$peer.hwnd);$native.window -and (Input-Ready (Model) $peer.hwnd) -and !(Model).windows_workspace.busy} 'The clipboard destination window did not become ready' 90
   $script:root=$native.window.Root;$script:drawingWindow=$native.window.Handle
   Chord @(0x11) 0x56
   Wait-Until {(Requests) -eq 0 -and (Model).state.document_file.modified -and (Model).brush_ready} 'The copied layer did not paste into the second window' 90

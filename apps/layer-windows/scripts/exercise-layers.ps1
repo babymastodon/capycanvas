@@ -183,7 +183,7 @@ function Open-LayersReview([string]$Log){
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/layers-review.json'),(@{process_id=$script:review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned Layers review $($script:review.Id)"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $script:review;$null -ne $native.window -and (Model).brush_ready} 'Review did not start' 45
+    Wait-Until {$native.window=Owned-DrawingWindow $script:review;$null -ne $native.window -and (Review-Ready)} 'Review did not start' 45
     [CapyLayersCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     $script:root=$native.window.Root;$script:drawingWindow=$native.window.Handle
     Use-PaintWorkspace
@@ -375,7 +375,7 @@ try {
     $native=@{window=$null}
     Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window} 'Restarted review did not start' 45
     $root=$native.window.Root;$drawingWindow=$native.window.Handle
-    Wait-Until {(Model).brush_ready -and !(Model).windows_recovery.busy -and !(Model).windows_recovery.restoring} 'Layer session did not reopen' 120
+    Wait-Until {(Review-Ready) -and !(Model).windows_recovery.busy -and !(Model).windows_recovery.restoring} 'Layer session did not reopen' 120
     if(@((Model).state.tabs|Where-Object active)[0].id -ne $reopenedDrawing){throw 'Layer session reopened a different drawing'}
     if(!(Model).state.document_file.modified -or [Math]::Abs((Model).state.layer_tools.editing_layer.opacity-.55) -gt .000001){throw 'Window close lost the focused layer draft'}
     Capture 'reopened-draft' -WithModel

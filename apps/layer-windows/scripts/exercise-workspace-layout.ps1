@@ -277,7 +277,7 @@ try{
     $null=$review.Handle
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/workspace-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned workspace review $($review.Id)"
-    Wait-Until {$script:drawing=Owned-DrawingWindow $review;$null -ne $drawing -and (Model).brush_ready -and (Model).state.theme -eq $Theme} 'Review did not start' 45
+    Wait-Until {$script:drawing=Owned-DrawingWindow $review;$null -ne $drawing -and (Review-Ready) -and (Model).state.theme -eq $Theme} 'Review did not start' 45
     $root=$drawing.Root
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     [CapyRowPointer]::SetForegroundWindow($drawing.Handle)|Out-Null

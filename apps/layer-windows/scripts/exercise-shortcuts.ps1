@@ -8,7 +8,7 @@ $review=Get-Process -Id $ProcessId
 if($review.ProcessName -ne 'CapyCanvas'){throw 'Expected an owned CapyCanvas review'}
 $CapyStateFile=$StateFile;$CapyTraceDirectory=Split-Path -Parent $StateFile
 $native=@{window=$null}
-Wait-Until {$native.window=Owned-DrawingWindow $review; $native.window -and (Model).brush_ready} 'Isolated review did not become ready' 45
+Wait-Until {$native.window=Owned-DrawingWindow $review; $native.window -and (Input-Ready)} 'Isolated review did not become ready' 45
 $root=$native.window.Root
 function Key([int]$Code,[switch]$Ctrl,[switch]$Shift){
     $modifiers=[Collections.Generic.List[uint16]]::new()
