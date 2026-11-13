@@ -27,6 +27,7 @@ import Vision
         for platform: UInt32 in [0, 1] {
             let store = EditorStore(platform: platform, persistence: EditorPersistence(root: nil))
             try await wait("Initial Settings owner", failure: { store.failure }) { !store.state.isNull && !store.catalog.isNull }
+            try await uncover(store)
             store.invoke("about")
             try await wait("About page", failure: { store.failure }) { store.snapshot["preferences"]["page"].string == "about" }
             let layers = store.state["layers"].stableKey

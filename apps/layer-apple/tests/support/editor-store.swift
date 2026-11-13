@@ -46,6 +46,11 @@ func require(_ value: Bool, _ message: String) throws {
     }
 }
 
+@MainActor func uncover(_ store: EditorStore) async throws {
+    store.native!.launchInteraction(true)
+    try await wait("Launch cover dropped for a fixture without a canvas", failure: { store.failure }) { !store.launchVisible }
+}
+
 @MainActor func desktopViewport(_ store: EditorStore) async throws {
     store.native?.resize(width: 1200, height: 900, scale: 1)
     try await wait("Desktop fixture viewport", failure: { store.failure }) {

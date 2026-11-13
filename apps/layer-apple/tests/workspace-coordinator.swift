@@ -72,7 +72,7 @@ import Foundation
             let recovered = EditorStore(platform: platform, persistence: badStorage)
             let recoveredWorkspaces = recovered.workspaces!
             try await recoveredWorkspaces.started("corrupt database recovery")
-            try await uncovered(recovered)
+            try await uncover(recovered)
             precondition(recovered.failure == nil && !recovered.state["notice"].isNull)
             try require(await recoveredWorkspaces.workspaceRows().count == 3, "Recovered storage must initialize the shared defaults")
             try await recoveredWorkspaces.closed()
@@ -84,10 +84,6 @@ import Foundation
             try await releasedStores(platform: platform, root: root.appendingPathComponent("released"))
             print("PASS: platform \(platform), SQLite startup, scene restoration, latest-edit switching, failure unlock, suspension, ownership recovery, restart, unreadable-store preservation, released 1.0.12 workspaces and damaged-store copy install")
         }
-    }
-    @MainActor static func uncovered(_ editor: EditorStore) async throws {
-        editor.native!.launchInteraction(true)
-        try await wait("startup notices published once the cover drops", failure: { editor.failure }) { !editor.launchVisible }
     }
     @MainActor static func releasedStores(platform: UInt32, root: URL) async throws {
         let tests = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("crates/layer-workspace/tests")
@@ -165,7 +161,7 @@ import Foundation
         let installed = EditorStore(platform: platform, persistence: damaged)
         try await installed.workspaces!.started("damaged store installs its newest copy")
         try quiet(installed.workspaces!, "damaged store")
-        try await uncovered(installed)
+        try await uncover(installed)
         try require(installed.state["notice"]["text"].string == "Your saved workspaces were damaged. Capy Canvas restored an earlier copy."
             && installed.state["notice"]["actions"].array.isEmpty, "The restored-copy notice has no buttons: \(installed.state["notice"].stableKey)")
         try require(installed.state["brush"]["diameter"].number == 37, "The retained copy's settings open")
@@ -177,7 +173,7 @@ import Foundation
         let restarted = EditorStore(platform: platform, persistence: damaged)
         try await restarted.workspaces!.started("installed copy relaunch")
         try quiet(restarted.workspaces!, "installed copy relaunch")
-        try await uncovered(restarted)
+        try await uncover(restarted)
         try require(restarted.state["notice"].isNull && restarted.state["brush"]["diameter"].number == 37 && (try copies()) == after,
             "A second start sets nothing aside and installs nothing")
         try await restarted.workspaces!.closed()
