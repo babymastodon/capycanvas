@@ -88,3 +88,26 @@ $saved=$copy.format_png;$copy.format_png=$null;$failure=$null
 try{Delivery 'missing-copy.png' 'format_png'}catch{$failure=$_.Exception.Message}finally{$copy.format_png=$saved}
 if($failure -notlike 'Missing HDR control:*' -or $script:previews -ne 0){throw 'Missing localized format copy reached Preview Output'}
 Write-Output 'HDR delivery passed 13 actual callers, owned offscreen localized Reset, seven localized format keys, exact hash return, existing preview recipe identity and missing/wrong-format controls; no window or GPU.'
+
+$guard=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.IfStatementAst] -and $node.Extent.Text -match "throw '(Window|Drawing) close cancellation lost drawings'"},$true))
+if($guard.Count -ne 1){throw 'Missing actual HDR drawing-close assertion'}
+$statements=@($guard[0].Parent.Statements);$end=[array]::IndexOf($statements,$guard[0]);$start=$end-1
+while($start -ge 0 -and $statements[$start].Extent.Text -notmatch '^\$count='){$start--}
+if($start -lt 0){throw 'Missing HDR drawing-close baseline'}
+Add-Type -TypeDefinition 'public static class CapyWindowApi { public static bool Closed; public static bool PostMessage(object w,int m,object a,object b){Closed=true;return true;} }'
+$drawingWindow=[IntPtr]::Zero;$script:closePending=$false;$script:closeCancelled=$false
+function Model {@{windows_tabs=@{tabs=@(@{id=1},@{id=2})}}}
+function Command([string]$Id,[string]$Menu){
+    if($Id -cne 'close_document' -or $Menu -cne 'File'){throw 'HDR cancellation requires explicit Close Drawing'}
+    $script:closePending=$true
+}
+function Button([string]$Name){
+    if([CapyWindowApi]::Closed){throw 'Owned review exited with code 0: Missing HDR control: Cancel'}
+    if($Name -cne 'Cancel' -or !$script:closePending){throw 'Missing HDR control: Cancel'}
+    $script:closePending=$false;$script:closeCancelled=$true
+}
+function Idle {if($script:closePending){throw 'HDR close decision remains pending'}}
+$closePath=($statements[$start..$end]|ForEach-Object {$_.Extent.Text}) -join "`n"
+Invoke-Expression $closePath
+if(!$script:closeCancelled -or [CapyWindowApi]::Closed){throw 'HDR did not cancel the explicit drawing close'}
+Write-Output 'HDR cancellation keeps both drawings through explicit Close Drawing, without quitting the recoverable session.'

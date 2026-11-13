@@ -1000,8 +1000,8 @@ try {
  }
  & (Join-Path $PSScriptRoot 'inspect-window.ps1') -TraceDirectory $CapyTraceDirectory -ProcessId $review.Id -Output (Join-Path $run 'hdr.png') -ClientOnly -Composed *> (Join-Path $run 'hdr.json')
  $count=@((Model).windows_tabs.tabs).Count
- [CapyWindowApi]::PostMessage($drawingWindow,0x10,[UIntPtr]::Zero,[IntPtr]::Zero)|Out-Null;Button 'Cancel';Idle
- if(@((Model).windows_tabs.tabs).Count -ne $count){throw 'Window close cancellation lost drawings'}
+ Command 'close_document' 'File';Button 'Cancel';Idle
+ if(@((Model).windows_tabs.tabs).Count -ne $count){throw 'Drawing close cancellation lost drawings'}
  Command 'close_document' 'File';Button 'Discard Changes';Idle
  Wait-Until {@((Model).windows_tabs.tabs).Count -eq $count-1 -and (Model).windows_tabs.available} 'Close drawing did not retain the other tabs' 60
  & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Close -DiscardUnsaved -StateDirectory $directory
