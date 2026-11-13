@@ -1630,7 +1630,7 @@ $script:scope=$root;Invoke-Control 'Undo'
 Wait-Until {(Model).state.document_file.revision -gt $revision -and (Model).state.document_file.modified} 'Undo did not remove the Export Again stroke'
 $webp=Join-Path $run 'Export.webp'
 File-Command 'export_document' {
-    Combo-Select (Find-Id 'export-format') {$_.Current.Name -like 'WebP*'}
+    Combo-Select (Owned 'export-format') {$_.Current.Name -like 'WebP*'}
     Wait-Until {$format=Find-Id 'export-format';$format -and (Combo-Value $format) -like 'WebP*'} 'Export did not choose WebP'
 }
 Picker 'Save As';Choose-Path $webp;Idle
@@ -1655,7 +1655,7 @@ $documentEpoch=(Model).state.document_file.epoch
 File-Command 'open_document';Picker 'Open';Choose-Path $photo;Idle
 Wait-Until {(Model).state.document_file.epoch -gt $documentEpoch} 'Open did not select the photo'
 File-Command 'export_document' {
-    $format=Find-Id 'export-format';Combo-Select $format {$_.Current.Name -eq 'JPEG image'}
+    Combo-Select (Owned 'export-format') {$_.Current.Name -eq 'JPEG image'}
     Wait-Until {$format=Find-Id 'export-format';$format -and (Combo-Value $format) -eq 'JPEG image'} 'Export did not choose JPEG'
     Wait-Until {$script:metadata=Find-Id 'export-metadata';$script:metadata -and !$script:metadata.Current.IsOffscreen} 'Export did not offer Metadata for a photo'
     $remove=Find-Id 'export-remove-location'

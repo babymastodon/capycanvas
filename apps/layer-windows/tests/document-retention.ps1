@@ -68,3 +68,38 @@ try{
     Check-Retention 'unrelated-focus' $true '3' -Expected 'focus left the retained field and invoked control'
     Write-Output "Document retention passed $checks cases using the actual sampler and pixel envelope: permitted focus, lost text, retained identity/value/scroll and unrelated focus; no window or GPU."
 }finally{if(Test-Path -LiteralPath $run){Remove-Item -LiteralPath $run -Recurse -Force}}
+
+& {
+    $owned=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Owned'},$true)
+    if(!$owned){throw 'Missing actual document owned-control wait'}
+    . ([scriptblock]::Create($owned.Extent.Text))
+    $selections=@($ast.FindAll({param($node)
+        $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Combo-Select' -and
+        ($node.Extent.Text -like '*WebP*' -or $node.Extent.Text -like '*JPEG image*')
+    },$true))
+    if($selections.Count -ne 2){throw 'Missing actual default export format selections'}
+    $root=[pscustomobject]@{owner='document'}
+    function Find([string]$Id,$Within){
+        if($Id -cne 'export-format' -or $Within -ne $root){throw 'Export looked outside its owned Format control'}
+        if($script:formatPublished){$script:formatControl}
+    }
+    function Find-Id([string]$Id){Find $Id -Within $root}
+    function Wait-Until([scriptblock]$Condition,[string]$Message){
+        if(& $Condition){throw 'Export control scenario did not begin before native publication'}
+        $script:formatPublished=$true
+        if(!(& $Condition)){throw $Message}
+    }
+    function Combo-Select($Combo,[scriptblock]$Pick){
+        if(!$Combo){throw 'Export selected Format before its native control was published'}
+        if($Combo -ne $script:formatControl){throw 'Export selected another native control'}
+        $script:formatChoice=@(@('WebP lossless','JPEG image')|ForEach-Object {[pscustomobject]@{Current=[pscustomobject]@{Name=$_}}}|Where-Object $Pick)
+    }
+    foreach($selection in $selections){
+        $script:formatPublished=$false;$script:formatControl=[pscustomobject]@{id='export-format'};$script:formatChoice=@();$format=$null
+        & ([scriptblock]::Create($selection.Extent.Text))
+        if(!$script:formatPublished -or $script:formatChoice.Count -ne 1){throw 'Export did not wait for and select its native format'}
+        $expected=if($selection.Extent.Text -like '*WebP*'){'WebP lossless'}else{'JPEG image'}
+        if($script:formatChoice[0].Current.Name -cne $expected){throw 'Export format selection changed'}
+    }
+    'Default export format selections wait for native publication: passed'
+}
