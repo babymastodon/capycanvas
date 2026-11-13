@@ -2057,7 +2057,7 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
     CanvasModelInputs::Capture capture(windowInputs,{{model,{}},{state,{L"state"}}},&changes);
     windowInputs.Add({L"state",L"workspace_ready"});windowInputs.Add({L"windows_workspace"});
     workspace->Root().Visibility(workspaceReady||flag(object(model,L"launch"),L"visible")?Visibility::Visible:Visibility::Collapsed);
-    {std::lock_guard lock(mutex);penSources.Select(to_string(object(model,L"windows_tabs").GetNamedValue(L"selected",JsonValue::CreateNullValue()).Stringify()+L"/"+named(branch(state,L"document_file"),L"epoch").Stringify()));}
+    {std::lock_guard lock(mutex);penSources.Select(to_string(named(branch(model,L"windows_tabs"),L"selected").Stringify()+L"/"+named(branch(state,L"document_file"),L"epoch").Stringify()));}
     if(surfaceState.CanAttach(uint64_t(num(model,L"windows_gpu_generation")),flag(model,L"windows_surface_ready"))){
         check_hresult(panel.as<ISwapChainPanelNative2>()->SetSwapChainHandle(surfaceHandle));surfaceState.DidAttach();
     }
