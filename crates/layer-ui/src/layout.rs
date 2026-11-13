@@ -855,13 +855,15 @@ impl Panel {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Edge {
-    Top,
-    Bottom,
-    Left,
-    Right,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Edge {
+        Top,
+        Bottom,
+        Left,
+        Right,
+    }
 }
 impl Edge {
     pub fn axis(self) -> Axis {
@@ -872,11 +874,13 @@ impl Edge {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Axis {
-    Horizontal,
-    Vertical,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Axis {
+        Horizontal,
+        Vertical,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1011,13 +1015,15 @@ pub struct FloatingGroup {
     pub toolbar_layout: FloatingToolbarLayout,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FloatingToolbarLayout {
-    #[default]
-    Compact,
-    Vertical,
-    Horizontal,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum FloatingToolbarLayout {
+        #[default]
+        Compact,
+        Vertical,
+        Horizontal,
+    }
 }
 impl FloatingToolbarLayout {
     fn next(self) -> Self {

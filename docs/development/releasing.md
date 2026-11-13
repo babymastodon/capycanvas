@@ -386,7 +386,9 @@ tools, commands, slots and panels; non-default palettes, brush and region
 options; custom and edited included workspaces; layer/record kinds and native
 sample depths; app-rendered previews; session history and UI membership; paper
 and profile content/indexes; and exported workspace, toolbar and keymap files.
-Keep unsupported files byte for byte. Follow the
+The UI generator also writes `saved-names.json`, the ledger of every saved
+workspace enum name and ID, and `workspace-layout.json`, a layout and history
+that use each of them. Keep unsupported files byte for byte. Follow the
 [expectation review](testing.md#saved-data-compatibility), rerun without
 `CAPY_BLESS`, and commit new inputs and reviewed expectations with the version and
 the [compatibility explanation](../COMMIT_GUIDE.md#commit-messages).

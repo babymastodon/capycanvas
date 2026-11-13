@@ -95,15 +95,17 @@ impl TabPresentation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TileStyle {
-    #[default]
-    Small,
-    Medium,
-    Large,
-    MediumLabeled,
-    Labeled,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum TileStyle {
+        #[default]
+        Small,
+        Medium,
+        Large,
+        MediumLabeled,
+        Labeled,
+    }
 }
 impl TileStyle {
     pub fn size(self) -> [f32; 2] {
@@ -195,29 +197,31 @@ impl From<TileStyle> for TilePresentation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PanelControl {
-    Brushes,
-    BrushSets,
-    FilterTypes,
-    SculptSets,
-    Tools,
-    ToolSettings,
-    ColorWheel,
-    BrushSize,
-    SizePresets,
-    BrushOpacity,
-    BrushColor,
-    Layers,
-    LayerActions,
-    LayerOpacity,
-    Adjustments,
-    Properties,
-    Stats,
-    Navigator,
-    Histogram,
-    Waveform,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PanelControl {
+        Brushes,
+        BrushSets,
+        FilterTypes,
+        SculptSets,
+        Tools,
+        ToolSettings,
+        ColorWheel,
+        BrushSize,
+        SizePresets,
+        BrushOpacity,
+        BrushColor,
+        Layers,
+        LayerActions,
+        LayerOpacity,
+        Adjustments,
+        Properties,
+        Stats,
+        Navigator,
+        Histogram,
+        Waveform,
+    }
 }
 impl PanelControl {
     pub fn canonical_label(self) -> std::sync::Arc<str> {

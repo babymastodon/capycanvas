@@ -134,14 +134,16 @@ impl BubbleOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Corner {
-    #[default]
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Corner {
+        #[default]
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight,
+    }
 }
 impl Corner {
     fn point(self, viewport: [f32; 2]) -> [f32; 2] {

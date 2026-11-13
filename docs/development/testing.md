@@ -204,6 +204,10 @@ the release loaders without expectation files; output excludes markers and locks
 `generated_saved_documents_set_every_field` (UI) checks non-default saved fields,
 including serde omissions; `generated_fixtures_cover_every_saved_value` (core)
 checks portable saved values and private-only session fields.
+`released_saved_names_still_read` (UI) reads each enum name and ID in every
+release's `saved-names.json` on its own, without the lenient readers;
+`generated_fixtures_cover_every_saved_name` requires the generated
+`workspace-layout.json` to use every name the current ledger lists.
 
 `saved_documents_tolerate_missing_and_unknown_fields` in the affected suites
 removes defaultable app-state options and adds unknown struct fields; required
