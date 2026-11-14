@@ -25,6 +25,7 @@ pub(crate) use sources::Sources;
 pub(super) type Pages=Arc<std::sync::Mutex<pages::Store>>;
 pub(super) fn pages_within(display:&Arc<crate::residency::Tier>)->Pages {Arc::new(std::sync::Mutex::new(pages::Store::within(display)))}
 pub(super) fn trim_pages_by(pages:&Pages,deficit:u64,class:Class) {let mut store=pages.lock().unwrap();let bytes=store.bytes();store.trim(bytes.saturating_sub(deficit),class);}
+pub(super) fn release_pages_by(pages:&Pages,deficit:u64) {let mut store=pages.lock().unwrap();let bytes=store.bytes();store.release_undemanded(bytes.saturating_sub(deficit));}
 
 #[derive(Clone, Default)]
 pub(crate) struct Damage {

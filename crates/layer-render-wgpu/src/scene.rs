@@ -533,6 +533,7 @@ impl Scene {
     pub(crate) fn working_bytes(&self)->u64 {self.usage().working}
     pub(crate) fn store_metadata_bytes(&self)->u64 {self.scale_pages.lock().unwrap().metadata_bytes()}
     pub(crate) fn trim_pages_by(&self,deficit:u64,class:crate::residency::Class) {scale::trim_pages_by(&self.scale_pages,deficit,class);}
+    pub(crate) fn release_pages_by(&self,deficit:u64) {scale::release_pages_by(&self.scale_pages,deficit);}
     pub(crate) fn retained_scale_bytes(&self)->[u64;2] {
         let pages=self.scale_pages.lock().unwrap();[pages.bytes(),pages.pinned_bytes()]
     }

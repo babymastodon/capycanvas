@@ -870,7 +870,9 @@ impl Store {
         self.index.remove(key);self.touch(key);self.ids.remove(&page.id);self.victims.release(page.window,page.image.bytes());
         self.version_slots-=page.versions.capacity() as u64;page
     }
-    pub(super) fn trim(&mut self,limit:u64,class:Class) {
+    pub(super) fn trim(&mut self,limit:u64,class:Class) {self.trim_at(limit,class,self.victims.epoch);}
+    pub(super) fn release_undemanded(&mut self,limit:u64) {self.trim_at(limit,Class::Fallback,self.victims.epoch+1);}
+    fn trim_at(&mut self,limit:u64,class:Class,epoch:u64) {
         let mut bytes=self.bytes();
         let mut pinned=Vec::new();
         while bytes>limit {
@@ -878,7 +880,7 @@ impl Store {
             let heap=&mut self.victims.windows.get_mut(&window).unwrap().heap;
             let Some(victim)=heap.pop() else {break;};
             let Some((key,page))=self.ids.get(&victim.id).and_then(|key|self.pages.get_key_value(key)).filter(|(_,page)|rank(page)==victim.rank) else {continue;};
-            if page.pinned() || demanded(page,self.victims.epoch,class) {pinned.push((page.window,victim));continue;}
+            if page.pinned() || demanded(page,epoch,class) {pinned.push((page.window,victim));continue;}
             let key=key.clone();
             let removed=self.remove(&key).image;
             if victim.rank.0 {self.victims.inflation=self.victims.inflation.max(victim.rank.1);}
@@ -951,6 +953,43 @@ mod tests {
     fn indexed_key(coordinate:[u32;2],level:u32)->Key {
         Key {source:None,expression:Arc::new(graph::Expression::Color([1f32.to_bits();4])),extent:[65536;2],
             color:Default::default(),blend_space:layer_core::BlendSpace::Linear,level,coordinate,format:wgpu::TextureFormat::Rgba16Float}
+    }
+    fn full_view(document:&layer_core::Document)->FramePacket<'_> {
+        let extent=document.composition().size;
+        let mut frame=crate::test_support::packet(document.scene(),extent);frame.composite_all=false;
+        frame.view.width_px=extent[0];frame.view.height_px=extent[1];frame.view.document_to_surface=[1.,0.,0.,1.,0.,0.];
+        frame
+    }
+    fn demanded_pages(rows:&[u32])->(layer_core::Document,WgpuRasterizer,Vec<Vec<Key>>,layer_core::MemoryOwner) {
+        let document=super::super::tests::document_at([1024,512]);let frame=full_view(&document);
+        let mut r=crate::memory::memory_tests::renderer(document.composition().color,layer_core::DeviceMemoryFacts {budget_bytes:Some(2<<30),..Default::default()}).unwrap();
+        crate::test_support::submit_settled(&mut r,frame);crate::test_support::complete(&r);
+        let rows=rows.iter().map(|&y|(0..256).map(|x|indexed_key([x,y],0)).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let mut store=r.scene.as_ref().unwrap().scale_pages.lock().unwrap();
+        for (epoch,keys) in rows.iter().enumerate() {
+            if epoch!=0 {store.advance_epoch();}
+            for key in keys {drop(store.claim(&r,key.clone(),u64::MAX,WindowId::default(),Class::Visible).unwrap());drop(store.allocated(key,Class::Visible).unwrap());}
+        }
+        drop(store);
+        let budget=r.factory.memory_budget().clone();
+        let other=budget.register_owner(layer_core::MemoryOwnerKind::Other,layer_core::MemoryClass::Pinned,Some(budget.snapshot().devices[0].device));
+        let held=budget.snapshot().devices[0].limit_bytes;
+        other.report(layer_core::MemoryReport {gpu_bytes:held,pinned_gpu_bytes:held,..Default::default()});
+        budget.flush_reports();
+        (document,r,rows,other)
+    }
+    fn retained(r:&WgpuRasterizer,keys:&[Key])->usize {
+        let store=r.scene.as_ref().unwrap().scale_pages.lock().unwrap();keys.iter().filter(|key|store.pages.contains_key(*key)).count()
+    }
+    #[test]
+    fn a_lowered_display_grant_releases_pages_only_the_previous_frame_demanded() {
+        let (document,mut r,rows,_pinned)=demanded_pages(&[200,201]);
+        let frame=full_view(&document);
+        let before=format!("used {} grant {} retiring {} store {}",r.scene_tiers.display.used(),r.memory.retention_grant(),r.scene_tiers.retiring.used(),r.scene.as_ref().unwrap().retained_scale_bytes()[0]);
+        r.begin_frame_memory(frame);
+        let after=format!("used {} grant {} pending {} store {:?}",r.scene_tiers.display.used(),r.memory.retention_grant(),r.scene_tiers.display.heap().pending(),r.scene.as_ref().unwrap().retained_scale_bytes());
+        assert_eq!(retained(&r,&rows[1]),rows[1].len(),"the trim keeps every page the current frame demanded: before {before}, after {after}");
+        assert_eq!(retained(&r,&rows[0]),0,"a lowered grant keeps no page only the previous frame demanded: before {before}, after {after}");
     }
     #[cfg(not(target_arch="wasm32"))]
     #[test]

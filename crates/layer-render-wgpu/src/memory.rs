@@ -287,7 +287,7 @@ impl WgpuRasterizer {
     }
     pub(crate) fn apply_memory_grants(&mut self,mut scene:Option<&mut scene::Scene>,cache:Option<&mut scene::scale::Cache>,encoder:&mut submission::CommandEncoder) {
         self.retire_victims(scene.as_deref_mut(),encoder);
-        if !self.memory.apply_limits(self.memory.grants()) && !self.memory.overdrawn() {return;}
+        if !self.memory.apply_limits(self.memory.grants()) && !self.memory.overdrawn() && !self.retention_above_grant() {return;}
         let composition=self.composition_memory(scene.as_deref());
         self.memory.sync_report(Kind::Scene,self.display_memory_report(scene.as_deref(),composition));
         let raster=self.raster_memory_report();self.memory.sync_report(Kind::RasterPool,raster);
@@ -354,7 +354,7 @@ impl WgpuRasterizer {
         let excess=display.used().saturating_sub(grant.saturating_add(self.scene_tiers.retiring.used()));
         display.heap().evict(excess,crate::residency::Class::Fallback);
         let excess=excess.saturating_sub(display.heap().pending());
-        if excess!=0 && let Some(scene)=scene {scene.trim_pages_by(excess,crate::residency::Class::Fallback);}
+        if excess!=0 && let Some(scene)=scene {scene.release_pages_by(excess);}
         self.memory.trimmed.set(Some([grant,display.used()]));
     }
     pub(crate) fn retention_above_grant(&self)->bool {
