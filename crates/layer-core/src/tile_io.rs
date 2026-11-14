@@ -598,8 +598,8 @@ mod tests {
         let reads=waits.iter_mut().map(|wait|match std::future::Future::poll(wait.as_mut(),&mut Context::from_waker(Waker::noop())) {
             Poll::Ready(Ok(bytes))=>bytes,_=>panic!("completed read")}).collect::<Vec<_>>();
         drop(waits);drop(reads);source.evict();
-        let state=cache.0.state.lock().unwrap();
-        assert_eq!((state.pooled,state.physical),(0,0),"no read waits for a recycled buffer");
+        let held={let state=cache.0.state.lock().unwrap();(state.pooled,state.physical)};
+        assert_eq!(held,(0,0),"no read waits for a recycled buffer");
     }
     #[test]
     fn pooled_reads_keep_the_logical_range_and_reuse_only_unleased_allocations() {
@@ -616,15 +616,16 @@ mod tests {
         let Poll::Ready(Ok(bytes))=std::future::Future::poll(wait.as_mut(),&mut Context::from_waker(Waker::noop())) else {panic!("completed pooled read")};drop(wait);
         let allocation=bytes.clone().allocation();let pointer=Arc::as_ptr(&allocation);drop(allocation);
         assert_eq!(bytes.len(),length);assert_eq!(bytes.retained_bytes(),buffer_class(length));assert!(bytes.iter().all(|byte|*byte==71));
-        source.evict();assert_eq!(cache.0.state.lock().unwrap().pooled,0);
+        source.evict();let pooled=cache.0.state.lock().unwrap().pooled;assert_eq!(pooled,0);
         let mut wait=Box::pin(source.wait(length as u64,length).unwrap());
-        drop(bytes);source.evict();assert_eq!(cache.0.state.lock().unwrap().pooled,buffer_class(length) as u64);
+        drop(bytes);source.evict();let pooled=cache.0.state.lock().unwrap().pooled;assert_eq!(pooled,buffer_class(length) as u64);
         cache.drive_inner();
         let Poll::Ready(Ok(bytes))=std::future::Future::poll(wait.as_mut(),&mut Context::from_waker(Waker::noop())) else {panic!("reused pooled read")};
         assert!(std::ptr::addr_eq(Arc::as_ptr(&bytes.clone().allocation()),pointer));
-        assert_eq!(cache.0.state.lock().unwrap().pooled,0);drop(wait);drop(bytes);
+        let pooled=cache.0.state.lock().unwrap().pooled;assert_eq!(pooled,0);drop(wait);drop(bytes);
         source.evict();budget.flush_reports();
-        let state=cache.0.state.lock().unwrap();assert!(state.pooled<=BUFFER_BYTES);assert_eq!(cache.0.owner.reported().ram_bytes,state.physical);
+        let (pooled,physical)={let state=cache.0.state.lock().unwrap();(state.pooled,state.physical)};
+        assert!(pooled<=BUFFER_BYTES);assert_eq!(cache.0.owner.reported().ram_bytes,physical);
     }
     #[test]
     fn filtered_pooled_input_is_recycled_without_truncating_the_transformed_result() {
@@ -638,11 +639,12 @@ mod tests {
                 done.complete_range(ByteRange::new(bytes,0..length).map_err(str::to_string));
             }
         }
-        let (budget,cache,_,_)=setup();let source=cache.source(64,Arc::new(Filtered));
-        let mut wait=Box::pin(source.wait(0,64).unwrap());cache.drive_inner();
+        let (budget,cache,_,_)=setup();let source=cache.source(128,Arc::new(Filtered));
+        let mut wait=Box::pin(source.wait(0,64).unwrap());let _waiting=source.wait(64,64).unwrap();cache.drive_inner();
         let Poll::Ready(Ok(bytes))=std::future::Future::poll(wait.as_mut(),&mut Context::from_waker(Waker::noop())) else {panic!("filtered input completed")};
-        assert_eq!(&*bytes,&[17u8;192]);assert_eq!(bytes.retained_bytes(),192);assert_eq!(cache.0.state.lock().unwrap().pooled,4096);
-        budget.flush_reports();assert_eq!(cache.0.owner.reported().ram_bytes,4096+192);assert_eq!(cache.0.owner.reported().pinned_ram_bytes,192);
+        let pooled=cache.0.state.lock().unwrap().pooled;
+        assert_eq!(&*bytes,&[17u8;192]);assert_eq!(bytes.retained_bytes(),192);assert_eq!(pooled,4096,"a waiting read keeps the filtered input for reuse");
+        budget.flush_reports();let reported=cache.0.owner.reported();assert_eq!(reported.ram_bytes,4096+192);assert_eq!(reported.pinned_ram_bytes,192);
     }
     #[test]
     fn a_full_hot_set_transfers_an_evicted_buffer_to_its_replacement() {

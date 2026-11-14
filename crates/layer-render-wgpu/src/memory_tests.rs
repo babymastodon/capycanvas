@@ -1628,7 +1628,7 @@ fn a_settled_reduced_view_keeps_no_decoded_layer_tiles_after_its_units_commit() 
     let mut frame=packet(doc.scene(),extent);frame.view.width_px=256;frame.view.height_px=256;
     frame.view.document_to_surface=[0.25,0.,0.,0.25,0.,0.];
     submit_settled(&mut r,frame);complete(&r);
-    crate::test_support::submit_ready(&mut r,FramePacket {composite_all:false,..frame}).unwrap();complete(&r);
+    for _ in 0..2 {crate::test_support::submit_ready(&mut r,FramePacket {composite_all:false,..frame}).unwrap();complete(&r);}
     let sources=r.source_tiles.borrow();
     let decoded=sources.gpu_bytes()-sources.non_slot_bytes();
     assert!(sources.misses>=8*16,"every layer tile was decoded once: {}",sources.misses);

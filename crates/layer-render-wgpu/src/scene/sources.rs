@@ -1296,7 +1296,7 @@ impl DecodedTiles {
     }
     pub(crate) fn release_unused(&self) {
         let epoch = self.decoded.heap().epoch();
-        for slot in self.slots.iter().filter(|slot| slot.used.load(Ordering::Relaxed) < epoch && slot.ready() && !slot.leased()) { slot.lease.evict(); }
+        for slot in self.slots.iter().filter(|slot| slot.used.load(Ordering::Relaxed).saturating_add(1) < epoch && slot.ready() && !slot.leased()) { slot.lease.evict(); }
     }
     pub(crate) fn retire_evicted(&mut self) -> u64 {
         if !self.evicted.swap(false, Ordering::AcqRel) { return 0; }
