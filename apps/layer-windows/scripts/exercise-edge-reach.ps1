@@ -227,7 +227,8 @@ function Check-ReachSweep([string]$Theme){
                 Wait-PresentedFrame
                 $after=Gesture
                 if($after.edge){throw 'Canceled edge sweep retained a contact'}
-                if((Reach-Geometry) -cne $geometry){throw 'Canceled edge sweep changed the arranged divider geometry'}
+                $arrangedGeometry=Reach-Geometry
+                if($arrangedGeometry -cne $geometry){throw "Canceled edge sweep changed the arranged divider geometry; before: <$geometry>; after: <$arrangedGeometry>"}
                 if(!$eligible){
                     foreach($group in (Layout).groups){
                         if($active.ContainsKey($group.id) -and $group.active -ne $active[$group.id]){
@@ -241,7 +242,8 @@ function Check-ReachSweep([string]$Theme){
                 $row=[pscustomobject]@{theme=$Theme;scenario=$scenario;device=$Device;divider=$sample.divider;axis=$sample.axis;depth=$sample.depth;x=$sample.x;y=$sample.y;admitted=($null -ne $down.edge);contact=$down.edge.contact;eligible=$eligible;claimed=$claimed;lost=($eligible -and !$claimed);terminal=$after.last_edge;restored=$restored}
                 $rows.Add($row);Append-SweepRow $row
                 if($row.lost -or !$restored -or $after.edge){throw "Edge sweep lost or retained a contact: $($row|ConvertTo-Json -Depth 8 -Compress)"}
-                if((Reach-Geometry) -cne $geometry){throw 'Canceled edge sweep changed the arranged divider geometry'}
+                $arrangedGeometry=Reach-Geometry
+                if($arrangedGeometry -cne $geometry){throw "Canceled edge sweep changed the arranged divider geometry; before: <$geometry>; after: <$arrangedGeometry>"}
             }finally{if([CapyRowPointer]::Active){[CapyRowPointer]::Cancel()}}
         }
         & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Close

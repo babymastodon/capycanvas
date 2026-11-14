@@ -1704,7 +1704,7 @@ public static class CapyEdgeSweepTest {
   . ([scriptblock]::Create($fn.Extent.Text.Replace('[CapyRowPointer]','[CapyEdgeSweepTest]')))
  }
  $sweep=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Check-ReachSweep'},$true)
- $geometryChecks=@($sweep.Body.FindAll({param($n)$n-is[Management.Automation.Language.IfStatementAst]-and$n.Extent.Text.Contains("throw 'Canceled edge sweep changed the arranged divider geometry'")},$true)|Sort-Object {$_.Extent.StartOffset})
+ $geometryChecks=@($sweep.Body.FindAll({param($n)$n-is[Management.Automation.Language.IfStatementAst]-and$n.Extent.Text.Contains('Canceled edge sweep changed the arranged divider geometry')},$true)|Sort-Object {$_.Extent.StartOffset})
  if($geometryChecks.Count-ne2){throw 'Missing actual sweep geometry assertions'}
  $statements=@($geometryChecks[1].Parent.Statements);$last=[array]::IndexOf($statements,$geometryChecks[1])
  $sequence=($statements[0..$last]|ForEach-Object {$_.Extent.Text})-join"`n"
@@ -1769,6 +1769,7 @@ public static class CapyEdgeSweepTest {
   [CapyEdgeSweepTest]::Phase=0;[CapyEdgeSweepTest]::Downs=0;[CapyEdgeSweepTest]::Cancels=0;[CapyEdgeSweepTest]::Escapes=0;[CapyEdgeSweepTest]::Moves=0;[CapyEdgeSweepTest]::Active=$false;[CapyEdgeSweepTest]::Committed=$false;[CapyEdgeSweepTest]::SharedClaimed=$mode-notin'unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas'
   $failure=$null;try{. ([scriptblock]::Create($sequence))}catch{$failure=$_}
   if([CapyEdgeSweepTest]::Committed){throw 'Actual mouse sweep skipped cancellation and committed the delayed shared claim with ordinary Up'}
+  if($mode-eq'wrong-geometry'-and(!$failure-or!$failure.Exception.Message.Contains('before: <restored-divider>; after: <changed-divider>'))){throw 'Sweep geometry failure omitted the compared divider geometry'}
   $expected=switch($mode){{$_-in'wrong-serial','wrong-edge-serial','wrong-position','stale-move-input','old-down','earlier-move','wrong-pointer'}{'Native edge sweep request was not acknowledged'}'stale-terminal'{'Native gesture release was not acknowledged'}'missing-layout'{'Canceled edge sweep did not acknowledge its exact workspace layout'}'missing-presentation'{'The display did not show the latest canvas frame'}'wrong-geometry'{'Canceled edge sweep changed the arranged divider geometry'}{$_-in'unclaimed','settled','settled-error'}{'Edge sweep lost or retained a contact:'}'stale-down'{'Native contact Down was not acknowledged at the requested point'}}
   $early=$expected-in'Native edge sweep request was not acknowledged','Native contact Down was not acknowledged at the requested point'
   $escapes=if($early-or$mode-in'unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas'){0}else{1}
