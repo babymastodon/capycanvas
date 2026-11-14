@@ -24,6 +24,7 @@ function Find-Id([string]$Id){$Id -eq 'document-workflow'}
 function Retention-State([string]$FieldId){
     $state=$script:retained.Clone();$state.serial=$script:serial;$state.focused=$script:focused;$state.focus=$script:focused -eq '1';$state
 }
+function Scroll-Position($Control,[double]$Percent){if($Control -ne $controls['export-preset-name'] -or $Percent -ne 100){throw 'Retention did not preserve its published scroll position'}}
 function Sample-Frames($Area,[scriptblock]$Action){
     if(($Area.Left,$Area.Top,$Area.Width,$Area.Height -join ',') -cne '519,705,90,93'){throw 'Retention field crop changed'}
     $frames=[Collections.Generic.List[Drawing.Bitmap]]::new()
@@ -33,12 +34,21 @@ function Sample-Frames($Area,[scriptblock]$Action){
         try{
             $graphics.Clear([Drawing.Color]::FromArgb(71,71,72))
             foreach($x in @(19,31,43,55)){$graphics.FillRectangle([Drawing.Brushes]::White,$x,58,6,18)}
-            if($script:focused -eq '1'){$graphics.FillRectangle([Drawing.Brushes]::Silver,17,54,2,29)}
+            if($script:focused -eq '1' -and $i -notin @(3,4)){$graphics.FillRectangle([Drawing.Brushes]::Silver,17,54,2,29)}
             if($script:pixelDamage){$graphics.FillRectangle([Drawing.Brushes]::Black,19,58,6,18)}
         }finally{$graphics.Dispose()}
         $frames.Add($image)
     }
     @{frames=$frames;times=@()}
+}
+& {
+    $get=$ast.Find({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Retention-Frames' -and @($node.CommandElements|Where-Object {$_.Value -eq 'get'}).Count},$true)
+    if(!$get){throw 'Missing actual retention Get sampler call'}
+    $preset=[pscustomobject]@{id='preset'}
+    function Retention-Frames([string]$Name,[scriptblock]$Operation,[scriptblock]$Acknowledged,$FocusTarget){
+        if($FocusTarget -ne $preset){throw 'Get selection sampled the active draft caret instead of its invoked selector'}
+    }
+    & ([scriptblock]::Create($get.Extent.Text))
 }
 $checks=0
 function Check-Retention([string]$Name,[bool]$Button,[string]$Destination,[hashtable]$Changed=@{},[switch]$Damage,[string[]]$Expected=@()){
@@ -59,7 +69,9 @@ function Check-Retention([string]$Name,[bool]$Button,[string]$Destination,[hasht
 }
 try{
     foreach($action in @('save','update','reset')){Check-Retention $action $true '2'}
-    Check-Retention 'get' $false '1'
+    Check-Retention 'get' $true '2'
+    $rejected=$null;try{Check-Retention 'active-caret' $false '1'}catch{$rejected=$_.Exception.Message}
+    if($rejected -cne 'Retention pixel baseline includes an active draft caret'){throw 'A focused draft entered caret-free retention sampling'}
     Check-Retention 'lost-text' $true '2' -Damage -Expected 'unchanged draft pixels disappeared or moved'
     foreach($key in @('request','kind','stage','dialog','field','value','scroll')){
         $changed=@{};$changed[$key]=if($key -in @('request','scroll')){999}else{'changed'}

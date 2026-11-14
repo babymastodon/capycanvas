@@ -1410,9 +1410,13 @@ function Retention-State([string]$FieldId) {
     @{request=$workflow.id;serial=$workflow.serial;kind=$workflow.kind;stage=$workflow.stage;preset_index=$workflow.details.presets.index;recipe_format=$workflow.details.recipe.format;dialog=($dialog.GetRuntimeId() -join ':');field=($name.GetRuntimeId() -join ':');value=$value;focus=$name.Current.HasKeyboardFocus;focused=(Retention-Focus);scroll=$scroll}
 }
 function Retention-Frames([string]$Name,[scriptblock]$Operation,[string]$FieldId='export-preset-name',[string]$PixelId='export-preset-name',[scriptblock]$Acknowledged,$FocusTarget){
-    $focus=if($FocusTarget){$FocusTarget}else{Owned $FieldId};$focus.SetFocus()
+    $field=Owned $FieldId;$scroll=(Retention-State $FieldId).scroll
+    $focus=if($FocusTarget){$FocusTarget}else{$field};$focus.SetFocus()
     Wait-Until {$focus.Current.HasKeyboardFocus} 'Export preset draft did not receive focus'
-    $before=Retention-State $FieldId;$allowedFocus=if($FocusTarget){$FocusTarget.GetRuntimeId() -join ':'}else{$null};$bounds=(Owned $PixelId).Current.BoundingRectangle
+    if($null -ne $scroll){Scroll-Position $field $scroll}
+    $before=Retention-State $FieldId
+    if($PixelId -eq 'export-preset-name' -and $before.focus){throw 'Retention pixel baseline includes an active draft caret'}
+    $allowedFocus=if($FocusTarget){$FocusTarget.GetRuntimeId() -join ':'}else{$null};$bounds=(Owned $PixelId).Current.BoundingRectangle
     $area=[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($bounds.Left),[int][Math]::Floor($bounds.Top),[int][Math]::Ceiling([Math]::Min($bounds.Right,$bounds.Left+90)),[int][Math]::Ceiling($bounds.Bottom))
     $folder=Join-Path $run ('retention-'+$Name);[IO.Directory]::CreateDirectory($folder)|Out-Null
     $sample=Sample-Frames $area {param($i)if($i -eq 3){& $Operation}}
@@ -1425,6 +1429,7 @@ function Retention-Frames([string]$Name,[scriptblock]$Operation,[string]$FieldId
             if($i -ge 3 -and $changed -gt 8){$bad+=@($i)}
         }
         $failures=@();if($bad.Count){$failures+='unchanged draft pixels disappeared or moved'}
+        if($PixelId -eq 'export-preset-name' -and $after.focus){$failures+='retained draft gained keyboard focus'}
         foreach($key in @('request','kind','stage','dialog','field','value','scroll')){if($before[$key] -ne $after[$key]){$failures+="retained $key changed"}}
         if($after.focused -ne $before.field -and (!$allowedFocus -or $after.focused -ne $allowedFocus)){$failures+='focus left the retained field and invoked control'}
         $result=@{action=$Name;before=$before;after=$after;allowed_focus=$allowedFocus;area=@($area.Left,$area.Top,$area.Width,$area.Height);action_frame=3;frequency=[Diagnostics.Stopwatch]::Frequency;times=$sample.times;scores=$scores;invalid=$bad;failures=$failures}
@@ -1481,7 +1486,7 @@ function Test-ExportRetention {
     $choice=Combo-Item $preset {$_.Current.Name -eq $builtin}
     Scroll-Position $preset 100
     Retention-Draft
-    $results+=Retention-Frames 'get' {$choice.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()} -Acknowledged {param($view)$view.details.presets.index -eq 0 -and $view.details.recipe.format -eq 'Png'}
+    $results+=Retention-Frames 'get' {$choice.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()} -FocusTarget $preset -Acknowledged {param($view)$view.details.presets.index -eq 0 -and $view.details.recipe.format -eq 'Png'}
     Retention-Draft
     $reset=Named-Control 'Reset'
     $results+=Retention-Frames 'reset' {$reset.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()} -FocusTarget $reset -Acknowledged {param($view)$view.details.presets.index -eq 0 -and $view.details.presets.changed -and $view.details.recipe.format -eq 'Png'}
