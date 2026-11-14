@@ -364,6 +364,8 @@ afterwards.
 
 ## Test
 
+The normal suite's `hdr-dial-commit.ps1` checks that Dial history references acknowledge a committed edit.
+
 | Where | Checks |
 | --- | --- |
 | Linux or Windows | `cargo test --locked -p layer-host -p layer-ui -p layer-workspace -p layer-windows --lib` and `cargo clippy --locked -p layer-windows --all-targets -- -D warnings` |

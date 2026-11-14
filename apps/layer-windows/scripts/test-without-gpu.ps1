@@ -33,6 +33,8 @@ foreach($shell in @((Get-Process -Id $PID).Path,(Join-Path $env:SystemRoot 'Syst
     if($LASTEXITCODE -ne 0){throw 'Atomic snapshot reader regression failed.'}
     & $shell -NoProfile -File (Join-Path $PSScriptRoot '../tests/hdr-output-format.ps1')
     if($LASTEXITCODE -ne 0){throw 'HDR output format regression failed.'}
+    & $shell -NoProfile -File (Join-Path $PSScriptRoot '../tests/hdr-dial-commit.ps1')
+    if($LASTEXITCODE -ne 0){throw 'HDR Dial committed reference regression failed.'}
     & $shell -NoProfile -File (Join-Path $PSScriptRoot '../tests/hdr-delivery.ps1')
     if($LASTEXITCODE -ne 0){throw 'HDR delivery format regression failed.'}
     & $shell -NoProfile -File (Join-Path $PSScriptRoot '../tests/navigator-frames.ps1')

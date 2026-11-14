@@ -897,15 +897,26 @@ try {
    [CapyRowPointer]::Down($device,$x,$y);[CapyRowPointer]::Move($x+25,$y-15)
    Wait-Until {((Model).windows_proof_form.rendition|ConvertTo-Json -Compress) -ne $dialBefore} 'Dial drag did not preview'
    if($device -eq 'mouse'){[CapyRowPointer]::Key([uint32]$review.Id,0x1B);[CapyRowPointer]::Up()}else{[CapyRowPointer]::Cancel()}
-   Wait-Until {((Model).windows_proof_form.rendition|ConvertTo-Json -Compress) -eq $dialBefore} 'Dial cancellation did not restore the recipe'
+   $dialOrigin=@{model=$null};Wait-Until {$dialOrigin.model=Model;($dialOrigin.model.windows_proof_form.rendition|ConvertTo-Json -Compress) -eq $dialBefore} 'Dial cancellation did not restore the recipe'
+   $dialOwner=$dialOrigin.model.windows_tabs.selected;$dialStamp=@($dialOrigin.model.windows_tabs.session_stamps|Where-Object id -eq $dialOwner)
+   if($dialStamp.Count -ne 1 -or $null -eq $dialStamp[0].stamp.checkpoint){throw 'Dial contact has no owned history checkpoint'}
+   $dialArtwork=$dialStamp[0].stamp.artwork;$dialEpoch=$dialStamp[0].stamp.epoch;$dialCheckpoint=$dialStamp[0].stamp.checkpoint
    [CapyRowPointer]::Down($device,$x,$y);[CapyRowPointer]::Move($x+25,$y-15);[CapyRowPointer]::Up()
-   Wait-Until {((Model).windows_proof_form.rendition|ConvertTo-Json -Compress) -ne $dialBefore} 'Dial release did not commit'
   } finally {[CapyRowPointer]::Dispose();[CapyRowPointer]::SetThreadDpiAwarenessContext($dpi)|Out-Null}
-  $settled=@{value=''};Wait-Until {$now=(Model).windows_proof_form.rendition|ConvertTo-Json -Compress;$same=$now -eq $settled.value;$settled.value=$now;Start-Sleep -Milliseconds 150;$same} 'Dial commit did not settle'
+  $settled=@{value=''};Wait-Until {
+   $sample=Model;$stamp=@($sample.windows_tabs.session_stamps|Where-Object id -eq $dialOwner)
+   if($sample.windows_tabs.selected -ne $dialOwner -or $stamp.Count -ne 1 -or $stamp[0].stamp.artwork -ne $dialArtwork -or $stamp[0].stamp.epoch -ne $dialEpoch -or $null -eq $stamp[0].stamp.checkpoint -or $stamp[0].stamp.checkpoint -eq $dialCheckpoint){return $false}
+   $settled.value=$sample.windows_proof_form.rendition|ConvertTo-Json -Compress
+   $settled.value -ne $dialBefore
+  } 'Dial release did not commit'
   $dialAfter=$settled.value
-  Command 'undo' 'Edit';Wait-Until {((Model).windows_proof_form.rendition|ConvertTo-Json -Compress) -eq $dialBefore} 'Dial did not undo in one step'
-  Command 'redo' 'Edit';Wait-Until {((Model).windows_proof_form.rendition|ConvertTo-Json -Compress) -eq $dialAfter} 'Dial redo failed'
-  Command 'undo' 'Edit';Wait-Until {((Model).windows_proof_form.rendition|ConvertTo-Json -Compress) -eq $dialBefore} 'Dial final undo failed'
+  $dialObserved=@{value=$null}
+  Command 'undo' 'Edit'
+  try{Wait-Until {$dialObserved.value=(Model).windows_proof_form.rendition|ConvertTo-Json -Compress;$dialObserved.value -eq $dialBefore} 'Dial did not undo in one step'}catch{if($_.Exception.Message -ne 'Dial did not undo in one step'){throw};throw "Dial did not undo in one step; dialBefore=$dialBefore; dialAfter=$dialAfter; current=$($dialObserved.value)"}
+  Command 'redo' 'Edit'
+  try{Wait-Until {$dialObserved.value=(Model).windows_proof_form.rendition|ConvertTo-Json -Compress;$dialObserved.value -eq $dialAfter} 'Dial redo failed'}catch{if($_.Exception.Message -ne 'Dial redo failed'){throw};throw "Dial redo failed; dialBefore=$dialBefore; dialAfter=$dialAfter; current=$($dialObserved.value)"}
+  Command 'undo' 'Edit'
+  try{Wait-Until {$dialObserved.value=(Model).windows_proof_form.rendition|ConvertTo-Json -Compress;$dialObserved.value -eq $dialBefore} 'Dial final undo failed'}catch{if($_.Exception.Message -ne 'Dial final undo failed'){throw};throw "Dial final undo failed; dialBefore=$dialBefore; dialAfter=$dialAfter; current=$($dialObserved.value)"}
  }
  $dial=Control 'proof-dial';$dial.SetFocus()
  [CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(0x10),0x27)
