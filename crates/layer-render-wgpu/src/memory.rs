@@ -324,6 +324,8 @@ impl WgpuRasterizer {
         if decoded+self.moving_images.retire_evicted(encoder)+scene.map_or(0,|scene|scene.retire_victims(encoder))!=0 {encoder.retain_resources();}
     }
     pub(crate) fn begin_frame_memory(&mut self, packet: FramePacket<'_>) {
+        if self.restore_preparation()==Some(crate::frame_demand::Outstanding::Blocked(crate::frame_demand::Input::Residency))
+            && let Some(scene)=&self.scene {scene.advance_demand_epoch();}
         self.frame_room(packet);
         self.scene_tiers.display.begin_frame();
     }

@@ -991,6 +991,26 @@ mod tests {
         assert_eq!(retained(&r,&rows[1]),rows[1].len(),"the trim keeps every page the current frame demanded: before {before}, after {after}");
         assert_eq!(retained(&r,&rows[0]),0,"a lowered grant keeps no page only the previous frame demanded: before {before}, after {after}");
     }
+    #[test]
+    fn a_frame_waiting_on_a_refused_restore_releases_the_pages_its_last_frame_demanded() {
+        let (document,mut r,rows,_pinned)=demanded_pages(&[200]);
+        let target=document.active_target().unwrap();
+        let dabs=(0..8).map(|n|crate::tests::test_dab([(n%4*PAGE_SIZE+128) as f32,(n/4*PAGE_SIZE+128) as f32],[1.,0.,1.,1.],1.)).collect::<Vec<_>>();
+        let damage=dabs.iter().copied().map(layer_render::Dab::bounds).fold(layer_core::Rect::EMPTY,layer_core::Rect::union);
+        let batch=layer_render::DabBatch {dab_count:dabs.len() as u32,kind:layer_render::DabBatchKind::Preview,
+            ..crate::test_support::dab_batch(target,crate::tests::test_style(crate::BrushExecution::Dry),damage)};
+        let frame=FramePacket {dabs:&dabs,dab_batches:std::slice::from_ref(&batch),..full_view(&document)};
+        let refused=Some(crate::frame_demand::Outstanding::Blocked(crate::frame_demand::Input::Residency));
+        let deadline=std::time::Instant::now()+crate::READBACK_TIMEOUT;
+        while r.restore_preparation()!=refused {
+            assert!(!r.raster_dependencies_ready(frame,None),"the pinned device refuses the preview outputs");
+            assert!(std::time::Instant::now()<deadline,"the preview outputs wait on residency: {:?}",r.outstanding_terms());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(retained(&r,&rows[0]),rows[0].len(),"the refusing frame keeps the pages the last frame demanded");
+        assert!(!r.raster_dependencies_ready(frame,None));
+        assert!(retained(&r,&rows[0])<rows[0].len(),"a frame waiting on a refused restore kept every page its last frame demanded");
+    }
     #[cfg(not(target_arch="wasm32"))]
     #[test]
     fn removed_store_textures_stay_charged_until_the_poll_actor_destroys_them() {
