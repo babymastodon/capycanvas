@@ -219,11 +219,9 @@ fn native_cache_limits_use_renderer_grants_without_a_synthetic_image_reserve() {
     let document=paint_document([256;2],"Cache grants");
     let mut r=crate::memory::memory_tests::legacy_scene_renderer(document.composition().color);
     crate::test_support::submit_published(&mut r,crate::test_support::packet(document.scene(),[256;2]));
-    let native=r.native_edit.as_ref().unwrap();
-    assert!(native.color_cache_bytes<=r.memory_limit(layer_core::MemoryOwnerKind::RasterPool));
-    assert_eq!(native.composition_bytes,r.memory_limit(layer_core::MemoryOwnerKind::Scene));
-    for resident in [0,native.composition_bytes/2,native.composition_bytes,native.composition_bytes.saturating_add(1)] {
-        assert_eq!(native.image_pixel_budget(resident),native.composition_bytes.saturating_sub(resident));
+    let grant=r.memory.display_grant();
+    for resident in [0,grant/2,grant,grant.saturating_add(1)] {
+        assert_eq!(r.image_pixel_budget(resident),grant.saturating_sub(resident));
     }
 }
 
@@ -325,7 +323,6 @@ fn partial_bakes_back_tiles_without_publishing_the_layer() {
         engine.backend_mut().readback_srgb_rgba8().unwrap()
     };
     let original = pixels(&mut engine);
-    engine.backend_mut().native_edit.as_mut().unwrap().color_cache_bytes = 4 << 20;
     let filters = layer_core::SeparationFilters::new(layer_core::bundled_effect_catalog(), 8.).unwrap();
     let plan = engine.document().separation_plan(photo, &filters, ["Frequency Separation", "Low", "High"].map(std::sync::Arc::from)).unwrap();
     let low = plan.operations[0].0;
@@ -1148,7 +1145,7 @@ fn deferred_native_outputs_preserve_versions_during_following_frames() {
             assert!(root.wait_data().unwrap().tiles.values().all(|t| t.try_backing().is_none()));
         }
     }
-    assert_eq!(r.raster_buffers.transfer.load(Ordering::Relaxed), 0);
+    assert_eq!(r.raster_buffers.transfer.used(), 0);
     drop(presentation);
     assert_eq!(backing(&paint(&first).raster), before);
     assert_eq!(backing(mask_raster(&first)), mask_before);
@@ -1683,7 +1680,7 @@ fn refused_native_capture_keeps_painted_revision_pending_until_admission_returns
     assert!(submitted.is_ok() && publication.is_none(),
         "late capture refusal must submit paint and leave its revision pending: submit={submitted:?}, publication={publication:?}");
     assert_eq!(r.metrics().dabs, before + 1);
-    assert!(r.has_pending_work());
+    assert!(r.next_frame()==layer_render::FrameDemand::Work);
     drop(pressure);
     crate::test_support::submit_settled(&mut r, packet(&doc, false));
     assert!(revision.try_data().unwrap().is_ok());

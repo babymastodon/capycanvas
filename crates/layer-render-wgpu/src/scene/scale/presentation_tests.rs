@@ -56,7 +56,7 @@ fn submit(r: &mut WgpuRasterizer, doc: &layer_core::Document, view: ViewState, a
     loop {
         if bounded {working_scene_frame(r,frame);}
         crate::test_support::submit_ready(r,frame).unwrap();
-        if !r.has_pending_work() {break;}
+        if r.next_frame()!=layer_render::FrameDemand::Work {break;}
         assert!(std::time::Instant::now()<deadline,"display did not settle");
         r.wait_idle().unwrap();
         frame.composite_all=false;
@@ -132,10 +132,10 @@ fn rejected_views_and_abandoned_composition_preserve_artwork() {
     let frame = FramePacket { view: v, ..packet(abandoned.scene(), doc.composition().size) };
     working_scene_frame(&mut r,frame);
     super::submit_published(&mut r, frame);
-    assert!(r.has_pending_work());
+    assert!(r.next_frame()==layer_render::FrameDemand::Work);
     let mut scene = r.scene.take().unwrap();
     let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-    scene.refine_display(&mut r, frame, &mut encoder).unwrap();
+    scene.refine_display(&mut r, frame, &mut encoder,&mut Scene::begin_work(false)).unwrap();
     drop(encoder);
     r.scene = Some(scene);
     submit(&mut r, &abandoned, v, false, true);
@@ -155,9 +155,8 @@ fn filter_images_share_the_display_composition_budget() {
     let effect=effect_occurrence(&mut document,crate::tests::image_windows::program(false,false),"window fixture");set_root_entries(&mut document,vec![effect]);let scene=document.scene();
     let image_bytes = scene::Scene::capture_image_bound(scene, PixelRect::full(extent));
     for allowance in [0, 512 << 20, 1536 << 20] {
-        r.native_edit.as_mut().unwrap().composition_bytes = allowance;
-        let native = r.native_edit.as_ref().unwrap();
-        let images = native.image_pixel_budget(0);
+        r.native_edit.as_mut().unwrap().image_pixel_bytes = Some(allowance);
+        let images = r.image_pixel_budget(0);
         assert!(images <= allowance);
         let plan = scene::windows::Plan::new(scene, extent, images, r.device.limits().max_texture_dimension_2d);
         if allowance == 0 { assert!(plan.is_err()); continue; }
@@ -194,7 +193,7 @@ fn visible_detail_matches_dense_composition_through_pan_wrap_rotation_and_resize
         submit(&mut dense, &doc, view, index == 0, true);
         submit(&mut cached, &doc, view, index == 0, true);
 
-        assert!(cached.scale_display.as_ref().unwrap().storage_bytes() <= CACHE_BYTES);
+        assert!(cached.scale_display.as_ref().unwrap().storage_bytes() <= crate::memory::CACHE_BYTES);
         close(
             &present(&dense, &mut a, view),
             &present(&cached, &mut b, view),
@@ -397,7 +396,7 @@ fn committed_contact_strokes_present_their_canonical_native_pixels() {
             }
         }
         let deadline = std::time::Instant::now() + READBACK_TIMEOUT;
-        while engine.backend().has_pending_work() {
+        while engine.backend().next_frame()==layer_render::FrameDemand::Work {
             prepare_engine_frame(&mut engine);
             engine.render_frame().unwrap();
             engine.backend_mut().wait_idle().unwrap();
@@ -435,7 +434,7 @@ fn native_stroke_undo_redo_and_replaced_device_rebuild_visible_tiles_from_exact_
             prepare_engine_frame(engine);
             engine.render_frame().unwrap();
             if !engine.has_pending_input() && !engine.has_pending_document_edits()
-                && (engine.has_active_stroke() || !engine.backend().has_pending_work()) {
+                && (engine.has_active_stroke() || engine.backend().next_frame()!=layer_render::FrameDemand::Work) {
                 break;
             }
             assert!(std::time::Instant::now() < deadline);
@@ -566,8 +565,8 @@ fn pass_through_edits_and_mode_changes_match_full_recomposition() {
                 crate::test_support::submit_ready(&mut r, FramePacket { view: v, composite_all: all, ..packet(doc.scene(), doc.composition().size) }).unwrap();
                 submit(r, &doc, v, false, false);
             }
-            assert!(!incremental.has_pending_work());
-            assert!(!reference.has_pending_work());
+            assert!(incremental.next_frame()!=layer_render::FrameDemand::Work);
+            assert!(reference.next_frame()!=layer_render::FrameDemand::Work);
             let actual = present(&incremental, &mut a, v);
             let exact = present(&reference, &mut b, v);
             if moving {
@@ -579,7 +578,7 @@ fn pass_through_edits_and_mode_changes_match_full_recomposition() {
             r.set_transform_preview(None).unwrap();
             submit(r, &doc, v, false, false);
         }
-        assert!(!incremental.has_pending_work());
+        assert!(incremental.next_frame()!=layer_render::FrameDemand::Work);
         close(&present(&incremental, &mut a, v), &present(&reference, &mut b, v));
     }
 }
@@ -843,7 +842,7 @@ fn precision_change_preserves_a_settled_61mp_picture_until_new_pages_commit() {
     let camera=fit_view(extent,viewport,zoom,0.);
     let mut r=bounded_renderer(doc.composition().color).unwrap();
     submit(&mut r,&doc,camera,true,true);
-    assert!(!r.has_pending_work());
+    assert!(r.next_frame()!=layer_render::FrameDemand::Work);
     let cache=r.scale_display.as_ref().unwrap();
     assert_eq!(cache.precision,DisplayPrecision::Half);
     let before=cache.presentable_pages();
@@ -870,7 +869,7 @@ fn precision_change_preserves_a_settled_61mp_picture_until_new_pages_commit() {
     let key=next.page_key(next.graph.root.clone().unwrap(),next.plan.bounds);
     assert!(key.expression!=old_key.expression);
     let area=key.plan().bounds.intersect(next.plan.bounds);
-    assert!(store.lock().unwrap().get(&key,area,pages::Accuracy::Exact,0).is_none(),"prior-key pages cannot satisfy an exact read after the effect changes");
+    assert!(store.lock().unwrap().get(&key,area,pages::Accuracy::Exact,0,crate::residency::Class::Visible).is_none(),"prior-key pages cannot satisfy an exact read after the effect changes");
     drop(next);
 
     let deadline=std::time::Instant::now()+READBACK_TIMEOUT;
@@ -884,7 +883,7 @@ fn precision_change_preserves_a_settled_61mp_picture_until_new_pages_commit() {
             page.key.expression==key.expression && page.key.format==key.format && !page.current.is_empty());
         assert!(cache.presentable_pages()>=before,"prior-key coverage must remain until all replacement pages commit");
         if !committed && !new_pages {
-            assert!(cache.pages.lock().unwrap().get(&key,area,pages::Accuracy::Exact,0).is_none());
+            assert!(cache.pages.lock().unwrap().get(&key,area,pages::Accuracy::Exact,0,crate::residency::Class::Visible).is_none());
         }
         committed|=new_pages;
         presenter.present(&r,&target,camera,[0.;4]).unwrap();
@@ -897,12 +896,12 @@ fn precision_change_preserves_a_settled_61mp_picture_until_new_pages_commit() {
         let (low,high)=interior.as_chunks::<4>().0.iter().map(|pixel|pixel[0]).fold((255,0),|(low,high),value|(low.min(value),high.max(value)));
         assert!(high-low>16,"the presented picture cannot become a blank surround or paper frame");
         r.wait_idle().unwrap();
-        if !r.has_pending_work() {break;}
+        if r.next_frame()!=layer_render::FrameDemand::Work {break;}
         assert!(std::time::Instant::now()<deadline,"new-key effect pages must settle");
     }
     assert!(committed);
     assert_eq!(r.scale_display.as_ref().unwrap().precision,DisplayPrecision::Full);
-    assert!(store.lock().unwrap().get(&key,area,pages::Accuracy::Exact,0).is_some());
+    assert!(store.lock().unwrap().get(&key,area,pages::Accuracy::Exact,0,crate::residency::Class::Visible).is_some());
 }
 
 #[test]
@@ -988,10 +987,10 @@ fn a_24mp_fit_reshow_finishes_within_two_frames_once_its_real_inputs_are_residen
     let hide=FramePacket {scene:hidden.scene(),composite_all:false,time_seconds:0.1,..frame};
     crate::test_support::submit_settled(&mut r,hide);crate::test_support::complete(&r);
     drop(r.scale_display.take());r.navigator=Default::default();
-    r.scene.as_ref().unwrap().scale_pages.lock().unwrap().trim(0);
+    r.scene.as_ref().unwrap().scale_pages.lock().unwrap().trim(0,crate::residency::Class::Visible);
     assert!(r.scene.as_ref().unwrap().scale_pages.lock().unwrap().retained_pages().is_empty(),"source and composite Store pages must really be evicted");
-    *r.source_tiles.get_mut()=crate::scene::sources::DecodedTiles::new(r.device.working_space());
-    r.memory.invalidate_limits();r.publish_memory(true);r.refresh_memory_limits();
+    *r.source_tiles.get_mut()=crate::scene::sources::DecodedTiles::within(&r.scene_tiers.display,r.device.working_space());
+    r.memory.invalidate_limits();r.publish_memory();r.refresh_memory_limits();
     let coordinates=page_coordinates(area).collect::<Vec<_>>();assert_eq!(coordinates.len(),384);
     assert!(coordinates.iter().all(|coordinate|r.source_tiles.borrow().prepared_view(&image,*coordinate).is_none()));
     let show=FramePacket {composite_all:false,time_seconds:0.2,..frame};
@@ -1000,12 +999,11 @@ fn a_24mp_fit_reshow_finishes_within_two_frames_once_its_real_inputs_are_residen
         "the first cold show must leave real work owed before the residency condition is met");
     crate::memory::memory_tests::declare_source_budget(&mut r,show,coordinates.len()+16,16<<20,44<<20);
     let expected=r.scene.as_ref().unwrap().scale_pages.lock().unwrap().expected().unwrap().clone();
-    let mut wanted=crate::scene::sources::Inputs::default();wanted.region(&r,show,&expected,None,id,area).unwrap();
+    let wanted=crate::scene::sources::declare_colors(&r,show.scene,expected,None,id,area).unwrap();
     let ((),resident)=wanted.accept(&mut r,&mut (),|_,r,inputs| {
         let bytes=inputs.additional_bytes(&r.source_tiles.borrow());
-        r.memory.admit_working(layer_core::MemoryOwnerKind::Scene,r.current_display_memory_report(),bytes).map(|token|(token,bytes))
-    },|_,_|Ok(()),|_,r,token|r.memory.commit_reservation(layer_core::MemoryOwnerKind::Scene,token,r.current_display_memory_report())
-        .map_err(|error|GpuRasterError::Color(error.into()))).unwrap().expect("Core must admit the ample native-input fixture without overriding a grant");
+        r.admit_display(None,crate::residency::Class::Visible,bytes).ok().map(|reservation|(reservation,bytes))
+    },|_,_|Ok(()),|_,_,_|Ok(())).unwrap().expect("Core must admit the ample native-input fixture without overriding a grant");
     assert_eq!(resident.len(),coordinates.len());
     let deadline=std::time::Instant::now()+READBACK_TIMEOUT;
     loop {
@@ -1013,24 +1011,24 @@ fn a_24mp_fit_reshow_finishes_within_two_frames_once_its_real_inputs_are_residen
         r.drain_image_decodes(&mut encoder).unwrap();
         for &coordinate in &coordinates {
             let read=crate::scene::sources::accepted_image(&resident,&image,coordinate).unwrap();
-            match read.encode(&mut r,&mut encoder) {Ok(_)=>{},Err(error) if error.is_preparation_pending()=>{},Err(error)=>panic!("{error}")}
+            match read.encode(&mut r,&mut encoder,crate::residency::Class::Visible) {Ok(_)=>{},Err(error) if error.is_preparation_pending()=>{},Err(error)=>panic!("{error}")}
         }
         r.uploads.finish(&encoder);encoder.submit(&r.queue);crate::test_support::complete(&r);
         if resident.ready_for(&wanted) && coordinates.iter().all(|coordinate|r.source_tiles.borrow().prepared_view(&image,*coordinate).is_some()) {break;}
         assert!(std::time::Instant::now()<deadline,"all actual native GPU inputs must become ready before counting composition frames");
         std::thread::yield_now();
     }
-    let source_grant=r.source_tiles.borrow().admitted_bytes();let source_bytes=r.source_tiles.borrow().gpu_bytes();
+    let source_bytes=r.source_tiles.borrow().gpu_bytes();
     let mut completed=None;let mut coverage=Vec::new();
     for index in 1..=2 {
         assert!(coordinates.iter().all(|coordinate|r.source_tiles.borrow().prepared_view(&image,*coordinate).is_some()),"resident inputs cannot be assumed from elapsed time");
         let next=FramePacket {time_seconds:0.2+index as f32*0.1,..show};
         assert!(r.can_submit());assert!(r.raster_dependencies_ready(next,None));r.submit(next).unwrap();crate::test_support::complete(&r);
         let cache=r.scale_display.as_ref().unwrap();let current=cache.coverage_snapshot();
-        coverage.push((index,current.matching.len(),pages::coordinates(cache.plan.bounds,cache.plan.level).count(),r.scene.as_ref().unwrap().frame_work));
+        coverage.push((index,current.matching.len(),pages::coordinates(cache.plan.bounds,cache.plan.level).count()));
         if current.ready(area,pages::Accuracy::Display) && completed.is_none() {completed=Some(index);}
     }
     crate::test_support::submit_settled(&mut r,FramePacket {time_seconds:0.5,..show});
     close(&shown,&present(&r,&mut presenter,v));
-    assert!(completed.is_some(),"24MP Fit re-show must finish within two still frames after all384 needed GPU inputs are actually resident: complete={completed:?}, coverage={coverage:?}, source_grant={source_grant:?}, source_physical={source_bytes}");
+    assert!(completed.is_some(),"24MP Fit re-show must finish within two still frames after all384 needed GPU inputs are actually resident: complete={completed:?}, coverage={coverage:?}, source_physical={source_bytes}");
 }

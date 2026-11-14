@@ -192,7 +192,8 @@ fn ordered_cold_fusion_retains_all_jobs_and_source_ranges_until_prepared() {
         plan: display_mips::Plan::window(EXTENT, 0, region)};
     let mut encoder = submission::CommandEncoder::new(&r.device, &Default::default());
     scene.prepare_region(&mut r, frame, (region, region.into()), region, false, &mut encoder).unwrap();
-    let image = scene.group(&r, frame, None, [0, 0]).unwrap();
+    let declaration=scene.capture_declaration(&r,frame).unwrap();let mut accepted=scene.accept_capture(&mut r,frame,Some(Output::Artwork(None)),&declaration,|scene,r,accepted|scene.group(r,frame,None,[0,0],accepted).map(drop)).unwrap();
+    let image = scene.group(&r, frame, None, [0, 0],&mut accepted).unwrap();
     let image = scene.converted(&r, image, Convert::linear(frame)).unwrap();
     scene.copy_window_tile(image, &destination, [0, 0]);
     assert!(scene.jobs.iter().any(|job| matches!(job, Job::Effect {prepared, ..} if !prepared.pipeline.ready())));
@@ -258,7 +259,7 @@ fn native_bake_defers_cold_effects_to_its_parent_compiler_and_preserves_history(
         let deadline=Instant::now()+Duration::from_secs(30);
         loop {
             engine.render_frame_at(0).unwrap();engine.backend_mut().wait_idle().unwrap();
-            if !engine.has_pending_document_edits() && !engine.raster_backing_pending() && !engine.backend().has_pending_work() {break;}
+            if !engine.has_pending_document_edits() && !engine.raster_backing_pending() && engine.backend().next_frame()!=layer_render::FrameDemand::Work {break;}
             assert!(Instant::now()<deadline,"native bake did not settle after compiler release");
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -334,7 +335,7 @@ fn native_bake_defers_cold_mask_restoration_to_its_parent_compiler() {
         let deadline=Instant::now()+Duration::from_secs(30);
         loop {
             engine.render_frame_at(0).unwrap();engine.backend_mut().wait_idle().unwrap();
-            if !engine.has_pending_document_edits() && !engine.raster_backing_pending() && !engine.backend().has_pending_work() {break;}
+            if !engine.has_pending_document_edits() && !engine.raster_backing_pending() && engine.backend().next_frame()!=layer_render::FrameDemand::Work {break;}
             assert!(Instant::now()<deadline,"masked bake did not settle");std::thread::sleep(Duration::from_millis(1));
         }
     };

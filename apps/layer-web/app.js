@@ -385,7 +385,16 @@ function applyChange(change) {
   if (change.regions) { refreshColorEditors(); refreshTextureDialogs(); }
   if (change.canvas_wake) wake();
   if (change.regions && !workspaceGesture?.started) wake();
+  scheduleFrameTimer();
 }
+let frameTimer = null;
+function scheduleFrameTimer() {
+  clearTimeout(frameTimer);
+  frameTimer = null;
+  const delay = app.next_frame_ms();
+  if (delay > 0) frameTimer = setTimeout(() => { frameTimer = null; wake(); }, Math.ceil(delay));
+}
+document.addEventListener('visibilitychange', () => { app?.set_window_hidden(document.hidden); if (!document.hidden) wake(); });
 let canvasCursorActive = false;
 function cursorInput(e) {
   if (!gpuReady) return;

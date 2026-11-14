@@ -357,6 +357,7 @@ impl SourceThumbnails {
             [32, 32],
             r.device.working_format(),
             "photo layer thumbnail",
+            &r.raster_tiers.paint,
         );
         {
             let mut pass = encoder.color_pass(

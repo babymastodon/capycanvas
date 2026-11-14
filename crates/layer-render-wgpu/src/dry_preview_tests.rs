@@ -423,11 +423,14 @@ fn dry_preview_ownership_uses_the_original_end_across_compacted_pages() {
             },
         )
         .unwrap();
-        let pages = r
-            .preview_pages
-            .iter()
-            .map(|page| {
-                let expected = r.preview_expected(doc.working.target.unwrap(), layer_core::raster::RasterPlane::Color, page.coordinate, scene::PreviewStage::Final).unwrap();
+        let target=doc.working.target.unwrap();
+        let pages = r.restore_preflight.as_ref().unwrap().outputs().iter()
+            .filter_map(|(owner,output)|match output {
+                crate::raster::staging::Output::PreviewColor(coordinate) if *owner==target=>Some(*coordinate),_=>None,
+            })
+            .map(|coordinate| {
+                let page=r.preview_pages.iter().find(|page|page.coordinate==coordinate).unwrap();
+                let expected = r.preview_expected(target, layer_core::raster::RasterPlane::Color, coordinate, scene::PreviewStage::Final).unwrap();
                 let read = page.active().read(expected, None).unwrap();
                 assert_eq!(
                     read.value().texture.format(),
@@ -436,6 +439,7 @@ fn dry_preview_ownership_uses_the_original_end_across_compacted_pages() {
                 (page.coordinate, page_bytes(&r, &read.value().texture))
             })
             .collect::<std::collections::BTreeMap<_, _>>();
+        assert!(!pages.is_empty());
         pages
     };
     let frozen = render(&[real, far, landing, end]);

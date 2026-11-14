@@ -10,7 +10,7 @@ pub(super) fn scratch(device:&wgpu::Device)->wgpu::Buffer {
 
 struct Storage {
     buffer:wgpu::Buffer,
-    _charge:crate::raster::pool::Charge,
+    _charge:crate::residency::Charge,
 }
 
 #[derive(Clone)]
@@ -19,13 +19,13 @@ impl CanonicalComparisons {
     pub fn bytes(count:usize)->Result<u64,GpuRasterError> {
         (count as u64).checked_mul(STRIDE).filter(|_|count!=0).ok_or(GpuRasterError::InvalidExtent)
     }
-    pub fn reserved(r:&mut WgpuRasterizer,count:usize,allocation:&layer_core::MemoryReservation)->Result<Self,GpuRasterError> {
+    pub fn reserved(r:&mut WgpuRasterizer,count:usize,allocation:&mut crate::residency::Reservation)->Result<Self,GpuRasterError> {
         let bytes=Self::bytes(count)?;
         if bytes>r.device.limits().max_buffer_size {return Err(GpuRasterError::SourceWorkingSetExceeded);}
         let buffer=r.device.create_buffer(&wgpu::BufferDescriptor {label:Some("native capture canonical comparisons"),
             size:bytes,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
         let storage=Self {storage:Arc::new(Storage {buffer,_charge:r.raster_buffers.charge(bytes)}),offset:0,len:count};
-        r.materialize_raster_working(allocation,bytes)?;
+        drop(allocation.split(bytes).ok_or(GpuRasterError::Invariant("canonical comparisons exceed their working reservation"))?);
         Ok(storage)
     }
     pub fn len(&self)->usize {self.len}

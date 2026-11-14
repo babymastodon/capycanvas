@@ -108,7 +108,7 @@ fn ready_restore_requires_consumed_preparation_progress_between_iterations() {
     let pixels = crate::object_image_mips::prepare_raster_tile(&blob, color.space, &r.device.source_samples);
     r.source_results.push_back((color.space, crate::object_image_mips::PreparedImageWork::Raster(
         crate::object_image_mips::PreparedRasterTile {
-            blob, space: color.space, destination: color.space, scalar: false, pixels,
+            class: crate::residency::Class::Authored, blob, space: color.space, destination: color.space, scalar: false, pixels,
         },
     )));
     assert!(matches!(r.restore_raster(source, &first, &second), Err(GpuRasterError::NotReady)));
@@ -253,7 +253,7 @@ fn native_mask_restoration_keeps_existing_scalar_path() {
 fn a_native_restore_inside_a_frame_leaves_the_frame_uploads_submittable() {
     let color = DocumentColor { space: RgbSpace::Srgb, depth: SampleDepth::U16 };
     let mut r = WgpuRasterizer::new_native_headless(color).unwrap();
-    r.source_tiles.get_mut().admit_limits(64 << 20, 16 << 20, 44 << 20);
+    r.source_tiles.get_mut().admit_limits(16 << 20);
     let document = restore_document(color);
     r.ensure_document_metadata([9504, 6336], document.scene()).unwrap();
     let working = create_color_target(&r.device, [PAGE_SIZE; 2], "restore candidate").0;
@@ -273,7 +273,7 @@ fn finish(engine:&mut layer_engine::CanvasEngine<WgpuRasterizer>) {
     let deadline=std::time::Instant::now()+std::time::Duration::from_secs(30);
     loop {
         engine.render_frame_at(0).unwrap();engine.backend_mut().wait_idle().unwrap();
-        if !engine.has_pending_document_edits() && !engine.raster_backing_pending() && !engine.backend().has_pending_work() {return;}
+        if !engine.has_pending_document_edits() && !engine.raster_backing_pending() && engine.backend().next_frame()!=layer_render::FrameDemand::Work {return;}
         assert!(std::time::Instant::now()<deadline,"prepared frame did not settle");
         std::thread::sleep(std::time::Duration::from_millis(1));
     }

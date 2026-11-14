@@ -39,7 +39,7 @@ impl ImportFailure {
 }
 impl From<super::session::OpenFailure> for ImportFailure {
     fn from(error:super::session::OpenFailure)->Self {match error {
-        super::session::OpenFailure::Invalid(error)=>Self::Invalid(error),super::session::OpenFailure::Unsupported(error)=>Self::Unsupported(error),super::session::OpenFailure::MemoryBudgetExceeded=>Self::MemoryBudgetExceeded,
+        super::session::OpenFailure::Invalid(error)=>Self::Invalid(error),super::session::OpenFailure::Unsupported(error)=>Self::Unsupported(error),super::session::OpenFailure::MemoryBudgetExceeded|super::session::OpenFailure::Uncovered=>Self::MemoryBudgetExceeded,
     }}
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -710,7 +710,12 @@ impl SessionStore {
         let (stored,mut resources,value)=self.indexed_generation(generation,limits,cancelled).await?;
         resources.prepare(&value,&budget).await?;
         let programs=self.programs.get(&generation.id).cloned().unwrap_or_default();
-        let session=super::session::open_stored_parts(&stored.metadata,&resources,limits,cancelled,&programs,budget)?;
+        let session=loop {
+            match super::session::open_stored_parts(&stored.metadata,&resources,limits,cancelled,&programs,budget.clone()) {
+                Err(super::session::OpenFailure::Uncovered)=>if let Some(admission)=&resources.admission {admission.covering().await;},
+                session=>break session?,
+            }
+        };
         resources.verify_pending().await?;Ok(session)
     }
 
@@ -955,7 +960,8 @@ impl StoreResources {
             let location=self.locations.get(&id).ok_or("Missing stored resource location")?;
             total=total.checked_add(location.length).ok_or("Stored resource size overflow")?;pending.push(id);
         }
-        self.admission=Some(budget.admit_import(total).ok_or(super::session::OpenFailure::MemoryBudgetExceeded)?);
+        let admission=budget.admit_import(total).ok_or(super::session::OpenFailure::MemoryBudgetExceeded)?;
+        admission.covering().await;self.admission=Some(admission);
         for id in pending {
             let bytes=self.locations.get(&id).ok_or("Missing stored resource location")?.read_all().await?;
             self.loaded.insert(id,bytes);

@@ -49,7 +49,7 @@ impl FineInputs {
         let bytes=texture_bytes(&texture)+directory.size()+coarse_bytes;
         Ok(Self {texture,view,directory,capacity,columns:shape[0],planes:if kept {2} else {1},
             slots:(0..capacity).map(|_|None).collect(),desired:Default::default(),all_pages:pages.clone(),pages,complete:false,
-            valid:Arc::new(AtomicBool::new(true)),allocation:Arc::new(Allocation {bytes,retired:r.retired_display_bytes.clone(),pending:AtomicBool::new(false)})})
+            valid:Arc::new(AtomicBool::new(true)),allocation:Arc::new(Allocation {bytes,retired:r.retired_display_bytes.clone(),pending:Default::default()})})
     }
     pub fn require(&mut self,coordinates:std::collections::BTreeSet<[u32;2]>)->Result<(),GpuRasterError> {
         if coordinates.len()>self.capacity {return Err(GpuRasterError::SourceWorkingSetExceeded);}
@@ -74,7 +74,7 @@ impl FineInputs {
     }
     pub fn storage_bytes(&self)->u64 {texture_bytes(&self.texture)+self.directory.size()}
     pub fn track(&self,encoder:&crate::submission::CommandEncoder) {
-        let allocation=self.allocation.clone();encoder.on_submitted_work_done(move||drop(allocation));
+        let allocation=self.allocation.clone();encoder.hold(allocation);
     }
     pub fn track_coarse(&self,encoder:&crate::submission::CommandEncoder) {
         crate::submission::CacheWrite::shared(self.valid.clone()).track(encoder);self.track(encoder);

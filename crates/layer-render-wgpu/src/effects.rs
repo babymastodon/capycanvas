@@ -181,6 +181,7 @@ struct Instance {
     pipelines: HashMap<Stage, (Pipeline, bool)>,
     lookups: Vec<preparation::State>,
     offsets: Vec<u32>,
+    _charge: crate::residency::Charge,
 }
 type PipelineRecipe = (Vec<Arc<EffectProgram>>, Stage, Pipeline, bool);
 pub(super) struct Recipes {
@@ -202,6 +203,7 @@ pub(super) struct Effects {
     ids: (Vec<OccurrenceHandle>, u32),
     preparation: preparation::Preparation,
     pub compilations: u64,
+    tier: Arc<crate::residency::Tier>,
 }
 impl std::ops::Deref for Effects {
     type Target = Recipes;
@@ -306,8 +308,10 @@ impl Effects {
             ids: (Vec::new(), 0),
             preparation: self.preparation.fork(),
             compilations: 0,
+            tier: Default::default(),
         }
     }
+    pub(crate) fn charged(mut self, tier: &Arc<crate::residency::Tier>) -> Self { self.tier = tier.clone(); self }
     pub fn merge_validated(&mut self, other: Self) {
         for (programs, stage, pipeline, original_independent) in other.pipelines {
             if !self
@@ -336,6 +340,7 @@ impl Effects {
     pub(crate) fn parameter_buffers(&self)->Vec<&wgpu::Buffer> {
         self.instances.values().map(|instance| -> &wgpu::Buffer { &instance.buffer }).collect()
     }
+    #[cfg(test)]
     pub fn storage_bytes(&self) -> u64 {
         self.instances.values().map(|i| i.buffer.size()).sum()
     }
@@ -343,7 +348,7 @@ impl Effects {
         if let Some(cache) = &r.validated_effects { return cache.fork(); }
         let recipes = r.recipes.effects.get_or_init(|| Arc::new(Recipes::new(&r.device, uniforms))).clone();
         Self { preparation: preparation::Preparation::from_recipes(recipes.preparation.clone()), recipes,
-            pipelines: Vec::new(), instances: HashMap::new(), ids: (Vec::new(), 0), compilations: 0 }
+            pipelines: Vec::new(), instances: HashMap::new(), ids: (Vec::new(), 0), compilations: 0, tier: Default::default() }
     }
 }
 impl Recipes {
@@ -674,6 +679,7 @@ impl Effects {
             _resource: resource.clone(),
             _parameters: buffer.clone(),
         };
+        let buffer_bytes = buffer.size();
         self.instances.insert(
             ids,
             Instance {
@@ -686,6 +692,7 @@ impl Effects {
                 pipelines,
                 lookups,
                 offsets,
+                _charge: self.tier.charge(buffer_bytes),
             },
         );
         self.discard_unreferenced();

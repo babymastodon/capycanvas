@@ -104,7 +104,7 @@ impl SnapshotGpu {
             r.layer_masks.prepare_regions(&r.device, &mut encoder, (view, &[],None), snapshot.extent, false,
                 &mut r.selection_clip, Some(&regions)).map_err(|e| e.to_string())?;
             r.uploads.finish(&encoder);
-            r.last_submission = Some(encoder.submit(&r.queue));
+            r.last_submission = encoder.submit(&r.queue);
             for (&target, data) in snapshot.backing.iter().filter(|(target, _)| target.is_coverage()) {
                 let region = regions[&target];
                 for (key, tile) in data.tiles.iter().filter(|(key, _)| !page_rect(key.coordinate).intersect(region).is_empty()) {
@@ -120,7 +120,7 @@ impl SnapshotGpu {
                         let scene::sources::PreparedSourcePixels::NativeSamples(samples) = pixels else {return Err("Coverage requires native samples".into());};
                         r.submit_restore(|r,_,encoder| {
                             let receipt=encoder.submission();let write=page.initialize(&receipt)?;
-                            crate::native_tiles::scalar::upload_coverage(r,encoder,&write.value().texture,blob.descriptor.depth(),&samples,4)?;
+                            crate::native_tiles::scalar::upload_coverage(r,encoder,&write.value().texture,blob.descriptor.depth(),&samples,4,crate::residency::Class::Authored)?;
                             write.publish(tile.content_version());Ok(())
                         }).map_err(|e|e.to_string())?;
                         page

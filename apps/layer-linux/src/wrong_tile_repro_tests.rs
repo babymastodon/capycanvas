@@ -47,7 +47,7 @@ fn pattern_drawing() -> layer_core::Document {
 
 fn settle(w: &Rc<Workspace>) {
     new_photo::ready(w);
-    until(|| !ui_session(w).wants_continuous_frames(), "presentation settled");
+    until(|| ui_session(w).frame_demand() == layer_render::FrameDemand::Wait, "presentation settled");
 }
 
 fn zoom_and_settle(w: &Rc<Workspace>,zoom:f32) {

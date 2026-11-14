@@ -120,7 +120,7 @@ struct StrokePages {
 /// the cache.
 struct ReferenceKey {
     input:scene::Input,
-    versions:std::collections::HashMap<SourceTarget,raster::contents::Versions>,
+    versions:crate::IdMap<SourceTarget,raster::contents::Versions>,
     members: Arc<BTreeSet<OccurrenceHandle>>,
     extent: [u32; 2],
     blend_space: layer_core::BlendSpace,
@@ -130,8 +130,8 @@ struct ReferenceKey {
 impl ReferenceKey {
     fn new(r:&WgpuRasterizer,frame:&artwork::Frame,members:&Arc<BTreeSet<OccurrenceHandle>>,extent:[u32;2])->Result<Self,GpuRasterError> {
         let reference=reference_frame(frame,members);let packet=reference.packet(extent);
-        let mut versions=std::collections::HashMap::new();
-        for target in packet.scene.targets() {match r.raster_versions(packet.scene,target) {
+        let mut versions=crate::IdMap::default();
+        for target in source_access::placed_targets(packet.scene) {match r.raster_versions(packet.scene,target) {
             Ok(value)=>{versions.insert(target,value);},Err(GpuRasterError::NotReady)=>{},Err(error)=>return Err(error),
         }}
         let input=scene::Input::from_declared(packet,versions.clone())?;
@@ -542,22 +542,10 @@ impl RetouchSources {
             if let Err(error)=self.capture.region_into(r,packet,region,&texture,encoder) {self.cache.release(slot);return Err(error);}
             encoding.publish(&encoder.submission());self.counts.captures+=1;return Ok(Some(slot));
         }
-        if let Some(input)=r.read_layer_color(layer,coordinate,&expected,Some(&encoder.submission())) {
-            let slot=self.cache.claim(r,coordinate);
-            let (texture,_,encoding)=self.cache.slots[slot].page.destination(self.cache.pages[&coordinate].1.clone(),&encoder.submission())?;
-            let source=&input.value().texture;
-            encoder.copy_texture_to_texture(source.as_image_copy(),texture.as_image_copy(),source.size());
-            encoding.publish(&encoder.submission());self.counts.captures+=1;return Ok(Some(slot));
-        }
-        let prepared = raw_prepared_view(r, layer, coordinate);
-        let view = match prepared {
-            Prepared::View(view) => Some(exact_source_view(r, view, encoder)?),
-            Prepared::Absent => None,
-            Prepared::Decode if !wait => return Ok(None),
-            Prepared::Decode => {
-                self.counts.blocking += 1;
-                r.raw_layer_tile(layer, coordinate, encoder)?.map(|tile| tile.view)
-            }
+        let versions=&self.cache.key.as_ref().unwrap().versions[&layer];
+        let view=match accepted_raw_page(r,layer,coordinate,Some(versions),encoder) {
+            Err(error) if error.is_preparation_pending() && !wait=>return Ok(None),
+            result=>result?,
         };
         let slot = self.cache.claim(r, coordinate);
         let (_,destination,encoding)=self.cache.slots[slot].page.destination(self.cache.pages[&coordinate].1.clone(),&encoder.submission())?;
@@ -615,25 +603,10 @@ impl RetouchSources {
         {
             return copy.as_ref().map(|(slot,expected)|self.pool[*slot].read(expected,Some(&encoder.submission())).map(|read|read.value().view.clone())).transpose();
         }
-        if let Some(page) = r
-            .paint_layers
-            .iter()
-            .find(|l| l.id == target)
-            .and_then(|l| l.pages.iter().find(|p| p.coordinate == coordinate))
-        {
-            return Ok(Some(r.read_color_page(target,page,false,Some(&encoder.submission()))?.value().view.clone()));
-        }
-        match raw_prepared_view(r, target, coordinate) {
-            Prepared::View(view) => exact_source_view(r, view, encoder).map(Some),
-            Prepared::Absent => Ok(None),
-            Prepared::Decode if self.live.is_some() => {
-                self.miss();
-                Ok(None)
-            }
-            Prepared::Decode => {
-                self.counts.blocking += 1;
-                Ok(r.raw_layer_tile(target, coordinate, encoder)?.map(|tile| tile.view))
-            }
+        let expected=self.stroke.as_ref().filter(|pages|pages.target==target && stroke.is_none_or(|id|id==pages.id)).map(|pages|&pages.versions);
+        match accepted_raw_page(r,target,coordinate,expected,encoder) {
+            Err(error) if error.is_preparation_pending() && self.live.is_some()=>{self.miss();Ok(None)},
+            result=>result,
         }
     }
 
@@ -650,15 +623,14 @@ impl RetouchSources {
         if let Some(slot) = self.cache.get(coordinate) {
             return Ok(Some(self.cache.slots[slot].page.read(&self.cache.pages[&coordinate].1,Some(&encoder.submission()))?.value().view.clone()));
         }
-        if let Some(layer) = self.cache.frame.as_deref().and_then(lone_layer) {
-            match lone_page(r,&self.cache.key.as_ref().ok_or(GpuRasterError::Invariant("prepared reference page state is inconsistent"))?.versions,layer,coordinate,Some(&encoder.submission())) {
-                Prepared::View(view) => return exact_source_view(r, view, encoder).map(Some),
-                Prepared::Absent => return Ok(None),
-                Prepared::Decode if self.live.is_some() => {
-                    self.miss();
-                    return Ok(None);
-                }
-                Prepared::Decode => {}
+        if let Some(layer)=self.cache.frame.as_deref().and_then(lone_layer) {
+            let versions=&self.cache.key.as_ref().ok_or(GpuRasterError::Invariant("prepared reference page state is inconsistent"))?.versions[&layer];
+            let expected=versions.tile(RasterPlane::Color,coordinate);
+            if r.current_raster_version(layer,RasterPlane::Color,coordinate).is_ok_and(|current|current.matches(&expected)==Some(true)) {
+                return match accepted_raw_page(r,layer,coordinate,Some(versions),encoder) {
+                    Err(error) if error.is_preparation_pending() && self.live.is_some()=>{self.miss();Ok(None)},
+                    result=>result,
+                };
             }
         }
         let slot = self.capture_reference(r, coordinate, self.live.is_none(), encoder)?;
@@ -745,32 +717,6 @@ impl RetouchSources {
             }
         }
         Ok((views, self.counts.misses == misses))
-    }
-
-    /// Whether `pages` would read `mapping` without capturing or decoding a
-    /// page, which could evict one that work encoded earlier still reads.
-    pub fn resident(&self, r: &WgpuRasterizer, mapping: &Mapping) -> bool {
-        if !matches!(mapping.mode, Mode::Target | Mode::References) {
-            return true;
-        }
-        let stroke = self.stroke.as_ref().filter(|s| s.target == mapping.target && mapping.stroke.is_none_or(|id| id == s.id));
-        let target = block_pages(mapping.blocks[0]).into_iter().flatten().all(|coordinate| {
-            stroke.is_some_and(|s| s.pages.contains_key(&coordinate))
-                || r.paint_layers
-                    .iter()
-                    .any(|l| l.id == mapping.target && l.pages.iter().any(|p| p.coordinate == coordinate))
-                || !matches!(raw_prepared_view(r, mapping.target, coordinate), Prepared::Decode)
-        });
-        let lone = self.cache.frame.as_deref().and_then(lone_layer);
-        let references = mapping.references.as_ref().is_none_or(|members| {
-            self.cache.key.as_ref().is_some_and(|key| *key.members == **members && key.extent == r.document_extent)
-                && block_pages(mapping.blocks[1]).into_iter().flatten().all(|coordinate| {
-                lone.is_some_and(|layer| self.live.is_some() || !matches!(lone_page(r,&self.cache.key.as_ref().unwrap().versions,layer,coordinate,None), Prepared::Decode))
-                    || page_rect(coordinate).intersect(PixelRect::full(r.document_extent)).is_empty()
-                    || self.cache.pages.contains_key(&coordinate)
-            })
-        });
-        target && references
     }
 
     /// Draw the source of `gather` into `destination`. Returns whether every
@@ -862,48 +808,12 @@ fn block_pages(block: [i64; 2]) -> [Option<[u32; 2]>; 4] {
     })
 }
 
-enum Prepared {
-    View(wgpu::TextureView),
-    Absent,
-    Decode,
-}
-
-fn exact_source_view(r: &mut WgpuRasterizer, view: wgpu::TextureView,
-    encoder: &mut crate::submission::CommandEncoder) -> Result<wgpu::TextureView, GpuRasterError> {
-    crate::scene::Scene::promote_source(r, encoder, crate::source_access::RawTile {
-        texture: view.texture().clone(), view,
-    }).map(|tile| tile.view)
-}
-
-fn lone_page(r:&WgpuRasterizer,versions:&std::collections::HashMap<SourceTarget,raster::contents::Versions>,layer:SourceTarget,coordinate:[u32;2],consumer:Option<&submission::Submission>)->Prepared {
-    let Some(versions)=versions.get(&layer) else {return Prepared::Decode;};
-    let expected=versions.tile(layer_core::raster::RasterPlane::Color,coordinate);
-    r.read_layer_color(layer,coordinate,&expected,consumer).map_or_else(|| {
-        if r.current_raster_version(layer,layer_core::raster::RasterPlane::Color,coordinate)
-            .is_ok_and(|current|current.matches(&expected)==Some(true)) {raw_prepared_view(r,layer,coordinate)}else {Prepared::Decode}
-    },|read|Prepared::View(read.value().view.clone()))
-}
-
-fn raw_prepared_view(r: &WgpuRasterizer, layer: SourceTarget, coordinate: [u32; 2]) -> Prepared {
-    let sources = r.source_tiles.borrow();
-    match r.native_color_tile(layer, coordinate) {
-        Ok(Some(blob)) => {
-            return sources.prepared_raster_any_view(&blob, r.document_color().space, r.document_color().space)
-                .map_or(Prepared::Decode, |view| Prepared::View(view.clone()));
-        }
-        Err(_) => return Prepared::Decode,
-        Ok(None) => {}
-    }
-    match r.tiled_sources.get(&layer) {
-        Some(source) if source_access::paint_base_contains(source, coordinate) =>
-        {
-            let view = if source.offset.iter().all(|value| value % PAGE_SIZE == 0) {
-                sources.prepared_view(source.image.storage(), std::array::from_fn(|axis| coordinate[axis] - source.offset[axis] / PAGE_SIZE))
-            } else { sources.prepared_base_view(source, coordinate) };
-            view.map_or(Prepared::Decode, |view| Prepared::View(view.clone()))
-        }
-        _ => Prepared::Absent,
-    }
+fn accepted_raw_page(r:&mut WgpuRasterizer,layer:SourceTarget,coordinate:[u32;2],expected:Option<&raster::contents::Versions>,
+    encoder:&mut submission::CommandEncoder,
+)->Result<Option<wgpu::TextureView>,GpuRasterError> {
+    let mut inputs=r.accept_raw_neighborhood(layer,coordinate,[Some([0,0])],None,expected,encoder)?;
+    let [view]=r.raw_layer_neighborhood(&mut inputs,layer,coordinate,[Some([0,0])],None,encoder)?;
+    inputs.track(encoder);Ok(view)
 }
 
 impl WgpuRasterizer {
@@ -1089,10 +999,6 @@ impl WgpuRasterizer {
         }
     }
 
-    pub(super) fn retouch_resident(&self, mapping: &Mapping) -> bool {
-        self.retouch.as_ref().is_some_and(|retouch| retouch.resident(self, mapping))
-    }
-
     /// The pages `mapping` reads, empty where there are none.
     pub(super) fn retouch_pages(
         &mut self,
@@ -1129,7 +1035,7 @@ impl WgpuRasterizer {
         self.retouch = Some(retouch);
         let complete = complete?;
         self.uploads.finish(&encoder);
-        self.last_submission = Some(encoder.submit(&self.queue));
+        self.last_submission = encoder.submit(&self.queue);
         Ok(complete)
     }
 }

@@ -664,7 +664,6 @@ impl Job {
                     };
                     let mut jobs = Vec::new();
                     for (i, slot, mapping) in mappings {
-                        if !sources.resident(r, &mapping) { flush(encoder, &mut jobs); }
                         let views = sources.pages(r, &mapping, encoder)?.0.map(|view| view.unwrap_or_else(|| r.empty_view.clone()));
                         let uniform = wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &uniforms, offset: 0, size: NonZeroU64::new(CANDIDATE_BYTES) });
                         let candidate = bindings::group(&device, "spot healing candidate", &k.candidate, views.iter().map(wgpu::BindingResource::TextureView).chain([uniform]));
@@ -717,7 +716,7 @@ impl Job {
                     };
                     let Some(index) = r.paint_layers[layer].pages.iter().position(|p| p.coordinate == page) else { continue; };
                     if r.paint_layers[layer].pages[index].secondary.is_none() {
-                        r.paint_layers[layer].pages[index].secondary = Some(resident::Resident::unwritten(r.create_page_surface("layer sparse destination companion")));
+                        r.paint_layers[layer].pages[index].secondary = Some(resident::Resident::unwritten(r.create_page_surface(&r.raster_tiers.paint,"layer sparse destination companion")));
                     }
                     let intent=r.raster_intent(self.batch.target,layer_core::raster::RasterPlane::Color,page)?;
                     let input=r.read_color_page(self.batch.target,&r.paint_layers[layer].pages[index],false,Some(&receipt))?.value().view.clone();

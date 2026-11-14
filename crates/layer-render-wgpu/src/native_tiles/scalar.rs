@@ -54,11 +54,13 @@ pub(crate) fn upload_coverage(
     depth: SampleDepth,
     samples: &[u8],
     channels: usize,
+    class: crate::residency::Class,
 ) -> Result<(), GpuRasterError> {
     let step = depth.bytes();
     if depth.is_float() || samples.len() != 256 * 256 * channels * step {
         return Err(GpuRasterError::Color("Invalid native coverage samples".into()));
     }
+    let reservation = r.reserve_upload(class, COVERAGE_TILE_BYTES).ok_or(GpuRasterError::NotReady)?;
     let reciprocal = reciprocal(depth);
     r.uploads.write_texture(encoder, working, 1024, |mapped| {
         let mut row = [0u8; 1024];
@@ -79,8 +81,7 @@ pub(crate) fn upload_coverage(
             mapped.slice(y * 1024..(y + 1) * 1024).copy_from_slice(&row);
         }
     })?;
-    let in_flight = r.source_tiles.borrow().charge_upload(encoder, COVERAGE_TILE_BYTES);
-    r.metrics.source_upload_peak_bytes = r.metrics.source_upload_peak_bytes.max(in_flight);
+    r.charge_upload(encoder, reservation, COVERAGE_TILE_BYTES);
     Ok(())
 }
 

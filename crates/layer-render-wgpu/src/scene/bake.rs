@@ -71,7 +71,7 @@ impl Scene {
                 let read=page.active().read(intent.version(),Some(&receipt)).ok_or(GpuRasterError::NotReady)?;
                 let image=Image {texture:read.value().texture.clone(),view:read.value().view.clone(),
                     plan:display_mips::Plan::window(extent,0,page_rect(page.coordinate).intersect(PixelRect::full(extent)))};
-                let pixels=read.alias(crate::source_access::RawTile {texture:image.texture.clone(),view:image.view.clone()}).ok_or(GpuRasterError::Invariant("snapshot aliases different physical storage"))?;
+                let pixels=read.alias(crate::source_access::RawTile {texture:image.texture.clone().into(),view:image.view.clone()}).ok_or(GpuRasterError::Invariant("snapshot aliases different physical storage"))?;
                 Ok(BakePage {coordinate:page.coordinate,image,pixels,intent})
             }).collect::<Result<_,GpuRasterError>>()?;
         if target.is_coverage() {
@@ -81,15 +81,18 @@ impl Scene {
                 let read=page.read(intent.version(),Some(&receipt))?;
                 let image=Image {texture:read.value().texture.clone(),view:read.value().view.clone(),
                     plan:display_mips::Plan::window(extent,0,page_rect(*coordinate).intersect(PixelRect::full(extent)))};
-                let pixels=read.alias(crate::source_access::RawTile {texture:image.texture.clone(),view:image.view.clone()}).ok_or(GpuRasterError::Invariant("snapshot aliases different physical storage"))?;
+                let pixels=read.alias(crate::source_access::RawTile {texture:image.texture.clone().into(),view:image.view.clone()}).ok_or(GpuRasterError::Invariant("snapshot aliases different physical storage"))?;
                 pages.push(BakePage {coordinate:*coordinate,image,pixels,intent});
             }
         }
         if !r.snapshot_worker {
             self.jobs.clear();self.source_jobs.clear();self.used.iter_mut().for_each(scratch::Usage::reset);
+            let declaration=self.capture_declaration(r,source)?;
             for page in &pages {
                 let coordinate=page.coordinate;let destination=&page.image;
-                let output=self.bake_output(r,source,coordinate,coverage,(target,operation,false),low)?;
+                let mut accepted=self.accept_capture(r,source,Some(Output::Artwork(None)),&declaration,|this,r,accepted|
+                    this.bake_output(r,source,coordinate,coverage,(target,operation,false),low,accepted).map(drop))?;
+                let output=self.bake_output(r,source,coordinate,coverage,(target,operation,false),low,&mut accepted)?;
                 let _output=self.own(output);
                 let output=if target.is_coverage() {
                     let scalar=self.reserve_format(r,true)?;
@@ -97,14 +100,13 @@ impl Scene {
                     self.free(output);scalar
                 }else {output};
                 self.copy_window_tile(output,destination,coordinate);
-                page.publish(self,r,target,encoder)?;
+                page.publish(self,r,target,encoder)?;accepted.track(encoder);
             }
             return self.encode_jobs(r,encoder);
         }
         self.placement_display = false;
         self.stop_before = None;
-        let budget = r.native_edit.as_ref().map_or(r.memory_limit(layer_core::MemoryOwnerKind::Scene),
-            |native| native.image_pixel_budget(r.scale_display.as_ref().map_or(0, |c| c.resident_bytes())));
+        let budget = r.image_pixel_budget(r.scale_display.as_ref().map_or(0, |c| c.resident_bytes()));
         let plan = windows::Plan::new(scene, extent, budget, r.device.limits().max_texture_dimension_2d)?;
         let regions: Vec<_> = plan.map_or_else(|| vec![(damage, Self::capture_window(scene, damage, extent))], |plan| plan.regions(scene, damage).collect());
         let multiple = regions.len() > 1;
@@ -123,7 +125,7 @@ impl Scene {
                 if pages.is_empty() {
                     continue;
                 }
-                self.retire_images(|scene| scene.images = images::ImageStages::default());
+                self.retire_images(|scene| scene.images = images::ImageStages::charged(&scene.tiers.gpu, &scene.tiers.ram));
                 self.image_window = Some(window);
                 self.image_output = Some(output);
                 self.update_images(r, source, output, encoder)?;
@@ -131,7 +133,7 @@ impl Scene {
                 if plan.is_some() {
                     r.metrics.image_window_peak_bytes = r.metrics.image_window_peak_bytes.max(self.images.storage_bytes());
                     if multiple {
-                        Self::submit_chunk(r, encoder, "after bounded bake window")?;
+                        Self::retire_window(r, encoder, "after bounded bake window")?;
                         r.metrics.image_window_submissions += 1;
                     }
                 }
@@ -141,21 +143,21 @@ impl Scene {
         if let Some(live) = live_masks { r.layer_masks.restore_snapshot((target, operation, false), live); }
         if let Some(previous) = previous { r.effect_analyses = previous; }
         self.image_window = None; self.image_output = None;
-        self.retire_images(|scene| scene.images = images::ImageStages::default());
+        self.retire_images(|scene| scene.images = images::ImageStages::charged(&scene.tiers.gpu, &scene.tiers.ram));
         result
     }
 
-    fn bake_output(&mut self,r:&WgpuRasterizer,source:FramePacket<'_>,coordinate:[u32;2],coverage:&layer_core::CoverageSnapshot,command:layer_masks::CommandCoverage,low:Option<SourceTarget>)->Result<usize,GpuRasterError> {
+    fn bake_output(&mut self,r:&WgpuRasterizer,source:FramePacket<'_>,coordinate:[u32;2],coverage:&layer_core::CoverageSnapshot,command:layer_masks::CommandCoverage,low:Option<SourceTarget>,accepted:&mut sources::AcceptedInputs)->Result<usize,GpuRasterError> {
+                #[cfg(test)]
+                let _record=sources::record_reads(accepted);
                 let mut output=if let Some(view)=r.prepared_bake(command.0,command.1,coordinate) {
                     let output=self.alloc(r,wgpu::Color::TRANSPARENT)?;
                     self.draw(r,output,view,None,[0.,0.,PAGE_SIZE as f32,PAGE_SIZE as f32],[1.,1.,0.,0.],false,Convert::None);output
-                }else if r.snapshot_worker {self.group(r,source,None,coordinate)?}else {return Err(GpuRasterError::NotReady);};
+                }else if r.snapshot_worker {self.group(r,source,None,coordinate,accepted)?}else {return Err(GpuRasterError::NotReady);};
                 let mut held=self.own(output);
                 if let Some(low) = low {
-                    let view = r.paint_layers.iter().find(|layer| layer.id == low)
-                        .and_then(|layer| layer.pages.iter().find(|page| page.coordinate == coordinate))
-                        .map(|page|r.read_scene_color(source.scene,low,page,false,self.submission.as_ref()).map(|read|read.value().view.clone())).transpose()?;
-                    let low = match view { Some(view) => view, None => self.source_tile(r, source.scene, low, coordinate)?.unwrap_or_else(|| r.empty_view.clone()) };
+                    let [read,_]=accepted.raw_color(r,low,coordinate)?;
+                    let low=read.map(|read|self.read_input(read)).unwrap_or_else(||r.empty_view.clone());
                     let detail = self.alloc(r, wgpu::Color::TRANSPARENT)?;
                     self.draw(r, detail, self.pool[output].view.clone(), Some(low),
                         [0., 0., PAGE_SIZE as f32, PAGE_SIZE as f32], [17., 1., 0., 0.], false, Convert::None);
@@ -165,7 +167,7 @@ impl Scene {
                 }
                 if coverage.source.default_coverage != 1. || coverage.use_.inverted || coverage.selection.is_some()
                     || !coverage.source.raster.is_empty() || !coverage.source.operations.is_empty() {
-                    let mask = self.command_mask_at(r, coverage, coordinate, command)?;
+                    let mask = self.command_mask_at(r, coverage, coordinate, command, accepted)?;
                     let clipped = self.alloc(r, wgpu::Color::TRANSPARENT)?;
                     self.draw(r, clipped, self.pool[output].view.clone(), Some(mask.view.clone()),
                         [0., 0., PAGE_SIZE as f32, PAGE_SIZE as f32], [3., 2., 0., 0.], false, Convert::None);
@@ -192,9 +194,12 @@ impl Scene {
         for batch in pages.chunks(TILES_PER_BATCH) {
             self.jobs.clear();
             self.used.iter_mut().for_each(scratch::Usage::reset);
+            let declaration=self.capture_declaration(r,source)?;
             for page in batch.iter().copied() {
                 let coordinate=page.coordinate;let destination=&page.image;
-                let output = self.bake_output(r,source,coordinate,coverage,command,low)?;
+                let mut accepted=self.accept_capture(r,source,Some(Output::Artwork(None)),&declaration,|this,r,accepted|
+                    this.bake_output(r,source,coordinate,coverage,command,low,accepted).map(drop))?;
+                let output = self.bake_output(r,source,coordinate,coverage,command,low,&mut accepted)?;
                 let _output = self.own(output);
                 let output = if command.0.is_coverage() {
                     let scalar = self.reserve_format(r, true)?;
@@ -203,7 +208,7 @@ impl Scene {
                     self.free(output); scalar
                 } else { output };
                 self.copy_window_tile(output, destination, coordinate);
-                page.publish(self,r,command.0,encoder)?;
+                page.publish(self,r,command.0,encoder)?;accepted.track(encoder);
             }
             self.encode_jobs(r, encoder)?;
         }

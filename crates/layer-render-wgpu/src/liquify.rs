@@ -12,11 +12,11 @@ fn map_bindings(mode: u32) -> usize {
 }
 
 #[derive(Clone)]
-struct TileStorage {texture:wgpu::Texture,view:wgpu::TextureView}
+struct TileStorage {texture:wgpu::Texture,view:wgpu::TextureView,_charge:Arc<crate::residency::Charge>}
 impl TileStorage {
     fn new(r:&WgpuRasterizer,block:u32)->Self {
         let (texture,view)=create_target(&r.device,[PAGE_SIZE/block;2],MAP_FORMAT,"liquify displacement and footprint");
-        Self {texture,view}
+        Self {_charge:Arc::new(r.raster_tiers.paint.charge(texture_bytes(&texture))),texture,view}
     }
 }
 impl resident::Storage for TileStorage {fn storage_bytes(&self)->u64 {texture_bytes(&self.texture)}}
@@ -76,12 +76,21 @@ struct OriginalAtlas {
     id: u64,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    _charge: crate::residency::Charge,
 }
 
-#[derive(Debug, Default)]
 struct Originals {
+    versions: raster::contents::Versions,
     tiles: BTreeMap<[u32; 2], Arc<OriginalTile>>,
     atlases: Vec<OriginalAtlas>,
+}
+impl Originals {
+    fn new(versions:raster::contents::Versions)->Self {Self {versions,tiles:BTreeMap::new(),atlases:Vec::new()}}
+}
+impl std::fmt::Debug for Originals {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        f.debug_struct("Originals").field("tiles",&self.tiles).field("atlases",&self.atlases).finish()
+    }
 }
 
 #[derive(Debug)]
@@ -357,29 +366,13 @@ impl Liquify {
             unchanged_previews: Default::default(),
             empty: TileStorage::new(r,1),
             scratch_map: std::array::from_fn(|_| TileStorage::new(r,1)),
-            scratch_color: std::array::from_fn(|_| r.create_page_surface("liquify color gather")) }
+            scratch_color: std::array::from_fn(|_| r.create_page_surface(&r.raster_tiers.paint, "liquify color gather")) }
     }
 
     pub fn reset(&mut self) { self.strokes.clear(); self.unchanged_previews.clear(); }
 
     pub fn preview_unchanged(&self, target: SourceTarget, coordinate: [u32; 2]) -> bool {
         self.unchanged_previews.contains(&(target, coordinate))
-    }
-
-    pub fn storage_bytes(&self) -> u64 {
-        let mut ids = std::collections::HashSet::new();
-        let mut bytes = texture_bytes(&self.empty.texture)
-            + self.scratch_map.iter().map(|t| texture_bytes(&t.texture)).sum::<u64>()
-            + self.scratch_color.iter().map(PageSurface::storage_bytes).sum::<u64>();
-        for stroke in self.strokes.values() {
-            layer_core::liquify::Field::resources(&stroke.field, &mut |id, size| {
-                if ids.insert(id) { bytes += size as u64; }
-            });
-            for tile in stroke.colored_tiles.values().chain(stroke.pending.iter().flat_map(|pending|pending.tiles.values().chain(pending.colored.values()).flatten())) {
-                if ids.insert(tile.id) {bytes+=tile.pixels.storage_bytes();}
-            }
-        }
-        bytes
     }
 
     pub(crate) fn captured_input(&self,target:SourceTarget,id:StrokeId,consumer:&submission::Submission)->Option<scene::Input> {
@@ -411,22 +404,29 @@ impl Liquify {
     fn original(r: &mut WgpuRasterizer, stroke: &Stroke, target: SourceTarget, coordinate: [u32; 2],
         encoder:&mut submission::CommandEncoder,pending:&mut Vec<display_mips::CompleteUpdates>,
         writes:&mut Vec<(Arc<OriginalTile>,resident::Encoding)>) -> Result<Arc<OriginalTile>,GpuRasterError> {
-        let data=stroke.original.raster.try_data().ok_or(GpuRasterError::NotReady)?.map_err(GpuRasterError::Effect)?;
         let key=layer_core::raster::TileKey {plane:layer_core::raster::RasterPlane::Color,coordinate};
-        let capture=data.tiles.get(&key).map_or_else(||crate::raster::contents::fallback(
-            &crate::raster::contents::defaults_for(stroke.original.domain,stroke.original.base.as_ref(),None)[0],coordinate),
-            layer_core::raster::RasterTile::content_version);
-        let prior=stroke.field.originals.lock().expect("liquify sources").tiles.get(&coordinate).cloned();
+        let (capture,prior)={let originals=stroke.field.originals.lock().expect("liquify sources");
+            (originals.versions.tile(key.plane,coordinate),originals.tiles.get(&coordinate).cloned())};
         if let Some(tile)=&prior {
             if tile.capture.matches(&capture)!=Some(true) {return Err(GpuRasterError::NotReady);}
             if tile.read(&encoder.submission()).is_ok() || writes.iter().any(|(pending,_)|Arc::ptr_eq(pending,tile)) {return Ok(tile.clone());}
         }
         let source=if let Some(read)=r.read_layer_color(target,coordinate,&capture,Some(&encoder.submission())) {
-            Some(source_access::RawTile {texture:read.value().texture.clone(),view:read.value().view.clone()})
-        }else if let Some(tile)=data.tiles.get(&key) {
-            let blob=tile.try_backing().ok_or(GpuRasterError::NotReady)?.map_err(GpuRasterError::Effect)?;
-            Some(r.backed_raster_tile(&blob,r.document_color().space,encoder)?)
-        }else if let Some(base)=&stroke.original.base {r.paint_base_tile(base,coordinate,encoder)?}else {None};
+            Some(source_access::RawTile {texture:read.value().texture.clone().into(),view:read.value().view.clone()})
+        }else {
+            let data=stroke.original.raster.try_data().ok_or(GpuRasterError::NotReady)?.map_err(GpuRasterError::Effect)?;
+            let declared=data.tiles.get(&key).map_or_else(||crate::raster::contents::fallback(
+                &crate::raster::contents::defaults_for(stroke.original.domain,stroke.original.base.as_ref(),None)[0],coordinate),
+                layer_core::raster::RasterTile::content_version);
+            match declared.matches(&capture) {
+                Some(true)=>{},Some(false)=>return Err(GpuRasterError::Invariant("Liquify backing does not match its captured input")),
+                None=>return Err(GpuRasterError::NotReady),
+            }
+            if let Some(tile)=data.tiles.get(&key) {
+                let blob=tile.try_backing().ok_or(GpuRasterError::NotReady)?.map_err(GpuRasterError::Effect)?;
+                Some(r.backed_raster_tile(&blob,r.document_color().space,encoder)?)
+            }else if let Some(base)=&stroke.original.base {r.paint_base_tile(base,coordinate,encoder)?}else {None}
+        };
         let mut originals=stroke.field.originals.lock().expect("liquify sources");
         let index=prior.as_ref().map_or(originals.tiles.len() as u32,|tile|tile.index);
         let layer=index%ORIGINAL_LAYERS;
@@ -438,12 +438,12 @@ impl Liquify {
                 view_formats:&[],
             });
             let view=texture.create_view(&wgpu::TextureViewDescriptor {dimension:Some(wgpu::TextureViewDimension::D2Array),..Default::default()});
-            originals.atlases.push(OriginalAtlas {id:NEXT_RESOURCE.fetch_add(1,Ordering::Relaxed),texture,view});
+            originals.atlases.push(OriginalAtlas {id:NEXT_RESOURCE.fetch_add(1,Ordering::Relaxed),_charge:r.raster_tiers.paint.charge(texture_bytes(&texture)),texture,view});
         }
         let texture=&originals.atlases[index as usize/ORIGINAL_LAYERS as usize].texture;
         let descriptor=wgpu::TextureViewDescriptor {dimension:Some(wgpu::TextureViewDimension::D2),base_array_layer:layer,array_layer_count:Some(1),..Default::default()};
         let mut surface=prior.as_ref().map_or_else(||resident::Resident::unwritten(source_access::RawTile {
-            texture:texture.clone(),view:texture.create_view(&descriptor),
+            texture:source_access::TileTexture::layer_of(texture.clone(),layer),view:texture.create_view(&descriptor),
         }),|tile|tile.surface.clone());
         let receipt=encoder.submission();
         let write=surface.overwrite(&receipt).ok_or(GpuRasterError::Invariant("accepted destination is not writable"))?;
@@ -511,17 +511,18 @@ impl Liquify {
             *original_scene.artwork.paint.get_mut(handle).ok_or(GpuRasterError::MissingPaintLayer(batch.target))?=(*original).clone();
             let owner=original_scene.view().source_owner(batch.target).ok_or(GpuRasterError::MissingPaintLayer(batch.target))?;
             original_scene.scope=SceneScope::Members(vec![owner].into());
-            let versions=raster::contents::declared_versions(original_scene.view(),batch.target)?;
+            let originals=match previous {Some(field)=>field.originals.clone(),None=>Arc::new(Mutex::new(Originals::new(r.raster_versions(original_scene.view(),batch.target)?)))};
+            let versions=originals.lock().expect("liquify sources").versions.clone();
             let extent=original_scene.view().composition().size;
             let source=scene::Input::from_declared(FramePacket {scene:original_scene.view(),view:layer_render::ViewState {width_px:extent[0],height_px:extent[1],document_to_surface:[1.,0.,0.,1.,0.,0.]},
                 document_extent:extent,time_seconds:original_scene.context.elapsed,blend_space:original_scene.view().composition().blend,
                 dabs:&[],dab_batches:&[],restore_rasters:&[],reset_layers:false,composite_all:false,commit_rasters:true,inspect_mask:None,selection_overlays:None},
-                std::collections::HashMap::from([(batch.target,versions)]))?;
+                crate::IdMap::from_iter([(batch.target,versions)]))?;
             self.strokes.insert(batch.target, Stroke { pending:None,source,id: batch.stroke_id, preview_only: preview, original, dirty: Default::default(),
                 colored_tiles: previous.map_or_default(|f| f.tiles.clone()),
                 preview_tiles: Default::default(),
                 field: Field { content:previous.map_or_else(layer_core::raster::ContentName::fresh,|field|field.content), device: (*r.device).clone(), tiles: previous.map_or_default(|f| f.tiles.clone()),
-                    originals: previous.map_or_default(|f| f.originals.clone()) } });
+                    originals } });
         }
         self.strokes.get_mut(&batch.target).unwrap().stage(&encoder.submission())?;
         let stroke = self.strokes.get(&batch.target).unwrap();
@@ -656,7 +657,7 @@ impl Liquify {
                 if let Some(tile)=originals.tiles.get(&at) {
                     let read=tile.read(&receipt)?;
                     let atlas=&originals.atlases[tile.index as usize/ORIGINAL_LAYERS as usize];
-                    if read.value().texture!=atlas.texture {return Err(GpuRasterError::InvalidExtent);}
+                    if read.value().texture.raw()!=&atlas.texture {return Err(GpuRasterError::InvalidExtent);}
                     chunks.insert(tile.index as usize/(ORIGINAL_BINDINGS*ORIGINAL_LAYERS as usize));
                 }
             }
@@ -747,8 +748,9 @@ mod publication_tests {
         let mut doc=placement::paint_document(extent,"Liquify publication");
         let original=Arc::new(placement::paint(&doc).clone());
         let input=scene::Input::capture(&r,crate::test_support::packet(doc.scene(),extent)).unwrap();
-        placement::paint_mut(&mut doc).raster=layer_core::raster::RasterRevision::pending();
         let target=placement::target(&doc);
+        let versions=r.raster_versions(doc.scene(),target).unwrap();
+        placement::paint_mut(&mut doc).raster=layer_core::raster::RasterRevision::pending();
         let tile=Arc::new(Tile::new(&r,PixelRect::full(extent)));
         let mut pixels=tile.pixels.clone();
         let mut producer=submission::CommandEncoder::new(&r.device,&Default::default());
@@ -760,7 +762,7 @@ mod publication_tests {
         let encoding=write.encoded(tile.capture.clone());
         producer.submit(&r.queue);encoding.publish(&receipt);
         let field=||Field {content:layer_core::raster::ContentName::fresh(),device:(*r.device).clone(),
-            tiles:BTreeMap::from([([0,0],tile.clone())]),originals:Arc::default()};
+            tiles:BTreeMap::from([([0,0],tile.clone())]),originals:Arc::new(Mutex::new(Originals::new(versions.clone())))};
         let source=placement::paint(&doc);
         let previous=Arc::new(layer_core::liquify::State::new(original.clone(),Arc::new(field()),source,false));
         let mut batch=crate::test_support::dab_batch(target,preset_style(layer_core::DefaultBrushPreset::LiquifyPush),layer_core::Rect::from_extent(extent));

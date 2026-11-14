@@ -27,15 +27,22 @@ pub struct ItemId(pub u64);
 pub enum Arrange { Front, Forward, Backward, Back }
 
 #[derive(Default)]
-pub(crate) struct IdHasher(u64);
+pub struct IdHasher(u64);
 impl Hasher for IdHasher {
-    fn finish(&self) -> u64 { self.0 }
-    fn write(&mut self, bytes: &[u8]) { for byte in bytes { self.write_u64(u64::from(*byte) ^ self.0.rotate_left(8)); } }
-    fn write_u64(&mut self, value: u64) { self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15); }
-    fn write_usize(&mut self, value: usize) { self.write_u64(value as u64); }
-    fn write_i32(&mut self, value: i32) { self.write_u64(u64::from(value as u32)); }
+    #[inline] fn finish(&self) -> u64 { self.0 }
+    #[inline] fn write(&mut self, bytes: &[u8]) {
+        let mut words = bytes.chunks_exact(8);
+        for word in &mut words { self.write_u64(u64::from_le_bytes(word.try_into().unwrap())); }
+        let rest = words.remainder();
+        if !rest.is_empty() { let mut word = [0; 8]; word[..rest.len()].copy_from_slice(rest); self.write_u64(u64::from_le_bytes(word)); }
+    }
+    #[inline] fn write_u64(&mut self, value: u64) { self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15); }
+    #[inline] fn write_u128(&mut self, value: u128) { self.write_u64(value as u64); self.write_u64((value >> 64) as u64); }
+    #[inline] fn write_u32(&mut self, value: u32) { self.write_u64(u64::from(value)); }
+    #[inline] fn write_usize(&mut self, value: usize) { self.write_u64(value as u64); }
+    #[inline] fn write_i32(&mut self, value: i32) { self.write_u64(u64::from(value as u32)); }
 }
-pub(crate) type IdBuild = BuildHasherDefault<IdHasher>;
+pub type IdBuild = BuildHasherDefault<IdHasher>;
 type IdSet = HashSet<ItemId, IdBuild>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

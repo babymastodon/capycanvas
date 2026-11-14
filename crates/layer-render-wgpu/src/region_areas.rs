@@ -30,8 +30,8 @@ impl AreasJob {
         if !encoder.has_work() {return match result {Err(GpuRasterError::NotReady)=>Ok(None),other=>other};}
         self.submission=Some(encoder.submission());
         self.in_flight.fetch_add(1,Ordering::AcqRel);
-        let done=self.in_flight.clone();
-        encoder.on_submitted_work_done(move||{done.fetch_sub(1,Ordering::AcqRel);});
+        let done=crate::InFlightCompletion(self.in_flight.clone());
+        encoder.hold(done);
         encoder.submit(&r.queue);
         if let Some(refiner)=&mut regions.refiner {refiner.timed(&r.queue,regions.chunk_timing.take());}
         match result {Err(GpuRasterError::NotReady)=>Ok(None),other=>other}

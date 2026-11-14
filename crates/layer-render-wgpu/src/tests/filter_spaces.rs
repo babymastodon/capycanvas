@@ -41,7 +41,7 @@ fn composite(space: BlendSpace, effects: &[EffectInstance], source: Arc<layer_co
     let view = crate::test_support::view(EXTENT);
     let packet = FramePacket { view, reset_layers: true, blend_space: space, ..packet(document.scene(), EXTENT) };
     r.submit(packet).unwrap();
-    while layer_render::CanvasRenderer::has_pending_work(&r) {
+    while layer_render::CanvasRenderer::next_frame(&r)==layer_render::FrameDemand::Work {
         r.submit(FramePacket { reset_layers: false, composite_all: false, ..packet }).unwrap();
     }
     crate::test_support::blend_space_pixels(&mut r).into_iter().map(|pixel|pixel.map(f64::from)).collect()

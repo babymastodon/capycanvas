@@ -31,6 +31,7 @@ pub(super) struct RegionRequests {
     positions: Option<paint_transform::mesh::Positions>,
     rx: Option<mpsc::Receiver<Result<(RegionResult,bool), GpuRasterError>>>,
     modify_source: Option<ModifySource>,
+    charge: crate::residency::Charge,
 }
 struct Preparation {request:RegionRequest,enclosed:bool,recipes_ready:bool}
 /// The selection Select › Modify refines, prepared at document resolution,
@@ -84,6 +85,7 @@ impl RegionRequests {
             positions: None,
             rx: None,
             modify_source: None,
+            charge: r.raster_tiers.paint.charge(0),
         }
     }
     /// Drop the request in progress; a readback already in flight is ignored.
@@ -230,8 +232,7 @@ impl RegionRequests {
         let buffer=buffer.get_or_insert_with(||r.device.create_buffer(&wgpu::BufferDescriptor {label:Some("fill seed texel"),size:16,
             usage:wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}));
         if let Some(tile)=tile {
-            encoder.copy_texture_to_buffer(wgpu::TexelCopyTextureInfo {texture:&tile.texture,mip_level:0,
-                origin:wgpu::Origin3d {x:rect.min_x()%PAGE_SIZE,y:rect.min_y()%PAGE_SIZE,z:0},aspect:wgpu::TextureAspect::All},
+            encoder.copy_texture_to_buffer(tile.texture.copy_at([rect.min_x()%PAGE_SIZE,rect.min_y()%PAGE_SIZE]),
                 wgpu::TexelCopyBufferInfo {buffer,layout:wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:None,rows_per_image:None}},
                 wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1});
         }else {encoder.clear_buffer(buffer,0,None);}
@@ -310,14 +311,15 @@ impl RegionRequests {
         self.raw.cancel();self.flood.cancel_lines();self.stop_mask=None;
     }
     pub fn background_pending(&self)->bool {self.preparation.as_ref().is_some_and(|preparation|!preparation.recipes_ready || self.cache.as_ref().is_none_or(|cache|!cache.ready || !cache.submitted()))}
+    fn prewarm_idle(&self,r:&WgpuRasterizer)->bool {
+        self.pending.is_none() && self.waiting.is_none() && self.running.is_none() && self.areas.is_none() && r.compilation.is_idle()
+            && flood::fits(r.document_extent,&r.device.limits())
+    }
     fn prewarm(&mut self,r:&mut WgpuRasterizer,encoder:&mut crate::submission::CommandEncoder)->Result<(),GpuRasterError> {
-        if self.pending.is_some() || self.waiting.is_some() || self.running.is_some() || self.areas.is_some() {return Ok(());}
-        if !r.compilation.is_idle() {return Ok(());}
+        if !self.prewarm_idle(r) {return Ok(());}
         let Some(preparation)=&self.preparation else {return Ok(());};
         let (request,enclosed)=(cache::current(r,&preparation.request),preparation.enclosed);
-        let _=r.device.poll(wgpu::PollType::Poll);
         if self.cache.as_ref().is_some_and(|cache|cache.pending()) || (!self.flood.lines_ready(false)? && !self.flood.lines_discarded()) {return Ok(());}
-        if !flood::fits(r.document_extent,&r.device.limits()) {return Ok(());}
         if let Some(binding)=&request.paper {
             r.prepare_paper_binding(binding,startup::OTHER)?;
             if paper::PaperTile::id_for(binding).is_some_and(|id|r.papers.view(&id).is_none()) {return Ok(());}
@@ -759,6 +761,7 @@ impl RegionRequests {
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
         selection_readback::capture_selection(
+            &r.device,
             capture,extent,byte_coverage,request_id,gaps,tx,
             move |mut result, source_stale, extra| {
                 result.tonal_sample = probe.and_then(|p| tonal::sample(extra, p));
@@ -777,7 +780,7 @@ impl WgpuRasterizer {
             None if preparation.is_none()=>return,
             None=>RegionRequests::new(self),
         };
-        if regions.areas.is_some() {self.regions=Some(regions);return;}
+        if regions.areas.is_some() {self.keep_regions(regions);return;}
         if invalid && regions.pending.is_none() && regions.waiting.is_none() && regions.running.is_none() {
             regions.raw.cancel();regions.flood.cancel_lines();
             if regions.cache.as_ref().is_some_and(|cache|!cache.ready) {regions.cache=None;}
@@ -795,17 +798,19 @@ impl WgpuRasterizer {
                 regions.cache.as_mut().unwrap().ready=false;
             }
         }
-        self.regions=Some(regions);
+        self.keep_regions(regions);
     }
     pub(super) fn prefetch_regions(&mut self,frame:&Arc<artwork::Frame>,encoder:&mut crate::submission::CommandEncoder)->Result<(),GpuRasterError> {
         let Some(mut regions)=self.regions.take() else {return Ok(());};
         let old=self.artwork_frame.replace(frame.clone());
-        let result=regions.prewarm(self,encoder);
-        self.artwork_frame=old;self.regions=Some(regions);result
+        let result=self.drain_image_decodes(encoder).and_then(|()|regions.prewarm(self,encoder));
+        self.artwork_frame=old;self.keep_regions(regions);result
     }
     pub(super) fn region_chunks_submitted(&mut self) {
         if let Some(regions)=&mut self.regions && regions.flood.lines_submitted() && regions.cache.as_ref().is_none_or(|cache|cache.submitted()) && let Some(refiner)=&mut regions.refiner {refiner.timed(&self.queue,regions.chunk_timing.take());}
     }
+    pub fn region_step_runnable(&self) -> bool {self.regions.as_ref().is_some_and(|regions|regions.areas.is_some())}
+    pub(super) fn region_prewarm_runnable(&self) -> bool {self.regions.as_ref().is_some_and(|regions|regions.background_pending() && regions.prewarm_idle(self))}
     pub fn region_pending(&self) -> bool {
         self.regions
             .as_ref()
@@ -817,7 +822,7 @@ impl WgpuRasterizer {
     pub(super) fn set_refine_chunk(&mut self, taps: Option<f64>) {
         let mut regions = self.regions.take().unwrap_or_else(|| RegionRequests::new(self));
         regions.refiner(self).budget = taps;
-        self.regions = Some(regions);
+        self.keep_regions(regions);
     }
     /// The pixel taps a refinement chunk takes on this GPU, once timed.
     #[cfg(test)]
@@ -825,17 +830,22 @@ impl WgpuRasterizer {
         self.regions.as_ref()?.refiner.as_ref().map(|r| (r.chunk(), r.times_chunks()))
     }
     pub(super) fn cancel_region(&mut self) {
-        if let Some(regions) = &mut self.regions {
+        if let Some(mut regions) = self.regions.take() {
             regions.cancel();
+            self.keep_regions(regions);
         }
-        self.refresh_storage_metrics();
+    }
+    fn keep_regions(&mut self, mut regions: RegionRequests) {
+        let bytes = regions.storage_bytes();
+        regions.charge.resize(bytes);
+        self.regions = Some(regions);
     }
     pub(super) fn start_region(&mut self, task: RegionTask) -> Result<bool, GpuRasterError> {
         let mut regions = self
             .regions
             .take()
             .unwrap_or_else(|| RegionRequests::new(self));
-        if regions.pending.is_some() || regions.waiting.is_some() || regions.running.is_some() || regions.areas.is_some() {self.regions=Some(regions);return Ok(false);}
+        if regions.pending.is_some() || regions.waiting.is_some() || regions.running.is_some() || regions.areas.is_some() {self.keep_regions(regions);return Ok(false);}
         regions.sampling=region_sources::Sampling::Transparent;
         regions.cache_request=None;
         if let RegionTask::Fill {request,..}=&task {
@@ -859,20 +869,17 @@ impl WgpuRasterizer {
             RegionTask::FlatAreas(request)=>{regions.areas=Some(areas::AreasJob::new(request));Ok(true)},
         };
         if result.is_err() { regions.cancel(); }
-        self.regions = Some(regions);
-        self.refresh_storage_metrics();
+        self.keep_regions(regions);
         result
     }
     pub(super) fn poll_region(&mut self) -> Option<Result<RegionOutput, GpuRasterError>> {
-        let _=self.device.poll(wgpu::PollType::Poll);
         if self.regions.as_ref()?.areas.is_some() {
             let mut regions=self.regions.take().unwrap();
             let mut job=regions.areas.take().unwrap();
             let result=job.advance(self,&mut regions);
             if matches!(result,Ok(None)) {regions.areas=Some(job);}
             if result.is_err() {regions.cancel();}
-            self.regions=Some(regions);
-            self.refresh_storage_metrics();
+            self.keep_regions(regions);
             return result.transpose();
         }
         if self.regions.as_ref()?.waiting.is_some() {
@@ -880,7 +887,7 @@ impl WgpuRasterizer {
             let request = requests.waiting.take().unwrap();
             let result = requests.start(self, request);
             if result.is_err() { requests.cancel(); }
-            self.regions = Some(requests);
+            self.keep_regions(requests);
             if let Err(error) = result {
                 return Some(Err(error));
             }
@@ -896,19 +903,16 @@ impl WgpuRasterizer {
                 &wgpu::CommandEncoderDescriptor { label: Some("refine selection") },
             );
             let result = requests.advance(self, encoder, running);
-            self.regions = Some(requests);
-            self.refresh_storage_metrics();
+            self.keep_regions(requests);
             if let Err(error) = result {
                 return Some(Err(error));
             }
         }
         let requests = self.regions.as_mut()?;
         if requests.running.is_some() {
-            let _ = self.device.poll(wgpu::PollType::Poll);
             return None;
         }
         requests.pending.as_ref()?;
-        let _ = self.device.poll(wgpu::PollType::Poll);
         let incoming=requests.rx.as_ref()?.try_recv().ok()?;
         let region=requests.pending.take().unwrap();
         requests.readback=None;
@@ -920,14 +924,13 @@ impl WgpuRasterizer {
                 let mut requests=self.regions.take().unwrap();
                 let rebuilt=requests.start(self,request);
                 if rebuilt.is_err(){requests.cancel();}
-                self.regions=Some(requests);
+                self.keep_regions(requests);
                 return rebuilt.err().map(Err);
             },
             Ok((result,false))=>{requests.cache_request=None;Ok(result)},
             Err(error)=>{if let Some(cache)=&mut requests.cache {cache.ready=false;}requests.cache_request=None;Err(error)},
         };
         if let Ok(result)=&result {self.selection_clip.remember_pixels(&result.pixels,region.coverage.clone());}
-        self.refresh_storage_metrics();
         Some(result.map(RegionOutput::Mask))
     }
 }

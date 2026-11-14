@@ -240,6 +240,31 @@ fn abandoning_a_heal_resolves_its_pending_revision() {
 }
 
 #[test]
+fn a_settling_heal_waits_on_its_wakes_instead_of_frames() {
+    let (mut input, mut engine) = healer(photo(|x, y| grey(texture_and_gradient(x, y))), DefaultBrushPreset::HealingBrush, 64., false);
+    let (wake, woken) = std::sync::mpsc::channel();
+    let wake = std::sync::Mutex::new(wake);
+    engine.backend_mut().set_preparation_wake(Arc::new(move || { let _ = wake.lock().unwrap().send(()); }));
+    source_at(&mut engine, 150., 256.);
+    for i in 0..9 {
+        let phase = if i == 0 { PenPhase::Down } else if i == 8 { PenPhase::Up } else { PenPhase::Move };
+        draw(&mut engine, &mut input, pen(i + 1, phase, [580. + i as f32 * 40., 256.], SampleFlags::PRIMARY));
+    }
+    assert!(engine.backend().has_pending_submission());
+    let mut frames = 0;
+    while engine.backend().has_pending_submission() {
+        assert!(engine.frame_demand() == layer_render::FrameDemand::Wait, "a settling heal asked for polling frames after {frames} frames");
+        if engine.backend().next_frame() == layer_render::FrameDemand::Wait {
+            woken.recv_timeout(std::time::Duration::from_secs(10)).expect("the heal's GPU work wakes its owner");
+        }
+        engine.render_frame().unwrap();
+        frames += 1;
+        assert!(frames < 1000, "the heal did not settle");
+    }
+    assert!(engine.document().target_raster(TARGET).unwrap().try_data().is_some_and(|data| data.is_ok()));
+}
+
+#[test]
 fn settling_preserves_sources_while_navigation_and_queued_paint_wait_for_publication() {
     for preset in [DefaultBrushPreset::HealingBrush, DefaultBrushPreset::SpotHealingBrush] {
         let doc = photo(|x, y| grey(texture_and_gradient(x, y)));

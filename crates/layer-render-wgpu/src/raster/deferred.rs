@@ -51,12 +51,12 @@ impl Drop for RasterPresentation {
 pub(super) struct NativeOutput {
     resource: crate::resident::Resident<pool::Resource>,
     pub tile: RasterTile,
-    pub charge:pool::Charge,
+    pub charge:crate::residency::Charge,
     pub comparison:Option<crate::native_tiles::comparison::CanonicalReadback>,
 }
-pub(super) struct Readback {buffer:wgpu::Buffer,charge:pool::Charge}
+pub(super) struct Readback {buffer:wgpu::Buffer,charge:crate::residency::Charge}
 impl NativeOutput {
-    pub fn new(resource: pool::Resource, tile: RasterTile, charge: pool::Charge) -> Self {
+    pub fn new(resource: pool::Resource, tile: RasterTile, charge: crate::residency::Charge) -> Self {
         Self { resource: crate::resident::Resident::unwritten(resource), tile, charge, comparison:None }
     }
     pub fn bytes(&self) -> u64 { self.charge.bytes() }
@@ -78,10 +78,11 @@ impl NativeOutput {
 pub(crate) struct NativeCapture {
     pub(super) outputs: Vec<NativeOutput>,
     pub pool: Arc<BufferPool>,
-    pub device: wgpu::Device,
+    pub device: PipelineDevice,
     pub queue: wgpu::Queue,
     pub(super) readback:Option<Readback>,
-    pub(super) allocation:layer_core::MemoryReservation,
+    pub(super) allocation:crate::residency::Reservation,
+    pub(super) owner:layer_core::MemoryOwner,
 }
 impl NativeCapture {
     pub(super) fn prepare_readback(&mut self,bytes:u64) {
@@ -135,7 +136,7 @@ impl NativeCapture {
             // Recheck after preparation. A frame can race this check, but only
             // this one bounded transfer can then precede it on the GPU queue.
             self.pool.priority.wait()?;
-            self.queue.submit([commands]);
+            self.device.submit(&self.queue,[commands]);
             capture
                 .submitted_device(&self.device)
                 .finish_recycling(drop)?;
@@ -155,13 +156,14 @@ impl Drop for NativeCapture {
         }
         let outputs=std::mem::take(&mut self.outputs);let readback=self.readback.take();
         if outputs.is_empty() && readback.is_none() {return;}
-        let allocation=self.allocation.clone();
+        let allocation=(self.allocation.split(self.allocation.bytes()),self.owner.clone());
         #[cfg(not(target_arch="wasm32"))]
-        self.queue.on_submitted_work_done(move||drop((outputs,readback,allocation)));
+        {let retired=self.device.retirement((outputs,readback,allocation));
+        self.device.on_queue_done(&self.queue,move||retired.complete());}
         #[cfg(target_arch="wasm32")]
         {
             let charges=outputs.into_iter().map(|output|output.charge).chain(readback.map(|readback|readback.charge)).collect::<Vec<_>>();
-            self.queue.on_submitted_work_done(move||drop((charges,allocation)));
+            self.device.on_queue_done(&self.queue,move||drop((charges,allocation)));
         }
     }
 }
@@ -191,7 +193,7 @@ impl NativeCapture {
             self.pool.priority.wait_browser().await;
             let (count, capture, commands) = self.next_transfer("browser native raster readback")?;
             self.pool.priority.wait_browser().await;
-            self.queue.submit([commands]);
+            self.device.submit(&self.queue,[commands]);
             capture.submitted_device(&self.device).finish_browser_recycling(worker,drop).await?;
             self.recycle(count);
         }
@@ -213,6 +215,8 @@ mod tests {
     }
     fn capture_fixture_inputs(r:&mut WgpuRasterizer,expected:&[layer_core::raster::ContentVersion],commands:&mut submission::CommandEncoder)->NativeCapture {
         let descriptor=r.document_color().paint_descriptor();
+        pollster::block_on(r.compilation.prepare_all(r.native_edit.as_ref().unwrap()
+            .required_pipelines(r.document_color().depth,false))).unwrap();
         let receipt=commands.submission();let mut encodings=Vec::new();
         assert_eq!(r.paint_layers[0].pages.len(),expected.len());
         let inputs=r.paint_layers[0].pages.iter_mut().zip(expected).map(|(page,expected)| {
@@ -249,9 +253,9 @@ mod tests {
             r.paint_layers[0].pages.push(page);
         }
         commands.submit(&r.queue);crate::test_support::complete(&r);
-        r.refresh_storage_metrics();r.publish_memory(true);r.factory.memory_budget().flush_reports();r.memory.invalidate_limits();r.refresh_memory_limits();
-        let baseline=r.paint_memory_bytes()+r.raster_buffers.bytes.load(Ordering::Acquire);
-        let initial_grant=r.memory_limit(layer_core::MemoryOwnerKind::RasterPool);
+        r.refresh_storage_metrics();r.publish_memory();r.factory.memory_budget().flush_reports();r.memory.invalidate_limits();r.refresh_memory_limits();
+        let baseline=r.paint_memory_bytes()+r.raster_buffers.retained.used();
+        let initial_grant=r.memory.raster_grant();
         assert!(baseline<=initial_grant);
         assert!(initial_grant<baseline+u64::from(pages)*256*1024,"fixture must consume Raster's current grant");
         let mut commands=submission::CommandEncoder::new(&r.device,&Default::default());
@@ -290,7 +294,7 @@ mod tests {
         r.set_raster_preparation_wake(Arc::new(move|| {
             let registered=slot.upgrade().is_some_and(|slot|slot.callback.lock().unwrap().is_some());
             let published=tiles.iter().all(|tile|matches!(tile.try_backing(),Some(Ok(_))));
-            let _=completed.send((registered,published,pending.load(Ordering::Acquire),staging.load(Ordering::Acquire)));
+            let _=completed.send((registered,published,pending.used(),staging.used()));
         }));
         r.raster.as_ref().unwrap().worker.as_ref().unwrap().submit_batch(capture).unwrap();
         assert_eq!(ready.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),(true,true,0,0));
@@ -321,7 +325,7 @@ mod tests {
         let (completed,ready)=mpsc::channel();
         current.set_raster_preparation_wake(Arc::new(move|| {
             let published=tiles.iter().all(|tile|matches!(tile.try_backing(),Some(Ok(_))));
-            let _=completed.send((published,pending.load(Ordering::Acquire),staging.load(Ordering::Acquire)));
+            let _=completed.send((published,pending.used(),staging.used()));
         }));
         assert!(ready.try_recv().is_err());
         drop(presentation);
@@ -338,10 +342,10 @@ mod tests {
             assert_eq!(output_bytes,u64::from(pages)*256*1024);
             let observe=|phase:&str,r:&WgpuRasterizer,capture:&NativeCapture,readback:u64,failures:&mut Vec<String>| {
                 let readback=readback.max(capture.readback.as_ref().map_or(0,|readback|readback.buffer.size()));
-                let physical=r.paint_memory_bytes()+r.staged_restore_bytes()+r.raster_buffers.bytes.load(Ordering::Acquire)
+                let physical=r.paint_memory_bytes()+r.staged_restore_bytes()+r.raster_buffers.retained.used()
                     +capture.outputs.iter().map(|output|output.bytes()).sum::<u64>()+readback;
                 let pinned=r.pinned_paint_bytes()+capture.storage_bytes()+readback;
-                let (report,_)=r.raster_memory_report();let grant=r.memory_limit(layer_core::MemoryOwnerKind::RasterPool);
+                let report=r.raster_memory_report();let grant=r.memory.raster_grant();
                 if report.gpu_bytes<physical || report.pinned_gpu_bytes<pinned || grant<physical {
                     failures.push(format!("seed=139a pages={pages} {phase}: physical={physical} report={} pins={} grant={grant} native={} readback={readback}",
                         report.gpu_bytes,report.pinned_gpu_bytes,capture.storage_bytes()));
@@ -424,8 +428,8 @@ mod tests {
                     let before=ContentName::fresh();
                     let (tile,name)=RasterTile::pending_from_live(descriptor,before.into());
                     assert_eq!(tile.content_version().resolved(),None);
-                    let allocation=r.admit_raster_working(CanonicalComparisons::bytes(1).unwrap()).unwrap();
-                    let comparison=CanonicalComparisons::reserved(&mut r,1,&allocation).unwrap();
+                    let mut allocation=r.admit_raster_working(CanonicalComparisons::bytes(1).unwrap()).unwrap();
+                    let comparison=CanonicalComparisons::reserved(&mut r,1,&mut allocation).unwrap();
                     let result=comparison.result(0,name);
                     let transfer=r.prepare_native_transfer(color.space).unwrap();
                     let mut commands=r.device.create_command_encoder(&Default::default());
@@ -434,11 +438,13 @@ mod tests {
                     let encoded=(!scalar).then(||crate::test_support::page_texture(&r,wgpu::TextureFormat::Rgba8Uint));
                     if scalar {
                         let encoder=if in_place {NativeScalarEncoder::in_place(&r.device)}else {NativeScalarEncoder::with_device(&r.device)};
+                        pollster::block_on(r.compilation.prepare_all(&encoder.pipelines)).unwrap();
                         let batch=encoder.prepare_compared(&r.device,&[NativeScalarRequest {working:&working,canonical:&canonical,
                             encoded:packed.as_ref().unwrap(),depth:SampleDepth::U8,region:[0,0,256,256]}],&mut Default::default(),Some(&comparison)).unwrap();
                         let mut pass=commands.begin_compute_pass(&Default::default());encoder.encode(&mut pass,&batch);
                     }else {
                         let encoder=NativeTileEncoder::new(&r.device,in_place);
+                        pollster::block_on(r.compilation.prepare_all(&encoder.pipelines)).unwrap();
                         let batch=encoder.prepare_compared(&r.device,&[NativeTileRequest {working:&working,canonical:&canonical,
                             encoded:encoded.as_ref().unwrap().into(),depth:SampleDepth::U8,region:[0,0,256,256],mode:LayerColorMode::FullColor,
                             space:color.space,transfer:&transfer,alpha:descriptor.alpha}],&mut Default::default(),&[],Some(&comparison)).unwrap();

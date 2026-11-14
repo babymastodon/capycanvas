@@ -1,13 +1,14 @@
 use super::*;
 use layer_core::raster::{ContentStamp, ContentVersion, RasterPlane};
-use std::{collections::HashMap, hash::{Hash, Hasher}, sync::Mutex};
+use std::{hash::{Hash, Hasher}, sync::Mutex};
+use crate::{IdMap, IdSet};
 
 #[derive(Clone, Default)]
 pub(crate) struct Declared {
     pub name_wake:Option<std::task::Waker>,
-    pub rasters: HashMap<SourceTarget, raster::contents::Versions>,
-    pub captures: HashMap<SourceTarget, Capture>,
-    pub preview_inputs: HashMap<SourceTarget, Input>,
+    pub rasters: IdMap<SourceTarget, raster::contents::Versions>,
+    pub captures: IdMap<SourceTarget, Capture>,
+    pub preview_inputs: IdMap<SourceTarget, Input>,
     pub preview: Option<Arc<PreviewDeclaration>>,
     pub fill: Option<layer_render::FillPreview>,
     pub quality: PreviewQuality,
@@ -18,17 +19,27 @@ pub(crate) struct Declared {
 pub(crate) struct Input { pub source:SceneSnapshot, pub version:ContentVersion }
 impl Input {
     pub fn capture(r:&WgpuRasterizer,packet:FramePacket<'_>)->Result<Self,GpuRasterError> {
-        let mut rasters=HashMap::new();for target in packet.scene.targets() {
-            match r.raster_versions(packet.scene,target) {Ok(versions)=>{rasters.insert(target,versions);},Err(GpuRasterError::NotReady)=>{},Err(error)=>return Err(error)}
+        let reads=Reads::of(packet)?;let mut rasters=IdMap::default();
+        for target in &reads.targets {
+            #[cfg(test)] record_read();
+            match r.raster_versions(packet.scene,*target) {Ok(versions)=>{rasters.insert(*target,versions);},Err(GpuRasterError::NotReady)=>{},Err(error)=>return Err(error)}
         }
-        let frame=Prepared::from_scene(packet,Declared {rasters,..Declared::default()})?;Self::from_frame(packet,frame)
+        Self::from_reads(packet,rasters,&reads)
     }
-    pub fn from_declared(packet:FramePacket<'_>,rasters:HashMap<SourceTarget,raster::contents::Versions>)->Result<Self,GpuRasterError> {
-        let frame=Prepared::from_scene(packet,Declared {rasters,..Declared::default()})?;Self::from_frame(packet,frame)
+    pub fn from_declared(packet:FramePacket<'_>,rasters:IdMap<SourceTarget,raster::contents::Versions>)->Result<Self,GpuRasterError> {
+        Self::from_reads(packet,rasters,&Reads::of(packet)?)
     }
-    fn from_frame(packet:FramePacket<'_>,frame:Prepared)->Result<Self,GpuRasterError> {
+    fn from_reads(packet:FramePacket<'_>,rasters:IdMap<SourceTarget,raster::contents::Versions>,reads:&Reads)->Result<Self,GpuRasterError> {
+        let frame=Prepared::read(packet,Declared {rasters,..Declared::default()},reads)?;
+        Ok(Self {version:frame.authored_version(&reads.node)?,source:frame.snapshot.scene.clone()})
+    }
+}
+struct Reads {node:graph::Node,targets:BTreeSet<SourceTarget>,effects:BTreeSet<OccurrenceHandle>}
+impl Reads {
+    fn of(packet:FramePacket<'_>)->Result<Self,GpuRasterError> {
         let node=graph::compose(packet,None,None,0,packet.scene.composition().color.space,None,None)?;
-        Ok(Self {version:frame.authored_version(&node)?,source:frame.snapshot.scene.clone()})
+        let (mut targets,effects)=node.reads();targets.extend(packet.dab_batches.iter().map(|batch|batch.target));
+        Ok(Self {node,targets,effects})
     }
 }
 #[derive(Clone)]
@@ -94,19 +105,45 @@ impl Capture {
         Ok(ContentVersion::derive(0x63617074757265,&inputs))
     }
 }
+#[derive(Clone)]
 struct Definition { version:ContentVersion, global:bool }
+#[derive(Clone)]
 pub(crate) struct Snapshot {
     pub scene: SceneSnapshot,
-    view:layer_render::ViewState,
-    rasters: HashMap<SourceTarget, raster::contents::Versions>,
-    captures: HashMap<SourceTarget, Capture>,
+    rasters: IdMap<SourceTarget, raster::contents::Versions>,
+    captures: IdMap<SourceTarget, Capture>,
     preview: Option<Arc<PreviewDeclaration>>,
     vector_preview: Option<(layer_render::VectorPreview,ContentVersion)>,
     vector_motion: Option<(layer_render::VectorMotion,ContentVersion,ContentVersion)>,
-    effects: HashMap<OccurrenceHandle,Definition>,
+    effects: IdMap<OccurrenceHandle,Definition>,
     moving: Option<OccurrenceHandle>,
-    watercolor: HashMap<SourceTarget, WatercolorLayerStyle>,
+    watercolor: IdMap<SourceTarget, WatercolorLayerStyle>,
     context: ContentStamp,
+}
+impl Snapshot {
+    fn preview_level(&self,id:SourceTarget)->u32 {self.preview.as_ref().filter(|preview|preview.target==id).map_or(0,|preview|preview.quality.level)}
+    fn changed_targets(&self,before:&Self)->std::collections::BTreeSet<SourceTarget> {
+        let mut changed=before.rasters.keys().chain(self.rasters.keys()).filter(|id|match (before.rasters.get(id),self.rasters.get(id)) {
+            (Some(before),Some(after))=>[source_plane(**id),RasterPlane::WatercolorWetness].into_iter().any(|plane|before.root(plane).identity()!=after.root(plane).identity()),
+            _=>true,
+        }).copied().collect::<std::collections::BTreeSet<_>>();
+        if !Option::zip(self.preview.as_ref(),before.preview.as_ref()).is_some_and(|(after,before)|Arc::ptr_eq(after,before)) {
+            changed.extend(self.preview.iter().chain(&before.preview).map(|preview|preview.target()));
+        }
+        changed
+    }
+    fn continues(&self,before:&Self)->bool {
+        let (scene,previous)=(&self.scene,&before.scene);
+        let version=|version:&ContentVersion|version.identity();
+        scene.owner!=0 && scene.owner==previous.owner && scene.revision==previous.revision && scene.scope==previous.scope
+            && scene.offset==previous.offset && scene.context.phases==previous.context.phases && self.context==before.context && self.moving==before.moving
+            && self.watercolor==before.watercolor && self.captures.is_empty() && before.captures.is_empty()
+            && self.effects.len()==before.effects.len() && self.effects.iter().all(|(handle,definition)|before.effects.get(handle)
+                .is_some_and(|previous|previous.global==definition.global && version(&previous.version)==version(&definition.version)))
+            && self.vector_preview.as_ref().map(|(_,preview)|version(preview))==before.vector_preview.as_ref().map(|(_,preview)|version(preview))
+            && self.vector_motion.as_ref().map(|(_,motion,selected)|(version(motion),version(selected)))
+                ==before.vector_motion.as_ref().map(|(_,motion,selected)|(version(motion),version(selected)))
+    }
 }
 #[derive(Clone)]
 struct Expression(graph::Node);
@@ -115,11 +152,69 @@ impl Eq for Expression {}
 impl Hash for Expression {fn hash<H:Hasher>(&self,state:&mut H) {Arc::as_ptr(&self.0).hash(state);}}
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Request {node:Expression,region:[i64;4],level:u32,input_level:u32,global:bool,source_chunk:bool}
+impl Request {
+    fn new(node:&graph::Node,region:DocRect,level:u32,input_level:u32,global:bool,source_chunk:bool)->Self {
+        Self {node:Expression(node.clone()),region:[region.min[0],region.min[1],region.max[0],region.max[1]],level,input_level,global,source_chunk}
+    }
+    fn region(&self)->DocRect {DocRect {min:[self.region[0],self.region[1]],max:[self.region[2],self.region[3]]}}
+}
+struct Entry {version:ContentVersion,dependents:Vec<Request>,used:u64}
+#[derive(Default)]
+struct Keys {entries:IdMap<Request,Entry>,readers:IdMap<SourceTarget,IdMap<Request,PixelRect>>,epoch:u64,kept:usize}
+impl Keys {
+    fn get(&mut self,request:&Request,parent:Option<&Request>)->Option<ContentVersion> {
+        let entry=self.entries.get_mut(request)?;
+        entry.used=self.epoch;
+        if let Some(parent)=parent && !entry.dependents.contains(parent) {entry.dependents.push(parent.clone());}
+        Some(entry.version.clone())
+    }
+    fn insert(&mut self,request:Request,version:ContentVersion,parent:Option<&Request>,read:Option<(SourceTarget,PixelRect)>) {
+        if let Some((id,local))=read {self.readers.entry(id).or_default().insert(request.clone(),local);}
+        self.entries.insert(request,Entry {version,dependents:parent.into_iter().cloned().collect(),used:self.epoch});
+    }
+    fn kept<'a>(entries:&'a IdMap<Request,Entry>,request:&'a Request,epoch:u64,kept:&mut IdMap<&'a Request,bool>)->bool {
+        if let Some(keep)=kept.get(request) {return *keep;}
+        let keep=entries.get(request).is_some_and(|entry|entry.used==epoch
+            || entry.dependents.iter().any(|parent|Self::kept(entries,parent,epoch,kept)));
+        kept.insert(request,keep);keep
+    }
+    fn invalidate(&mut self,id:SourceTarget,changed:impl Fn(PixelRect)->bool,regions:&mut Vec<(u32,DocRect)>) {
+        let Some(readers)=self.readers.get_mut(&id) else {return;};
+        let mut stale=readers.iter().filter(|(_,local)|changed(**local)).map(|(request,_)|request.clone()).collect::<Vec<_>>();
+        for request in &stale {readers.remove(request);}
+        while let Some(request)=stale.pop() {
+            if let Some(entry)=self.entries.remove(&request) {
+                if !request.source_chunk {regions.push((request.level,request.region()));}
+                stale.extend(entry.dependents);
+            }
+        }
+    }
+    fn advance(&mut self,regions:&mut Vec<(u32,DocRect)>) {
+        if self.entries.len()>2*self.kept+256 {
+            let mut kept=IdMap::with_capacity_and_hasher(self.entries.len(),Default::default());
+            for request in self.entries.keys() {Self::kept(&self.entries,request,self.epoch,&mut kept);}
+            let dropped=kept.into_iter().filter(|(_,keep)|!keep).map(|(request,_)|request.clone()).collect::<Vec<_>>();
+            for request in &dropped {if self.entries.remove(request).is_some() && !request.source_chunk {regions.push((request.level,request.region()));}}
+            let entries=&self.entries;
+            self.readers.retain(|_,readers| {readers.retain(|request,_|entries.contains_key(request));!readers.is_empty()});
+            self.kept=self.entries.len();
+        }
+        self.epoch+=1;
+    }
+}
 pub(crate) struct Prepared {
     snapshot: Arc<Snapshot>,
-    memo: Mutex<HashMap<Request,ContentVersion>>,
-    authored: Mutex<HashMap<Expression,ContentVersion>>,
+    memo: Mutex<Keys>,
+    authored: Mutex<IdMap<Expression,Authored>>,
     name_wake:Option<std::task::Waker>,
+}
+#[derive(Clone)]
+struct Authored {version:ContentVersion,reads:Arc<[SourceTarget]>}
+fn read_together(reads:&mut Arc<[SourceTarget]>,child:&Arc<[SourceTarget]>) {
+    if reads.is_empty() || reads==child {*reads=child.clone();}
+    else if !child.is_empty() {
+        let mut union=reads.iter().chain(child.iter()).copied().collect::<Vec<_>>();union.sort();union.dedup();*reads=union.into();
+    }
 }
 pub(super) struct PackingWake(ContentVersion);
 pub(super) enum ExpectedKey { Ready(ContentVersion), Unresolved(PackingWake) }
@@ -130,9 +225,11 @@ impl ExpectedKey {
 impl Prepared {
     pub fn capture(r:&WgpuRasterizer,packet:FramePacket<'_>,mut declared:Declared)->Result<Self,GpuRasterError> {
         declared.name_wake=r.raster_name_waker();
-        for target in packet.scene.targets() {
-            if !declared.rasters.contains_key(&target) {
-                match r.raster_versions(packet.scene,target) {Ok(versions)=>{declared.rasters.insert(target,versions);},Err(GpuRasterError::NotReady)=>{},Err(error)=>return Err(error)}
+        let reads=Reads::of(packet)?;
+        for target in &reads.targets {
+            #[cfg(test)] record_read();
+            if !declared.rasters.contains_key(target) {
+                match r.raster_versions(packet.scene,*target) {Ok(versions)=>{declared.rasters.insert(*target,versions);},Err(GpuRasterError::NotReady)=>{},Err(error)=>return Err(error)}
             }
         }
         let mut needed=Vec::new();
@@ -161,18 +258,21 @@ impl Prepared {
         let mut scene=packet.scene.snapshot();
         scene.context.phases=Arc::new(packet.scene.order().iter().filter_map(|handle|packet.scene.effect_handle(*handle)
             .map(|effect|(effect,crate::effects::Gpu::effect_time(r,packet.scene,*handle,packet.time_seconds)))).collect());
-        let mut prepared=Self::from_scene(FramePacket {scene:scene.view(),..packet},declared)?;
+        let mut prepared=Self::read(FramePacket {scene:scene.view(),..packet},declared,&reads)?;
         let snapshot=Arc::get_mut(&mut prepared.snapshot).unwrap();snapshot.moving=r.moving_layer;
         for target in needed {snapshot.rasters.remove(&target);snapshot.captures.remove(&target);}
-        for target in packet.scene.targets() {
+        for target in reads.targets {
             if r.transforms.as_ref().is_some_and(|transforms|transforms.display_source(target)) && !snapshot.captures.contains_key(&target) {snapshot.rasters.remove(&target);}
             if let Some(style)=r.watercolor_style(target,packet.dab_batches) {snapshot.watercolor.insert(target,style);}
         }
         Ok(prepared)
     }
-    pub fn from_scene(packet:FramePacket<'_>,mut declared:Declared)->Result<Self,GpuRasterError> {
-        let mut watercolor=HashMap::new();
-        for target in packet.scene.targets() {
+    #[cfg(test)]
+    pub fn from_scene(packet:FramePacket<'_>,declared:Declared)->Result<Self,GpuRasterError> {Self::read(packet,declared,&Reads::of(packet)?)}
+    fn read(packet:FramePacket<'_>,mut declared:Declared,reads:&Reads)->Result<Self,GpuRasterError> {
+        let mut watercolor=IdMap::default();
+        for target in reads.targets.iter().copied() {
+            #[cfg(test)] record_read();
             if !declared.rasters.contains_key(&target) {
                 match raster::contents::declared_versions(packet.scene,target) {Ok(versions)=>{declared.rasters.insert(target,versions);},Err(GpuRasterError::NotReady)=>{},Err(error)=>return Err(error)}
             }
@@ -182,7 +282,7 @@ impl Prepared {
         }
         let preview=match declared.preview.take() {
             Some(preview)=>Some(preview),
-            None=>match PreviewDeclaration::from_scene(packet,declared.rasters.clone(),declared.preview_inputs.clone(),declared.quality,declared.fill.clone()) {
+            None=>match PreviewDeclaration::from_scene(packet,declared.rasters.clone(),declared.preview_inputs.clone(),declared.quality,declared.fill.clone(),None) {
                 Ok(preview)=>preview.map(Arc::new),
                 Err(GpuRasterError::NotReady)=> {
                     if let Some(target)=packet.dab_batches.iter().find(|batch|batch.kind==DabBatchKind::Preview).map(|batch|batch.target).or_else(||declared.fill.as_ref().map(|fill|fill.target)) {
@@ -194,27 +294,107 @@ impl Prepared {
             },
         };
         let mut context=Recipe::new();context.add(&(packet.document_extent,packet.scene.composition().color));context.tag(&packet.blend_space);
-        let effects=packet.scene.order().iter().filter_map(|handle|packet.scene.effect(*handle).map(|effect|(*handle,effect))).map(|(handle,effect)| {
+        let effects=reads.effects.iter().filter_map(|handle|packet.scene.effect(*handle).map(|effect|(*handle,effect))).map(|(handle,effect)| {
             let mut version=effect_version(effect)?;
             if effect.animated() {version=ContentVersion::derive(u128::from(crate::effects::effective_phase(packet.scene,handle,packet.time_seconds).to_bits()),&[version]);}
             Ok((handle,Definition {version,global:effect.program.analysis().is_some() || effect.program.passes.iter().any(|pass|matches!(pass.sampling,layer_core::EffectSampling::Document))}))
         }).collect::<Result<_,GpuRasterError>>()?;
         let vector_preview=declared.vector_preview.map(|preview| {let version=path_version(&preview.path);(preview,version)});
         let vector_motion=declared.vector_motion.map(|motion| {let selected=ContentVersion::derive(recipe(&motion.items),&[]);let version=ContentVersion::derive(recipe(&motion.transform.0.map(f64::to_bits)),&[selected.clone()]);(motion,version,selected)});
-        let mut prepared=Self::from_snapshot(Arc::new(Snapshot {scene:packet.scene.snapshot(),view:packet.view,rasters:declared.rasters,captures:declared.captures,
+        let mut prepared=Self::from_snapshot(Arc::new(Snapshot {scene:packet.scene.snapshot(),rasters:declared.rasters,captures:declared.captures,
             preview,vector_preview,vector_motion,effects,moving:None,watercolor,context:context.0}));
         prepared.name_wake=declared.name_wake;Ok(prepared)
     }
-    pub fn view(&self)->layer_render::ViewState {self.snapshot.view}
-    pub fn snapshot(&self)->Arc<Snapshot> {self.snapshot.clone()}
-    pub fn from_snapshot(snapshot:Arc<Snapshot>)->Self {Self {snapshot,memo:Mutex::new(HashMap::new()),authored:Mutex::new(HashMap::new()),name_wake:None}}
     #[cfg(test)]
+    pub fn snapshot(&self)->Arc<Snapshot> {self.snapshot.clone()}
+    pub fn from_snapshot(snapshot:Arc<Snapshot>)->Self {Self {snapshot,memo:Mutex::new(Keys::default()),authored:Mutex::new(IdMap::default()),name_wake:None}}
+    pub(super) fn carry(&self,previous:&Self)->Option<Vec<(u32,DocRect)>> {
+        let mut keys=std::mem::take(&mut *previous.memo.lock().unwrap());
+        let (s,before)=(&*self.snapshot,&*previous.snapshot);
+        if !s.continues(before) {return None;}
+        let mut authored=std::mem::take(&mut *previous.authored.lock().unwrap());
+        let changed=s.changed_targets(before);
+        while {let held=authored.len();authored.retain(|node,entry|Arc::strong_count(&node.0)>1 && !entry.reads.iter().any(|id|changed.contains(id)));authored.len()<held} {}
+        *self.authored.lock().unwrap()=authored;
+        let mut regions=Vec::new();
+        for (id,versions) in &before.rasters {
+            let mut changed=Vec::new();
+            if s.rasters.get(id).is_some_and(|after|versions.changes(after,|coordinate|changed.push(page_rect(coordinate)))) {
+                let bounds=changed.iter().fold(PixelRect::EMPTY,|bounds,tile|bounds.union(*tile));
+                keys.invalidate(*id,|local|!local.intersect(bounds).is_empty() && changed.iter().any(|tile|!local.intersect(*tile).is_empty()),&mut regions);
+            }else {keys.invalidate(*id,|_|true,&mut regions);}
+        }
+        if !Option::zip(s.preview.as_ref(),before.preview.as_ref()).is_some_and(|(after,before)|Arc::ptr_eq(after,before)) {
+            for preview in s.preview.iter().chain(&before.preview) {keys.invalidate(preview.target(),|local|preview.affects(local),&mut regions);}
+        }
+        keys.advance(&mut regions);
+        *self.memo.lock().unwrap()=keys;
+        let mut levels=BTreeMap::<u32,DocRect>::new();
+        for (level,region) in regions {let bounds=levels.entry(level).or_default();*bounds=bounds.union(region);}
+        Some(levels.into_iter().collect())
+    }
+    pub(super) fn contact_continues(&self,last:&Self,target:SourceTarget)->Option<std::collections::BTreeSet<[u32;2]>> {
+        let (s,before)=(&*self.snapshot,&*last.snapshot);
+        if !s.continues(before) || s.rasters.len()!=before.rasters.len() || s.preview_level(target)!=before.preview_level(target) {return None;}
+        let unchanged=|plane,before:&raster::contents::Versions,after:&raster::contents::Versions|before.root(plane).identity()==after.root(plane).identity();
+        let mut changed=std::collections::BTreeSet::new();
+        for (id,versions) in &before.rasters {
+            let after=s.rasters.get(id)?;
+            if !unchanged(RasterPlane::Mask,versions,after) {return None;}
+            if *id!=target {
+                if !unchanged(RasterPlane::Color,versions,after) || !unchanged(RasterPlane::WatercolorWetness,versions,after) {return None;}
+            }else if !versions.changes(after,|coordinate|{changed.insert(coordinate);}) {return None;}
+        }
+        if !Option::zip(s.preview.as_ref(),before.preview.as_ref()).is_some_and(|(after,before)|Arc::ptr_eq(after,before)) {
+            for preview in s.preview.iter().chain(&before.preview) {
+                if preview.target!=target || preview.fill.is_some() {return None;}
+                changed.extend(preview.commands.iter().flat_map(|command|command.outputs.iter().copied()));
+            }
+        }
+        Some(changed)
+    }
+    pub(super) fn watercolor(&self,target:SourceTarget)->bool {self.snapshot.watercolor.contains_key(&target)}
+    pub(crate) fn prepare(r:&WgpuRasterizer,packet:FramePacket<'_>)->Result<Arc<Self>,GpuRasterError> {
+        Self::capture(r,packet,Declared {preview:r.preview_declaration.clone(),..Default::default()}).map(Arc::new)
+    }
+    pub(super) fn holds_scene(&self,scene:SceneView<'_>)->bool {
+        let (held,artwork)=(&self.snapshot.scene,scene.artwork());
+        scene.owner()!=0 && scene.owner()==held.owner && scene.revision()==held.revision && scene.offset()==held.offset
+            && scene.scope().map_or(held.scope==Default::default(),|scope|*scope==held.scope)
+            && artwork.compositions.same_root(&held.artwork.compositions) && artwork.stacks.same_root(&held.artwork.stacks)
+            && artwork.occurrences.same_root(&held.artwork.occurrences) && artwork.paint.same_root(&held.artwork.paint)
+            && artwork.objects.same_root(&held.artwork.objects) && artwork.vectors.same_root(&held.artwork.vectors)
+            && artwork.coverage.same_root(&held.artwork.coverage) && artwork.effects.same_root(&held.artwork.effects)
+    }
+    pub(super) fn reader_regions(&self,target:SourceTarget,level:u32)->Vec<(PixelRect,Vec<DocRect>)> {
+        let memo=self.memo.lock().unwrap();
+        let Some(readers)=memo.readers.get(&target) else {return Vec::new();};
+        readers.iter().map(|(request,local)| {
+            let mut regions=Vec::new();let mut seen=IdSet::default();let mut stack=vec![request];
+            while let Some(request)=stack.pop() {
+                if !seen.insert(request) {continue;}
+                let Some(entry)=memo.entries.get(request) else {continue;};
+                if !request.source_chunk && request.level==level {regions.push(request.region());}
+                stack.extend(&entry.dependents);
+            }
+            (*local,regions)
+        }).collect()
+    }
+    pub(super) fn composed(&self,target:SourceTarget,versions:raster::contents::Versions)->Self {
+        let mut snapshot=(*self.snapshot).clone();snapshot.rasters.insert(target,versions);snapshot.preview=None;
+        Self {name_wake:self.name_wake.clone(),..Self::from_snapshot(Arc::new(snapshot))}
+    }
     fn versions(&self,target:SourceTarget)->Option<&raster::contents::Versions> {self.snapshot.rasters.get(&target)}
+    pub(super) fn target_versions(&self,target:SourceTarget)->Option<raster::contents::Versions> {self.versions(target).cloned()}
+    pub(crate) fn tile_version(&self,target:SourceTarget,plane:RasterPlane,coordinate:[u32;2])->Option<ContentVersion> {self.versions(target).map(|versions|versions.tile(plane,coordinate))}
     pub fn capture_for(&self,target:SourceTarget)->Option<&Capture> {self.snapshot.captures.get(&target)}
     pub fn preview_for(&self,target:SourceTarget)->Option<&PreviewDeclaration> {self.snapshot.preview.as_deref().filter(|preview|preview.target()==target)}
-    fn expected(&self,node:&graph::Node,region:DocRect,level:u32,input_level:u32)->Result<ContentVersion,GpuRasterError> {self.evaluate(node,region,level,input_level,false,false)}
-    fn expected_source(&self,node:&graph::Node,region:DocRect,level:u32,input_level:u32)->Result<ContentVersion,GpuRasterError> {self.evaluate(node,region,level,input_level,false,true)}
+    fn expected(&self,node:&graph::Node,region:DocRect,level:u32,input_level:u32)->Result<ContentVersion,GpuRasterError> {self.evaluate(Request::new(node,region,level,input_level,false,false),None)}
+    fn expected_source(&self,node:&graph::Node,region:DocRect,level:u32,input_level:u32)->Result<ContentVersion,GpuRasterError> {self.evaluate(Request::new(node,region,level,input_level,false,true),None)}
+    pub(super) fn preview_level(&self,id:SourceTarget)->u32 {self.snapshot.preview_level(id)}
     pub(super) fn expected_key(&self,key:&pages::Key,region:PixelRect,input_level:u32)->Result<ExpectedKey,GpuRasterError> {
+        #[cfg(test)]
+        crate::test_support::PassCounts {expected_keys:1,..Default::default()}.record();
         let version=if key.source.is_some() {self.expected_source(&key.expression,region.into(),key.level,input_level)?}
             else {self.expected(&key.expression,region.into(),key.level,input_level)?};
         let mut context=Recipe::new();context.add(&(key.color,key.format));context.tag(&key.blend_space);
@@ -233,23 +413,22 @@ impl Prepared {
         else {recorded.matches(expected.version()).or(Some(false))}
     }
     pub(super) fn authored_revision(&self,node:&graph::Node)->Result<ContentStamp,GpuRasterError> {Ok(self.authored_version(node)?.authored())}
-    fn evaluate(&self,node:&graph::Node,region:DocRect,level:u32,input_level:u32,global:bool,source_chunk:bool)->Result<ContentVersion,GpuRasterError> {
-        let key=Request {node:Expression(node.clone()),region:[region.min[0],region.min[1],region.max[0],region.max[1]],level,input_level,global,source_chunk};
-        if let Some(version)=self.memo.lock().unwrap().get(&key) {return Ok(version.clone());}
-        let version=self.compute(node,region,level,input_level,global,source_chunk)?;
-        self.memo.lock().unwrap().insert(key,version.clone());Ok(version)
+    fn evaluate(&self,request:Request,parent:Option<&Request>)->Result<ContentVersion,GpuRasterError> {
+        if let Some(version)=self.memo.lock().unwrap().get(&request,parent) {return Ok(version);}
+        let (version,read)=self.compute(&request)?;
+        self.memo.lock().unwrap().insert(request,version.clone(),parent,read);Ok(version)
     }
     fn source_versions(&self,id:SourceTarget)->Result<&raster::contents::Versions,GpuRasterError> {
         self.snapshot.rasters.get(&id).ok_or(if self.snapshot.scene.view().source_owner(id).is_some() {GpuRasterError::NotReady}else {GpuRasterError::StaleExpression})
     }
-    fn source_version(&self,id:SourceTarget,frame:SourceFrame,extent:[u32;2],region:DocRect,input_level:u32,global:bool)->Result<ContentVersion,GpuRasterError> {
+    fn source_version(&self,id:SourceTarget,frame:SourceFrame,extent:[u32;2],region:DocRect,input_level:u32,global:bool)->Result<(ContentVersion,PixelRect),GpuRasterError> {
         let s=&self.snapshot;let scene=s.scene.view();let mut inputs=Vec::new();let mut name=Recipe::new();name.add(&(id,frame,extent,scene.color_mode(id)));
-        let moving=s.moving==scene.source_owner(id);let level=source_level(input_level,frame).saturating_sub(u32::from(moving && frame.aligned()));name.add(&level);
+        let moving=s.moving==scene.source_owner(id);let level=source_level(input_level,frame,moving,s.preview_level(id));name.add(&level);
         let halo=if frame.aligned() && !moving {0}else {1<<level};let watercolor=s.watercolor.get(&id).copied();name.watercolor(watercolor);
         let local=if global {PixelRect::full(extent)}else {source_footprint(region,frame,extent,level,halo+watercolor.map_or(0,|style|style.radius()))};
         if let Some(capture)=s.captures.get(&id) {inputs.push(capture.content(region,global)?);}
         else {
-            if local.is_empty() {return Ok(ContentVersion::derive(name.0,&[]));}
+            if local.is_empty() {return Ok((ContentVersion::derive(name.0,&[]),local));}
             let versions=self.source_versions(id)?;let plane=source_plane(id);
             inputs.push(if global {versions.root(plane)}else {versions.region(plane,local)});
             if watercolor.is_some() {inputs.push(if global {versions.root(RasterPlane::WatercolorWetness)}else {versions.region(RasterPlane::WatercolorWetness,local)});}
@@ -258,7 +437,7 @@ impl Prepared {
             inputs.push(preview.region_version(source_plane(id),local,PreviewStage::Final)?);
             if watercolor.is_some() {inputs.push(preview.region_version(RasterPlane::WatercolorWetness,local,PreviewStage::Final)?);}
         }
-        Ok(ContentVersion::derive(name.0,&inputs))
+        Ok((ContentVersion::derive(name.0,&inputs),local))
     }
     fn selected_placement(&self,node:&graph::Expression)->Result<Option<ContentStamp>,GpuRasterError> {
         let scene=self.snapshot.scene.view();let mut name=Recipe::new();
@@ -275,13 +454,16 @@ impl Prepared {
         }
         Ok(Some(name.0))
     }
-    fn compute(&self,node:&graph::Node,region:DocRect,level:u32,input_level:u32,global:bool,source_chunk:bool)->Result<ContentVersion,GpuRasterError> {
+    fn compute(&self,request:&Request)->Result<(ContentVersion,Option<(SourceTarget,PixelRect)>),GpuRasterError> {
         use graph::Expression as E;
+        let Request {node:Expression(node),level,input_level,global,source_chunk,..}=request;let (level,input_level,global,source_chunk)=(*level,*input_level,*global,*source_chunk);
+        let region=request.region();let mut read=None;
+        let child=|node:&graph::Node,region:DocRect,global:bool|self.evaluate(Request::new(node,region,level,input_level,global,false),Some(request));
         let s=&self.snapshot;let scene=s.scene.view();let mut inputs=Vec::new();let mut name=Recipe::new();name.add(&(s.context,level,input_level,global));
         if !source_chunk {name.add(&self.selected_placement(node)?);}
         match node.as_ref() {
             E::Color(color)=>name.add(&(0,color)),
-            E::Source {id,frame,extent,outside}=>{name.add(&(1,outside));let frame=if source_chunk {SourceFrame {phase:frame.phase,shift:[0;2]}}else {*frame};inputs.push(self.source_version(*id,frame,*extent,region,input_level,global)?);},
+            E::Source {id,frame,extent,outside}=>{name.add(&(1,outside));let frame=if source_chunk {SourceFrame {phase:frame.phase,shift:[0;2]}}else {*frame};let (version,local)=self.source_version(*id,frame,*extent,region,input_level,global)?;inputs.push(version);read=Some((*id,local));},
             E::Objects {content,preview}=>{
                 let owner=content.owner();name.add(&(2,owner,preview,scene.visible(owner)));
                 let keys=if global {content.keys().to_vec()}else {content.query_at(region,input_level)};
@@ -293,26 +475,30 @@ impl Prepared {
             },
             E::VectorPreview {owner}=>{name.add(&(4,owner,scene.visible(*owner)));inputs.push(s.vector_preview.as_ref().filter(|(preview,_)|preview.owner==*owner).map_or_else(||ContentVersion::derive(0,&[]),|(_,version)|version.clone()));},
             E::VectorMotion {owner}=>{name.add(&(5,owner,scene.visible(*owner)));if let Some((_,version,_))=s.vector_motion.as_ref().filter(|(motion,_,_)|motion.owner==*owner) {inputs.push(version.clone());inputs.push(scene.vector_layer(*owner).ok_or(GpuRasterError::StaleExpression)?.content_version());}},
-            E::Opacity {input,opacity}=>{name.add(&(6,opacity));inputs.push(self.evaluate(input,region,level,input_level,global,false)?);},
-            E::Combine {front,back,blend,flags}=>{name.add(&(7,blend,flags));inputs.push(self.evaluate(front,region,level,input_level,global,false)?);inputs.push(self.evaluate(back,region,level,input_level,global,false)?);},
+            E::Opacity {input,opacity}=>{name.add(&(6,opacity));inputs.push(child(input,region,global)?);},
+            E::Combine {front,back,blend,flags}=>{name.add(&(7,blend,flags));inputs.push(child(front,region,global)?);inputs.push(child(back,region,global)?);},
             E::Effect {input,chain,masks,..}=>{
                 name.add(&8);let mut footprint=region;let mut entire=global;
                 for (handle,_,flags) in chain {
                     let effect=scene.effect(*handle).ok_or(GpuRasterError::StaleExpression)?;let definition=s.effects.get(handle).ok_or(GpuRasterError::Invariant("effect signature definition is missing"))?;name.add(&(handle,flags,scene.visible(*handle)));inputs.push(definition.version.clone());entire|=definition.global;
                     if !entire && !effect.program.passes.is_empty() {footprint=crate::effects::document_pass_regions(effect,footprint,input.support(scene,scene.composition().size,input_level),input_level).first().copied().ok_or(GpuRasterError::Invariant("effect footprint is missing"))?;}
                 }
-                inputs.push(self.evaluate(input,footprint,level,input_level,entire,false)?);
-                for mask in masks {inputs.push(match mask {Some(mask)=>self.evaluate(mask,region,level,input_level,global,false)?,None=>ContentVersion::derive(0,&[])});}
+                inputs.push(child(input,footprint,entire)?);
+                for mask in masks {inputs.push(match mask {Some(mask)=>child(mask,region,global)?,None=>ContentVersion::derive(0,&[])});}
             },
         }
-        Ok(ContentVersion::derive(name.0,&inputs))
+        Ok((ContentVersion::derive(name.0,&inputs),read))
     }
-    fn authored_version(&self,node:&graph::Node)->Result<ContentVersion,GpuRasterError> {
-        let key=Expression(node.clone());if let Some(version)=self.authored.lock().unwrap().get(&key) {return Ok(version.clone());}
+    fn authored_version(&self,node:&graph::Node)->Result<ContentVersion,GpuRasterError> {self.authored_entry(node).map(|entry|entry.version)}
+    fn authored_entry(&self,node:&graph::Node)->Result<Authored,GpuRasterError> {
+        let key=Expression(node.clone());if let Some(entry)=self.authored.lock().unwrap().get(&key) {return Ok(entry.clone());}
         use graph::Expression as E;let s=&self.snapshot;let scene=s.scene.view();let mut name=Recipe::new();name.add(&s.context);name.add(&self.selected_placement(node)?);let mut inputs=Vec::new();
+        let mut reads:Arc<[SourceTarget]>=Arc::from([]);
+        let mut child=|node:&graph::Node,inputs:&mut Vec<ContentVersion>|->Result<(),GpuRasterError> {let child=self.authored_entry(node)?;read_together(&mut reads,&child.reads);inputs.push(child.version);Ok(())};
         match node.as_ref() {
             E::Color(color)=>name.add(&(0,color)),
             E::Source {id,outside,..}=>{
+                reads=Arc::from([*id]);
                 name.add(&(1,id,outside,scene.color_mode(*id)));name.watercolor(s.watercolor.get(id).copied());
                 if let Some(capture)=s.captures.get(id) {inputs.push(capture.authored_content());}else {
                     let versions=self.source_versions(*id)?;inputs.push(versions.root(source_plane(*id)));
@@ -329,15 +515,15 @@ impl Prepared {
                 if let Some((preview,version))=&s.vector_preview && preview.owner==*owner {inputs.push(version.clone());}
                 if let Some((motion,version,_))=&s.vector_motion && motion.owner==*owner {inputs.push(version.clone());}
             },
-            E::Opacity {input,opacity}=>{name.add(&(6,opacity));inputs.push(self.authored_version(input)?);},
-            E::Combine {front,back,blend,flags}=>{name.add(&(7,blend,flags));inputs.push(self.authored_version(front)?);inputs.push(self.authored_version(back)?);},
+            E::Opacity {input,opacity}=>{name.add(&(6,opacity));child(input,&mut inputs)?;},
+            E::Combine {front,back,blend,flags}=>{name.add(&(7,blend,flags));child(front,&mut inputs)?;child(back,&mut inputs)?;},
             E::Effect {input,chain,masks,..}=>{
-                name.add(&8);inputs.push(self.authored_version(input)?);
+                name.add(&8);child(input,&mut inputs)?;
                 for (handle,_,flags) in chain {name.add(&(handle,flags,scene.visible(*handle)));let definition=s.effects.get(handle).ok_or(if scene.effect(*handle).is_some() {GpuRasterError::Invariant("effect signature definition is missing")}else {GpuRasterError::StaleExpression})?;inputs.push(definition.version.clone());}
-                for mask in masks {inputs.push(match mask {Some(mask)=>self.authored_version(mask)?,None=>ContentVersion::derive(0,&[])});}
+                for mask in masks {match mask {Some(mask)=>child(mask,&mut inputs)?,None=>inputs.push(ContentVersion::derive(0,&[]))}}
             },
         }
-        let version=ContentVersion::derive(name.0,&inputs);self.authored.lock().unwrap().insert(key,version.clone());Ok(version)
+        let entry=Authored {version:ContentVersion::derive(name.0,&inputs),reads};self.authored.lock().unwrap().insert(key,entry.clone());Ok(entry)
     }
 }
 fn source_plane(target:SourceTarget)->RasterPlane {if matches!(target,SourceTarget::Paint(_)) {RasterPlane::Color}else {RasterPlane::Mask}}
@@ -376,6 +562,7 @@ fn transform_version(preview:&layer_render::TransformPreview)->ContentVersion {
     ContentVersion::derive(name.0,&inputs)
 }
 fn preview_version(packet:FramePacket<'_>,batch:&DabBatch,captured:Option<&ContentVersion>)->Result<Option<ContentVersion>,GpuRasterError> {
+    #[cfg(test)] crate::test_support::PassCounts {preview_definitions:1,..Default::default()}.record();
     let mut inputs=Vec::new();let style=&batch.style;
     if style.retouch.is_some() {let Some(captured)=captured else {return Ok(None);};inputs.push(captured.clone());}
     if let Some(context)=&style.liquify {
@@ -420,7 +607,10 @@ fn sampling(name:&mut Recipe,value:&layer_core::EffectSampling) {
     use layer_core::EffectSampling as S;name.tag(value);
     match value {S::Neighborhood {radius}=>name.add(radius),S::Parameter {key,scale,padding}=>name.add(&(key,scale.to_bits(),padding)),S::Sum {parameters,padding}=>{name.add(&(parameters.len(),padding));for parameter in parameters.iter() {name.add(&(&parameter.key,parameter.scale.to_bits()));}},S::Document=>{}}
 }
+#[cfg(test)]
+fn record_read() {crate::test_support::PassCounts {signature_reads:1,..Default::default()}.record();}
 fn effect_version(effect:layer_core::EffectView<'_>)->Result<ContentVersion,GpuRasterError> {
+    #[cfg(test)] record_read();
     let p=effect.program;let mut inputs=Vec::new();let mut name=Recipe::new();
     name.add(&(p.abi,&p.id,&p.constant_color,&p.entry,p.period.map(f32::to_bits),p.time));name.tag(&p.kind);name.tag(&p.alpha);name.tag(&p.space);name.tag(&p.resolution);
     name.add(&p.passes.len());for pass in p.passes.iter() {name.add(&pass.entry);sampling(&mut name,&pass.sampling);}
@@ -470,9 +660,9 @@ fn recipe(value:&impl Hash)->ContentStamp {let mut recipe=Recipe::new();recipe.a
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub(crate) struct PreviewQuality { pub level:u32, pub contribution:bool, pub requires_base:bool }
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum PreviewStage { Seed, BeforeBatch(usize), AfterBatch(usize), BeforeFill, Final }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) enum PreviewPass { Color, Coverage, Wetness, Transport, StrokeStart, Reservoir }
 #[derive(Clone)]
 pub(crate) struct PreviewVersion {
@@ -482,6 +672,8 @@ pub(crate) struct PreviewVersion {
     plane:RasterPlane,
     coordinate:[u32;2],
     stage:PreviewStage,
+    pass:PreviewPass,
+    step:Option<(PreviewPass,u32)>,
 }
 impl PreviewVersion {
     pub fn input(&self)->&raster::contents::Intent {&self.input}
@@ -489,7 +681,7 @@ impl PreviewVersion {
     pub fn same_declaration(&self,declaration:&Arc<PreviewDeclaration>)->bool {Arc::ptr_eq(&self.declaration.accepted,&declaration.accepted)}
     pub fn intermediate(&self,pass:PreviewPass,step:u32)->Self {
         if !matches!(self.plane,RasterPlane::Color|RasterPlane::WatercolorWetness) || !self.declaration.transport_output(self.coordinate,self.stage) {return self.clone();}
-        Self {version:ContentVersion::derive(recipe(&(pass,step)),std::slice::from_ref(&self.version)),..self.clone()}
+        Self {version:ContentVersion::derive(recipe(&(pass,step)),std::slice::from_ref(&self.version)),step:Some((pass,step)),..self.clone()}
     }
 }
 #[derive(Clone)]
@@ -499,7 +691,7 @@ impl PreviewCommand {
     fn coordinates(&self,region:PixelRect)->impl Iterator<Item=[u32;2]>+'_ {self.outputs.iter().copied().filter(move |coordinate|!page_rect(*coordinate).intersect(region).is_empty())}
 }
 #[derive(Clone)]
-pub(crate) struct PreviewSeed {pub plane:RasterPlane,pub coordinate:[u32;2],pub pass:PreviewPass,pub versions:Vec<ContentVersion>}
+pub(crate) struct PreviewSeed {pub plane:RasterPlane,pub coordinate:[u32;2],pub pass:PreviewPass,pub versions:Vec<ContentVersion>,pub committed:bool}
 #[derive(Clone)]
 struct PreviewFill {operation:layer_core::RasterOperation,definition:ContentVersion,coverage:Option<raster::contents::Versions>}
 #[derive(Clone)]
@@ -507,69 +699,74 @@ pub(crate) struct PreviewDeclaration {
     source:SceneSnapshot,
     target:SourceTarget,
     versions:raster::contents::Versions,
-    inputs:HashMap<SourceTarget,Input>,
+    inputs:IdMap<SourceTarget,Input>,
     commands:Vec<PreviewCommand>,
     fill:Option<PreviewFill>,
     quality:PreviewQuality,
-    wetness_before:HashMap<usize,usize>,
-    transport_outputs:HashMap<usize,std::collections::BTreeSet<[u32;2]>>,
-    seed_inputs:HashMap<AcceptedKey,ContentVersion>,
+    wetness_before:IdMap<usize,usize>,
+    transport_outputs:IdMap<usize,std::collections::BTreeSet<[u32;2]>>,
+    seed_inputs:IdMap<AcceptedKey,(ContentVersion,bool)>,
     selection:Option<raster::contents::Intent>,
     context:ContentStamp,
-    accepted:Arc<Mutex<HashMap<AcceptedKey,CapturedInputs>>>,
-    memo:Arc<Mutex<HashMap<PreviewRequest,ContentVersion>>>,
+    accepted:Arc<Mutex<IdMap<AcceptedKey,CapturedInputs>>>,
+    memo:Arc<Mutex<IdMap<PreviewRequest,ContentVersion>>>,
+    stamps:Option<(Arc<PreviewStamps>,ContentStamp)>,
 }
+#[derive(Default)]
+pub(crate) struct PreviewStamps {accepted:Mutex<IdSet<[u32;2]>>}
 #[derive(Clone,Copy,PartialEq,Eq,Hash)]
 struct AcceptedKey {plane:usize,coordinate:[u32;2],stage:PreviewStage,pass:PreviewPass}
 struct CapturedInputs {_proofs:Vec<resident::Input>,version:ContentVersion}
 #[derive(Clone,Copy,PartialEq,Eq,Hash)]
 struct PreviewRequest {plane:usize,bounds:[u32;4],stage:PreviewStage,pass:PreviewPass}
 impl PreviewDeclaration {
-    pub fn capture(r:&WgpuRasterizer,packet:FramePacket<'_>,quality:PreviewQuality,inputs:HashMap<SourceTarget,Input>)->Result<Option<Self>,GpuRasterError> {
+    pub fn capture(r:&WgpuRasterizer,packet:FramePacket<'_>,quality:PreviewQuality,inputs:IdMap<SourceTarget,Input>)->Result<Option<Self>,GpuRasterError> {
         let plans=brush_tiles::plan_packet(packet,|target|packet.scene.target_extent(target))?;
         let rectangular=r.preview_from_persistent(packet.dab_batches) && !WgpuRasterizer::sparse_preview(packet.dab_batches);
         let plans:Vec<_>=packet.dab_batches.iter().zip(plans).map(|(batch,tiles)|brush_tiles::destinations(&tiles,batch_pixel_rect(batch,packet.scene.target_extent(batch.target)),batch.kind==DabBatchKind::Preview && rectangular,batch.first_dab).into_owned()).collect();
-        Self::capture_with_plans(r,packet,quality,inputs,&plans)
+        Self::capture_with_plans(r,packet,quality,inputs,&plans,None)
     }
-    pub fn capture_with_plans(r:&WgpuRasterizer,packet:FramePacket<'_>,quality:PreviewQuality,inputs:HashMap<SourceTarget,Input>,plans:&[Vec<BrushTile>])->Result<Option<Self>,GpuRasterError> {
+    pub fn capture_with_plans(r:&WgpuRasterizer,packet:FramePacket<'_>,quality:PreviewQuality,inputs:IdMap<SourceTarget,Input>,plans:&[Vec<BrushTile>],stamps:Option<Arc<PreviewStamps>>)->Result<Option<Self>,GpuRasterError> {
         let target=packet.dab_batches.iter().find(|batch|batch.kind==DabBatchKind::Preview).map(|batch|batch.target).or_else(||r.fill_preview.as_ref().map(|fill|fill.target));
         let Some(target)=target else {return Ok(None);};
-        let mut versions=HashMap::new();versions.insert(target,r.raster_versions(packet.scene,target)?);
-        let mut declaration=Self::from_plans(packet,versions,inputs,quality,r.fill_preview.clone(),plans)?;
+        let mut versions=IdMap::default();versions.insert(target,r.raster_versions(packet.scene,target)?);
+        let mut declaration=Self::from_plans(packet,versions,inputs,quality,r.fill_preview.clone(),plans,stamps)?;
         if let Some(declaration)=&mut declaration && let Some(fill)=&mut declaration.fill {
             fill.coverage=Some(r.coverage_versions(&fill.operation.coverage)?);
         }
         if let Some(declaration)=&mut declaration {declaration.selection=Some(r.raster_intent(target,source_plane(target),[0;2])?);}
         Ok(declaration)
     }
-    pub fn from_scene(packet:FramePacket<'_>,versions:HashMap<SourceTarget,raster::contents::Versions>,inputs:HashMap<SourceTarget,Input>,quality:PreviewQuality,
-        fill:Option<layer_render::FillPreview>)->Result<Option<Self>,GpuRasterError> {
+    pub fn from_scene(packet:FramePacket<'_>,versions:IdMap<SourceTarget,raster::contents::Versions>,inputs:IdMap<SourceTarget,Input>,quality:PreviewQuality,
+        fill:Option<layer_render::FillPreview>,stamps:Option<Arc<PreviewStamps>>)->Result<Option<Self>,GpuRasterError> {
         let plans=brush_tiles::plan_packet(packet,|target|packet.scene.target_extent(target))?;
         let rectangular=quality.requires_base && !WgpuRasterizer::sparse_preview(packet.dab_batches);
         let plans:Vec<_>=packet.dab_batches.iter().zip(plans).map(|(batch,tiles)|brush_tiles::destinations(&tiles,batch_pixel_rect(batch,packet.scene.target_extent(batch.target)),batch.kind==DabBatchKind::Preview && rectangular,batch.first_dab).into_owned()).collect();
-        Self::from_plans(packet,versions,inputs,quality,fill,&plans)
+        Self::from_plans(packet,versions,inputs,quality,fill,&plans,stamps)
     }
-    fn from_plans(packet:FramePacket<'_>,mut versions:HashMap<SourceTarget,raster::contents::Versions>,inputs:HashMap<SourceTarget,Input>,quality:PreviewQuality,
-        fill:Option<layer_render::FillPreview>,plans:&[Vec<BrushTile>])->Result<Option<Self>,GpuRasterError> {
+    fn from_plans(packet:FramePacket<'_>,mut versions:IdMap<SourceTarget,raster::contents::Versions>,inputs:IdMap<SourceTarget,Input>,quality:PreviewQuality,
+        fill:Option<layer_render::FillPreview>,plans:&[Vec<BrushTile>],stamps:Option<Arc<PreviewStamps>>)->Result<Option<Self>,GpuRasterError> {
         let target=packet.dab_batches.iter().find(|batch|batch.kind==DabBatchKind::Preview).map(|batch|batch.target).or_else(||fill.as_ref().map(|fill|fill.target));
         let Some(target)=target else {return Ok(None);};
         if packet.dab_batches.iter().any(|batch|batch.kind==DabBatchKind::Preview && batch.target!=target) || fill.as_ref().is_some_and(|fill|fill.target!=target) {return Err(GpuRasterError::MultiplePreviewLayers);}
         if plans.len()!=packet.dab_batches.len() {return Err(GpuRasterError::InvalidDabRange);}
         let versions=match versions.remove(&target) {Some(versions)=>versions,None=>raster::contents::declared_versions(packet.scene,target)?};
+        let stamped=stamps.is_some() && fill.is_none();
         let commands:Vec<PreviewCommand>=packet.dab_batches.iter().enumerate().filter(|(_,batch)|batch.kind==DabBatchKind::Preview).map(|(index,batch)| {
             let end=batch.first_dab.checked_add(batch.dab_count).ok_or(GpuRasterError::InvalidDabRange)?;
-            let dabs=packet.dabs.get(batch.first_dab as usize..end as usize).ok_or(GpuRasterError::InvalidDabRange)?.to_vec();
+            let dabs=packet.dabs.get(batch.first_dab as usize..end as usize).ok_or(GpuRasterError::InvalidDabRange)?;
             let outputs=if target.is_coverage() {page_coordinates(batch_pixel_rect(batch,packet.scene.target_extent(target))).collect()}else {plans[index].iter().map(|tile|tile.coordinate).collect()};
+            if stamped {return Ok(PreviewCommand {index,batch:batch.clone(),dabs:Vec::new(),outputs,definition:None});}
             let mut definition=preview_version(packet,batch,inputs.get(&target).map(|input|&input.version))?;
             if let Some(captured)=inputs.get(&target) {definition=definition.map(|definition|ContentVersion::derive(0x696e707574,&[definition,captured.version.clone()]));}
-            Ok(PreviewCommand {index,batch:batch.clone(),dabs,outputs,definition})
+            Ok(PreviewCommand {index,batch:batch.clone(),dabs:dabs.to_vec(),outputs,definition})
         }).collect::<Result<_,GpuRasterError>>()?;
         let fill=fill.map(|fill| {
             let operation=fill.operation;let definition=operation_version(&operation,inputs.get(&target))?;
             let coverage=match raster::contents::declared_coverage_versions(&operation.coverage.source) {Ok(versions)=>Some(versions),Err(GpuRasterError::NotReady)=>None,Err(error)=>return Err(error)};
             Ok(PreviewFill {operation,definition,coverage})
         }).transpose()?;
-        let mut wetness_before=HashMap::new();let mut first=0;
+        let mut wetness_before=IdMap::default();let mut first=0;
         for (index,batch) in packet.dab_batches.iter().enumerate() {
             if index==0 || !same_material_update(batch,&packet.dab_batches[index-1]) {first=index;}
             if batch.kind==DabBatchKind::Preview && batch.style.execution==BrushExecution::Watercolor {wetness_before.insert(index,first);}
@@ -579,15 +776,17 @@ impl PreviewDeclaration {
             (command.index,outputs)
         }).collect();
         let mut context=Recipe::new();context.add(&(packet.document_extent,packet.scene.composition().color,packet.scene.color_mode(target)));context.tag(&packet.blend_space);
-        Ok(Some(Self {source:packet.scene.snapshot(),target,versions,inputs,commands,fill,quality,wetness_before,transport_outputs,seed_inputs:HashMap::new(),selection:None,context:context.0,accepted:Arc::default(),memo:Arc::default()}))
+        Ok(Some(Self {source:packet.scene.snapshot(),target,versions,inputs,commands,fill,quality,wetness_before,transport_outputs,seed_inputs:IdMap::default(),selection:None,context:context.0,accepted:Arc::default(),memo:Arc::default(),
+            stamps:stamps.map(|stamps|(stamps,layer_core::raster::ContentName::fresh().stamp()))}))
     }
     pub fn captured_version(pass:PreviewPass,versions:&[ContentVersion])->ContentVersion {ContentVersion::derive(recipe(&pass),versions)}
-    pub fn matches_metadata(&self,r:&WgpuRasterizer,packet:FramePacket<'_>,quality:PreviewQuality,inputs:&HashMap<SourceTarget,Input>)->Result<bool,GpuRasterError> {
-        if self.quality!=quality || self.inputs.len()!=inputs.len() {return Ok(false);}
-        let current=r.raster_intent(self.target,source_plane(self.target),[0;2])?;
-        if self.selection.as_ref().is_none_or(|selection|!selection.same_selection(&current)) {return Ok(false);}
-        for (target,held) in &self.inputs {if inputs.get(target).is_none_or(|input|held.version.matches(&input.version)!=Some(true)) {return Ok(false);}}
-        let candidate=Self::capture(r,packet,quality,inputs.clone())?;let Some(candidate)=candidate else {return Ok(false);};
+    pub fn matches_metadata(&self,candidate:&Self)->Result<bool,GpuRasterError> {
+        if self.target!=candidate.target || self.quality!=candidate.quality || self.inputs.len()!=candidate.inputs.len()
+            || self.wetness_before!=candidate.wetness_before || self.transport_outputs!=candidate.transport_outputs
+            || !self.commands.iter().map(|command|(command.index,&command.outputs))
+                .eq(candidate.commands.iter().map(|command|(command.index,&command.outputs))) {return Ok(false);}
+        if !self.selection.as_ref().zip(candidate.selection.as_ref()).is_some_and(|(held,current)|held.same_selection(current)) {return Ok(false);}
+        for (target,held) in &self.inputs {if candidate.inputs.get(target).is_none_or(|input|held.version.matches(&input.version)!=Some(true)) {return Ok(false);}}
         match (self.program_version(),candidate.program_version()) {
             (Ok(held),Ok(wanted))=>Ok(held.matches(&wanted)==Some(true)),
             (Err(GpuRasterError::NotReady),_)|(_,Err(GpuRasterError::NotReady))=>Ok(false),
@@ -597,10 +796,30 @@ impl PreviewDeclaration {
     pub fn matches_history(&self,mut current:impl FnMut(RasterPlane,[u32;2],PreviewPass)->Option<ContentVersion>)->bool {
         self.required_seed_inputs().into_iter().all(|(plane,coordinate,pass)| {
             let key=AcceptedKey {plane:raster::contents::index(plane),coordinate,stage:PreviewStage::Seed,pass};
-            self.seed_inputs.get(&key).is_some_and(|held|current(plane,coordinate,pass).is_some_and(|current|held.matches(&current)==Some(true)))
+            self.seed_inputs.get(&key).is_some_and(|(held,_)|current(plane,coordinate,pass).is_some_and(|current|held.matches(&current)==Some(true)))
         })
     }
     pub fn target(&self)->SourceTarget {self.target}
+    pub(crate) fn contact_outputs(&self)->Option<impl Iterator<Item=[u32;2]>+'_> {
+        self.fill.is_none().then(||self.commands.iter().flat_map(|command|command.outputs.iter().copied()))
+    }
+    pub(crate) fn level(&self)->u32 {self.quality.level}
+    pub fn in_contact(&self)->bool {self.stamps.is_some()}
+    pub fn finishes(&self,ticket:&PreviewVersion,target:SourceTarget,plane:RasterPlane,coordinate:[u32;2])->bool {
+        if target!=self.target || !Arc::ptr_eq(&ticket.declaration.accepted,&self.accepted) || ticket.plane!=plane || ticket.coordinate!=coordinate
+            || ticket.pass!=plane_pass(plane) || ticket.step.is_some() {return false;}
+        match ticket.stage {
+            PreviewStage::Final=>true,
+            PreviewStage::Seed=>self.fill.is_none() && {
+                let footprint=self.footprint(page_rect(coordinate).intersect(PixelRect::full(self.source.view().target_extent(target))),PreviewStage::Final);
+                !self.commands.iter().any(|command|command.intersects(footprint))
+            },
+            PreviewStage::AfterBatch(index)=>self.stamps.is_some() && self.fill.is_none() && self.commands.iter().map(|command|command.index).max()==Some(index),
+            PreviewStage::BeforeBatch(_)|PreviewStage::BeforeFill=>false,
+        }
+    }
+    pub fn accepted(&self,coordinate:[u32;2])->bool {self.stamps.as_ref().is_some_and(|(stamps,_)|stamps.accepted.lock().unwrap().contains(&coordinate))}
+    pub fn accepts(&self,coordinate:[u32;2])->bool {self.stamps.as_ref().is_none_or(|(stamps,_)|stamps.accepted.lock().unwrap().insert(coordinate))}
     pub fn affects(&self,region:PixelRect)->bool {self.fill.is_some() || self.commands.iter().any(|command|command.intersects(region))}
     pub fn required_seed_inputs(&self)->Vec<(RasterPlane,[u32;2],PreviewPass)> {
         let mut keys=std::collections::BTreeSet::new();
@@ -621,6 +840,9 @@ impl PreviewDeclaration {
             _=>false,
         }).map(|command|PreviewStage::BeforeBatch(command.index))
     }
+    pub fn committed_seed(&self,coordinate:[u32;2])->bool {
+        self.seed_inputs.get(&AcceptedKey {plane:raster::contents::index(RasterPlane::Color),coordinate,stage:PreviewStage::Seed,pass:PreviewPass::StrokeStart}).is_some_and(|(_,committed)|*committed)
+    }
     pub fn seed_batch(&self,plane:RasterPlane,coordinate:[u32;2],pass:PreviewPass)->Option<&DabBatch> {
         let PreviewStage::BeforeBatch(index)=self.seed_stage(plane,coordinate,pass)? else {return None;};
         self.commands.iter().find(|command|command.index==index).map(|command|&command.batch)
@@ -629,7 +851,7 @@ impl PreviewDeclaration {
         for seed in seeds {
             let key=AcceptedKey {plane:raster::contents::index(seed.plane),coordinate:seed.coordinate,stage:PreviewStage::Seed,pass:seed.pass};
             let version=Self::captured_version(seed.pass,&seed.versions);
-            if let Some(previous)=self.seed_inputs.insert(key,version.clone()) && previous.matches(&version)!=Some(true) {return Err(GpuRasterError::Effect("Preview seed inputs changed after declaration".into()));}
+            if let Some((previous,_))=self.seed_inputs.insert(key,(version.clone(),seed.committed)) && previous.matches(&version)!=Some(true) {return Err(GpuRasterError::Effect("Preview seed inputs changed after declaration".into()));}
         }
         Ok(self)
     }
@@ -650,7 +872,7 @@ impl PreviewDeclaration {
         if target!=self.target {return Err(GpuRasterError::MissingPaintLayer(target));}
         let versions=proofs.iter().map(|input|input.version().clone()).collect::<Vec<_>>();
         let version=Self::captured_version(pass,&versions);let key=AcceptedKey {plane:raster::contents::index(plane),coordinate,stage:self.page_stage(plane,coordinate,stage),pass};
-        if key.stage==PreviewStage::Seed && let Some(wanted)=self.seed_inputs.get(&key) && wanted.matches(&version)!=Some(true) {return Err(GpuRasterError::Effect("Preview seed proof differs from its declaration".into()));}
+        if key.stage==PreviewStage::Seed && let Some((wanted,_))=self.seed_inputs.get(&key) && wanted.matches(&version)!=Some(true) {return Err(GpuRasterError::Effect("Preview seed proof differs from its declaration".into()));}
         let mut accepted=self.accepted.lock().unwrap();
         if let Some(existing)=accepted.get(&key) {
             if existing.version.matches(&version)!=Some(true) {return Err(GpuRasterError::Effect("Preview inputs changed after acceptance".into()));}
@@ -665,32 +887,40 @@ impl PreviewDeclaration {
         self.region_version_for(plane,page_rect(coordinate).intersect(PixelRect::full(self.source.view().target_extent(target))),stage,pass)
     }
     pub fn ticket(self:&Arc<Self>,target:SourceTarget,plane:RasterPlane,coordinate:[u32;2],stage:PreviewStage,input:raster::contents::Intent)->Result<PreviewVersion,GpuRasterError> {
-        Ok(PreviewVersion {declaration:self.clone(),version:self.version(target,plane,coordinate,stage)?,input,plane,coordinate,stage})
+        Ok(PreviewVersion {declaration:self.clone(),version:self.version(target,plane,coordinate,stage)?,input,plane,coordinate,stage,pass:plane_pass(plane),step:None})
     }
     pub fn ticket_for_accepted(self:&Arc<Self>,target:SourceTarget,plane:RasterPlane,coordinate:[u32;2],stage:PreviewStage,pass:PreviewPass,input:raster::contents::Intent)->Result<PreviewVersion,GpuRasterError> {
-        Ok(PreviewVersion {declaration:self.clone(),version:self.version_for(target,plane,coordinate,stage,pass)?,input,plane,coordinate,stage})
+        Ok(PreviewVersion {declaration:self.clone(),version:self.version_for(target,plane,coordinate,stage,pass)?,input,plane,coordinate,stage,pass,step:None})
     }
     pub fn ticket_for(self:&Arc<Self>,target:SourceTarget,plane:RasterPlane,coordinate:[u32;2],stage:PreviewStage,pass:PreviewPass,input:raster::contents::Intent,proofs:Vec<resident::Input>)->Result<PreviewVersion,GpuRasterError> {
         self.accept_inputs(target,plane,coordinate,stage,pass,proofs)?;
-        Ok(PreviewVersion {declaration:self.clone(),version:self.version_for(target,plane,coordinate,stage,pass)?,input,plane,coordinate,stage})
+        Ok(PreviewVersion {declaration:self.clone(),version:self.version_for(target,plane,coordinate,stage,pass)?,input,plane,coordinate,stage,pass,step:None})
     }
     pub fn region_version(&self,plane:RasterPlane,region:PixelRect,stage:PreviewStage)->Result<ContentVersion,GpuRasterError> {self.region_version_for(plane,region,stage,plane_pass(plane))}
     fn region_version_for(&self,plane:RasterPlane,region:PixelRect,stage:PreviewStage,pass:PreviewPass)->Result<ContentVersion,GpuRasterError> {
         let stage=if let PreviewStage::BeforeBatch(index)=stage {self.source_stage(plane,index)}else {stage};
         let key=PreviewRequest {plane:raster::contents::index(plane),bounds:region_bounds(region),stage,pass};
         if let Some(version)=self.memo.lock().unwrap().get(&key) {return Ok(version.clone());}
-        let version=self.compute_region(plane,region,stage,pass)?;self.memo.lock().unwrap().insert(key,version.clone());Ok(version)
+        #[cfg(test)] crate::test_support::record_preview_region((key.plane,key.bounds,key.stage,key.pass));
+        let footprint=self.footprint(region,stage);
+        let version=match self.stamped(plane,region,footprint,stage,pass) {Some(version)=>version,None=>self.compute_region(plane,region,footprint,stage,pass)?};
+        self.memo.lock().unwrap().insert(key,version.clone());Ok(version)
     }
-    fn compute_region(&self,plane:RasterPlane,region:PixelRect,stage:PreviewStage,pass:PreviewPass)->Result<ContentVersion,GpuRasterError> {
+    fn footprint(&self,region:PixelRect,stage:PreviewStage)->PixelRect {
+        let extent=self.source.view().target_extent(self.target);
+        self.transport_outputs.iter().filter(|(index,outputs)|included_stage(stage,**index) && outputs.iter().any(|coordinate|!page_rect(*coordinate).intersect(region).is_empty()))
+            .fold(region,|footprint,_|footprint.union(region.expand(PAGE_SIZE*WATERCOLOR_TRANSPORT_STEPS,extent)))
+    }
+    fn stamped(&self,plane:RasterPlane,region:PixelRect,footprint:PixelRect,stage:PreviewStage,pass:PreviewPass)->Option<ContentVersion> {
+        let (_,frame)=self.stamps.as_ref().filter(|_|self.fill.is_none())?;
+        let last=self.commands.iter().filter(|command|included_stage(stage,command.index) && command.intersects(footprint)).map(|command|command.index).max()?;
+        Some(ContentVersion::derive(recipe(&(*frame,self.target,raster::contents::index(plane),self.quality,pass,last,region_bounds(region),region_bounds(footprint))),&[]))
+    }
+    fn compute_region(&self,plane:RasterPlane,region:PixelRect,footprint:PixelRect,stage:PreviewStage,pass:PreviewPass)->Result<ContentVersion,GpuRasterError> {
+        #[cfg(test)] if self.commands.iter().any(|command|included_stage(stage,command.index) && command.intersects(footprint)) {crate::test_support::PassCounts {preview_computations:1,..Default::default()}.record();}
         let mut name=Recipe::new();name.add(&(self.context,self.target,raster::contents::index(plane),self.quality,pass));let mut inputs=Vec::new();
         let extent=self.source.view().target_extent(self.target);
         if (self.quality.requires_base || self.fill.is_some()) && matches!(pass,PreviewPass::Color|PreviewPass::Wetness) {inputs.push(self.versions.region(plane,region));}
-        let mut footprint=region;
-        for (index,outputs) in &self.transport_outputs {
-            if included_stage(stage,*index) && outputs.iter().any(|coordinate|!page_rect(*coordinate).intersect(region).is_empty()) {
-                footprint=footprint.union(region.expand(PAGE_SIZE*WATERCOLOR_TRANSPORT_STEPS,extent));
-            }
-        }
         for command in &self.commands {
             if !included_stage(stage,command.index) || !command.intersects(footprint) {continue;}
             inputs.push(command.definition.clone().ok_or(GpuRasterError::NotReady)?);
@@ -707,7 +937,7 @@ impl PreviewDeclaration {
             if let Some(versions)=&fill.coverage {inputs.push(versions.region(RasterPlane::Mask,local));}
             else {return Err(GpuRasterError::NotReady);}
         }
-        let mut contact=std::collections::HashSet::new();
+        let mut contact=IdSet::default();
         for command in &self.commands {
             let plan=BrushPassPlan::for_style(&command.batch.style);
             if !self.target.is_coverage() && included_stage(stage,command.index) && (plan.state.coverage || WgpuRasterizer::tracks_stroke_start(&command.batch) || matches!(command.batch.style.execution,BrushExecution::Smudge|BrushExecution::Wet|BrushExecution::Watercolor)) {
@@ -732,10 +962,11 @@ impl PreviewDeclaration {
         Ok(ContentVersion::derive(recipe(&(self.context,self.target)),&inputs))
     }
     pub fn authored_version(&self)->Result<ContentVersion,GpuRasterError> {
+        if let Some((_,frame))=self.stamps.as_ref().filter(|_|self.fill.is_none()) {return Ok(ContentVersion::derive(recipe(&(*frame,self.context,self.target)),&[]));}
         let mut inputs=vec![self.program_version()?];
         for (plane,coordinate,pass) in self.required_seed_inputs() {
             let key=AcceptedKey {plane:raster::contents::index(plane),coordinate,stage:PreviewStage::Seed,pass};
-            let seed=self.seed_inputs.get(&key).ok_or(GpuRasterError::NotReady)?;
+            let (seed,_)=self.seed_inputs.get(&key).ok_or(GpuRasterError::NotReady)?;
             inputs.push(ContentVersion::derive(recipe(&(key.plane,key.coordinate,key.pass)),std::slice::from_ref(seed)));
         }
         Ok(ContentVersion::derive(0x73656564696e707574,&inputs))
@@ -776,16 +1007,21 @@ fn scene_version(scene:&SceneSnapshot,scope:&SceneScope)->Result<ContentVersion,
     let size=scene.view().composition().size;
     let packet=FramePacket {restore_rasters:&[],time_seconds:scene.context.elapsed,view:layer_render::ViewState {width_px:size[0],height_px:size[1],document_to_surface:[1.,0.,0.,1.,0.,0.]},
         document_extent:size,scene:scene.view().with_scope(scope),inspect_mask:None,selection_overlays:None,dabs:&[],dab_batches:&[],reset_layers:false,commit_rasters:true,composite_all:false,blend_space:scene.view().composition().blend};
-    let frame=Prepared::from_scene(packet,Declared::default())?;
-    let node=graph::compose(packet,None,None,0,scene.view().composition().color.space,None,None)?;
-    frame.authored_version(&node)
+    let reads=Reads::of(packet)?;
+    Prepared::read(packet,Declared::default(),&reads)?.authored_version(&reads.node)
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use layer_core::{Document, authored::*, raster::{CanonicalName,RasterData,RasterRevision,RasterTile,TileKey}};
     use crate::test_support::{packet,dab_batch};
+
+    pub(in crate::scene::scale) fn cached_len(frame:&Prepared)->usize {frame.memo.lock().unwrap().entries.len()}
+    pub(in crate::scene::scale) fn cached_cells(frame:&Prepared,node:&graph::Node,level:u32)->IdMap<[i64;4],ContentVersion> {
+        frame.memo.lock().unwrap().entries.iter().filter(|(request,_)|Arc::ptr_eq(&request.node.0,node) && request.level==level && !request.global && !request.source_chunk)
+            .map(|(request,entry)|(request.region,entry.version.clone())).collect()
+    }
 
     fn document()->(Document,SourceTarget) {
         let mut artwork=Artwork::new([1024,512]).unwrap();
@@ -804,6 +1040,26 @@ mod tests {
     fn tile()->RasterTile {RasterTile::pending(RasterPlane::Color.descriptor(Default::default()))}
 
     #[test]
+    fn a_frame_reads_no_version_backing_or_effect_of_a_layer_nothing_composes() {
+        let reads=|unreferenced:usize| {
+            use super::super::tests::{document_at,effect_occurrence,insert_occurrence,paint_occurrence};
+            let mut doc=document_at([1024,512]);
+            for index in 0..unreferenced {
+                let hidden=paint_occurrence(&mut doc,&format!("Hidden {index}"),None);
+                doc.artwork.occurrences.get_mut(hidden).unwrap().visible=false;insert_occurrence(&mut doc,hidden,0);
+                let blur=effect_occurrence(&mut doc,layer_core::EffectInstance::new(crate::tests::fixture("gaussian_blur").program()),"Hidden blur");
+                doc.artwork.occurrences.get_mut(blur).unwrap().visible=false;insert_occurrence(&mut doc,blur,0);
+                paint_occurrence(&mut doc,&format!("Unplaced {index}"),None);
+            }
+            let r=WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
+            let counts=crate::test_support::PassCounts::snapshot();
+            Prepared::capture(&r,packet(doc.scene(),[1024,512]),Declared::default()).unwrap();
+            crate::test_support::PassCounts::snapshot().delta(counts).signature_reads
+        };
+        assert_eq!(reads(9),reads(0),"a frame reads the versions, backing and effect definitions of the layers it composes, whatever else the document holds");
+    }
+
+    #[test]
     fn regional_names_ignore_unrelated_tiles_and_restore_the_undo_name() {
         let (mut document,target)=document();let node=source(target);
         let key=|x|TileKey {plane:RasterPlane::Color,coordinate:[x,0]};
@@ -815,10 +1071,10 @@ mod tests {
         assert_eq!(initial.matches(&version(&prepared(&document),&node)),Some(false));
         let restored=Prepared::from_snapshot(before.snapshot());
         assert_eq!(initial.matches(&version(&restored,&node)),Some(true));
-        assert_eq!(restored.memo.lock().unwrap().len(),1);
-        version(&restored,&node);assert_eq!(restored.memo.lock().unwrap().len(),1);
+        assert_eq!(restored.memo.lock().unwrap().entries.len(),1);
+        version(&restored,&node);assert_eq!(restored.memo.lock().unwrap().entries.len(),1);
         restored.expected(&node,PixelRect::new(0,0,256,256).into(),0,1).unwrap();
-        assert_eq!(restored.memo.lock().unwrap().len(),2,"the input level is part of the per-frame memo key");
+        assert_eq!(restored.memo.lock().unwrap().entries.len(),2,"the input level is part of the per-frame memo key");
     }
 
     #[test]
@@ -952,13 +1208,82 @@ mod tests {
     }
 
     #[test]
+    fn pruned_frames_keep_the_readers_of_kept_roots_so_a_later_tile_write_replans_its_cell() {
+        let (mut document,target)=document();let key=|x,y|TileKey {plane:RasterPlane::Color,coordinate:[x,y]};
+        let mut data=RasterData::default();for x in 0..4 {for y in 0..2 {data.tiles.insert(key(x,y),tile());}}
+        install(&mut document,target,data.clone());
+        let root=(0..40).fold(source(target),|node,step|Arc::new(graph::Expression::Opacity {input:node,opacity:(1.-step as f32/64.).to_bits()}));
+        let cells=(0..4).flat_map(|x|(0..2).map(move|y|PixelRect::new(x*256,y*256,(x+1)*256,(y+1)*256))).collect::<Vec<_>>();
+        let roots=|frame:&Prepared|cells.iter().map(|cell|frame.expected(&root,(*cell).into(),0,0).unwrap().identity()).collect::<Vec<_>>();
+        let other=Arc::new(graph::Expression::Opacity {input:source(target),opacity:0.5f32.to_bits()});
+        let mut frame=prepared(&document);roots(&frame);
+        let mut unrelated=0;
+        loop {
+            let held=cached_len(&frame);let next=prepared(&document);next.carry(&frame);
+            let pruned=cached_len(&next)<held;roots(&next);frame=next;
+            if pruned {break;}
+            for _ in 0..8 {unrelated+=1;frame.expected(&other,PixelRect::new(unrelated,0,unrelated+1,1).into(),0,0).unwrap();}
+            assert!(unrelated<16384,"a frame that reads only the roots eventually prunes the unrelated keys");
+        }
+        data.tiles.insert(key(1,0),tile());install(&mut document,target,data);
+        let written=prepared(&document);written.carry(&frame);
+        assert_eq!(roots(&written),roots(&prepared(&document)),"after pruned frames, a tile write re-plans the cell that reads it");
+    }
+
+    #[test]
+    fn a_prune_reports_one_bounding_region_per_level_whatever_it_drops() {
+        let (document,target)=document();
+        let other=Arc::new(graph::Expression::Opacity {input:source(target),opacity:0.5f32.to_bits()});
+        let read=|frame:&Prepared,keys:std::ops::Range<u32>|for x in keys {frame.expected(&other,PixelRect::new(x,0,x+1,1).into(),0,0).unwrap();};
+        let first=prepared(&document);read(&first,0..5000);
+        let second=prepared(&document);second.carry(&first).unwrap();read(&second,5000..15300);
+        let held=cached_len(&second);let third=prepared(&document);let regions=third.carry(&second).unwrap();
+        assert!(cached_len(&third)<held,"the keys the last frame did not read are pruned");
+        let levels=regions.iter().map(|(level,_)|*level).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(regions.len(),levels.len(),"a carry reports one bounding region per level, not one per pruned key");
+    }
+
+    pub(in crate::scene::scale) fn assert_authored_versions_are_exact(frame:&Prepared) {
+        let fresh=Prepared::from_snapshot(frame.snapshot.clone());
+        let held=frame.authored.lock().unwrap().keys().cloned().collect::<Vec<_>>();
+        for node in held {
+            let carried=frame.authored_version(&node.0).map(|version|version.identity());
+            assert_eq!(carried.ok(),fresh.authored_version(&node.0).map(|version|version.identity()).ok(),"a held authored version equals a fresh evaluation");
+        }
+    }
+
+    #[test]
+    fn a_carry_keeps_the_authored_versions_of_nodes_that_read_no_changed_target() {
+        let mut artwork=Artwork::new([1024,512]).unwrap();
+        let (_,a)=crate::test_support::add_paint(&mut artwork,"A",[1024,512]);let (_,b)=crate::test_support::add_paint(&mut artwork,"B",[1024,512]);
+        let mut document=Document::from_artwork(artwork).unwrap();
+        let tiles=|x|{let mut data=RasterData::default();data.tiles.insert(TileKey {plane:RasterPlane::Color,coordinate:[x,0]},tile());data};
+        install(&mut document,a,tiles(0));install(&mut document,b,tiles(1));
+        let [source_a,source_b]=[a,b].map(source);
+        let faded=Arc::new(graph::Expression::Opacity {input:source_b.clone(),opacity:0.5f32.to_bits()});
+        let root=Arc::new(graph::Expression::Combine {front:source_a.clone(),back:faded.clone(),blend:0,flags:0});
+        let held=|frame:&Prepared,node:&graph::Node|frame.authored.lock().unwrap().contains_key(&Expression(node.clone()));
+        let first=prepared(&document);let before=first.authored_revision(&root).unwrap();
+        install(&mut document,a,tiles(2));
+        let second=prepared(&document);second.carry(&first).unwrap();
+        assert!(held(&second,&source_b) && held(&second,&faded),"nodes that read only unchanged targets keep their authored versions");
+        assert!(!held(&second,&source_a) && !held(&second,&root),"nodes that read the changed target are evaluated again");
+        assert_ne!(before,second.authored_revision(&root).unwrap(),"the root follows the changed target");
+        assert_authored_versions_are_exact(&second);
+        install(&mut document,b,tiles(3));
+        let third=prepared(&document);third.carry(&second).unwrap();
+        assert!(held(&third,&source_a) && !held(&third,&source_b) && !held(&third,&faded) && !held(&third,&root));
+        third.authored_revision(&root).unwrap();assert_authored_versions_are_exact(&third);
+    }
+
+    #[test]
     fn repeated_root_lookups_use_held_expression_identity_without_revisiting_dependencies() {
         let (document,target)=document();let mut prepared=prepared(&document);let source=source(target);
         let mut root=source.clone();for _ in 0..28 {root=Arc::new(graph::Expression::Combine {front:root,back:source.clone(),blend:0,flags:0});}
-        let before=version(&prepared,&root);let authored=prepared.authored_revision(&root).unwrap();let memo=prepared.memo.lock().unwrap().len();let definitions=prepared.authored.lock().unwrap().len();
+        let before=version(&prepared,&root);let authored=prepared.authored_revision(&root).unwrap();let memo=prepared.memo.lock().unwrap().entries.len();let definitions=prepared.authored.lock().unwrap().len();
         Arc::get_mut(&mut prepared.snapshot).unwrap().rasters.clear();
         assert_eq!(before.matches(&version(&prepared,&root)),Some(true));assert_eq!(authored,prepared.authored_revision(&root).unwrap());
-        assert_eq!(memo,prepared.memo.lock().unwrap().len());assert_eq!(definitions,prepared.authored.lock().unwrap().len());
+        assert_eq!(memo,prepared.memo.lock().unwrap().entries.len());assert_eq!(definitions,prepared.authored.lock().unwrap().len());
         assert!(matches!(prepared.expected(&root,PixelRect::new(256,0,512,256).into(),0,0),Err(GpuRasterError::NotReady)));
     }
 
@@ -969,8 +1294,9 @@ mod tests {
     }
 
     fn preview_dab(x:f32)->Dab {Dab {center:layer_core::Point {x,y:32.},radii:[8.;2],rotation:[1.,0.],motion:[0.;2],color_rgba_linear:[1.;4],flow:1.,hardness:1.,texture_sign:[1.;2],material:[0.;4],previous:[0.;4],contact:[0.;4],previous_contact:[0.;4]}}
-    fn declaration(document:&Document,batches:&[DabBatch],dabs:&[Dab],fill:Option<layer_render::FillPreview>)->PreviewDeclaration {
-        PreviewDeclaration::from_scene(FramePacket {dab_batches:batches,dabs,..packet(document.scene(),document.composition().size)},HashMap::new(),HashMap::new(),PreviewQuality::default(),fill).unwrap().unwrap()
+    fn declaration(document:&Document,batches:&[DabBatch],dabs:&[Dab],fill:Option<layer_render::FillPreview>)->PreviewDeclaration {contact_declaration(document,batches,dabs,fill,None)}
+    fn contact_declaration(document:&Document,batches:&[DabBatch],dabs:&[Dab],fill:Option<layer_render::FillPreview>,stamps:Option<Arc<PreviewStamps>>)->PreviewDeclaration {
+        PreviewDeclaration::from_scene(FramePacket {dab_batches:batches,dabs,..packet(document.scene(),document.composition().size)},IdMap::default(),IdMap::default(),PreviewQuality::default(),fill,stamps).unwrap().unwrap()
     }
 
     #[test]
@@ -998,13 +1324,13 @@ mod tests {
         assert!(matches!(program.authored_version(),Err(GpuRasterError::NotReady)));
         let histories=program.required_seed_inputs();assert!(!histories.is_empty());
         let initial:ContentVersion=layer_core::raster::ContentName::fresh().into();
-        let seeds=histories.iter().map(|(plane,coordinate,pass)|PreviewSeed {plane:*plane,coordinate:*coordinate,pass:*pass,versions:vec![initial.clone()]}).collect();
+        let seeds=histories.iter().map(|(plane,coordinate,pass)|PreviewSeed {plane:*plane,coordinate:*coordinate,pass:*pass,versions:vec![initial.clone()],committed:false}).collect();
         let held=program.clone().with_seed_inputs(seeds).unwrap();let authored=held.authored_version().unwrap();
         held.accepted.lock().unwrap().insert(AcceptedKey {plane:0,coordinate:[0;2],stage:PreviewStage::AfterBatch(0),pass:PreviewPass::Color},CapturedInputs {_proofs:Vec::new(),version:ContentVersion::derive(10,&[])});
         assert_eq!(authored.matches(&held.authored_version().unwrap()),Some(true));
         let mut different_quality=held.clone();different_quality.quality=PreviewQuality {level:3,contribution:true,requires_base:true};
         assert_eq!(authored.matches(&different_quality.authored_version().unwrap()),Some(true));
-        let changed=program.with_seed_inputs(histories.iter().map(|(plane,coordinate,pass)|PreviewSeed {plane:*plane,coordinate:*coordinate,pass:*pass,versions:vec![ContentVersion::derive(11,&[])]}).collect()).unwrap();
+        let changed=program.with_seed_inputs(histories.iter().map(|(plane,coordinate,pass)|PreviewSeed {plane:*plane,coordinate:*coordinate,pass:*pass,versions:vec![ContentVersion::derive(11,&[])],committed:false}).collect()).unwrap();
         assert_eq!(authored.matches(&changed.authored_version().unwrap()),Some(false));
         assert!(matches!(held.seed_stage(RasterPlane::Color,[0;2],PreviewPass::Coverage),Some(PreviewStage::BeforeBatch(0))));
     }
@@ -1030,7 +1356,7 @@ mod tests {
         let program=Arc::new(declaration(&document,&[first,second],&[preview_dab(32.),preview_dab(288.)],None));
         let contents=raster::contents::Contents::new(Arc::new(RasterData::default()));let version=ContentVersion::derive(12,&[]);
         for coordinate in [[0,0],[1,0],[2,0]] {
-            let ticket=PreviewVersion {declaration:program.clone(),input:contents.intent(TileKey {plane:RasterPlane::Color,coordinate}),version:version.clone(),plane:RasterPlane::Color,coordinate,stage:PreviewStage::AfterBatch(1)};
+            let ticket=PreviewVersion {declaration:program.clone(),input:contents.intent(TileKey {plane:RasterPlane::Color,coordinate}),version:version.clone(),plane:RasterPlane::Color,coordinate,stage:PreviewStage::AfterBatch(1),pass:PreviewPass::Color,step:None};
             assert_eq!(ticket.intermediate(PreviewPass::Transport,0).version().matches(ticket.version()),Some(coordinate==[2,0]));
         }
         assert!(!program.transport_output([0,0],PreviewStage::AfterBatch(0)));

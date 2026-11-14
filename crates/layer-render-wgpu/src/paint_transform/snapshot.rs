@@ -5,6 +5,10 @@ use super::*;
 use pixel_transform::{TRANSFORM_SLOTS, TransformSource, TransformTile};
 use std::collections::BTreeMap;
 
+pub(crate) fn sampling_support(transform:&layer_core::ImageTransform)->u32 {
+    if transform.is_identity() {0}else {transform.placement.interpolation.support().max(1)}
+}
+
 #[derive(Clone)]
 pub(super) struct SnapshotPage {
     pub texture: wgpu::Texture,
@@ -61,7 +65,6 @@ pub(super) struct TileSnapshot {
         layer_core::raster::RasterPlane,
     )>,
     pub bounds: PixelRect,
-    pub decode_id: layer_core::authored::PortableId,
 }
 /// A destination rectangle and the source pages its samples read.
 pub(crate) struct Footprint {
@@ -133,40 +136,28 @@ impl TileSnapshot {
             .map_err(GpuRasterError::InvalidTransform)?;
         Ok(source)
     }
-    pub fn prepare_pages(&self, r: &mut WgpuRasterizer, coordinates: &[[u32;2]], encoder: &mut crate::submission::CommandEncoder) -> Result<Vec<crate::scene::sources::Lease>, GpuRasterError> {
-        let mut leases = Vec::new();
-        let mut pending = false;
+    pub fn prepare_pages(&self,r:&mut WgpuRasterizer,coordinates:&[[u32;2]],encoder:&mut crate::submission::CommandEncoder)->Result<Vec<crate::scene::sources::Lease>,GpuRasterError> {
+        let mut requested=crate::scene::sources::Inputs::default();
         let receipt=encoder.submission();
-        for coordinate in coordinates.iter().copied().filter(|c| self.contains(*c) && !self.pages.get(c).is_some_and(|page|page.readable(&receipt))) {
-            #[cfg(not(target_arch="wasm32"))]
-            if let Some((data, space, plane)) = &self.backing
-                && let Some(tile) = data.tiles.get(&layer_core::raster::TileKey {plane:*plane,coordinate}) {
-                let blob = match tile.try_backing() {
-                    Some(Ok(blob)) => blob,
-                    Some(Err(error)) => return Err(GpuRasterError::Effect(error)),
-                    None => {pending=true;continue;},
-                };
-                let view = r.source_tiles.borrow().prepared_raster_any_view(&blob, *space,r.document_color().space).cloned();
-                if let Some(view) = view {
-                    let tile=crate::scene::Scene::promote_source(r,encoder,crate::source_access::RawTile {texture:view.texture().clone(),view})?;
-                    leases.extend(r.source_tiles.borrow().lease(&tile.view));
+        let pending=coordinates.iter().copied().filter(|c|self.contains(*c) && !self.pages.get(c).is_some_and(|page|page.readable(&receipt)))
+            .try_fold(false,|pending,coordinate|->Result<bool,GpuRasterError> {
+                #[cfg(not(target_arch="wasm32"))]
+                if let Some((data,space,plane))=&self.backing && let Some(tile)=data.tiles.get(&layer_core::raster::TileKey {plane:*plane,coordinate}) {
+                    match tile.try_backing() {
+                        Some(Ok(blob))=>requested.raster(blob,*space,r.document_color().space),
+                        Some(Err(error))=>return Err(GpuRasterError::Effect(error)),
+                        None=>return Ok(true),
+                    }
+                    return Ok(pending);
                 }
-                else {r.request_raster_decode_to(blob, *space,r.device.working_space())?;pending=true;}
-                continue;
-            }
-            if let Some(base) = &self.base {
-                let bounds = page_rect(coordinate).intersect(source_access::paint_base_bounds(base));
-                let local = PixelRect::new(bounds.min_x()-base.offset[0],bounds.min_y()-base.offset[1],bounds.max_x()-base.offset[0],bounds.max_y()-base.offset[1]);
-                let mut ready = true;
-                for source_coordinate in page_coordinates(local) {
-                    let view = r.source_tiles.borrow().prepared_view(base.image.storage(),source_coordinate).cloned();
-                    if let Some(view) = view {leases.extend(r.source_tiles.borrow().lease(&view));}
-                    else {r.request_exact_image_decode(self.decode_id,base.image.storage().clone(),source_coordinate)?;ready=false;pending=true;}
-                }
-                if ready && let Some(tile) = r.paint_base_tile(base,coordinate,encoder)? {leases.extend(r.source_tiles.borrow().lease(&tile.view));}
-            }
-        }
-        if pending {Err(GpuRasterError::NotReady)} else {Ok(leases)}
+                if let Some(base)=&self.base {requested.base(base,coordinate,r.document_color().space);}
+                Ok(pending)
+            })?;
+        let accepted=requested.accept_query(r,None)?;
+        let ready=accepted.prepare(r)?;
+        accepted.clone().track(encoder);
+        if !accepted.encode(r,encoder,crate::residency::Class::Authored)? || !ready || pending {return Err(GpuRasterError::NotReady);}
+        Ok(accepted.into_iter().collect())
     }
     /// The original page at `coordinate`, decoded if it is not captured, or
     /// None where the layer has no pixels.
@@ -178,7 +169,7 @@ impl TileSnapshot {
     ) -> Result<Option<crate::source_access::RawTile>, GpuRasterError> {
         if let Some(page) = self.pages.get(&coordinate).filter(|page|page.readable(&encoder.submission())) {
             return Ok(Some(crate::source_access::RawTile {
-                texture: page.texture.clone(),
+                texture: page.texture.clone().into(),
                 view: page.view.clone(),
             }));
         }
@@ -389,7 +380,7 @@ impl SourceMap {
         mesh: Option<std::sync::Arc<super::mesh::MeshGeometry>>,
     ) -> Result<Self, GpuRasterError> {
         let invalid = GpuRasterError::InvalidTransform("Transform must be finite and invertible");
-        let support = f64::from(transform.placement.interpolation.support().max(1));
+        let support = f64::from(sampling_support(transform));
         let inset = if transform.placement.interpolation == layer_core::Interpolation::Nearest {
             0.5
         } else {
@@ -640,7 +631,7 @@ mod tests {
         let texture=read.value().texture.clone();
         assert!(read.alias(SnapshotPixels {view:texture.create_view(&Default::default()),texture}).is_none());
         let captured=SnapshotPage::captured(page.read(original,Some(&receipt)).unwrap()).unwrap();
-        let snapshot=TileSnapshot {pages:[([0,0],captured)].into(),base:None,backing:None,bounds:PixelRect::full([PAGE_SIZE;2]),decode_id:layer_core::PortableId::random()};
+        let snapshot=TileSnapshot {pages:[([0,0],captured)].into(),base:None,backing:None,bounds:PixelRect::full([PAGE_SIZE;2])};
         assert!(snapshot.original_page(&mut r,[0,0],&mut encoder).unwrap().is_some());
         page.clear(&mut encoder,0.75,layer_core::raster::ContentName::fresh()).unwrap();
         assert!(matches!(snapshot.original_page(&mut r,[0,0],&mut encoder),Err(GpuRasterError::NotReady)));

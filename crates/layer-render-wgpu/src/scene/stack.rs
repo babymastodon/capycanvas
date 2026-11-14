@@ -139,11 +139,11 @@ pub(super) fn owner_image<C: Compositor>(
 }
 
 pub(super) fn tile(
-    scene: &mut Scene, r: &WgpuRasterizer, packet: FramePacket<'_>, parent: Option<OccurrenceHandle>, coordinate: [u32; 2],
+    scene: &mut Scene, r: &WgpuRasterizer, packet: FramePacket<'_>, parent: Option<OccurrenceHandle>, coordinate: [u32; 2], accepted:&mut sources::AcceptedInputs,
 ) -> Result<usize, GpuRasterError> {
     let stop = scene.stop_before.take();
     let presented = scene.presented_backdrop;
-    let mut compositor = Tile { scene, r, packet, coordinate, stop, presented, waiting: false };
+    let mut compositor = Tile { scene, r, packet, coordinate, stop, presented, waiting: false,accepted };
     let result = compose(&mut compositor, packet.scene, parent, stop);
     let waiting = compositor.waiting;
     let result = result.and_then(|lease| if waiting {Err(GpuRasterError::NotReady)} else {Ok(scene.keep(lease))});
@@ -153,6 +153,7 @@ pub(super) fn tile(
 
 struct Tile<'a> {
     scene: &'a mut Scene,
+    accepted:&'a mut sources::AcceptedInputs,
     r: &'a WgpuRasterizer,
     packet: FramePacket<'a>,
     coordinate: [u32; 2],
@@ -176,7 +177,7 @@ impl Compositor for Tile<'_> {
     fn fade(&mut self, front: Self::Image, back: Self::Image, index: OccurrenceHandle) -> Result<Self::Image, GpuRasterError> {
         let group = self.packet.scene.occurrence(index).unwrap();
         let result = (|| if let Some((mask, source)) = self.packet.scene.mask(index).filter(|(m, _)| m.enabled) {
-            let coverage = self.scene.mask_at(self.r, mask, source, self.packet.scene.target_offset(SourceTarget::Coverage(mask.source)), self.coordinate)?;
+            let coverage = self.scene.mask_at(self.r, mask, source, self.packet.scene.target_offset(SourceTarget::Coverage(mask.source)), self.coordinate, self.accepted)?;
             let coverage = self.scene.own(coverage);
             let change = self.weighted_sum(&front, &back, [1., -1.])?;
             let masked = self.scene.reserve(self.r)?;
@@ -188,7 +189,7 @@ impl Compositor for Tile<'_> {
         Ok(self.ready(result)?.unwrap_or(back))
     }
     fn layer(&mut self, index: OccurrenceHandle) -> Result<Self::Image, GpuRasterError> {
-        let result = self.scene.layer(self.r, self.packet, index, self.coordinate);
+        let result = self.scene.layer(self.r, self.packet, index, self.coordinate, self.accepted);
         match self.ready(result)? {Some(output)=>Ok(self.scene.own(output)),None=>self.clear()}
     }
     fn blend(&mut self, front: Self::Image, back: Self::Image, index: OccurrenceHandle, clipped: bool) -> Result<Self::Image, GpuRasterError> {
@@ -197,15 +198,16 @@ impl Compositor for Tile<'_> {
         Ok(match self.ready(result)? {Some(output)=>self.scene.own(output),None=>back})
     }
     fn effect(&mut self, chain: &[OccurrenceHandle], input: Self::Image) -> Result<Self::Image, GpuRasterError> {
-        let result = self.scene.effect(self.r, self.packet, chain, self.coordinate, input.index);
+        let result = self.scene.effect(self.r, self.packet, chain, self.coordinate, input.index, self.accepted);
         Ok(match self.ready(result)? {Some(output)=>self.scene.own(output),None=>input})
     }
     fn has_content(&self, index: OccurrenceHandle) -> bool { has_content(self.r, self.packet.scene, index) }
     fn draw_normal(&mut self, index: OccurrenceHandle, output: &Self::Image) -> Result<bool, GpuRasterError> {
-        let result = self.scene.draw_normal_layer(self.r, self.packet, index, self.coordinate, output.index);
+        let result = self.scene.draw_normal_layer(self.r, self.packet, index, self.coordinate, output.index, self.accepted);
         Ok(self.ready(result)?.unwrap_or(true))
     }
     fn checkpoint(&mut self, parent: Option<OccurrenceHandle>) -> Result<Option<Checkpoint<Self::Image>>, GpuRasterError> {
+        if self.accepted.declaring() { return Ok(None); }
         let scene = self.packet.scene;
         let stop = stop_root(scene, parent, self.stop);
         let Some(handle) = scene.members(parent).find(|handle| {
@@ -298,7 +300,9 @@ mod tests {
             r.ensure_document_metadata([16;2],doc.scene()).unwrap();
             r.publish_cold_raster(mask_target,&data).unwrap();
             let mut scene=Scene::new(&r).unwrap();scene.object_display=true;
-            let result=tile(&mut scene,&r,crate::test_support::packet(doc.scene(),[16;2]),None,[0;2]);
+            let packet=crate::test_support::packet(doc.scene(),[16;2]);
+            let declaration=scene.capture_declaration(&r,packet).unwrap();let mut accepted=scene.accept_capture(&mut r,packet,Some(crate::scene::Output::Artwork(None)),&declaration,|scene,r,accepted|tile(scene,r,packet,None,[0;2],accepted).map(drop)).unwrap();
+            let result=tile(&mut scene,&r,packet,None,[0;2],&mut accepted);
             assert!(matches!(result,Err(GpuRasterError::NotReady)));
             let requested:std::collections::BTreeSet<_>=scene.object_results.request_windows().into_iter().map(|(_,owner,_)|owner).collect();
             assert_eq!(requested,owners.iter().copied().collect(),"passthrough={passthrough}");

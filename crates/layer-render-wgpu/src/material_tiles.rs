@@ -112,7 +112,7 @@ impl WgpuRasterizer {
                 .map(|(i, j)| material_sources::dry_record(j.local, j.dabs.clone(), mappings.get(i).map_or([0; 16], |m| m.words))), encoder)?
         } else { 0 };
         if transported {
-            self.encode_transport_jobs(encoder, batch_index, batch, batch_dabs, &jobs, layer_index, preview, preview && !from_persistent)?;
+            self.encode_transport_jobs(encoder, batch_index, batch, batch_dabs, &jobs, layer_index, context.target)?;
         }
         let gathers = self.dry_display_gathers(batch);
         if gathers {
@@ -125,33 +125,21 @@ impl WgpuRasterizer {
         let mut written=Vec::with_capacity(jobs.len()*2);
         let mut compute_jobs = mem::take(&mut self.dry_jobs);
         for (record_index, job) in jobs.iter().enumerate().filter(|_| !transported) {
-            // A decoded original slot may be overwritten by the next source
-            // preparation. Owned paint pages never have that eviction hazard.
-            let borrowed = from_persistent && !self.compact_preview_contribution(batch)
-                && !self.paint_layers[layer_index]
-                    .pages
-                    .iter()
-                    .any(|p| p.coordinate == job.coordinate)
-                && (self.tiled_sources.contains_key(&batch.target)
-                    || self
-                        .native_color_tile(batch.target, job.coordinate)?
-                        .is_some());
-            if borrowed || (retouches && !self.retouch_resident(&mappings[record_index]))
-                || (gathers && compute_jobs.len() == dry_material::DISPLAY_INPUT_SETS) {
+            if gathers && compute_jobs.len()==dry_material::DISPLAY_INPUT_SETS {
                 self.encode_dry_material_jobs(encoder, batch_index, batch, &compute_jobs);
                 let receipt=encoder.submission();written.extend(publications.drain(..).map(|publication:MaterialPublication|publication.encoded(&receipt)));
                 compute_jobs.clear();
             }
             let display_slot = gathers.then_some(compute_jobs.len());
+            let intent=self.raster_intent(batch.target,RasterPlane::Color,job.coordinate)?;
             let (source_bind_group, display) = if retouches {
-                self.clone_source_binding(batch,batch_index, job.coordinate, &mappings[record_index], context.target, display_slot, encoder)?
+                self.clone_source_binding(batch,batch_index, job.coordinate, &mappings[record_index], context.target, &intent, display_slot, encoder)?
             } else {
-                self.material_source_binding(batch,batch_index, job.coordinate, context.target, display_slot, encoder)?
+                self.material_source_binding(batch,batch_index, job.coordinate, context.target, &intent, display_slot, encoder)?
             };
-            let receipt=encoder.submission();let intent=self.raster_intent(batch.target,RasterPlane::Color,job.coordinate)?;
-            let color_ticket=preview.then(||self.preview_material_version(batch,batch_index,RasterPlane::Color,job.coordinate,scene::PreviewPass::Color)).transpose()?;
-            let coverage_ticket=(preview && job.coverage_index.is_some()).then(||self.preview_pass_version(batch.target,RasterPlane::Color,job.coordinate,scene::PreviewStage::AfterBatch(batch_index),scene::PreviewPass::Coverage)).transpose()?;
-            self.validate_raster_intent(batch.target,&intent)?;
+            let receipt=encoder.submission();
+            let color_ticket=preview.then(||self.preview_material_version(batch,batch_index,RasterPlane::Color,job.coordinate,scene::PreviewPass::Color,&intent)).transpose()?;
+            let coverage_ticket=(preview && job.coverage_index.is_some()).then(||self.preview_material_version(batch,batch_index,RasterPlane::Color,job.coordinate,scene::PreviewPass::Coverage,&intent)).transpose()?;
             let pipelines=&self.pipelines.dry_material;
             let page=if preview {&self.preview_pages[job.page_index]}else {&self.paint_layers[layer_index].pages[job.page_index]};
             let tracked=in_place || (self.compact_preview_contribution(batch) && pipelines.in_place()
@@ -181,11 +169,7 @@ impl WgpuRasterizer {
             compute_jobs.push(dry_material::Job {output,source:source_bind_group,display,coordinate:job.coordinate,
                 coverage:job.coverage_index.is_some(),record_offset:self.material_records.offset(first_record+record_index),
                 dabs:job.dabs.clone(),dirty:job.local});
-            if borrowed {
-                self.encode_dry_material_jobs(encoder, batch_index, batch, &compute_jobs);
-                let receipt=encoder.submission();written.extend(publications.drain(..).map(|publication:MaterialPublication|publication.encoded(&receipt)));
-                compute_jobs.clear();
-            }
+
         }
         self.encode_dry_material_jobs(encoder, batch_index, batch, &compute_jobs);
                 let receipt=encoder.submission();written.extend(publications.drain(..).map(|publication:MaterialPublication|publication.encoded(&receipt)));

@@ -157,7 +157,6 @@ impl WgpuRasterizer {
             }
         }
         let pending = pending.value.as_mut()?;
-        let _ = self.device.poll(wgpu::PollType::Poll);
         let Poll::Ready(error) = pending
             .result
             .as_mut()

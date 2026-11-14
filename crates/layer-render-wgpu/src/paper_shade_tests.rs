@@ -77,14 +77,14 @@ fn paper_lighting_waiting_for_optional_shaders_does_not_keep_frames_busy() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(r.paper_lighting.is_some() && r.paper_shade().is_none());
-    assert!(!r.has_pending_work(), "waiting for optional lighting cannot prevent UI readbacks");
+    assert!(r.next_frame()!=layer_render::FrameDemand::Work, "waiting for optional lighting cannot prevent UI readbacks");
     r.shader_idle(true, true);
     while r.paper_shade().is_none() {
         r.poll_startup().unwrap();
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert!(!r.has_pending_work());
+    assert!(r.next_frame()!=layer_render::FrameDemand::Work);
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn viewport_paper_compilation_stays_optional_after_startup() {
         let progress = r.poll_startup().unwrap();
         assert!(progress.canvas_ready && progress.brush_ready, "{progress:?}, overview={overview}");
         assert!(r.ui_readback_ready());
-        assert!(!r.has_pending_work());
+        assert!(r.next_frame()!=layer_render::FrameDemand::Work);
         r.shader_idle(true, false);
         while !presenter.paper_lighting_drawn() {
             r.poll_startup().unwrap();

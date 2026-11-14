@@ -624,7 +624,7 @@ mod tests {
         let transfer=pollster::block_on(crate::package::transfer::PreparedTransfer::capture_async(&transfer_capture,&None,&cancel,&crate::MemoryBudget::process())).unwrap();
         let descriptor=serde_json::from_slice(&serde_json::to_vec(transfer.descriptor()).unwrap()).unwrap();
         let chunks=(0..transfer.payload_count()).map(|index|vec![Arc::from(transfer.read_chunk(index,0,transfer.payload_len(index).unwrap() as usize).unwrap())]).collect();
-        let transferred=crate::package::transfer::PreparedTransfer::from_chunks(descriptor,chunks).unwrap().adopt_verified(limits,&cancel).unwrap();
+        let transferred=pollster::block_on(crate::package::transfer::PreparedTransfer::from_chunks(descriptor,chunks)).unwrap().adopt_verified(limits,&cancel).unwrap();
         verify(&transferred.artwork);
         verify(&artwork);let (manifest,backing)=captured(&artwork);verify(&reopen(&manifest,&backing).unwrap());
         let mut editor=crate::Editor::new(crate::Document::from_artwork(artwork).unwrap());

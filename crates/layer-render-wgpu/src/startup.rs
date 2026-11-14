@@ -166,7 +166,7 @@ impl Needs {
         required.render.extend(r.scene_pipelines.for_scene(r,view,&[]).cloned());
         required.compute.push(r.scene_pipelines.constant.2.clone());
         required.compute.extend([r.recipes.display.reduce.clone(),r.recipes.display.fused_reduce.clone()]);
-        required.compute.extend(r.scene_pipelines.scale_pipelines().into_iter().cloned());
+        required.compute.extend(r.scene_pipelines.scale_pipelines(wgpu::TextureFormat::Rgba32Float).into_iter().cloned());
         required.compute.extend(r.transforms.as_ref().unwrap().placement_pipelines());
         if r.device.portable_blend() { required.compute.extend(r.portable_blend.pipelines.iter().cloned()); }
         if watercolor {
@@ -345,8 +345,13 @@ impl Startup {
     }
 }
 impl WgpuRasterizer {
-    pub(super) fn scene_scale_ready(&self) -> bool {
-        self.compilation.require(self.scene_pipelines.scale_pipelines().into_iter().chain([
+    fn scene_scale_pipelines(&self,scene:SceneView<'_>)->impl Iterator<Item=&Deferred<wgpu::ComputePipeline>> {
+        let format=self.display_precision(scene).format();
+        self.scene_pipelines.scale_pipelines(format).into_iter()
+            .chain((format!=wgpu::TextureFormat::Rgba32Float).then_some(&self.scene_pipelines.scale.full.reduce))
+    }
+    pub(super) fn scene_scale_ready(&self,scene:SceneView<'_>) -> bool {
+        self.compilation.require(self.scene_scale_pipelines(scene).chain([
             &self.scene_pipelines.constant.2,&self.recipes.display.reduce,&self.recipes.display.fused_reduce]), DOCUMENT)
     }
 
@@ -511,7 +516,7 @@ impl WgpuRasterizer {
             if self.native_edit.is_some() {
                 let mip = self.display_pipelines.get_or_insert_with(|| self.recipes.display.clone());
                 required.compute.extend([mip.reduce.clone(), mip.fused_reduce.clone()]);
-                required.compute.extend(self.scene_pipelines.scale_pipelines().into_iter().cloned());
+                required.compute.extend(self.scene_scale_pipelines(document.scene()).cloned());
             }
             let mut sources = shader.key.sources;
             if self.native_edit.is_some() { sources.include(SourceKinds::for_depth(document.composition().color.depth)); }
@@ -747,6 +752,31 @@ mod tests {
     }
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    fn a_cold_navigator_prepares_inherited_window_recipes() {
+        use layer_render::CanvasRenderer;
+        for depth in [layer_core::color::SampleDepth::U8,layer_core::color::SampleDepth::F32] {
+            let mut document=crate::scene::scale::tests::document_at([1024,512]);
+            let root=document.artwork.root;
+            document.artwork.compositions.get_mut(root).unwrap().color.depth=depth;
+            let frame=crate::test_support::packet(document.scene(),[1024,512]);
+            let mut reference=WgpuRasterizer::new_native_headless(document.composition().color).unwrap();
+            crate::test_support::submit_settled(&mut reference,frame);
+            let mut renderer=crate::test_support::staged_renderer(&reference,document.composition().color);
+            assert!(!renderer.scene_pipelines.scale.half.reduce.ready());
+            assert!(!renderer.scene_pipelines.scale.full.reduce.ready());
+            renderer.adopt_committed_pages(&mut reference);
+            renderer.navigator=Default::default();
+            crate::test_support::submit_settled(&mut renderer,FramePacket {composite_all:false,..frame});
+            let expected=crate::display_precision::DisplayPrecision::for_scene(document.scene()).format();
+            let navigator=renderer.navigator.view().expect("the cold Navigator commits");
+            assert!(renderer.navigator.scale()>1.);
+            assert_eq!(navigator.texture().format(),expected);
+            assert!(renderer.scene_pipelines.scale.output(expected).reduce.ready());
+            assert!(crate::test_support::float_pixels(&renderer,navigator.texture()).iter().all(|pixel|pixel[3]==1.));
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
     fn backdrop_submission_defers_display_recipes_to_the_compiler() {
         use layer_render::CanvasRenderer;
         let reference = WgpuRasterizer::new_native_headless(Default::default()).unwrap();
@@ -759,7 +789,7 @@ mod tests {
         let compiler = &renderer.startup.as_ref().unwrap().compiler;
         compiler.enqueue(DOCUMENT, move || { let _ = entered.send(()); let _ = held.recv(); Ok(()) });
         entry.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(renderer.scene_pipelines.scale_pipelines().iter().all(|pipeline| !pipeline.ready()));
+        assert!(renderer.scene_scale_pipelines(document.scene()).all(|pipeline| !pipeline.ready()));
         let packet = FramePacket { reset_layers: true, ..crate::test_support::packet(snapshot.view(), [64; 2]) };
         let submitted = renderer.submitted_updates();
         assert!(!renderer.raster_dependencies_ready(packet, None), "the first backdrop waits for its display recipes before submission");
@@ -768,10 +798,10 @@ mod tests {
         assert_eq!(renderer.submitted_updates(), submitted + 1);
         assert!(crate::scene::scale::tests::publication_pending(&renderer));
         assert!(renderer.presentation_views().is_none());
-        assert!(renderer.scene_pipelines.scale_pipelines().iter().all(|pipeline| !pipeline.ready()));
+        assert!(renderer.scene_scale_pipelines(document.scene()).all(|pipeline| !pipeline.ready()));
         release.send(()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while renderer.scene_pipelines.scale_pipelines().iter().any(|pipeline| !pipeline.ready()) {
+        while renderer.scene_scale_pipelines(document.scene()).any(|pipeline| !pipeline.ready()) {
             renderer.startup.as_ref().unwrap().compiler.check().unwrap();
             assert!(std::time::Instant::now() < deadline, "Backdrop display recipes did not prepare");
             std::thread::sleep(Duration::from_millis(1));

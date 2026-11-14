@@ -1,20 +1,36 @@
 use super::*;
 
+pub(super) fn exact_at_view_level(scene: SceneView<'_>) -> bool {
+    scene.order().iter().any(|&owner| scene.object_layer(owner).is_some() || scene.vector_layer(owner).is_some())
+}
+
+pub(super) fn presented_accuracy(r: &WgpuRasterizer, scene: SceneView<'_>, preview: bool) -> pages::Accuracy {
+    if !preview && r.moving_layer.is_none() && exact_at_view_level(scene) {pages::Accuracy::Exact} else {pages::Accuracy::Display}
+}
+
 impl Cache {
     pub fn approximating(&self) -> bool { !self.output_complete() || self.preparing || self.overview.as_ref().is_some_and(|overview| overview.approximating()) }
 
 
     pub fn has_pending_work(&self, r: &WgpuRasterizer) -> bool {
-        if r.moving_layer.is_some() || self.transform.as_ref().is_some_and(|preview| preview.moving) { return false; }
-        self.pixels.committed_root().is_none() || self.coverage_snapshot().needs(self.plan.bounds,pages::Accuracy::Exact)
-            || self.overview.as_ref().is_some_and(|overview|overview.has_pending_work(r))
+        use crate::frame_demand::Outstanding::{Blocked,Runnable};
+        match self.outstanding(r) {Some(Runnable)=>true,Some(Blocked(input))=>!r.wakes(input),None=>false}
+    }
+    pub(crate) fn outstanding(&self, r: &WgpuRasterizer) -> Option<crate::frame_demand::Outstanding> {
+        use crate::frame_demand::Outstanding::Runnable;
+        if r.moving_layer.is_some() || self.transform.as_ref().is_some_and(|preview| preview.moving) { return None; }
+        if self.contact {return Some(Runnable);}
+        let own=self.cell_demand(r).or_else(||self.pixels.committed_root().is_none().then_some(Runnable));
+        let overview=self.overview.as_ref().and_then(|overview|overview.outstanding(r));
+        if own==Some(Runnable) || overview==Some(Runnable) {Some(Runnable)}else {own.or(overview)}
     }
 
     pub(super) fn refine(
         &mut self, scene: &mut Scene, r: &mut WgpuRasterizer, packet: FramePacket<'_>,
-        encoder: &mut crate::submission::CommandEncoder, commands: &mut RegionRecords,
+        encoder: &mut crate::submission::CommandEncoder, commands: &mut RegionRecords, budget: &mut WorkBudget,
     ) -> Result<PixelRect, GpuRasterError> {
-        let page_limit=(scene.remaining_work(false)/object_cache::PASS_TAPS).max(1) as usize;
+        if exact_at_view_level(packet.scene) || self.gesture.is_some() {return Ok(PixelRect::EMPTY);}
+        let page_limit=(budget.remaining()/object_cache::PASS_TAPS).max(1) as usize;
         let mut missing=Vec::new();
         for cache in std::iter::once(&*self).chain(self.overview.as_deref()) {
             if cache.graph.root.is_none() {continue;}
@@ -26,6 +42,7 @@ impl Cache {
             if missing.len()>=page_limit {break;}
         }
         let (reductions,native):(Vec<_>,Vec<_>)=missing.into_iter().partition(|key|key.level>0);
+        #[cfg(test)] crate::test_support::PassCounts {destination_units:reductions.len() as u64,..Default::default()}.record();
         let mut changed=PixelRect::EMPTY;
         if !reductions.is_empty() {
             for key in reductions {self.reduce_exact(scene,r,encoder,commands,key)?;}
@@ -35,35 +52,45 @@ impl Cache {
             effect.program.image_boundary() && packet.scene.visible(*handle)))
             .map(|effect|effect.program.passes.len().max(1) as u64).sum::<u64>();
         for key in native {
-            let region=key.plan().bounds;let window=scene.cached_capture_window(packet.scene,region);
+            let region=key.plan().bounds;
+            if std::iter::once(&*self).chain(self.overview.as_deref()).any(|cache|cache.plan.level==key.level && cache.refused(region)) {continue;}
+            let window=scene.cached_capture_window(packet.scene,region);
             let work=region.area().saturating_add(window.area().saturating_mul(passes));
-            if !scene.work_fits(WorkClass::Background,!changed.is_empty(),work,object_cache::IDLE_TAPS) {break;}
+            if !budget.fits(Class::Refinement,!changed.is_empty(),work) {break;}
             let plan=key.plan();
-            let inputs=self.native_inputs(scene,r,packet,window.in_frame(packet.document_extent),plan,true)?;
+            let destination=Image {texture:r.empty_texture.clone(),view:r.empty_view.clone(),plan};
+            let prepared=r.ensure_exact_preview(encoder).and_then(|()|scene.prepare_region(r,packet,(region,window),PixelRect::EMPTY,false,encoder))
+                .and_then(|()|scene.declare_capture(r,packet,&destination,&[region],scene::Output::Display,None,None));
+            let inputs=match prepared {Ok(inputs)=>inputs,Err(GpuRasterError::NotReady|GpuRasterError::SourceWorkingSetExceeded)=>continue,Err(error)=>return Err(error)};
             let scratch=self.graph.root.as_ref().unwrap().cost().1 as usize+1;
             let interest=Self::exact_interest(key.clone(),self.evaluation,region);
-            if !self.accept_working(scene,r,interest,vec![(key.clone(),region)],inputs,[scratch,0],plan,[commands.storage_bytes(),0],true,encoder)? {continue;}
-            let image=self.pages.lock().unwrap().allocated(&key).expect("accepted exact page");
-            let write=self.pages.lock().unwrap().prepare_write(key.clone(),region,pages::Accuracy::Exact,pages::Freshness::Current,0)?;
-            let held=self.pages.lock().unwrap().take_inputs(&key,region);
-            let (held,result)=scene.with_inputs(held,|scene| {
-                r.ensure_exact_preview(encoder)?;
-                scene.prepare_region(r,packet,(region,window),PixelRect::EMPTY,false,encoder)?;
-                scene.capture_prepared_regions(r,packet,&image,&[region],scene::Output::Display,false,None,encoder)
-            });
+            let handle=match self.accept_working(scene,r,interest,vec![(key.clone(),region)],inputs,[scratch,0],plan,true,Class::Refinement,Class::Refinement,encoder)? {
+                Ok(handle)=>handle,Err(None)=>continue,Err(Some(blocked))=>{self.refuse(region,&blocked);continue;},
+            };
+            #[cfg(test)] crate::test_support::PassCounts {destination_units:1,..Default::default()}.record();
+            let image=self.pages.lock().unwrap().allocated(&key,Class::Refinement).expect("accepted exact page");
+            let write=self.pages.lock().unwrap().prepare_write(key.clone(),region,pages::Accuracy::Exact,0)?;
+            let mut held=self.pages.lock().unwrap().take_inputs(&handle)?;
+            held.clone().track(encoder);
+            let result=(|| {
+                #[cfg(test)]
+                let _record=crate::scene::sources::record_reads(&held);
+                let accepted=&mut held;
+                scene.capture_prepared_regions(r,packet,&image,&[region],scene::Output::Display,false,None,encoder, accepted)
+            })();
             match result {
                 Ok(())=>{
-                    self.pages.lock().unwrap().commit(write,encoder.submission());
-                    self.pages.lock().unwrap().finish_inputs(&key,region);
+                    self.pages.lock().unwrap().commit(write,work,encoder);
+                    self.pages.lock().unwrap().finish_inputs(&handle);
                     r.metrics.composited_pixels+=region.area();r.metrics.frame_composited_pages.push((0,key.coordinate));
-                    scene.frame_work=scene.frame_work.saturating_add(work.max(object_cache::PASS_TAPS));
+                    budget.spend(work.max(object_cache::PASS_TAPS));
                     if self.plan.level.max(self.overview.as_ref().map_or(0,|cache|cache.plan.level))>0 {
                         self.reduce_exact(scene,r,encoder,commands,pages::Key {level:1,coordinate:key.coordinate.map(|value|value/2),..key})?;
                     }
                     changed=changed.union(self.project_exact(scene,r,encoder,commands)?);
                 },
-                Err(GpuRasterError::NotReady)=>self.pages.lock().unwrap().hold_inputs(&key,region,self.evaluation,held)?,
-                Err(GpuRasterError::SourceWorkingSetExceeded)=>self.pages.lock().unwrap().finish_inputs(&key,region),
+                Err(GpuRasterError::NotReady)=>self.pages.lock().unwrap().hold_inputs(&handle,held)?,
+                Err(GpuRasterError::SourceWorkingSetExceeded)=>self.pages.lock().unwrap().finish_inputs(&handle),
                 Err(error)=>return Err(error),
             }
         }
@@ -75,12 +102,13 @@ impl Cache {
     )->Result<(),GpuRasterError> {
         let level=self.plan.level.max(self.overview.as_ref().map_or(0,|cache|cache.plan.level));
         loop {
-            if self.pages.lock().unwrap().get(&key,key.plan().bounds,pages::Accuracy::Exact,0).is_none() {
-                let inputs=self.pages.lock().unwrap().reduction(&key,0);
-                let Some((inputs,pages::Accuracy::Exact,pages::Freshness::Current))=inputs else {break;};
-                let Some(image)=self.claim_page(scene,r,key.clone(),[commands.storage_bytes(),0],false)? else {break;};
-                let write=self.pages.lock().unwrap().prepare_write(key.clone(),image.plan.bounds,pages::Accuracy::Exact,pages::Freshness::Current,0)?;
-                for (input_key,input) in inputs {
+            if self.pages.lock().unwrap().get(&key,key.plan().bounds,pages::Accuracy::Exact,0,Class::Refinement).is_none() {
+                let inputs=self.pages.lock().unwrap().reduction(&key,0,Class::Refinement);
+                let Some((inputs,pages::Accuracy::Exact))=inputs else {break;};
+                let image=match self.claim_page(scene,r,key.clone(),Class::Refinement)? {Ok(image)=>image,Err(blocked)=>{self.refuse(key.plan().bounds,&blocked);break;}};
+                let write=self.pages.lock().unwrap().prepare_write(key.clone(),image.plan.bounds,pages::Accuracy::Exact,0)?;
+                let work=inputs.len() as u64*object_cache::PASS_TAPS;
+                for (_,input) in inputs {
                     let covered=input.plan.bounds.intersect(image.plan.bounds);
                     let [x,y,width,height]=paint_transform::texel_rect(covered.window_local(image.plan.bounds),1<<image.plan.level);
                     let mut values=[0;20];
@@ -88,9 +116,9 @@ impl Cache {
                     values[14]=((x*2) as f32).to_bits();values[15]=((y*2) as f32).to_bits();
                     let binding=RegionRecords::binding(r,&input.view,&r.empty_view,&image.view);
                     commands.reduce(r,encoder,values,&binding,"reduce exact composite page",image.texture.format())?;
-                    self.pages.lock().unwrap().read(&input_key,&input,encoder.submission());
+                    input.track(encoder);
                 }
-                self.pages.lock().unwrap().commit(write,encoder.submission());
+                self.pages.lock().unwrap().commit(write,work,encoder);
             }
             if key.level>=level {break;}
             key=pages::Key {level:key.level+1,coordinate:key.coordinate.map(|value|value/2),..key};
@@ -99,14 +127,8 @@ impl Cache {
     }
 
     fn project_exact(&mut self,scene:&Scene,r:&mut WgpuRasterizer,encoder:&mut crate::submission::CommandEncoder,commands:&mut RegionRecords)->Result<PixelRect,GpuRasterError> {
-        let frame=self.pages.lock().unwrap().expected().cloned().ok_or(GpuRasterError::Invariant("signature frame is missing or inconsistent"))?;
-        let served=display_mips::view_bounds(frame.view(),self.plan.extent,0).unwrap_or(PixelRect::EMPTY).intersect(self.plan.bounds);
-        let mut changed=self.project_level(scene,r,encoder,commands,[0;2],served)?;
-        let retained=self.window_memory();
-        if let Some(cache)=&mut self.overview {
-            let retained=[retained[0].saturating_sub(cache.window_bytes()),retained[1].saturating_sub(cache.window_pinned_bytes())];
-            changed=changed.union(cache.project_level(scene,r,encoder,commands,retained,cache.plan.bounds)?);
-        }
+        let mut changed=self.copy_level(scene,r,encoder,commands)?;
+        if let Some(cache)=&mut self.overview {changed=changed.union(cache.copy_level(scene,r,encoder,commands)?);}
         Ok(changed)
     }
 }
@@ -114,14 +136,14 @@ impl Cache {
 impl Scene {
     pub fn refine_display(
         &mut self, r: &mut WgpuRasterizer, packet: FramePacket<'_>,
-        encoder: &mut crate::submission::CommandEncoder,
+        encoder: &mut crate::submission::CommandEncoder, budget: &mut WorkBudget,
     ) -> Result<PixelRect, GpuRasterError> {
         let write = self.begin_write(r,encoder)?;
         let Some(mut cache) = r.scale_display.take() else { return Ok(PixelRect::EMPTY) };
         cache.submission_valid = Some(self.valid.clone());
-        let mut commands = self.scale_commands.take().unwrap_or_else(|| RegionRecords::new(r));
+        let mut commands = self.scale_commands.take().unwrap_or_else(|| RegionRecords::charged(r, &self.tiers.gpu));
         commands.begin();
-        let result = cache.refine(self, r, packet, encoder, &mut commands);
+        let result = cache.refine(self, r, packet, encoder, &mut commands, budget);
         self.scale_commands = Some(commands);
         r.scale_display = Some(cache);
         if matches!(&result, Err(error) if error.is_preparation_pending()) { self.clear_unencoded_jobs(); }

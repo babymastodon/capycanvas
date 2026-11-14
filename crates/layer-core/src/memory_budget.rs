@@ -43,6 +43,7 @@ pub struct MemoryReport {
     pub pinned_gpu_bytes: u64,
     pub demand_ram_bytes: u64,
     pub demand_gpu_bytes: u64,
+    pub optional_gpu_bytes: u64,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MemoryGrant { pub ram_bytes: u64, pub gpu_bytes: u64 }
@@ -82,13 +83,13 @@ pub struct MemoryBudgetSnapshot {
 #[derive(Default)]
 struct Grants { ram: AtomicU64, gpu: AtomicU64, wake: OnceLock<Arc<dyn Fn() + Send + Sync>> }
 #[derive(Default)]
-struct PendingReport { version: AtomicU64, values: [AtomicU64; 6] }
+struct PendingReport { version: AtomicU64, values: [AtomicU64; 7] }
 impl PendingReport {
     fn publish(&self, report: MemoryReport) -> bool {
         let version=self.version.load(Ordering::Acquire);
         if version&1!=0 || version>u64::MAX-2 || self.version.compare_exchange(version,version+1,Ordering::AcqRel,Ordering::Relaxed).is_err() {return false;}
         std::sync::atomic::fence(Ordering::Release);
-        let values=[report.ram_bytes,report.gpu_bytes,report.pinned_ram_bytes,report.pinned_gpu_bytes,report.demand_ram_bytes,report.demand_gpu_bytes];
+        let values=[report.ram_bytes,report.gpu_bytes,report.pinned_ram_bytes,report.pinned_gpu_bytes,report.demand_ram_bytes,report.demand_gpu_bytes,report.optional_gpu_bytes];
         for (field,value) in self.values.iter().zip(values) {field.store(value,Ordering::Relaxed);}
         self.version.store(version+2,Ordering::Release);true
     }
@@ -97,7 +98,7 @@ impl PendingReport {
         let values=self.values.each_ref().map(|value|value.load(Ordering::Relaxed));
         std::sync::atomic::fence(Ordering::Acquire);
         if self.version.load(Ordering::Relaxed)!=version {return None;}
-        Some((version,MemoryReport {ram_bytes:values[0],gpu_bytes:values[1],pinned_ram_bytes:values[2],pinned_gpu_bytes:values[3],demand_ram_bytes:values[4],demand_gpu_bytes:values[5]}))
+        Some((version,MemoryReport {ram_bytes:values[0],gpu_bytes:values[1],pinned_ram_bytes:values[2],pinned_gpu_bytes:values[3],demand_ram_bytes:values[4],demand_gpu_bytes:values[5],optional_gpu_bytes:values[6]}))
     }
 }
 struct OwnerRecord {
@@ -108,6 +109,12 @@ struct OwnerRecord {
     grants: Arc<Grants>,
     pending: Arc<PendingReport>,
     applied: u64,
+}
+impl OwnerRecord {
+    fn gpu_wanted(&self, level: usize) -> u64 {
+        if level == MEMORY_CLASSES { self.report.optional_gpu_bytes.max(self.report.demand_gpu_bytes) }
+        else if self.class as usize == level { self.report.demand_gpu_bytes } else { 0 }
+    }
 }
 #[derive(Default)]
 struct State {
@@ -124,7 +131,11 @@ struct State {
     retired_devices: BTreeSet<MemoryDevice>,
     owners: BTreeMap<u64, OwnerRecord>,
     reservations: BTreeMap<u64, Reserved>,
+    waiters: Vec<Waiter>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wait { Working { owner: u64, gpu_bytes: u64 }, Covered(u64) }
+struct Waiter { wait: Wait, wake: Arc<dyn Fn() + Send + Sync> }
 #[derive(Default)]
 struct BudgetCache { limit: AtomicU64, headroom: AtomicU64, refusals: AtomicU64 }
 #[derive(Default)]
@@ -139,6 +150,7 @@ impl Drop for Owner {
     fn drop(&mut self) {
         let mut state = self.budget.0.state.lock().unwrap();
         state.owners.remove(&self.id);
+        state.waiters.retain(|waiter|!matches!(waiter.wait,Wait::Working {owner,..} if owner==self.id));
         state.remove_retired_devices();
         self.budget.rebalance(state);
     }
@@ -168,6 +180,29 @@ impl MemoryOwner {
             if changed {budget.rebalance(state);}
             return None;
         }
+        self.reserve(state,bytes)
+    }
+    pub fn admit_working_through(&self,gpu_bytes:u64,wake:Option<Arc<dyn Fn() + Send + Sync>>)->Option<MemoryReservation> {
+        let budget=&self.0.budget;
+        let mut state=budget.0.state.lock().unwrap();
+        let changed=state.apply_reports();
+        let bytes=state.working_through(self.0.id,gpu_bytes);
+        if !state.fits_working(self.0.id,bytes) {
+            if let Some(wake)=wake {
+                state.waiters.retain(|waiter|!matches!(waiter.wait,Wait::Working {owner,..} if owner==self.0.id) || !Arc::ptr_eq(&waiter.wake,&wake));
+                state.waiters.push(Waiter {wait:Wait::Working {owner:self.0.id,gpu_bytes},wake});
+            }
+            if changed {budget.rebalance(state);}
+            return None;
+        }
+        self.reserve(state,bytes)
+    }
+    pub fn fits_working_through(&self,gpu_bytes:u64)->bool {
+        let state=self.0.budget.0.state.lock().unwrap();
+        state.fits_working(self.0.id,state.working_through(self.0.id,gpu_bytes))
+    }
+    fn reserve(&self,mut state:MutexGuard<'_,State>,bytes:MemoryGrant)->Option<MemoryReservation> {
+        let budget=&self.0.budget;
         state.next=state.next.checked_add(1).expect("Memory owner identity exhausted");
         let id=state.next;let reserved=Reserved::Working {owner:self.0.id,bytes};
         state.reservations.insert(id,reserved);budget.rebalance(state);
@@ -178,6 +213,14 @@ impl MemoryOwner {
         MemoryGrant { ram_bytes: self.0.grants.ram.load(Ordering::Acquire), gpu_bytes: self.0.grants.gpu.load(Ordering::Acquire) }
     }
     pub fn working(&self)->MemoryGrant {self.0.budget.0.state.lock().unwrap().working(self.0.id)}
+    pub fn gpu_working_limit(&self)->u64 {
+        let budget=&self.0.budget;
+        let mut state=budget.0.state.lock().unwrap();
+        let changed=state.apply_reports();
+        let limit=state.gpu_working_limit(self.0.id);
+        if changed {budget.rebalance(state);}
+        limit
+    }
 }
 #[derive(Clone,Copy)]
 enum Reserved { Import(u64), Working {owner:u64,bytes:MemoryGrant} }
@@ -192,6 +235,7 @@ struct Reservation { budget: MemoryBudget, id: u64, bytes: AtomicU64, active: At
 impl Drop for Reservation {
     fn drop(&mut self) {
         let mut state = self.budget.0.state.lock().unwrap();
+        state.waiters.retain(|waiter|waiter.wait!=Wait::Covered(self.id));
         if state.reservations.remove(&self.id).is_some() { self.budget.rebalance(state); }
     }
 }
@@ -201,6 +245,27 @@ impl std::fmt::Debug for MemoryReservation {
 impl MemoryReservation {
     pub fn reserved_bytes(&self) -> u64 { self.0.bytes.load(Ordering::Acquire) }
     pub fn active(&self) -> bool { self.0.active.load(Ordering::Acquire) }
+    pub fn covered(&self) -> bool {
+        let mut state=self.0.budget.0.state.lock().unwrap();
+        let changed=state.apply_reports();let covered=state.covered(self.0.id);
+        if changed {self.0.budget.rebalance(state);}
+        covered
+    }
+    pub fn on_covered(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        let mut state=self.0.budget.0.state.lock().unwrap();
+        state.apply_reports();
+        state.waiters.retain(|waiter|waiter.wait!=Wait::Covered(self.0.id));
+        state.waiters.push(Waiter {wait:Wait::Covered(self.0.id),wake});
+        self.0.budget.rebalance(state);
+    }
+    pub fn covering(&self) -> impl std::future::Future<Output = ()> + '_ {
+        std::future::poll_fn(move |context| {
+            if self.covered() {return std::task::Poll::Ready(());}
+            let waker=context.waker().clone();
+            self.on_covered(Arc::new(move||waker.wake_by_ref()));
+            std::task::Poll::Pending
+        })
+    }
     pub fn merge(&self, other: MemoryReservation) -> Result<(), &'static str> {
         if !Arc::ptr_eq(&self.0.budget.0,&other.0.budget.0) {return Err("Memory reservations belong to different budgets");}
         if Arc::ptr_eq(&self.0,&other.0) {return if self.active() {Ok(())}else {Err("Memory reservation is already complete")};}
@@ -264,8 +329,15 @@ impl std::fmt::Debug for MemoryBudget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_struct("MemoryBudget").field("limit", &self.ram_limit_bytes()).field("headroom", &self.import_headroom_bytes()).finish() }
 }
 impl MemoryBudget {
-    fn rebalance(&self, state: MutexGuard<'_, State>) {
-        let wakes = state.rebalance(&self.0.cache);
+    fn rebalance(&self, mut state: MutexGuard<'_, State>) {
+        let mut wakes = state.rebalance(&self.0.cache);
+        let waiters = std::mem::take(&mut state.waiters);
+        let (ready, waiting): (Vec<_>, Vec<_>) = waiters.into_iter().partition(|waiter|match waiter.wait {
+            Wait::Working {owner,gpu_bytes}=>state.fits_working(owner, state.working_through(owner, gpu_bytes)),
+            Wait::Covered(id)=>state.covered(id),
+        });
+        state.waiters = waiting;
+        wakes.extend(ready.into_iter().map(|waiter| waiter.wake));
         drop(state);
         for wake in wakes { wake(); }
     }
@@ -335,6 +407,14 @@ impl MemoryBudget {
             state.facts
         };
         self.update_ram(facts, Self::now_ms());
+    }
+    pub fn out_of_memory(&self) {
+        let mut state = self.0.state.lock().unwrap();
+        if state.pressure_trip { return; }
+        state.ram_limit = (state.ram_limit / 2).max(384 * MIB);
+        state.last_growth = Self::now_ms();
+        state.pressure_trip = true;
+        self.rebalance(state);
     }
     pub fn register_device(&self, facts: DeviceMemoryFacts) -> MemoryDevice {
         let mut state = self.0.state.lock().unwrap();
@@ -425,6 +505,18 @@ fn device_limit(facts: DeviceMemoryFacts, ours: u64) -> u64 {
     let ceiling = facts.budget_bytes.map_or_else(|| facts.heap_bytes.map_or(if facts.unified { u64::MAX } else { 0 }, |bytes| bytes / 2), |bytes| fraction(bytes,80,100));
     ceiling.saturating_sub(facts.fixed_bytes.max(facts.usage_bytes.unwrap_or(0).saturating_sub(ours)))
 }
+fn resident_caps(free: u64, owners: impl Iterator<Item = (usize, usize, u64, [u64; 2])>) -> Vec<(usize, u64)> {
+    let owners: Vec<_> = owners.collect();
+    let mut caps: Vec<_> = owners.iter().map(|&(i, _, occupied, _)| (i, occupied)).collect();
+    let mut remaining = free;
+    for level in 0..=MEMORY_CLASSES {
+        let optional = level == MEMORY_CLASSES;
+        let requests: Vec<_> = owners.iter().enumerate().filter(|(_, owner)| optional || owner.1 == level)
+            .map(|(index, &(_, _, _, targets))| (index, targets[usize::from(optional)].saturating_sub(caps[index].1))).collect();
+        for (index, grant) in distribute(remaining, &requests) { caps[index].1 = caps[index].1.saturating_add(grant); remaining -= grant; }
+    }
+    caps
+}
 pub fn distribute(available: u64, requests: &[(usize, u64)]) -> Vec<(usize, u64)> {
     let mut grants = vec![0u64; requests.len()];
     let mut remaining = available;
@@ -461,17 +553,40 @@ impl State {
             }total
         })
     }
+    fn gpu_working_limit(&self,id:u64)->u64 {
+        let Some((device,facts))=self.owners[&id].device.and_then(|device|self.devices.get(&device).map(|facts|(device,facts))) else {return 0;};
+        let occupied=|id:u64,owner:&OwnerRecord|owner.report.pinned_gpu_bytes.saturating_add(self.working(id).gpu_bytes).max(owner.report.gpu_bytes);
+        let (physical,held)=self.owners.iter().filter(|(_,owner)|owner.device==Some(device)).fold((0u64,0u64),|(physical,held),(other,owner)|
+            (physical.saturating_add(owner.report.gpu_bytes),held.saturating_add(if *other==id {0}else {occupied(*other,owner)})));
+        let limit=device_limit(*facts,physical).saturating_sub(held);
+        if facts.unified {
+            limit.min(self.free_ram().saturating_add(occupied(id,&self.owners[&id])))
+        } else {limit}
+    }
+    fn working_through(&self,id:u64,gpu_bytes:u64)->MemoryGrant {
+        let held=self.owners[&id].report.pinned_gpu_bytes.saturating_add(self.working(id).gpu_bytes);
+        MemoryGrant {ram_bytes:0,gpu_bytes:gpu_bytes.saturating_sub(held)}
+    }
     fn fits_working(&self,id:u64,bytes:MemoryGrant)->bool {
         let owner=&self.owners[&id];
         let ram=bytes.ram_bytes.saturating_add(if self.unified(owner.device) {bytes.gpu_bytes}else {0});
         if ram>self.import_headroom() {return false;}
         if bytes.gpu_bytes==0 {return true;}
-        let Some((device,facts))=owner.device.and_then(|device|self.devices.get(&device).map(|facts|(device,facts))) else {return false;};
-        let (physical,held)=self.owners.iter().filter(|(_,owner)|owner.device==Some(device)).fold((0u64,0u64),|(physical,held),(id,owner)|
-            (physical.saturating_add(owner.report.gpu_bytes),held.saturating_add(owner.report.pinned_gpu_bytes).saturating_add(self.working(*id).gpu_bytes)));
-        bytes.gpu_bytes<=device_limit(*facts,physical).saturating_sub(held)
+        bytes.gpu_bytes<=self.gpu_working_limit(id).saturating_sub(owner.report.pinned_gpu_bytes.saturating_add(self.working(id).gpu_bytes))
     }
     fn import_headroom(&self) -> u64 { self.ram_limit.saturating_sub(self.ram_physical(true)).saturating_sub(self.reserved()) }
+    fn occupied_ram(&self) -> u64 {
+        self.owners.iter().fold(0u64,|sum,(id,owner)| {
+            let working=self.working(*id);let unified=|bytes:u64|if self.unified(owner.device) {bytes}else {0};
+            sum.saturating_add(owner.report.pinned_ram_bytes.saturating_add(working.ram_bytes).saturating_add(unified(owner.report.pinned_gpu_bytes.saturating_add(working.gpu_bytes)))
+                .max(owner.report.ram_bytes.saturating_add(unified(owner.report.gpu_bytes))))
+        })
+    }
+    fn free_ram(&self) -> u64 { self.ram_limit.saturating_sub(self.import_reserved()).saturating_sub(self.occupied_ram()) }
+    fn covered(&self, id: u64) -> bool {
+        let Some(Reserved::Import(bytes))=self.reservations.get(&id).copied() else {return true;};
+        self.ram_limit.saturating_sub(self.import_reserved().saturating_sub(bytes)).saturating_sub(self.occupied_ram())>=bytes
+    }
     fn remove_retired_devices(&mut self) {
         self.devices.retain(|device,_| !self.retired_devices.contains(device) || self.owners.values().any(|owner|owner.device == Some(*device)));
         self.retired_devices.retain(|device| self.devices.contains_key(device));
@@ -487,29 +602,52 @@ impl State {
         let headroom_changed=cache.headroom.swap(headroom, Ordering::AcqRel)!=headroom;
         let owners: Vec<_> = self.owners.values().collect();
         let working:Vec<_>=self.owners.keys().map(|id|self.working(*id)).collect();
-        let mut gpu: Vec<_> = owners.iter().enumerate().map(|(i,owner)|owner.report.pinned_gpu_bytes.saturating_add(working[i].gpu_bytes)).collect();
+        let held: Vec<_> = owners.iter().enumerate().map(|(i,owner)|owner.report.pinned_gpu_bytes.saturating_add(working[i].gpu_bytes)).collect();
+        let mut gpu = held.clone();let mut required = held.clone();
         for (&device, facts) in &self.devices {
-            let physical = owners.iter().filter(|owner| owner.device == Some(device)).fold(0u64, |sum,owner| sum.saturating_add(owner.report.gpu_bytes));
-            let mut remaining = device_limit(*facts,physical).saturating_sub(owners.iter().enumerate().filter(|(_,owner)| owner.device == Some(device)).fold(0u64, |sum,(i,_)|sum.saturating_add(gpu[i])));
-            for class in 0..MEMORY_CLASSES {
-                let requests:Vec<_> = owners.iter().enumerate().filter(|(_,owner)|owner.device==Some(device) && owner.class as usize==class)
-                    .map(|(i,owner)|(i,owner.report.demand_gpu_bytes.saturating_sub(gpu[i]))).collect();
+            let on = |owner: &OwnerRecord| owner.device == Some(device);
+            let physical = owners.iter().filter(|owner|on(owner)).fold(0u64, |sum,owner| sum.saturating_add(owner.report.gpu_bytes));
+            let limit = device_limit(*facts,physical);
+            let mut remaining = limit.saturating_sub(owners.iter().enumerate().filter(|(_,owner)|on(owner)).fold(0u64, |sum,(i,_)|sum.saturating_add(held[i])));
+            for level in 0..=MEMORY_CLASSES {
+                if level==MEMORY_CLASSES { for (i,_) in owners.iter().enumerate().filter(|(_,owner)|on(owner)) { required[i]=gpu[i]; } }
+                let requests:Vec<_> = owners.iter().enumerate().filter(|(_,owner)|on(owner))
+                    .map(|(i,owner)|(i,owner.gpu_wanted(level).saturating_sub(gpu[i]))).collect();
                 for (i,grant) in distribute(remaining,&requests) { gpu[i]=gpu[i].saturating_add(grant); remaining-=grant; }
             }
+            let occupied = |i: usize| held[i].max(owners[i].report.gpu_bytes);
+            let free = limit.saturating_sub(owners.iter().enumerate().filter(|(_,owner)|on(owner)).fold(0u64, |sum,(i,_)|sum.saturating_add(occupied(i))));
+            for (i,cap) in resident_caps(free, owners.iter().enumerate().filter(|(_,owner)|on(owner)).map(|(i,owner)|(i,owner.class as usize,occupied(i),[required[i],gpu[i]]))) {
+                gpu[i]=gpu[i].min(cap);required[i]=required[i].min(gpu[i]);
+            }
         }
-        let mut ram: Vec<_> = owners.iter().enumerate().map(|(i,owner)|owner.report.pinned_ram_bytes.saturating_add(working[i].ram_bytes)).collect();
-        let mut unified: Vec<_> = owners.iter().enumerate().map(|(i,owner)|if self.unified(owner.device) {owner.report.pinned_gpu_bytes.saturating_add(working[i].gpu_bytes)}else {gpu[i]}).collect();
-        let mut remaining = self.import_headroom();
-        for class in 0..MEMORY_CLASSES {
+        let base: Vec<_> = owners.iter().enumerate().map(|(i,owner)|(owner.report.pinned_ram_bytes.saturating_add(working[i].ram_bytes),
+            if self.unified(owner.device) {held[i]}else {gpu[i]})).collect();
+        let mut ram: Vec<_> = base.iter().map(|(ram,_)|*ram).collect();
+        let mut unified: Vec<_> = base.iter().map(|(_,gpu)|*gpu).collect();
+        let mut remaining = headroom;
+        let mut required_shared = vec![0u64; owners.len()];
+        for level in 0..=MEMORY_CLASSES {
+            let optional = level==MEMORY_CLASSES;
+            if optional { for (i,owner) in owners.iter().enumerate() { required_shared[i]=ram[i].saturating_add(if self.unified(owner.device) {unified[i]}else {0}); } }
             let mut requests=Vec::new();
-            for (i,owner) in owners.iter().enumerate().filter(|(_,owner)|owner.class as usize==class) {
-                requests.push((2*i,owner.report.demand_ram_bytes.saturating_sub(ram[i])));
-                if self.unified(owner.device) {requests.push((2*i+1,gpu[i].saturating_sub(unified[i])));}
+            for (i,owner) in owners.iter().enumerate().filter(|(_,owner)|optional || owner.class as usize==level) {
+                if !optional {requests.push((2*i,owner.report.demand_ram_bytes.saturating_sub(ram[i])));}
+                if self.unified(owner.device) {requests.push((2*i+1,(if optional {gpu[i]}else {required[i]}).saturating_sub(unified[i])));}
             }
             for (id,grant) in distribute(remaining,&requests) {
                 if id%2==0 {ram[id/2]=ram[id/2].saturating_add(grant);} else {unified[id/2]=unified[id/2].saturating_add(grant);}
                 remaining-=grant;
             }
+        }
+        let shared = |i: usize, owner: &OwnerRecord| if self.unified(owner.device) {[base[i].0.saturating_add(base[i].1), owner.report.ram_bytes.saturating_add(owner.report.gpu_bytes), ram[i].saturating_add(unified[i])]}
+            else {[base[i].0, owner.report.ram_bytes, ram[i]]};
+        let occupied = |i: usize| {let [held,physical,_]=shared(i,owners[i]);held.max(physical)};
+        let free = self.ram_limit.saturating_sub(self.import_reserved()).saturating_sub((0..owners.len()).fold(0u64,|sum,i|sum.saturating_add(occupied(i))));
+        for (i,cap) in resident_caps(free, owners.iter().enumerate().map(|(i,owner)|(i,owner.class as usize,occupied(i),[required_shared[i],shared(i,owner)[2]]))) {
+            let excess=ram[i].saturating_add(if self.unified(owners[i].device) {unified[i]}else {0}).saturating_sub(cap);
+            let gpu_cut=if self.unified(owners[i].device) {excess.min(unified[i].saturating_sub(base[i].1))}else {0};
+            unified[i]-=gpu_cut;ram[i]=ram[i].saturating_sub(excess-gpu_cut).max(base[i].0);
         }
         let mut wakes = Vec::new();
         for (i,owner) in owners.iter().enumerate() {
@@ -530,6 +668,59 @@ mod tests {
     fn owner(budget:&MemoryBudget,class:MemoryClass,device:Option<MemoryDevice>,ram:u64,gpu:u64)->MemoryOwner {
         let owner=budget.register_owner(MemoryOwnerKind::Scene,class,device);
         owner.report(MemoryReport {demand_ram_bytes:ram,demand_gpu_bytes:gpu,..Default::default()});owner
+    }
+    fn resident_bytes_reach_another_owner_only_after_their_release(unified:bool) {
+        let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(2*GIB),..facts()});
+        let device=budget.register_device(device(unified));
+        let snapshot=budget.snapshot();
+        let limit=if unified {snapshot.ram_limit_bytes.min(snapshot.devices[0].limit_bytes)}else {snapshot.devices[0].limit_bytes};
+        let giver=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        giver.report(MemoryReport {gpu_bytes:limit*3/4,pinned_gpu_bytes:limit/8,demand_gpu_bytes:limit/4,..Default::default()});
+        let taker=owner(&budget,MemoryClass::Visible,Some(device),0,limit);
+        assert!(giver.reported().gpu_bytes+taker.grant().gpu_bytes<=limit,
+            "bytes still resident in one owner were granted to another: resident {} granted {} limit {limit}",giver.reported().gpu_bytes,taker.grant().gpu_bytes);
+        giver.report(MemoryReport {gpu_bytes:limit/4,pinned_gpu_bytes:limit/8,demand_gpu_bytes:limit/4,..Default::default()});
+        assert!(taker.grant().gpu_bytes>=limit/2,"released bytes reach the other owner: granted {} limit {limit}",taker.grant().gpu_bytes);
+    }
+    #[test]
+    fn discrete_resident_bytes_reach_another_owner_only_after_their_release() {resident_bytes_reach_another_owner_only_after_their_release(false);}
+    #[test]
+    fn unified_resident_bytes_reach_another_owner_only_after_their_release() {resident_bytes_reach_another_owner_only_after_their_release(true);}
+    #[test]
+    fn unified_renderer_limit_keeps_own_gpu_charges_inside_ram_headroom() {
+        let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(512*MIB),..facts()});
+        let device=budget.register_device(device(true));
+        let current=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        current.report(MemoryReport {gpu_bytes:128*MIB,pinned_gpu_bytes:128*MIB,..Default::default()});
+        let cpu=owner(&budget,MemoryClass::Warm,None,0,0);
+        let working=current.admit_working(MemoryGrant {gpu_bytes:64*MIB,ram_bytes:0}).unwrap();
+        assert!(cpu.publish(MemoryReport {ram_bytes:64*MIB,pinned_ram_bytes:64*MIB,..Default::default()}));
+        assert_eq!(current.gpu_working_limit(),448*MIB,
+            "the public query must apply newly published RAM pins before returning the renderer limit");
+        let headroom=budget.import_headroom_bytes();
+        assert_eq!(headroom,256*MIB);
+        assert!(current.admit_working(MemoryGrant {gpu_bytes:headroom+1,ram_bytes:0}).is_none(),
+            "Core admission must refuse new unified GPU work above RAM headroom");
+        let held=current.reported().pinned_gpu_bytes+working.reserved_bytes();
+        assert_eq!(current.gpu_working_limit(),headroom+held,
+            "the renderer limit must include its own held GPU bytes once and leave other owners' RAM protected");
+    }
+    #[test]
+    fn gpu_working_limit_excludes_other_owners_resident_pins_and_working() {
+        let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(8*GIB),..facts()});
+        let device=budget.register_device(device(false));
+        let current=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        let other=owner(&budget,MemoryClass::Warm,Some(device),0,0);
+        other.report(MemoryReport {gpu_bytes:2*GIB,pinned_gpu_bytes:128*MIB,..Default::default()});
+        let limit=budget.snapshot().devices[0].limit_bytes;
+        assert_eq!(current.gpu_working_limit(),limit-2*GIB,"resident retention is not another owner's room until it is released");
+        other.report(MemoryReport {gpu_bytes:128*MIB,pinned_gpu_bytes:128*MIB,..Default::default()});
+        assert_eq!(current.gpu_working_limit(),limit-128*MIB);
+        let reservation=other.admit_working(MemoryGrant {gpu_bytes:64*MIB,ram_bytes:0}).unwrap();
+        assert_eq!(current.gpu_working_limit(),limit-192*MIB);
+        assert_eq!(other.gpu_working_limit(),limit);
+        drop(reservation);
+        assert_eq!(current.gpu_working_limit(),limit-128*MIB);
     }
     #[test]
     fn accepted_work_reserves_capacity_without_reporting_phantom_pins() {
@@ -557,6 +748,82 @@ mod tests {
         assert_eq!(snapshot.reserved_bytes,0);
         assert!(snapshot.ram_granted_bytes<=GIB,"allocation consumes its obligation, never both charges");
         assert_eq!(work.grant(),MemoryGrant {ram_bytes:64*MIB,gpu_bytes:128*MIB});
+    }
+
+    #[test]
+    fn working_through_a_total_reserves_only_what_pins_and_working_do_not_hold() {
+        let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(GIB),..facts()});
+        let device=budget.register_device(DeviceMemoryFacts {budget_bytes:Some(GIB),..Default::default()});
+        let work=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        work.report(MemoryReport {gpu_bytes:32*MIB,pinned_gpu_bytes:32*MIB,..Default::default()});
+        let first=work.admit_working_through(96*MIB,None).unwrap();
+        assert_eq!(first.reserved_bytes(),64*MIB);
+        let second=work.admit_working_through(128*MIB,None).unwrap();
+        assert_eq!(second.reserved_bytes(),32*MIB);
+        assert_eq!(work.working().gpu_bytes,96*MIB);
+        assert!(work.admit_working_through(GIB,None).is_none(),"the device limit refuses the rest");
+    }
+
+    fn optional_bytes_take_only_room_no_other_owner_demands(unified:bool) {
+        let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(8*GIB),..facts()});
+        let device=budget.register_device(DeviceMemoryFacts {budget_bytes:Some(2*GIB),unified,..Default::default()});
+        let limit=budget.snapshot().devices[0].limit_bytes;
+        let painting=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        painting.report(MemoryReport {gpu_bytes:400*MIB,pinned_gpu_bytes:64*MIB,demand_gpu_bytes:600*MIB,..Default::default()});
+        let warm=owner(&budget,MemoryClass::Warm,Some(device),0,0);
+        warm.report(MemoryReport {gpu_bytes:300*MIB,demand_gpu_bytes:300*MIB,..Default::default()});
+        let display=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        display.report(MemoryReport {gpu_bytes:200*MIB,pinned_gpu_bytes:64*MIB,demand_gpu_bytes:200*MIB,optional_gpu_bytes:u64::MAX,..Default::default()});
+        assert_eq!(painting.grant().gpu_bytes,600*MIB,"optional room never shrinks another owner's demand");
+        assert_eq!(warm.grant().gpu_bytes,300*MIB,"optional room comes after every class of demand");
+        assert_eq!(display.grant().gpu_bytes,limit-900*MIB,"optional room fills what no owner demands");
+        display.report(MemoryReport {gpu_bytes:limit-900*MIB,pinned_gpu_bytes:64*MIB,demand_gpu_bytes:200*MIB,optional_gpu_bytes:u64::MAX,..Default::default()});
+        painting.report(MemoryReport {gpu_bytes:400*MIB,pinned_gpu_bytes:64*MIB,demand_gpu_bytes:800*MIB,..Default::default()});
+        assert_eq!(display.grant().gpu_bytes,limit-1100*MIB,"optional room shrinks first under demand");
+        assert_eq!(painting.grant().gpu_bytes,600*MIB,"optional bytes still resident are not yet free");
+        display.report(MemoryReport {gpu_bytes:limit-1100*MIB,pinned_gpu_bytes:64*MIB,demand_gpu_bytes:200*MIB,optional_gpu_bytes:u64::MAX,..Default::default()});
+        assert_eq!(painting.grant().gpu_bytes,800*MIB,"released optional bytes reach the demand");
+        assert_eq!(warm.grant().gpu_bytes,300*MIB);
+    }
+    #[test]
+    fn discrete_optional_bytes_take_only_room_no_other_owner_demands() {optional_bytes_take_only_room_no_other_owner_demands(false);}
+    #[test]
+    fn unified_optional_bytes_take_only_room_no_other_owner_demands() {optional_bytes_take_only_room_no_other_owner_demands(true);}
+
+    #[test]
+    fn a_refused_working_admission_wakes_once_when_another_owner_releases() {
+        let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(GIB),..facts()});
+        let device=budget.register_device(DeviceMemoryFacts {budget_bytes:Some(GIB),..Default::default()});
+        let work=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        let other=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        let held=other.admit_working(MemoryGrant {ram_bytes:0,gpu_bytes:640*MIB}).unwrap();
+        let wakes=Arc::new(AtomicU64::new(0));
+        let wake:Arc<dyn Fn()+Send+Sync>={let wakes=wakes.clone();Arc::new(move||{wakes.fetch_add(1,Ordering::SeqCst);})};
+        assert!(work.admit_working_through(256*MIB,Some(wake.clone())).is_none());
+        assert!(work.admit_working_through(256*MIB,Some(wake)).is_none());
+        other.report(MemoryReport {gpu_bytes:MIB,demand_gpu_bytes:MIB,..Default::default()});
+        budget.flush_reports();
+        assert_eq!(wakes.load(Ordering::SeqCst),0,"no release, no wake");
+        drop(held);
+        assert_eq!(wakes.load(Ordering::SeqCst),1,"the release wakes the refused admission once");
+        other.report(MemoryReport::default());
+        assert_eq!(wakes.load(Ordering::SeqCst),1);
+        assert!(work.admit_working_through(256*MIB,None).is_some());
+    }
+
+    #[test]
+    fn a_working_fit_query_matches_admission_without_reserving() {
+        let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(GIB),..facts()});
+        let device=budget.register_device(DeviceMemoryFacts {budget_bytes:Some(GIB),..Default::default()});
+        let work=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        let other=owner(&budget,MemoryClass::Visible,Some(device),0,0);
+        let held=other.admit_working(MemoryGrant {ram_bytes:0,gpu_bytes:640*MIB}).unwrap();
+        assert!(!work.fits_working_through(512*MIB) && work.admit_working_through(512*MIB,None).is_none());
+        let before=budget.snapshot();
+        assert!(work.fits_working_through(64*MIB));
+        assert_eq!(before,budget.snapshot(),"a fit query reserves nothing");
+        drop(held);
+        assert!(work.fits_working_through(512*MIB) && work.admit_working_through(512*MIB,None).is_some());
     }
 
     #[test]
@@ -801,6 +1068,30 @@ mod tests {
         }
     }
     #[test]
+    fn the_errors_of_one_out_of_memory_incident_halve_the_limit_once() {
+        let facts=MemoryFacts {host_default_bytes:Some(2*GIB),..Default::default()};
+        let budget=MemoryBudget::with_facts(facts);
+        budget.register_device(device(true));
+        for _ in 0..3 {budget.out_of_memory();}
+        assert_eq!(budget.ram_limit_bytes(),GIB,"one incident halves once");
+        budget.update_ram(facts,60_000);
+        budget.out_of_memory();
+        assert_eq!(budget.ram_limit_bytes(),512*MIB,"a later incident halves again");
+    }
+    #[test]
+    fn out_of_memory_halves_the_unified_limit_to_the_floor_and_it_does_not_regrow() {
+        let budget=MemoryBudget::with_facts(MemoryFacts {host_default_bytes:Some(2*GIB),..Default::default()});
+        budget.register_device(device(true));
+        assert_eq!(budget.ram_limit_bytes(),2*GIB);
+        budget.out_of_memory();
+        assert_eq!(budget.ram_limit_bytes(),GIB);
+        assert!(budget.snapshot().devices[0].limit_bytes<=GIB);
+        budget.update_ram(MemoryFacts {host_default_bytes:Some(2*GIB),..Default::default()},60_000);
+        assert_eq!(budget.ram_limit_bytes(),GIB,"no regrowth without available-memory evidence");
+        for _ in 0..4 {budget.update_ram(MemoryFacts {host_default_bytes:Some(2*GIB),..Default::default()},60_000);budget.out_of_memory();}
+        assert_eq!(budget.ram_limit_bytes(),384*MIB);
+    }
+    #[test]
     fn pressure_and_configuration_cannot_reduce_the_final_target_below_the_floor() {
         let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(512*MIB),..facts()});
         budget.update_ram(MemoryFacts {pressure:true,..facts()},1000);
@@ -900,6 +1191,34 @@ mod tests {
         drop(token);assert_eq!(cache.grant().ram_bytes,900*MIB);
     }
     #[test]
+    fn an_import_reads_only_into_room_that_evictable_owners_have_released() {
+        use std::{future::Future,task::{Context,Wake,Waker}};
+        struct Count(AtomicU64);
+        impl Wake for Count {fn wake(self:Arc<Self>) {self.0.fetch_add(1,Ordering::SeqCst);}}
+        let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(GIB),..facts()});
+        assert_eq!(budget.ram_limit_bytes(),GIB);
+        let cache=owner(&budget,MemoryClass::Warm,None,900*MIB,0);
+        cache.report(MemoryReport {ram_bytes:900*MIB,demand_ram_bytes:900*MIB,..Default::default()});
+        let artwork=owner(&budget,MemoryClass::Pinned,None,0,0);
+        let token=budget.admit_import(700*MIB).unwrap();
+        let read=AtomicBool::new(false);
+        let physical=||budget.snapshot().ram_physical_bytes+if read.load(Ordering::SeqCst) {700*MIB}else {0};
+        let mut import=Box::pin(async {token.covering().await;read.store(true,Ordering::SeqCst);});
+        let wakes=Arc::new(Count(AtomicU64::new(0)));let waker=Waker::from(wakes.clone());let mut context=Context::from_waker(&waker);
+        let _=import.as_mut().poll(&mut context);
+        assert!(physical()<=GIB,"an import must not read into bytes another owner still holds: physical {} limit {GIB}",physical());
+        cache.report(MemoryReport {ram_bytes:500*MIB,demand_ram_bytes:900*MIB,..Default::default()});
+        assert_eq!(wakes.0.load(Ordering::SeqCst),0,"a partial release does not cover the import");
+        assert!(import.as_mut().poll(&mut context).is_pending());
+        cache.report(MemoryReport {ram_bytes:cache.grant().ram_bytes,demand_ram_bytes:900*MIB,..Default::default()});
+        assert_eq!(wakes.0.load(Ordering::SeqCst),1,"the release that covers the import wakes it once");
+        assert!(import.as_mut().poll(&mut context).is_ready());
+        assert!(physical()<=GIB,"physical {} limit {GIB}",physical());
+        drop(import);
+        token.commit(&artwork,MemoryReport {ram_bytes:700*MIB,pinned_ram_bytes:700*MIB,..Default::default()}).unwrap();
+        assert!(budget.snapshot().ram_physical_bytes<=GIB);
+    }
+    #[test]
     fn reservation_clones_resize_and_convert_to_one_physical_owner() {
         let budget=MemoryBudget::with_facts(MemoryFacts {override_bytes:Some(GIB),..facts()});
         let token=budget.admit_import(700*MIB).unwrap();let retained=token.clone();assert!(token.active());
@@ -959,7 +1278,7 @@ mod tests {
     #[test]
     fn published_reports_never_take_the_budget_lock_and_flush_as_coherent_snapshots() {
         let budget=MemoryBudget::with_facts(facts());let owner=owner(&budget,MemoryClass::Visible,None,GIB,0);
-        let report=MemoryReport {ram_bytes:100*MIB,gpu_bytes:200*MIB,pinned_ram_bytes:50*MIB,pinned_gpu_bytes:80*MIB,demand_ram_bytes:2*GIB,demand_gpu_bytes:3*GIB};
+        let report=MemoryReport {ram_bytes:100*MIB,gpu_bytes:200*MIB,pinned_ram_bytes:50*MIB,pinned_gpu_bytes:80*MIB,demand_ram_bytes:2*GIB,demand_gpu_bytes:3*GIB,optional_gpu_bytes:4*GIB};
         {let _held=budget.0.state.lock().unwrap();assert!(owner.publish(report));assert_eq!(owner.grant().ram_bytes,GIB);}
         budget.flush_reports();let row=budget.snapshot().rows[MemoryOwnerKind::Scene as usize][MemoryClass::Visible as usize];
         assert_eq!((row.ram_bytes,row.gpu_bytes,row.pinned_ram_bytes,row.pinned_gpu_bytes),(100*MIB,200*MIB,50*MIB,80*MIB));

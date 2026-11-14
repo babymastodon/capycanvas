@@ -39,7 +39,7 @@ impl Harness {
     }
     pub(super) fn settle(&mut self) {
         self.finish();let deadline=std::time::Instant::now()+READBACK_TIMEOUT;
-        while self.engine.backend().has_pending_work() {
+        while self.engine.backend().next_frame()==layer_render::FrameDemand::Work {
             self.step();assert!(std::time::Instant::now()<deadline,"selected authored picture did not settle");
         }
     }
@@ -65,6 +65,11 @@ impl Harness {
         let target=source_at(self.engine.document(),0);let layer=self.engine.backend().paint_layers.iter().find(|layer|layer.id==target).unwrap();
         for point in points {let coordinate=point.map(|value|value/PAGE_SIZE);
             assert!(layer.pages.iter().any(|page|page.coordinate==coordinate),"A must remain GPU resident before Undo at {coordinate:?}");}
+    }
+    pub(super) fn frame(&mut self,matrix:[f32;6]) {
+        let [a,_,_,d,x,y]=matrix;self.view_revision+=1;
+        self.engine.set_view(ViewState {width_px:512,height_px:256,document_to_surface:matrix},
+            ViewTransform {revision:self.view_revision,surface_to_document:[1./a,0.,0.,1./d,-x/a,-y/d]});
     }
     pub(super) fn zoom(&mut self,scale:f32) {
         let extent=self.engine.document().composition().size;self.view_revision+=1;
@@ -103,6 +108,40 @@ fn undo_then_overlapping_stroke_commits_only_selected_raster_contents() {
     assert_eq!(pixel(&result,256,96),[0;4]);assert_eq!(pixel(&result,256,120),pixel(&expected,256,120));
 }
 
+#[test]
+fn a_warm_stroke_restores_only_its_required_tiles_and_keeps_the_others_through_undo_and_redo() {
+    use layer_core::raster::{RasterData,RasterRevision,RasterTile,TileBlob};
+    let mut document=blank_document([1024,512]);let descriptor=document.composition().color.paint_descriptor();
+    let tiles=(0..8u32).map(|index|(TileKey {plane:RasterPlane::Color,coordinate:[index%4,index/4]},
+        RasterTile::backed(TileBlob::encode(descriptor,&[(index*30) as u8,48,90,255].repeat((PAGE_SIZE*PAGE_SIZE) as usize)).unwrap()))).collect();
+    paint_mut(&mut document,0).raster=RasterRevision::backed(RasterData {tiles,..Default::default()});
+    let pages=|harness:&Harness| {
+        let target=source_at(harness.engine.document(),0);let layer=harness.engine.backend().paint_layers.iter().find(|layer|layer.id==target).unwrap();
+        [[0,1],[1,1]].map(|coordinate|layer.pages.iter().find(|page|page.coordinate==coordinate).map(|page|(page.active().allocation_identity(),page.active().name())))
+    };
+    let mut actual=Harness::new(document);actual.zoom(1.);actual.settle();
+    actual.gpen(1,352.,[0.,0.,1.,1.]);actual.settle();
+    let resident=pages(&actual);assert!(resident.iter().all(Option::is_some),"the first stroke leaves its tiles resident");
+    let counts=crate::test_support::PassCounts::snapshot();
+    let mut brush=layer_core::default_brush(layer_core::DefaultBrushPreset::GPen);brush.diameter=40.;brush.color_rgba_linear=[1.,0.,0.,1.];
+    actual.engine.set_brush(brush).unwrap();let [a,b,c,d,x,y]=actual.engine.view().document_to_surface;
+    let push=|harness:&mut Harness,sequence:u64,phase:PenPhase,point:[f32;2]|harness.input.push(PenEvent {timestamp_ns:sequence*100_000_000,pressure:if phase==PenPhase::Up {0.}else {1.},
+        view_revision:harness.view_revision,..crate::test_support::pen(sequence,phase,[a*point[0]+c*point[1]+x,b*point[0]+d*point[1]+y],SampleFlags::PRIMARY)}).unwrap();
+    for (sequence,phase,point) in [(4,PenPhase::Down,[112.,96.]),(5,PenPhase::Move,[256.,96.]),(6,PenPhase::Move,[400.,96.])] {push(&mut actual,sequence,phase,point);}
+    actual.clock=actual.clock.max(700_000_000);
+    for frame in 0..6 {actual.step();assert!(actual.engine.has_active_stroke());
+        assert_eq!(pages(&actual),resident,"contact frame {frame}: no resident tile outside the stroke is re-uploaded or dropped");}
+    push(&mut actual,7,PenPhase::Up,[400.,96.]);actual.settle();
+    let extra=crate::test_support::PassCounts::snapshot().delta(counts).warm_restore_extra_tiles;
+    for step in 0..3 {
+        if step==1 {assert!(actual.engine.undo().unwrap());actual.settle();}
+        if step==2 {assert!(actual.engine.redo().unwrap());actual.settle();}
+        let mut reference=Harness::new(actual.engine.document().clone());reference.zoom(1.);reference.settle();
+        assert_picture(&mut actual,&mut reference);
+    }
+    assert_eq!(extra,0,"a warm stroke frame selects only the tiles it requires");
+}
+
 fn backed_document()->layer_core::Document {
     use layer_core::raster::{RasterData,RasterRevision,RasterTile,TileBlob};
     let mut document=blank_document([512,256]);let descriptor=document.composition().color.paint_descriptor();
@@ -135,8 +174,7 @@ fn pending_restore_after_history(redo:bool,zoom:bool) {
     let history=actual.engine.retained_tiles();let store=crate::test_support::GatedStore::new(&history,false);
     {let r=actual.engine.backend_mut();let samples=&r.device.source_samples;let limit=samples.stats().limit_bytes;
         samples.set_limit(0);samples.trim_unused(usize::MAX);samples.set_limit(limit);
-        let mut source=r.source_tiles.borrow_mut();let [bytes,uploads]=source.admitted_bytes();let mips=source.mip_budget();
-        source.admit_limits(0,uploads,mips);source.admit_limits(bytes,uploads,mips);
+        crate::test_support::evict_sources(r);
     }
     assert!(actual.engine.undo().unwrap());if zoom {actual.zoom(0.25);}actual.step();store.gate.entered();
     assert!(actual.engine.has_pending_document_edits(),"selected restore must remain pending while its source read is gated");
@@ -150,6 +188,37 @@ fn pending_restore_after_history(redo:bool,zoom:bool) {
 }
 
 #[test]
+fn cached_cell_keys_compose_like_an_uncached_full_plan_after_strokes_layer_edits_undo_and_a_pan() {
+    fn edit(harness:&mut Harness,index:usize,change:impl FnOnce(&mut Occurrence)) {
+        let document=harness.engine.document();let id=document.scene().order()[index];
+        let mut occurrence=document.artwork.occurrences.get(id).unwrap().clone();change(&mut occurrence);
+        let edit=layer_core::Edit::Occurrence(layer_core::RecordChange::replace(&document.artwork.occurrences,id,Some(occurrence)).unwrap());
+        harness.engine.apply_edit(edit).unwrap();
+    }
+    fn pan(harness:&mut Harness,x:f32) {
+        harness.view_revision+=1;
+        harness.engine.set_view(ViewState {width_px:512,height_px:256,document_to_surface:[1.,0.,0.,1.,-x,0.]},
+            ViewTransform {revision:harness.view_revision,surface_to_document:[1.,0.,0.,1.,x,0.]});
+    }
+    let mut document=blank_document([1024,256]);
+    let layer=paint_occurrence(&mut document,"Wash",Some(rgba8_source([1024,256],|x,y|[(x/4) as u8,90,(y/2) as u8,140]).into()));
+    insert_occurrence(&mut document,layer,1);
+    let mut actual=Harness::new(document);pan(&mut actual,0.);actual.settle();
+    actual.gpen(1,96.,[1.,0.,0.,1.]);actual.settle();actual.gpen(4,160.,[0.,0.,1.,1.]);actual.settle();
+    edit(&mut actual,1,|occurrence|occurrence.visible=false);actual.settle();
+    edit(&mut actual,1,|occurrence|occurrence.visible=true);actual.settle();
+    edit(&mut actual,0,|occurrence|occurrence.opacity=0.5);actual.settle();
+    actual.gpen(7,128.,[0.,1.,0.,1.]);actual.settle();
+    assert!(actual.engine.undo().unwrap());actual.settle();
+    assert!(actual.engine.redo().unwrap());actual.settle();
+    actual.gpen(10,200.,[1.,1.,0.,1.]);actual.settle();
+    pan(&mut actual,256.);actual.settle();
+    actual.gpen(13,64.,[0.,1.,1.,1.]);actual.settle();
+    let mut reference=Harness::new(actual.engine.document().clone());pan(&mut reference,256.);reference.settle();
+    assert_picture(&mut actual,&mut reference);
+}
+
+#[test]
 fn undo_then_overlapping_stroke_waits_for_selected_nonempty_restore() {pending_restore_after_history(false,false);}
 #[test]
 fn undo_then_zoom_and_overlapping_stroke_use_only_selected_history() {pending_restore_after_history(false,true);}
@@ -158,6 +227,9 @@ fn redo_then_undo_and_overlapping_stroke_use_only_selected_history() {pending_re
 
 #[path="downstream_author_tests.rs"]
 mod downstream_authors;
+
+#[path="one_pass_tests.rs"]
+mod one_pass;
 
 #[path="ui_held_restore_tests.rs"]
 mod ui_held_restore;

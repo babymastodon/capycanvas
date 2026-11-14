@@ -251,7 +251,7 @@ fn transform_queries_keep_only_the_native_tiles_the_requested_window_reads() {
     let doc = document_at([2053, 1541]);
     let extent = doc.composition().size;
     let mut r = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
-    r.source_tiles.get_mut().admit_limits(64 << 20, 16 << 20, 44 << 20);
+    r.source_tiles.get_mut().admit_limits(16 << 20);
     let mut frame = packet(doc.scene(), extent);
     frame.view.document_to_surface = [0.125, 0., 0., 0.125, 0., 0.];
     frame.composite_all = false;
@@ -262,7 +262,7 @@ fn transform_queries_keep_only_the_native_tiles_the_requested_window_reads() {
     })).unwrap();
     crate::test_support::submit_ready(&mut r, frame).unwrap();
     let mut capture = artwork::Capture::default();
-    while r.has_pending_work() { r.wait_idle().unwrap(); crate::test_support::submit_ready(&mut r, frame).unwrap(); }
+    while r.next_frame()==layer_render::FrameDemand::Work { r.wait_idle().unwrap(); crate::test_support::submit_ready(&mut r, frame).unwrap(); }
     r.wait_idle().unwrap();
     for origin in [[256,256], [1024,768], [1536,1024], [0,0]].into_iter().cycle().take(16) {
         let region = PixelRect::new(origin[0], origin[1], origin[0] + 32, origin[1] + 32);
@@ -422,9 +422,9 @@ fn whole_image_selections_reserve_one_transform_input_pyramid() {
         let level = crate::paint_transform::input_level(plan.level, &preview, extent);
         assert_eq!(transforms.input_requirements(&preview, level, extent), (level, kept), "{label}: transform input requirements");
         let pyramid = display_mips::Plan::at(extent, level).pixel_bytes_through(display_mips::MAX_LEVEL);
-        crate::memory::memory_tests::scene_frame_with_budget(&mut r, frame, pyramid);
+        let _budget = crate::memory::memory_tests::display_frame_with_budget(&mut r, frame, pyramid);
         assert_eq!(r.projected_restore_bytes(), 0, "{label}: no pending raster restores");
-        let available = r.memory.preparation_limits().into_iter().sum::<u64>();
+        let available = r.memory.display_grant() + r.memory.raster_grant();
         assert!(pyramid <= available && available < pyramid + pyramid,
             "{label}: preparation must have headroom for exactly one input pyramid: {pyramid} <= {available} < {}", pyramid + pyramid);
         let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
@@ -515,7 +515,7 @@ fn optional_transform_inputs_park_until_the_compiler_wakes_the_owner() {
     let captures=r.test.source_captures.get();
     for _ in 0..3 {
         crate::test_support::submit_ready(&mut r,frame).unwrap();
-        assert!(!r.has_pending_work(),"unadmitted optional compilation parks the owner");
+        assert!(r.next_frame()!=layer_render::FrameDemand::Work,"unadmitted optional compilation parks the owner");
         assert_eq!(r.metrics.composited_pixels,work);
         assert_eq!(r.test.source_captures.get(),captures);
     }
@@ -684,8 +684,6 @@ fn native_previews_larger_than_the_decoded_floor_draw_from_resumed_original_capt
         crate::test_support::submit_settled(&mut r,frame);
         r
     });
-    let pages = page_coordinates(PixelRect::full(extent)).count() as u64;
-    assert!(floor.source_tiles.borrow().admitted_bytes()[0] < pages * crate::scene::sources::NORMALIZED_PAGE_BYTES);
     assert!(!floor.transform_sources_pending && floor.transforms.as_ref().unwrap().has_preview());
     assert_eq!(pixels(&floor,crate::test_support::document_texture(&floor)),pixels(&reference,crate::test_support::document_texture(&reference)),
         "a preview reading more originals than the decoded slots hold must match one whose originals all fit");
@@ -704,8 +702,7 @@ fn selection_standby_waits_for_cold_samples_without_deferring_the_ready_frame() 
     let store=crate::test_support::GatedStore::new(&layer_core::raster_storage::RetainedTiles::from_sources([source.as_ref()]),false);
     let samples=&r.device.source_samples;let limit=samples.stats().limit_bytes;
     samples.set_limit(0);samples.trim_unused(usize::MAX);samples.set_limit(limit);
-    {let mut cache=r.source_tiles.borrow_mut();let [bytes,uploads]=cache.admitted_bytes();let mips=cache.mip_budget();
-        cache.admit_limits(0,uploads,mips);cache.admit_limits(bytes,uploads,mips);}
+    crate::test_support::evict_sources(&mut r);
     assert!(page_coordinates(PixelRect::full(extent)).all(|coordinate|r.source_tiles.borrow().prepared_view(&source,coordinate).is_none()));
     r.prepare_moving_pixels(Some((id,part)));frame.composite_all=false;
     let submitted=r.submitted_updates();let result=r.submit_when_ready(frame,None);

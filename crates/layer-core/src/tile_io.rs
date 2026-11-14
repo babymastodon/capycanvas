@@ -232,13 +232,20 @@ impl ReadCache {
         }
         retired
     }
+    fn pool_room(state:&State)->u64 {
+        state.queued.iter().chain(&state.cold).map(|key|state.entries[key].reservation as u64).fold(0,u64::saturating_add).min(BUFFER_BYTES)
+    }
     fn recycle(&self,retired:Vec<ByteRange>) {
         let mut discarded=Vec::new();let mut state=self.0.state.lock().unwrap();
+        let room=Self::pool_room(&state);
         for bytes in retired {
             let bytes=bytes.allocation();let length=bytes.len() as u64;
-            if Arc::strong_count(&bytes)==1 && Arc::weak_count(&bytes)==0 && bytes.len()==buffer_class(bytes.len()) && length<=BUFFER_BYTES && state.pooled+length<=BUFFER_BYTES && state.physical+length<=self.limit_bytes() {
+            if Arc::strong_count(&bytes)==1 && Arc::weak_count(&bytes)==0 && bytes.len()==buffer_class(bytes.len()) && state.pooled+length<=room && state.physical+length<=self.limit_bytes() {
                 state.pooled+=length;state.physical+=length;state.buffers.entry(bytes.len()).or_default().push(bytes);
             }else{discarded.push(bytes);}
+        }
+        while state.pooled>room && let Some(bytes)=state.buffers.values_mut().find_map(Vec::pop) {
+            state.pooled-=bytes.len() as u64;state.physical-=bytes.len() as u64;discarded.push(bytes);
         }
         self.publish(&state);drop(state);drop(discarded);
     }
@@ -448,9 +455,8 @@ impl ReadWait {
         if let Some(entry)=state.entries.get_mut(&self.key) && let Some(waiter)=entry.waiters.iter_mut().find(|waiter|waiter.id==self.id) {waiter.distance_squared=distance_squared;}
     }
 }
-impl std::future::Future for ReadWait {
-    type Output=Result<ByteRange,String>;
-    fn poll(self:std::pin::Pin<&mut Self>,context:&mut Context<'_>)->Poll<Self::Output> {
+impl ReadWait {
+    pub fn poll_bytes(&self,waker:&Waker)->Poll<Result<ByteRange,String>> {
         let cache=&self.source.0.cache;
         let mut state=cache.0.state.lock().unwrap();
         match cache.ready(&mut state,self.key,&self.source.0,self.crc) {
@@ -458,11 +464,15 @@ impl std::future::Future for ReadWait {
             Err(error)=>Poll::Ready(Err(error)),
             Ok(RangeState::Pending)=>{
                 let wake=&mut state.entries.get_mut(&self.key).unwrap().waiters.iter_mut().find(|waiter|waiter.id==self.id).unwrap().wake;
-                if wake.as_ref().is_none_or(|wake|!wake.will_wake(context.waker())) {*wake=Some(context.waker().clone());}
+                if wake.as_ref().is_none_or(|wake|!wake.will_wake(waker)) {*wake=Some(waker.clone());}
                 cache.publish(&state);drop(state);cache.schedule();Poll::Pending
             },
         }
     }
+}
+impl std::future::Future for ReadWait {
+    type Output=Result<ByteRange,String>;
+    fn poll(self:std::pin::Pin<&mut Self>,context:&mut Context<'_>)->Poll<Self::Output> {self.poll_bytes(context.waker())}
 }
 impl Drop for ReadWait {
     fn drop(&mut self) {
@@ -574,6 +584,24 @@ mod tests {
         assert_eq!(offsets,[0,64],"camera-near inputs precede a distant source");
     }
     #[test]
+    fn an_idle_read_cache_keeps_no_recycled_buffers() {
+        struct Pooled;
+        impl RangeReader for Pooled {
+            fn allocation_bytes(&self,_:u64,length:usize)->usize {buffer_class(length)}
+            fn read(&self,_:u64,length:usize,_:Option<u32>,mut done:ReadCompletion) {
+                let bytes=done.buffer(length);done.complete_range(ByteRange::new(bytes,0..length).map_err(str::to_string));
+            }
+        }
+        let (_,cache,_,_)=setup();let source=cache.source(64*1024*1024,Arc::new(Pooled));let length=1<<20;
+        let mut waits=(0..8u64).map(|index|Box::pin(source.wait(index*length as u64,length).unwrap())).collect::<Vec<_>>();
+        for _ in 0..8 {cache.drive_inner();}
+        let reads=waits.iter_mut().map(|wait|match std::future::Future::poll(wait.as_mut(),&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(Ok(bytes))=>bytes,_=>panic!("completed read")}).collect::<Vec<_>>();
+        drop(waits);drop(reads);source.evict();
+        let state=cache.0.state.lock().unwrap();
+        assert_eq!((state.pooled,state.physical),(0,0),"no read waits for a recycled buffer");
+    }
+    #[test]
     fn pooled_reads_keep_the_logical_range_and_reuse_only_unleased_allocations() {
         struct Pooled;
         impl RangeReader for Pooled {
@@ -589,8 +617,9 @@ mod tests {
         let allocation=bytes.clone().allocation();let pointer=Arc::as_ptr(&allocation);drop(allocation);
         assert_eq!(bytes.len(),length);assert_eq!(bytes.retained_bytes(),buffer_class(length));assert!(bytes.iter().all(|byte|*byte==71));
         source.evict();assert_eq!(cache.0.state.lock().unwrap().pooled,0);
+        let mut wait=Box::pin(source.wait(length as u64,length).unwrap());
         drop(bytes);source.evict();assert_eq!(cache.0.state.lock().unwrap().pooled,buffer_class(length) as u64);
-        let mut wait=Box::pin(source.wait(length as u64,length).unwrap());cache.drive_inner();
+        cache.drive_inner();
         let Poll::Ready(Ok(bytes))=std::future::Future::poll(wait.as_mut(),&mut Context::from_waker(Waker::noop())) else {panic!("reused pooled read")};
         assert!(std::ptr::addr_eq(Arc::as_ptr(&bytes.clone().allocation()),pointer));
         assert_eq!(cache.0.state.lock().unwrap().pooled,0);drop(wait);drop(bytes);

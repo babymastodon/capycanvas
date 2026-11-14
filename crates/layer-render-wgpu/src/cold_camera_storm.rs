@@ -9,9 +9,10 @@ use std::sync::{Condvar,Mutex};
 use std::collections::BTreeMap;
 use std::time::{Duration,Instant};
 
+const QUIET:Duration=Duration::from_secs(1);
+
 const SEEDS:[u64;3]=[0x139a,0x84e7,0xc25d];
 const FRAMES:usize=300;
-const TRANSIENT_BYTES:u64=64<<20;
 const CPU_MAX:Duration=Duration::from_nanos(33_333_332);
 const CPU_P99:Duration=Duration::from_micros(8300);
 
@@ -61,17 +62,34 @@ impl CoverageProgress {
     }
 }
 
-struct Reads {state:Arc<(Mutex<(usize,bool,u64)>,Condvar)>,seed:u64,profile:IoProfile}
+#[derive(Default)]
+struct EvictionLag {over:[usize;2],worst:[usize;2]}
+impl EvictionLag {
+    fn observe(&mut self,r:&WgpuRasterizer,context:std::fmt::Arguments<'_>) {
+        let resident=[r.scene_tiers.display.used().saturating_sub(r.scene_tiers.retiring.used()),r.raster_tiers.raster.used().saturating_sub(r.raster_buffers.transfer.used())];
+        let grants=[r.memory.display_owner().grant().gpu_bytes,r.memory.raster_owner().grant().gpu_bytes];
+        for owner in 0..2 {
+            self.over[owner]=if resident[owner]>grants[owner] {self.over[owner]+1}else {0};
+            self.worst[owner]=self.worst[owner].max(self.over[owner]);
+            assert!(self.over[owner]<=1,"{} stayed above its grant past the next frame: {context}, resident={}, grant={}",["display","raster"][owner],resident[owner],grants[owner]);
+        }
+    }
+}
+
+struct Reads {state:Arc<(Mutex<(usize,bool,usize)>,Condvar)>,seed:u64,profile:IoProfile}
 impl Reads {
     fn new(seed:u64,profile:IoProfile)->Self {Self {state:Arc::new((Mutex::new((0,false,0)),Condvar::new())),seed,profile}}
-    fn observe(&self)->Arc<dyn Fn()+Send+Sync> {
+    fn observe(&self)->Arc<dyn Fn(u64,usize)+Send+Sync> {
         let state=self.state.clone();let seed=self.seed;let profile=self.profile;
-        Arc::new(move || {
-            let mut step=state.0.lock().unwrap();let serial=step.2;step.2+=1;
-            let ready=step.0+profile.delay(mix(seed^serial));
+        Arc::new(move |offset,length| {
+            let mut step=state.0.lock().unwrap();
+            let ready=step.0+profile.delay(mix(seed^offset^((length as u64)<<40)));
+            step.2+=1;
             while !step.1 && step.0<ready {step=state.1.wait(step).unwrap();}
+            step.2-=1;
         })
     }
+    fn gated(&self)->bool {self.state.0.lock().unwrap().2!=0}
     fn advance(&self,frame:usize) {self.state.0.lock().unwrap().0=frame;self.state.1.notify_all();}
     fn release(&self) {self.state.0.lock().unwrap().1=true;self.state.1.notify_all();}
 }
@@ -188,14 +206,18 @@ fn storm(fixture:Fixture,grant:Grant,profile:IoProfile) {
         let retained=layer_core::Editor::new(document.clone()).retained_tiles();
         let _store=crate::test_support::StoredTiles::with_reads(&retained,crate::test_support::tile_read_cache(),Some(reads.observe()));
         let (initial,transform,_)=camera(seed,0,extent);
-        let renderer=grant.renderer(document.composition().color);
+        let (woken,wakes)=std::sync::mpsc::channel::<()>();
+        let wake:Arc<dyn Fn()+Send+Sync>=Arc::new(move||{let _=woken.send(());});
+        let mut renderer=grant.renderer(document.composition().color);renderer.set_preparation_wake(wake.clone());
         let (mut input,mut live)=engine(document,renderer,initial,transform);
         let mut presenter=crate::ViewportPresenter::for_surface(live.backend(),wgpu::TextureFormat::Rgba8UnormSrgb,crate::SdrSurfaceColor::Srgb).unwrap();
         presenter.set_overviews(live.backend(),&[crate::OverviewPlacement {bounds:[3500.,24.,312.,192.],clip:None,
             work_area:[[0.;2];4],outline_linear:[1.;3],scale:1.,opacity:1.}]);
         let mut output=create_target(&live.backend().device,[initial.width_px,initial.height_px],wgpu::TextureFormat::Rgba8UnormSrgb,"cold storm presentation");
+        let mut lag=EvictionLag::default();
         let mut timings=Vec::new();let mut pictured=false;let mut sequence=0;let mut coverage=CoverageProgress::default();let mut requested_view=initial;
         for frame in 0..FRAMES {
+            while wakes.try_recv().is_ok() {}
             reads.advance(frame);
             let cold_stroke=(151..=171).contains(&frame);
             let (view,mut transform,center)=camera(seed,if cold_stroke {4}else {frame},extent);
@@ -203,7 +225,7 @@ fn storm(fixture:Fixture,grant:Grant,profile:IoProfile) {
             if frame==FRAMES/2 {
                 let factory=live.backend().factory.clone();let color=live.document().composition().color;
                 let mut renderer=WgpuRasterizer::from_factory_inner(factory.clone(),factory.pipeline_device(color),Initialization::Headless).unwrap();
-                renderer.initialize_native(color).unwrap();
+                renderer.initialize_native(color).unwrap();renderer.set_preparation_wake(wake.clone());
                 drop(live.replace_backend(*renderer).unwrap());
             }
             live.set_view(view,transform);requested_view=view;
@@ -246,19 +268,27 @@ fn storm(fixture:Fixture,grant:Grant,profile:IoProfile) {
             pictured=coverage.first_visible.is_some();
             if !cfg!(debug_assertions) && matches!(grant,Grant::Desktop) {assert!(timings.last().unwrap()<=&CPU_MAX,"CPU max: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}, cpu={:?}",timings.last());}
             let physical=r.telemetry().resident_bytes;
-            let grants=r.factory.memory_budget().snapshot().devices.iter().map(|device|device.granted_bytes).sum::<u64>();
-            assert!(physical<=grants.saturating_add(TRANSIENT_BYTES),"physical budget: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}, physical={physical}, grants={grants}");
+            let limit=r.factory.memory_budget().snapshot().devices.iter().map(|device|device.limit_bytes).sum::<u64>();
+            assert!(physical<=limit,"device memory above its limit: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}, physical={physical}, limit={limit}");
+            lag.observe(r,format_args!("{profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}"));
             let _=device.poll(wgpu::PollType::Poll);
             assert!(pollster::block_on(validation.pop()).is_none(),"validation: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}");
+            if matches!(live.frame_demand(),layer_render::FrameDemand::Wait|layer_render::FrameDemand::WaitUntil(_)) && !reads.gated() {let _=wakes.recv_timeout(QUIET);}
         }
         reads.release();
         assert!(pictured,"no visible first picture: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, coverage={coverage:?}");
         timings.sort();
         if !cfg!(debug_assertions) && matches!(grant,Grant::Desktop) {assert!(timings[timings.len()*99/100]<=CPU_P99,"CPU p99: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, p99={:?}, max={:?}",timings[timings.len()*99/100],timings.last());}
-        let deadline=Instant::now()+Duration::from_secs(30);let mut settled=false;
+        let deadline=Instant::now()+Duration::from_secs(30);let mut settled=false;let mut audit=crate::frame_demand::DemandAudit::default();
+        crate::test_support::count_source_preparations();
         for frame in 0..4000 {
+            while wakes.try_recv().is_ok() {}
             let counts=crate::test_support::PassCounts::snapshot();
+            audit.begin(live.backend());
             live.render_frame().unwrap();live.backend_mut().wait_idle().unwrap();
+            audit.end(live.backend(),format_args!("{profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, settle frame={frame}"));
+            let [prepared,pages]=crate::test_support::source_preparations();
+            assert!(prepared<=3*pages.max(64),"settling prepares source pages again: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, settle frame={frame}, {prepared} preparations of {pages} pages");
             assert_eq!(crate::test_support::PassCounts::snapshot().delta(counts).source_input_misses,0,"accepted input miss after storm: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}");
             assert_eq!(crate::test_support::PassCounts::snapshot().delta(counts).raster_output_misses,0,"accepted output miss after storm: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}");
             let revision=live.document().revision;let owner=live.document().owner;let r=live.backend_mut();
@@ -268,17 +298,22 @@ fn storm(fixture:Fixture,grant:Grant,profile:IoProfile) {
             assert_eq!(known,1.,"settled root has no matching publication witness");
             let camera=crate::test_support::coverage_hash(&(view.document_to_surface.map(f32::to_bits),[view.width_px,view.height_px]));
             coverage.observe(FRAMES+frame,[owner,revision,camera],covered,visible,presenter.canvas_revision().is_some());
-            if !live.has_pending_input() && !live.has_pending_document_edits() && !live.raster_backing_pending()
-                && !live.wants_continuous_frames() && !live.backend().has_pending_work() {
-                assert!(live.backend().has_presentable_frame());
+            let waiting=!live.has_pending_input() && !live.has_pending_document_edits() && !live.raster_backing_pending()
+                && live.frame_demand() == layer_render::FrameDemand::Wait;
+            if waiting && wakes.recv_timeout(QUIET).is_err() {
+                let r=live.backend();
+                assert!(r.has_presentable_frame());
                 assert!(covered>0.,"idle renderer has no visible committed content: {coverage:?}");
+                if let Some(cache)=&r.scale_display && let Err(cell)=cache.storm_view_settled(view) {
+                    panic!("settled with a required visible cell incomplete: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}: {cell}");
+                }
                 settled=true;break;
             }
-            assert!(Instant::now()<deadline,"settle timeout: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}");
-            std::thread::sleep(Duration::from_millis(1));
+            assert!(Instant::now()<deadline,"settle timeout: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, frame={frame}, first_visible={:?}",coverage.first_visible);
+            if !waiting {std::thread::sleep(Duration::from_millis(1));}
         }
-        eprintln!("STORM profile={profile:?} fixture={fixture:?} grant={grant:?} seed={seed:x} first_visible={:?} zero={} partial={} full={} cpu_p99={:?} cpu_max={:?}",coverage.first_visible,coverage.zero,coverage.partial,coverage.full,timings[timings.len()*99/100],timings.last());
-        assert!(settled,"settle frame bound: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}");
+        eprintln!("STORM profile={profile:?} fixture={fixture:?} grant={grant:?} seed={seed:x} first_visible={:?} zero={} partial={} full={} cpu_p99={:?} cpu_max={:?} eviction_lag={:?}",coverage.first_visible,coverage.zero,coverage.partial,coverage.full,timings[timings.len()*99/100],timings.last(),lag.worst);
+        assert!(settled,"settle frame bound: {profile:?}/{fixture:?}/{grant:?}, seed={seed:x}, first_visible={:?}",coverage.first_visible);
     }
 }
 
@@ -416,4 +451,30 @@ fn recreated_tablet_renderer_under_real_pressure_keeps_frames_resumable() {
         if live.backend().navigator.view().is_some() {published=true;break;}
     }
     assert!(published,"releasing real import pressure must let the Navigator publish");
+}
+
+#[test]
+fn an_effects_storm_holds_composition_scratch_to_one_unit() {
+    let seed=SEEDS[0];let document=document(Fixture::Effects,seed);let extent=document.composition().size;
+    let reads=Reads::new(seed,IoProfile::Adversarial);
+    let retained=layer_core::Editor::new(document.clone()).retained_tiles();
+    let _store=crate::test_support::StoredTiles::with_reads(&retained,crate::test_support::tile_read_cache(),Some(reads.observe()));
+    let (initial,transform,_)=camera(seed,0,extent);
+    let renderer=Grant::Desktop.renderer(document.composition().color);
+    let (_input,mut live)=engine(document,renderer,initial,transform);
+    let mut presenter=crate::ViewportPresenter::for_surface(live.backend(),wgpu::TextureFormat::Rgba8UnormSrgb,crate::SdrSurfaceColor::Srgb).unwrap();
+    let mut output=create_target(&live.backend().device,[initial.width_px,initial.height_px],wgpu::TextureFormat::Rgba8UnormSrgb,"effects storm presentation");
+    for frame in 0..96 {
+        reads.advance(frame);
+        let (view,mut transform,_)=camera(seed,frame,extent);transform.revision=frame as u64+1;
+        live.set_view(view,transform);
+        if output.0.width()!=view.width_px || output.0.height()!=view.height_px {
+            output=create_target(&live.backend().device,[view.width_px,view.height_px],wgpu::TextureFormat::Rgba8UnormSrgb,"resized effects storm presentation");
+        }
+        live.render_frame().unwrap();
+        let r=live.backend_mut();
+        if presenter.needs_present(r,view,[0.18,0.18,0.18,1.]) {presenter.present(r,&output.1,view,[0.18,0.18,0.18,1.]).unwrap();}
+        let scratch=r.scene.as_ref().map_or(0,|scene|scene.pool_bytes())+r.scale_display.as_ref().map_or(0,|cache|cache.charged_scratch_bytes());
+        assert!(scratch<=r.memory.unit(),"composition scratch above one unit's working term: frame={frame}, scratch={scratch}, unit={}",r.memory.unit());
+    }
 }

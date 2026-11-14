@@ -540,7 +540,7 @@ impl WgpuRasterizer {
     pub(crate) fn restore_mask_page(&mut self,blob:&Arc<layer_core::raster::TileBlob>,name:layer_core::raster::ContentVersion)->Result<MaskPage,GpuRasterError> {
         let mut page=MaskPage::new(&self.device);
         self.submit_restore(|r,scene,encoder| {
-            if r.source_tiles.borrow().uploads_full() {scene::Scene::submit_source_uploads(r,encoder)?;}
+            if r.source_tiles.borrow().uploads_full(crate::residency::Class::Authored) {scene::Scene::submit_source_uploads(r,encoder,crate::residency::Class::Authored)?;}
             let receipt=encoder.submission();let write=page.initialize(&receipt)?;
             scene.restore_native_scalars(r,&[crate::native_tiles::scalar::NativeScalarRestore {blob,working:&write.value().texture}],encoder)?;
             write.publish(name);Ok(())
@@ -592,6 +592,7 @@ impl WgpuRasterizer {
                         self,
                         encoder,
                         batch.target,
+                        op,
                         operation,
                     );
                     self.transforms = Some(transforms);

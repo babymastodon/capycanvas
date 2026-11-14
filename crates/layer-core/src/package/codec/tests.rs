@@ -757,3 +757,25 @@ fn cold_original_copy_uses_worker_reads_without_revalidating_the_package() {
     assert!(cancelled.is_empty());
     assert_eq!(input.reads.load(Ordering::Relaxed),2);
 }
+
+#[test]
+fn an_opened_package_decodes_only_into_room_another_owner_has_released() {
+    use std::{future::Future,task::{Context,Poll,Waker}};
+    let mut artwork=crate::Document::new(identity(70),64,64,crate::DocumentNames {paint:"Paint".into(),paper:"Paper".into()}).artwork;
+    artwork.metadata=Arc::new(PhotoMetadata {xmp:Some(Resource::from(vec![7;8*1024*1024])),..Default::default()});
+    let bytes=serialize(&prepare(&artwork,false));
+    let budget=crate::MemoryBudget::with_facts(crate::MemoryFacts {override_bytes:Some(1<<30),..Default::default()});
+    let limit=budget.ram_limit_bytes();
+    let cache=budget.register_owner(crate::MemoryOwnerKind::Other,crate::MemoryClass::Warm,None);
+    cache.report(crate::MemoryReport {ram_bytes:limit-MAX_RANGE_BYTES as u64,demand_ram_bytes:limit,..Default::default()});
+    let cancelled=AtomicBool::new(false);
+    let mut opening=Box::pin(open_async_with_budget(backing(bytes),Default::default(),&cancelled,budget.clone()));
+    let mut context=Context::from_waker(Waker::noop());
+    assert!(opening.as_mut().poll(&mut context).is_pending(),"the open decoded into room another owner still holds");
+    cache.report(crate::MemoryReport {ram_bytes:cache.grant().ram_bytes,demand_ram_bytes:limit,..Default::default()});
+    let Poll::Ready(Ok(OpenOutcome::Candidate {artwork:opened,memory,..}))=opening.as_mut().poll(&mut context) else {panic!("the release lets the open finish")};
+    assert_eq!(opened.metadata,artwork.metadata);
+    let snapshot=budget.snapshot();
+    assert!(snapshot.ram_physical_bytes+snapshot.reserved_bytes<=limit,"physical {} reserved {} limit {limit}",snapshot.ram_physical_bytes,snapshot.reserved_bytes);
+    drop(memory);
+}

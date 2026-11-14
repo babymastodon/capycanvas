@@ -252,9 +252,12 @@ impl NativeHost {
         if let Some(renderer)=self.session.renderer_mut().0.as_mut() {self.preparation.install(renderer);}
         else {self.preparation.retire();}
     }
-    pub fn poll_preparation(&mut self)->bool {
+    pub fn poll_preparation(&mut self)->layer_render::FrameDemand {
         if self.preparation.take() {self.dirty=true;}
-        self.dirty
+        self.frame_demand()
+    }
+    pub fn frame_demand(&self)->layer_render::FrameDemand {
+        if self.dirty {layer_render::FrameDemand::Work} else {self.session.frame_demand()}
     }
     pub fn close_wake(&mut self) {self.preparation.close();}
 
@@ -452,7 +455,7 @@ impl NativeHost {
             self.dirty=change.needs_present();
             self.apply_change(previous,change);
         }
-        self.dirty|=!self.startup.complete || self.session.holding_input();
+        self.dirty|=self.session.holding_input();
         Ok(())
     }
     pub fn dispatch(&mut self, action: UiAction) -> Result<(), String> {self.dispatch_with(action,UiSession::dispatch)}
@@ -510,17 +513,11 @@ impl NativeHost {
             }
         }
         let mut images = Vec::new();
-        if let Some(gpu) = &self.session.renderer_mut().0 {
-            gpu.device()
-                .poll(wgpu::PollType::Poll)
-                .map_err(|e| e.to_string())?;
-        }
         while let Some(image) = self.session.renderer_mut().take_thumbnail() {
             let image = image.map_err(|e| e.to_string())?;
             self.thumbnails.completed(image.request_id);
             images.push(image);
         }
-        self.dirty |= self.session.engine().wants_continuous_frames();
         Ok((accepted, images))
     }
     /// Camera motion changes the core revision without changing the workspace
@@ -1127,7 +1124,7 @@ impl NativeHost {
                     .into_iter()
                     .map(|image| (image.request_id, image.width, image.height, image.bytes))
                     .collect();
-                json!({ "accepted": accepted, "images": images, "canvas_wake": self.dirty, "wait_ms": wait_ms })
+                json!({ "accepted": accepted, "images": images, "canvas_wake": self.frame_demand() != layer_render::FrameDemand::Wait, "wait_ms": wait_ms })
             }
             Query::Context { target } => json!(self.session.context_menu(target)?),
             Query::PanelHandleTarget { item } => {
@@ -1491,6 +1488,129 @@ mod tests {
     }
 
     #[test]
+    fn a_settled_native_canvas_does_not_wake_for_completed_gpu_work() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::time::{Duration, Instant};
+        let (_reference, mut host) = gpu_host(layer_ui::Platform::Windows, [64; 2]);
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let count = notifications.clone();
+        host.set_wake(Arc::new(move || { count.fetch_add(1, Ordering::Relaxed); }));
+        host.session.renderer_mut().0.as_mut().unwrap().finish_startup_catalog();
+        let clock = std::cell::Cell::new(0);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !host.startup.complete || host.session.frame_demand() != layer_render::FrameDemand::Wait {
+            frame_step(&mut host, &clock, deadline);
+        }
+        assert!(host.startup.canvas_ready && host.startup.brush_ready);
+        assert!(host.session.engine().backend().0.as_ref().unwrap().has_presentable_frame());
+        host.session.renderer_mut().0.as_mut().unwrap().wait_idle().unwrap();
+        host.poll_preparation();
+        host.dirty = false;
+        let submitted = host.session.engine().backend().0.as_ref().unwrap().submitted_updates();
+        host.resize(641, 480, 1.).unwrap();
+        frame_step(&mut host, &clock, deadline);
+        let submitted = {
+            let gpu = host.session.engine().backend().0.as_ref().unwrap();
+            assert!(gpu.submitted_updates() > submitted, "the served frame must submit real GPU work");
+            gpu.submitted_updates()
+        };
+        host.dirty = false;
+        host.session.renderer_mut().0.as_mut().unwrap().wait_idle().unwrap();
+        let frames = host.session.engine().metrics().frames;
+        let revision = host.session.engine().document().revision;
+        let started = Instant::now();
+        let mut polls = 0;
+        while started.elapsed() < Duration::from_secs(1) {
+            polls += 1;
+            assert!(host.poll_preparation() == layer_render::FrameDemand::Wait,
+                "settled native canvas requested an idle frame: polls={polls}, notifications={}, frames={frames}, submissions={submitted}, elapsed={:?}",
+                notifications.load(Ordering::Relaxed), started.elapsed());
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(polls > 0);
+        assert_eq!(host.session.engine().metrics().frames, frames);
+        assert_eq!(host.session.engine().backend().0.as_ref().unwrap().submitted_updates(), submitted);
+        assert_eq!(host.session.engine().document().revision, revision);
+        assert!(host.error.is_none());
+        assert!(host.poisoned().is_none());
+    }
+
+    #[test]
+    fn a_settled_native_host_requests_no_frames_for_five_seconds() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::time::{Duration, Instant};
+        let (_reference, mut host) = gpu_host(layer_ui::Platform::Windows, [64; 2]);
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let count = notifications.clone();
+        host.set_wake(Arc::new(move || { count.fetch_add(1, Ordering::Relaxed); }));
+        host.session.renderer_mut().0.as_mut().unwrap().finish_startup_catalog();
+        let clock = std::cell::Cell::new(0);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let serve = |host: &mut NativeHost, window: Duration| {
+            let started = Instant::now();
+            let mut frames = 0;
+            while started.elapsed() < window {
+                if host.poll_preparation() != layer_render::FrameDemand::Wait { frames += 1; frame_step(host, &clock, deadline); }
+                else { std::thread::sleep(Duration::from_millis(1)); }
+            }
+            frames
+        };
+        while !host.startup.complete || host.session.frame_demand() != layer_render::FrameDemand::Wait || host.session.engine().has_pending_document_edits() {
+            frame_step(&mut host, &clock, deadline);
+        }
+        host.session.renderer_mut().0.as_mut().unwrap().wait_idle().unwrap();
+        let drained = serve(&mut host, Duration::from_millis(200));
+        assert!(drained < 8, "idle frames kept waking the host: {drained}");
+        let frames = serve(&mut host, Duration::from_secs(5));
+        assert_eq!(frames, 0, "a settled host requested idle frames: notifications={}", notifications.load(Ordering::Relaxed));
+        assert!(host.error.is_none() && host.poisoned().is_none());
+    }
+
+    fn serve_on_wakes(host: &mut NativeHost, woken: &std::sync::mpsc::Receiver<()>, clock: &std::cell::Cell<u64>, deadline: std::time::Instant, done: impl Fn(&NativeHost) -> bool) {
+        while !done(host) {
+            match host.poll_preparation() {
+                layer_render::FrameDemand::Wait => woken.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .unwrap_or_else(|_| panic!("the host waited without a wake: {}", host.session.rendering_diagnostics())),
+                layer_render::FrameDemand::WaitUntil(at) => { let _ = woken.recv_timeout(at.saturating_duration_since(std::time::Instant::now())); }
+                _ => frame_step(host, clock, deadline),
+            }
+        }
+    }
+
+    #[test]
+    fn native_startup_completes_from_wakes_without_polling_frames() {
+        let (_reference, mut host) = gpu_host(layer_ui::Platform::Windows, [64; 2]);
+        let (woke, woken) = std::sync::mpsc::channel();
+        host.set_wake(std::sync::Arc::new(move || { let _ = woke.send(()); }));
+        host.session.renderer_mut().0.as_mut().unwrap().finish_startup_catalog();
+        let clock = std::cell::Cell::new(0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        frame_step(&mut host, &clock, deadline);
+        serve_on_wakes(&mut host, &woken, &clock, deadline, |host| host.startup.complete);
+    }
+
+    #[test]
+    fn host_thumbnail_service_leaves_gpu_callbacks_to_the_poll_owner() {
+        use std::time::Duration;
+        let (_reference, mut host) = gpu_host(layer_ui::Platform::Windows, [64; 2]);
+        let (holding, held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (fired, firing) = std::sync::mpsc::channel();
+        {
+            let gpu = host.session.engine().backend().0.as_ref().unwrap();
+            gpu.on_gpu_done(move || { let _ = holding.send(()); let _ = released.recv_timeout(Duration::from_secs(10)); });
+            held.recv_timeout(Duration::from_secs(10)).expect("the poll owner fires the first completion");
+            gpu.queue().on_submitted_work_done(move || { let _ = fired.send(std::thread::current().name().map(str::to_owned)); });
+        }
+        host.layer_thumbnails(std::iter::empty()).unwrap();
+        let early = firing.try_recv().ok();
+        release.send(()).unwrap();
+        assert_eq!(early, None, "a host thread fired a later completion while the poll owner still held an earlier one");
+        host.session.engine().backend().0.as_ref().unwrap().on_gpu_done(|| {});
+        assert_eq!(firing.recv_timeout(Duration::from_secs(10)).unwrap().as_deref(), Some("capy-gpu-poll"));
+    }
+
+    #[test]
     fn native_pen_move_marquee_and_alt_drag_preserve_vector_edits() {
         use layer_ui::{CommandId, FigurePaint, LayerAction, Modifiers, Platform};
         let mut outcomes = Vec::new();
@@ -1610,7 +1730,7 @@ mod tests {
         let clock = std::cell::Cell::new(0);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let settle = |host: &mut NativeHost| {
-            while !host.startup.complete || host.session.wants_continuous_frames() {
+            while !host.startup.complete || host.session.frame_demand() != layer_render::FrameDemand::Wait {
                 frame_step(host, &clock, deadline);
                 assert!(!host.session.rendering_suspended(), "{:?}", host.error);
             }
@@ -1637,6 +1757,60 @@ mod tests {
         assert!(host.session.command(CommandId::CanvasSize).enabled);
         host.dispatch(UiAction::Invoke { command: CommandId::CanvasSize }).unwrap();
         assert!(host.session.state().layer_tools.canvas_size.is_some());
+    }
+
+    #[test]
+    fn rapid_history_commands_preserve_the_selected_picture_at_fit_and_native_zoom() {
+        use layer_ui::CommandId;
+        let (_reference, mut host) = gpu_host(layer_ui::Platform::Windows, [768, 512]);
+        let clock = std::cell::Cell::new(0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let settle = |host: &mut NativeHost| {
+            frame_step(host, &clock, deadline);
+            while !host.startup.complete || host.dirty || host.session.frame_demand() != layer_render::FrameDemand::Wait
+                || host.session.engine().raster_backing_pending()
+            {
+                frame_step(host, &clock, deadline);
+            }
+        };
+        settle(&mut host);
+        let probes = [Point { x: 128., y: 128. }, Point { x: 384., y: 256. }];
+        let mut states = Vec::new();
+        host.dispatch(UiAction::Invoke { command: CommandId::SelectAll }).unwrap();
+        for color in [[1., 0., 0., 1.], [0., 1., 0., 1.], [0., 0., 1., 1.]] {
+            host.dispatch(serde_json::from_value(json!({"type":"set_color","rgba":color})).unwrap()).unwrap();
+            host.dispatch(UiAction::Invoke { command: CommandId::FillSelection }).unwrap();
+            settle(&mut host);
+            states.push(host.session.engine().checkpoint());
+        }
+        for zoom in [0.25, 1.] {
+            host.dispatch(UiAction::SetZoom { zoom }).unwrap();
+            settle(&mut host);
+            for selected in [2, 1] {
+                if selected == 1 {
+                    host.dispatch(UiAction::Invoke { command: CommandId::Undo }).unwrap();
+                    settle(&mut host);
+                }
+                let expected = presented(&host, &probes);
+                let channel = if selected == 2 { 2 } else { 1 };
+                assert!(expected.iter().all(|pixel| pixel[channel] > 240 && pixel[3] == 255), "selected fill: {expected:?}");
+                let commands = if selected == 2 {
+                    [CommandId::Undo, CommandId::Undo, CommandId::Redo, CommandId::Redo]
+                } else {
+                    [CommandId::Redo, CommandId::Undo, CommandId::Redo, CommandId::Undo]
+                };
+                for _ in 0..64 {
+                    for command in commands {
+                        host.dispatch(UiAction::Invoke { command }).unwrap();
+                    }
+                }
+                settle(&mut host);
+                assert_eq!(host.session.engine().checkpoint(), states[selected], "selected history at zoom {zoom}");
+                assert_eq!(presented(&host, &probes), expected, "history picture at zoom {zoom}");
+            }
+            host.dispatch(UiAction::Invoke { command: CommandId::Redo }).unwrap();
+            settle(&mut host);
+        }
     }
 
     #[test]
@@ -1722,7 +1896,7 @@ mod tests {
         let (_reference, mut host) = gpu_document_host(layer_ui::Platform::Windows, document);
         let clock = std::cell::Cell::new(0);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !host.startup.complete || host.session.wants_continuous_frames() { frame_step(&mut host, &clock, deadline); }
+        while !host.startup.complete || host.session.frame_demand() != layer_render::FrameDemand::Wait { frame_step(&mut host, &clock, deadline); }
         let gpu = host.session.engine().backend().0.as_ref().unwrap();
         gpu.shader_idle(false, false);
         let view = host.session.state().camera.view();
@@ -1834,13 +2008,13 @@ mod tests {
         let (_reference, mut host) = gpu_document_host(layer_ui::Platform::Windows, document);
         let clock = std::cell::Cell::new(0);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !host.startup.complete || host.session.wants_continuous_frames() { frame_step(&mut host, &clock, deadline); }
-        assert!(!host.session.engine().backend().has_pending_work());
+        while !host.startup.complete || host.session.frame_demand() != layer_render::FrameDemand::Wait { frame_step(&mut host, &clock, deadline); }
+        assert!(host.session.engine().backend().next_frame()!=layer_render::FrameDemand::Work);
         host.session.renderer_mut().prepare_regions(Some(&layer_render::RegionPreparation {
             source: layer_render::RegionSource::Composite, reference_count: None, paper: None,
             tolerance: 0., refinement: Default::default(), enclosed: false,
         }));
-        let images = visible_layer_thumbnails(&mut host, |host| assert!(host.session.engine().backend().has_pending_work()));
+        let images = visible_layer_thumbnails(&mut host, |host| assert!(host.session.engine().backend().next_frame()==layer_render::FrameDemand::Work));
         assert_eq!(images.len(), 4);
     }
 
@@ -1882,7 +2056,7 @@ mod tests {
         let clock = std::cell::Cell::new(1_000_000_000);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !host.startup.canvas_ready || !host.session.filter_previews_idle()
-            || host.session.engine().has_pending_input() || !host.session.engine().backend().has_pending_work()
+            || host.session.engine().has_pending_input() || host.session.engine().backend().next_frame()!=layer_render::FrameDemand::Work
         {
             frame_step(&mut host, &clock, deadline);
         }
@@ -1892,7 +2066,7 @@ mod tests {
             frame_step(&mut host, &clock, deadline);
             if before == (host.session.engine().backend().showing_drawing(), host.session.engine().backend().showing_navigator()) { break; }
         }
-        assert!(host.session.engine().backend().has_pending_work(), "the reopened fixture must retain real display work after transitions finish");
+        assert!(host.session.engine().backend().next_frame()==layer_render::FrameDemand::Work, "the reopened fixture must retain real display work after transitions finish");
         assert!(!host.session.engine().has_pending_document_edits());
         let gpu = host.session.engine().backend().0.as_ref().unwrap().snapshot_gpu();
         let snapshot = host.session.engine().document().snapshot();
@@ -1911,7 +2085,7 @@ mod tests {
             expected.insert(layer.id, pixel);
         }
         let images = visible_layer_thumbnails(&mut host, |host| {
-            assert!(host.session.engine().backend().has_pending_work());
+            assert!(host.session.engine().backend().next_frame()==layer_render::FrameDemand::Work);
             assert!(!host.session.engine().has_pending_document_edits());
         });
         for (id, pixels) in images {
@@ -2003,7 +2177,7 @@ mod tests {
             assert!(host.session.holding_input(), "the complete early Down/Move/Up waits for the new paper");
             assert_eq!(host.session.engine().metrics().committed_strokes, committed);
             assert!(!host.session.engine().has_active_stroke());
-            while host.session.holding_input() || host.session.engine().wants_continuous_frames() || host.session.engine().has_pending_document_edits() {
+            while host.session.holding_input() || host.session.engine().frame_demand() != layer_render::FrameDemand::Wait || host.session.engine().has_pending_document_edits() {
                 frame_step(&mut host, &clock, deadline);
             }
             assert!(host.session.paint_ready());
@@ -2043,7 +2217,7 @@ mod tests {
         assert_eq!(host.session.engine().checkpoint(), start, "the paper choice waits behind the stroke");
         contact(&mut host, 260.);
         while host.session.engine().metrics().committed_strokes < committed + 2 || host.session.engine().has_active_stroke()
-            || host.session.engine().has_pending_document_edits() || host.session.engine().wants_continuous_frames() {
+            || host.session.engine().has_pending_document_edits() || host.session.engine().frame_demand() != layer_render::FrameDemand::Wait {
             frame_step(&mut host, &clock, deadline);
         }
         assert_eq!(host.session.engine().metrics().committed_strokes, committed + 2);
@@ -2282,7 +2456,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         assert_eq!(host.layer_thumbnail_wait_ms(), 50);
         assert_eq!(host.query(json!({"type":"layer_thumbnails","requests":[]})).unwrap()["wait_ms"].as_u64(), Some(50), "Preview polling yields while the canvas prepares");
-        while !host.startup.brush_ready || host.session.engine().wants_continuous_frames() { frame_step(&mut host, &clock, deadline); }
+        while !host.startup.brush_ready || host.session.engine().frame_demand() != layer_render::FrameDemand::Wait { frame_step(&mut host, &clock, deadline); }
         let mut woke = false;
         let mut prompt = false;
         loop {
@@ -2290,13 +2464,14 @@ mod tests {
             let wait_ms = host.layer_thumbnail_wait_ms();
             let reply = host.query(json!({"type":"layer_thumbnails","requests":[[1,layer_ui::occurrence_token(layer)]]})).unwrap();
             assert_eq!(reply["wait_ms"].as_u64(), Some(wait_ms));
-            assert_eq!(reply["canvas_wake"].as_bool(), Some(host.dirty), "The query carries frame demand to its native caller");
+            let demand = host.frame_demand() != layer_render::FrameDemand::Wait;
+            assert_eq!(reply["canvas_wake"].as_bool(), Some(demand), "The query carries frame demand to its native caller");
             let images = reply["images"].as_array().unwrap();
-            woke |= host.dirty;
+            woke |= demand;
             prompt |= reply["wait_ms"].as_u64() == Some(0);
-            assert!(host.dirty || !host.session.engine().wants_continuous_frames(), "work left for frames schedules one");
+            assert!(demand || host.session.engine().frame_demand() == layer_render::FrameDemand::Wait, "work left for frames schedules one");
             if images.iter().any(|image| image[0].as_u64() == Some(1)) { break; }
-            while host.dirty { frame_step(&mut host, &clock, deadline); }
+            while host.frame_demand() != layer_render::FrameDemand::Wait { frame_step(&mut host, &clock, deadline); }
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
         assert!(woke, "the thumbnail leaves decoding for canvas frames");
@@ -2314,7 +2489,7 @@ mod tests {
         let cache=layer_core::tile_io::ReadCache::new(layer_core::MemoryBudget::with_facts(layer_core::MemoryFacts {host_default_bytes:Some(1<<30),override_bytes:Some(1<<30),..Default::default()}));
         let (entered,waiting)=mpsc::channel();
         let open=Arc::new((Mutex::new(false),Condvar::new()));let gate=open.clone();
-        let observe=Arc::new(move || {
+        let observe=Arc::new(move |_,_| {
             let _=entered.send(());
             let mut released=gate.0.lock().unwrap();while !*released {released=gate.1.wait(released).unwrap();}drop(released);
         });
@@ -2328,13 +2503,13 @@ mod tests {
         let (_reference,mut host)=gpu_document_host(layer_ui::Platform::Android,document);
         let (notify,woken)=mpsc::channel();host.set_wake(Arc::new(move ||{let _=notify.send(());}));
         let clock=std::cell::Cell::new(0);let deadline=std::time::Instant::now()+std::time::Duration::from_secs(60);
-        while !host.startup.complete || host.session.engine().wants_continuous_frames() {frame_step(&mut host,&clock,deadline);}
+        while !host.startup.complete || host.session.engine().frame_demand() != layer_render::FrameDemand::Wait {frame_step(&mut host,&clock,deadline);}
         waiting.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
         while woken.try_recv().is_ok() {}
         host.poll_preparation();host.dirty=false;
-        assert!(!host.poll_preparation());assert!(woken.try_recv().is_err());
+        assert!(host.poll_preparation() == layer_render::FrameDemand::Wait);assert!(woken.try_recv().is_err());
         *held.0.0.lock().unwrap()=true;held.0.1.notify_all();
-        woken.recv_timeout(std::time::Duration::from_secs(10)).unwrap();assert!(host.poll_preparation());
+        woken.recv_timeout(std::time::Duration::from_secs(10)).unwrap();assert!(host.poll_preparation() == layer_render::FrameDemand::Work);
         let pixels=thumbnail(&mut host,&clock,1,layer_ui::occurrence_token(layer));
         assert_eq!(&pixels[(16*32+16)*4..(16*32+16)*4+4],&[0,0,255,255]);
         host.close_wake();drop(host);drop(store);drop(held);let _=std::fs::remove_dir_all(path);
@@ -2342,7 +2517,7 @@ mod tests {
     fn thumbnail(host: &mut NativeHost, clock: &std::cell::Cell<u64>, request: u64, target: u64) -> Vec<u8> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
-            while host.session.holding_input() || host.session.engine().wants_continuous_frames() || host.session.engine().has_pending_document_edits() { frame_step(host, clock, deadline); }
+            while host.session.holding_input() || host.session.engine().frame_demand() != layer_render::FrameDemand::Wait || host.session.engine().has_pending_document_edits() { frame_step(host, clock, deadline); }
             let (_, images) = host.layer_thumbnails([(request, target)]).unwrap();
             if let Some(image) = images.into_iter().find(|image| image.request_id == request) { return image.bytes; }
             frame_step(host, clock, deadline);
@@ -2353,7 +2528,7 @@ mod tests {
         let (_reference, mut host) = gpu_host(layer_ui::Platform::Windows, [2048, 1536]);
         let clock = std::cell::Cell::new(0);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !host.startup.brush_ready || host.session.engine().wants_continuous_frames() { frame_step(&mut host, &clock, deadline); }
+        while !host.startup.brush_ready || host.session.engine().frame_demand() != layer_render::FrameDemand::Wait { frame_step(&mut host, &clock, deadline); }
         let layer = layer_ui::occurrence_token(host.session.engine().document().working.occurrence.unwrap());
         let original = thumbnail(&mut host, &clock, 1, layer);
         for attempt in 0..4u64 {

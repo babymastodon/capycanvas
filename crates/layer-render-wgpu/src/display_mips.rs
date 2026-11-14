@@ -381,10 +381,11 @@ impl Image {
     pub fn copy_to_scratch(
         &self,
         encoder: &mut crate::submission::CommandEncoder,
-        source: &wgpu::Texture,
+        source: impl Into<crate::source_access::TileTexture>,
         region: PixelRect,
         destination: [u32; 2],
     ) -> Result<(), GpuRasterError> {
+        let source = &source.into();
         if source.format() != wgpu::TextureFormat::Rgba32Float
             || region.max_x() > source.width() || region.max_y() > source.height()
             || destination[0] + region.width() > PAGE_SIZE || destination[1] + region.height() > PAGE_SIZE
@@ -392,10 +393,7 @@ impl Image {
             return Err(GpuRasterError::InvalidExtent);
         }
         encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                origin: wgpu::Origin3d { x: region.min_x(), y: region.min_y(), z: 0 },
-                ..source.as_image_copy()
-            },
+            source.copy_at([region.min_x(), region.min_y()]),
             wgpu::TexelCopyTextureInfo {
                 origin: wgpu::Origin3d { x: destination[0], y: destination[1], z: 0 },
                 ..self.scratch.as_image_copy()

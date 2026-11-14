@@ -71,15 +71,40 @@ fn assert_pixels(actual: &[u8], expected: &[u8], context: &str) {
     assert!(changed == 0, "{context}: {changed} differing pixels, maximum channel error {error}");
 }
 
-fn live_planes(r: &WgpuRasterizer, document: &Document) -> std::collections::BTreeMap<TileKey, Vec<u8>> {
+fn raw_planes(r: &mut WgpuRasterizer, document: &Document) -> Planes {
     let target = target(document);
     let versions = r.raster_versions(document.scene(), target).unwrap();
-    let layer = r.paint_layers.iter().find(|layer| layer.id == target).unwrap();
-    layer.pages.iter().map(|p| (TileKey { plane: RasterPlane::Color, coordinate: p.coordinate },
-        page_bytes(r, &p.active().read(versions.tile(RasterPlane::Color, p.coordinate), None).unwrap().value().texture)))
-        .chain(layer.watercolor_wetness_pages.iter().map(|p| (TileKey { plane: RasterPlane::WatercolorWetness, coordinate: p.coordinate },
-            page_bytes(r, &p.active().read(versions.tile(RasterPlane::WatercolorWetness, p.coordinate), None).unwrap().value().texture))))
-        .collect()
+    let mut planes = Planes::new();
+    for coordinate in page_coordinates(PixelRect::full(EXTENT)) {
+        for plane in PLANES {
+            let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
+            let tile = crate::test_support::query_ready(r, &mut encoder, |r, encoder| {
+                let read = |r: &WgpuRasterizer, inputs: &mut crate::scene::sources::AcceptedInputs| {
+                    if plane == RasterPlane::Color { inputs.raw_color(r, target, coordinate).map(|[base, _]| base) }
+                    else { inputs.raw_scalar(r, target, plane, coordinate) }
+                };
+                let declaration = crate::scene::sources::Declaration::raw(None, Some(versions.clone()), Some(encoder.submission()));
+                let mut inputs = crate::scene::sources::declare(Default::default(), declaration, |inputs| read(r, inputs).map(drop))?.accept_query(r, None)?;
+                if !inputs.prepare(r)? { return Err(GpuRasterError::NotReady); }
+                let source = read(r, &mut inputs)?;
+                inputs.track(encoder);
+                if let Some(source) = &source && !source.encode(r, encoder, crate::residency::Class::Authored)? {
+                    return Err(GpuRasterError::NotReady);
+                }
+                Ok(source.map(|source| source.tile))
+            });
+            r.uploads.finish(&encoder);
+            encoder.submit(&r.queue);
+            if let Some(tile) = tile {
+                let bytes = page_bytes(r, &tile.texture);
+                let bytes = if plane == RasterPlane::WatercolorWetness && tile.texture.format() == wgpu::TextureFormat::Rgba32Float {
+                    bytes.chunks_exact(16).flat_map(|pixel| pixel[..4].iter().copied()).collect()
+                } else { bytes };
+                planes.insert(TileKey { plane, coordinate }, bytes);
+            }
+        }
+    }
+    planes
 }
 
 fn maps() -> [Affine; 2] {
@@ -113,8 +138,8 @@ fn affine_material_transform_maps_raw_planes_before_edges_and_keeps_tile_neighbo
             };
             Arc::make_mut(&mut paint_mut(&mut source).operations).push(operation);
             let actual = render(&mut transformed, &source, &[operation_batch], false);
-            let actual_planes = live_planes(&transformed, &source);
-            for (key, bytes) in live_planes(&expected, &destination) {
+            let actual_planes = raw_planes(&mut transformed, &source);
+            for (key, bytes) in raw_planes(&mut expected, &destination) {
                 assert!(actual_planes.get(&key) == Some(&bytes), "{map:?} width={width} {key:?}: mapped raw plane differs");
             }
             for (key, bytes) in &actual_planes {
@@ -136,7 +161,6 @@ fn cold_backed_scalar_planes_survive_destructive_affine_mapping_without_live_pag
     let mut source = layer(fixture(Affine::IDENTITY, 4.));
     let immutable = paint(&source).raster.clone();
     render(&mut transformed, &source, &[], true);
-    assert!(!transformed.paint_layers[0].watercolor_wetness_pages.is_empty());
     transformed.paint_layers[0].watercolor_wetness_pages.clear();
     assert!(transformed.native_plane_tile(target(&source), RasterPlane::WatercolorWetness, [1, 0]).unwrap().is_some());
     let destination = layer(fixture(map, 4.));
@@ -151,8 +175,8 @@ fn cold_backed_scalar_planes_survive_destructive_affine_mapping_without_live_pag
         damage: operation.bounds(EXTENT), ..crate::test_support::dab_batch(target(&source), crate::tests::test_style(BrushExecution::Dry), Rect::from_extent(EXTENT)) };
     Arc::make_mut(&mut paint_mut(&mut source).operations).push(operation);
     let actual = render(&mut transformed, &source, &[operation_batch], false);
-    let actual_planes = live_planes(&transformed, &source);
-    for (key, bytes) in live_planes(&expected, &destination) {
+    let actual_planes = raw_planes(&mut transformed, &source);
+    for (key, bytes) in raw_planes(&mut expected, &destination) {
         let mapped = actual_planes.get(&key).unwrap_or_else(|| panic!("missing cold mapped {key:?}"));
         if key.plane == RasterPlane::Color {
             assert!(mapped == &bytes, "cold mapped pigment must match independent raw planes");
@@ -183,7 +207,7 @@ fn semitransparent_material_over_nontransparent_backdrop_matches_premultiplied_o
     }
     paint_mut(&mut background).raster = RasterRevision::backed(data);
     let mut pixels = |doc: &Document| {
-        crate::test_support::submit_published(&mut renderer, FramePacket { reset_layers: true, ..packet(doc.scene(), EXTENT) });
+        crate::test_support::submit_settled(&mut renderer, FramePacket { reset_layers: true, ..packet(doc.scene(), EXTENT) });
         crate::scene::scale::tests::display_pixels(&renderer)
     };
     let source = pixels(&front);
@@ -858,7 +882,7 @@ fn nonlinear_material_transform_maps_raw_planes_with_preview_commit_and_destinat
             let immutable = paint(&source).raster.clone();
             let digests: Vec<_> = immutable.wait_data().unwrap().tiles.values().map(|t| t.wait_backing().unwrap().content_digest().unwrap()).collect();
             render(&mut transformed, &source, &[], true);
-            let source_planes = live_planes(&transformed, &source);
+            let source_planes = raw_planes(&mut transformed, &source);
             let transform = ImageTransform { placement: layer_core::LayerPlacement { interpolation: Interpolation::Nearest, ..map.clone() }, ..Default::default() };
             transformed.set_transform_preview(Some(&layer_render::TransformPreview {
                 transaction: 1, target: target(&source), moving: false, selection: None, transform: transform.clone(),
@@ -874,7 +898,7 @@ fn nonlinear_material_transform_maps_raw_planes_with_preview_commit_and_destinat
                 damage: operation.bounds(EXTENT), ..crate::test_support::dab_batch(target(&source), crate::tests::test_style(BrushExecution::Dry), Rect::from_extent(EXTENT)) };
             Arc::make_mut(&mut paint_mut(&mut source).operations).push(operation);
             let actual = render(&mut transformed, &source, &[operation_batch], false);
-            let samples = check_raw_mapping(&source_planes, &live_planes(&transformed, &source), &positions, &context);
+            let samples = check_raw_mapping(&source_planes, &raw_planes(&mut transformed, &source), &positions, &context);
             let destination = layer(destination_fixture(&samples, width, &data));
             let expected_pixels = render(&mut expected, &destination, &[], true);
             assert_eq!(transformed.paint_layers[0].watercolor, expected.paint_layers[0].watercolor, "{label} width={width}");
@@ -1084,7 +1108,7 @@ fn selection_copy_bake_applies_soft_coverage_after_the_source_mask() {
         ..crate::test_support::dab_batch(copied,crate::tests::test_style(BrushExecution::Dry),damage)};
     occurrence_mut(&mut owner).visible =false;
     let packet=FramePacket {dab_batches:std::slice::from_ref(&batch),..packet(owner.scene(),EXTENT)};
-    crate::test_support::submit_ready(&mut r, packet).unwrap();
+    crate::test_support::submit_settled(&mut r, packet);
     let actual=crate::test_support::float_pixels(&r,crate::test_support::document_texture(&r));
     let mut occupied=0;
     for (i,(actual,source)) in actual.iter().zip(&original).enumerate() {

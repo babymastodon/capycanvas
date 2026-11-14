@@ -115,25 +115,15 @@ pub(super) fn slot_for(slots:impl Iterator<Item=Option<[u32;2]>>,desired:&BTreeS
 }
 pub(super) struct Allocation {
     pub bytes:u64,
-    pub retired:Arc<std::sync::atomic::AtomicU64>,
-    pub pending:std::sync::atomic::AtomicBool,
+    pub retired:Arc<crate::residency::Tier>,
+    pub pending:std::sync::OnceLock<crate::residency::Charge>,
 }
 impl Allocation {
-    pub fn retire(&self) {
-        use std::sync::atomic::Ordering;
-        if !self.pending.swap(true,Ordering::AcqRel) {self.retired.fetch_add(self.bytes,Ordering::AcqRel);}
-    }
-}
-impl Drop for Allocation {
-    fn drop(&mut self) {
-        use std::sync::atomic::Ordering;
-        if self.pending.load(Ordering::Acquire) {self.retired.fetch_sub(self.bytes,Ordering::AcqRel);}
-    }
+    pub fn retire(&self) {self.pending.get_or_init(||self.retired.charge(self.bytes));}
 }
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool,AtomicU64,Ordering};
     #[test]
     fn overflowing_or_uncertain_region_subdivides_without_losing_any_output() {
         let bounds=PixelRect::new(0,0,9,3);
@@ -151,18 +141,18 @@ mod lifecycle_tests {
     }
     #[test]
     fn submitted_and_accepted_consumers_hold_one_retired_charge_until_the_last_completion() {
-        let retired=Arc::new(AtomicU64::new(0));let allocation=Arc::new(Allocation {bytes:608<<20,retired:retired.clone(),pending:AtomicBool::new(false)});
+        let retired=Arc::new(crate::residency::Tier::default());let allocation=Arc::new(Allocation {bytes:608<<20,retired:retired.clone(),pending:Default::default()});
         let accepted=allocation.clone();let submitted=allocation.clone();
         allocation.retire();allocation.retire();drop(allocation);
-        assert_eq!(retired.load(Ordering::Acquire),608<<20);
-        drop(submitted);assert_eq!(retired.load(Ordering::Acquire),608<<20);
-        drop(accepted);assert_eq!(retired.load(Ordering::Acquire),0);
+        assert_eq!(retired.used(),608<<20);
+        drop(submitted);assert_eq!(retired.used(),608<<20);
+        drop(accepted);assert_eq!(retired.used(),0);
     }
     #[test]
     fn discarded_unretired_allocation_does_not_subtract_some_other_consumers_charge() {
-        let retired=Arc::new(AtomicU64::new(17));
-        drop(Allocation {bytes:91,retired:retired.clone(),pending:AtomicBool::new(false)});
-        assert_eq!(retired.load(Ordering::Acquire),17);
+        let retired=Arc::new(crate::residency::Tier::default());let other=retired.charge(17);
+        drop(Allocation {bytes:91,retired:retired.clone(),pending:Default::default()});
+        assert_eq!(retired.used(),17);drop(other);
     }
     #[test]
     fn cursor_yields_during_splitting_and_keeps_each_accepted_draw_until_advanced() {

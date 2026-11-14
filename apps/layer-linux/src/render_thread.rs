@@ -4,7 +4,7 @@ use crate::wayland::{Child, Geometry, Parent};
 use gtk::prelude::WidgetExt;
 use layer_core::{AssetId, authored::{SceneSnapshot, OccurrenceHandle, SourceTarget, EvaluationContext, ArtworkCapture}};
 use layer_render::{
-    BackendError, BrushSource, CanvasRenderer, CursorSegment, Dab, DabBatch, FramePacket, HostImage,
+    BackendError, BrushSource, CanvasRenderer, CursorSegment, Dab, DabBatch, FrameDemand, FramePacket, HostImage,
     ReadbackImage, TipOutline, ViewState,
 };
 use layer_render_wgpu::{ViewportPresenter, WgpuRasterizer};
@@ -26,7 +26,16 @@ fn error(e: impl std::fmt::Display) -> String {
 }
 /// Wake the canvas once GTK is next idle, from any thread.
 fn wake_canvas(area: &gtk::glib::SendWeakRef<gtk::Picture>, status: &Arc<ChromeStatus>) {
+    status.woken();
     canvas_action(area, "canvas.wake", status);
+}
+struct Replies { sender: mpsc::Sender<Reply>, area: gtk::glib::SendWeakRef<gtk::Picture>, status: Arc<ChromeStatus> }
+impl Replies {
+    fn send(&self, reply: Reply) -> Result<(), mpsc::SendError<Reply>> {
+        self.sender.send(reply)?;
+        wake_canvas(&self.area, &self.status);
+        Ok(())
+    }
 }
 fn canvas_action(area: &gtk::glib::SendWeakRef<gtk::Picture>, action: &'static str, status: &Arc<ChromeStatus>) {
     let area = area.clone();
@@ -48,9 +57,25 @@ pub(crate) struct ChromeStatus {
     owner: u64,
     accepting: AtomicBool,
     value: AtomicU64,
+    wakes: AtomicU64,
+    waker: std::sync::Mutex<Option<std::task::Waker>>,
 }
 impl ChromeStatus {
-    fn new(owner: u64) -> Self { Self {owner,accepting:AtomicBool::new(true),value:AtomicU64::new(CHROME_PREPARING)} }
+    fn new(owner: u64) -> Self {
+        Self {owner,accepting:AtomicBool::new(true),value:AtomicU64::new(CHROME_PREPARING),wakes:AtomicU64::new(0),waker:Default::default()}
+    }
+    fn woken(&self) {
+        let waker = { let mut waker = self.waker.lock().unwrap(); self.wakes.fetch_add(1, Ordering::AcqRel); waker.take() };
+        if let Some(waker) = waker { waker.wake(); }
+    }
+    pub(crate) async fn wake_after(self: Arc<Self>, seen: u64) {
+        std::future::poll_fn(|context| {
+            let mut waker = self.waker.lock().unwrap();
+            if self.wakes.load(Ordering::Acquire) != seen { std::task::Poll::Ready(()) }
+            else { *waker = Some(context.waker().clone()); std::task::Poll::Pending }
+        }).await
+    }
+    pub(crate) fn wakes(&self) -> u64 { self.wakes.load(Ordering::Acquire) }
     pub(crate) fn state(&self) -> crate::glass::ChromeState {
         use crate::glass::ChromeState;
         match self.value.load(Ordering::Acquire) {
@@ -169,12 +194,29 @@ fn preparation_command<T>(receiver: &mpsc::Receiver<T>, ready: bool) -> Preparat
         Err(mpsc::TryRecvError::Disconnected) => PreparationCommand::Closed,
     }
 }
+fn receive<T>(receiver: &mpsc::Receiver<T>, demand: FrameDemand) -> Result<T, mpsc::RecvTimeoutError> {
+    match demand {
+        FrameDemand::Animate | FrameDemand::Work => receiver.try_recv().map_err(|failure| match failure {
+            mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
+            mpsc::TryRecvError::Disconnected => mpsc::RecvTimeoutError::Disconnected,
+        }),
+        FrameDemand::WaitUntil(deadline) => receiver.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())),
+        FrameDemand::Wait => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+    }
+}
 struct PreparationSignal { commands:mpsc::Sender<Command>,queued:AtomicBool }
 impl PreparationSignal {
     fn notify(&self) {
         if !self.queued.swap(true,Ordering::AcqRel)
             && self.commands.send(Command::PreparationReady).is_err() {self.queued.store(false,Ordering::Release);}
     }
+}
+fn submit_ready_frame<R: CanvasRenderer>(renderer: &mut R, packet: FramePacket<'_>, preview: Option<&layer_render::TransformPreview>,
+    draw_start: &mut std::time::Instant) -> std::task::Poll<Result<(), R::Error>> {
+    let checking = std::time::Instant::now();
+    let Some(ready) = renderer.ready_submission(packet, preview) else { return std::task::Poll::Pending; };
+    *draw_start += checking.elapsed();
+    std::task::Poll::Ready(renderer.submit_ready(ready, packet))
 }
 fn admit_frame<T, E>(frame: Option<T>, pending: &mut VecDeque<T>, mut draw: impl FnMut(&mut T) -> Result<bool, E>) -> Result<usize, E> {
     let mut admitted = 0;
@@ -221,10 +263,7 @@ impl Drop for ContextRequest {
     fn drop(&mut self) { let _ = self.value.set(Err("GPU worker stopped before capture".into())); }
 }
 impl ContextCapture {
-    fn context(&self) -> Result<EvaluationContext, String> {
-        while self.0.get().is_none() { std::thread::sleep(Duration::from_millis(1)); }
-        self.0.get().unwrap().clone()
-    }
+    fn context(&self) -> Result<EvaluationContext, String> { self.0.wait().clone() }
     pub(crate) async fn resolve(self) -> Result<EvaluationContext, String> {
         gtk::gio::spawn_blocking(move || self.context()).await.map_err(|_| "Capture worker failed".to_string())?
     }
@@ -301,6 +340,9 @@ impl Drop for Frame {
     }
 }
 impl Frame {
+    fn waits_for_raster(&self) -> bool {
+        self.scene.view().targets().any(|t| self.scene.view().raster(t).is_some_and(|r| r.try_data().is_none()))
+    }
     fn packet(&self) -> FramePacket<'_> {
         FramePacket {
             commit_rasters: self.commit_rasters,
@@ -437,6 +479,7 @@ enum Command {
     SeedContext(EvaluationContext),
     CaptureContext(ContextRequest),
     CanvasTransition(layer_render::CanvasFade),
+    Hidden(bool),
     LocalTone(Option<Arc<layer_render_wgpu::local_tone::GpuToneGuide>>, mpsc::Sender<Result<(),String>>),
     Proof(Option<Arc<layer_color::ProofLut>>, bool, bool, mpsc::Sender<Result<(), String>>),
     Screen(u64, f32, Option<layer_render_wgpu::ScreenCheck>),
@@ -534,7 +577,8 @@ enum Reply {
     Error(String),
 }
 
-const SCREEN_CHECK_DELAY: Duration = Duration::from_millis(250);
+const FRAMES_IN_FLIGHT: usize = 2;
+pub(crate) const SCREEN_CHECK_DELAY: Duration = Duration::from_millis(250);
 
 #[cfg(test)]
 static NEXT_STARTUP_PAUSE: std::sync::Mutex<Option<Arc<AtomicBool>>> = std::sync::Mutex::new(None);
@@ -616,6 +660,7 @@ pub struct RenderWorker {
     replies: mpsc::Receiver<Reply>,
     failure: Arc<std::sync::OnceLock<String>>,
     in_flight: Arc<AtomicUsize>,
+    hidden: bool,
     report: Arc<FrameReport>,
     retouch: Option<layer_render::RetouchPreparation>,
     regions:Option<layer_render::RegionPreparation>,
@@ -707,6 +752,9 @@ impl RenderWorker {
         let (sender, receiver) = mpsc::channel();
         self.send(Command::PendingDependency(sender))?;
         Ok(receiver)
+    }
+    pub(crate) fn set_hidden(&mut self, hidden: bool) {
+        if self.hidden != hidden && self.send(Command::Hidden(hidden)).is_ok() { self.hidden = hidden; }
     }
     pub(crate) fn release_chrome(&self, revision: u64) -> impl FnOnce() + 'static {
         let commands = self.commands.clone();
@@ -913,6 +961,7 @@ impl RenderWorker {
             replies,
             failure: Arc::default(),
             in_flight: Arc::default(),
+            hidden: false,
             report: Arc::default(),
             retouch: None,
             regions:None,
@@ -1095,7 +1144,7 @@ impl RenderWorker {
         }
         Ok(self.initialized
             && (!self.first_frame_sent || self.startup.canvas_ready)
-            && self.in_flight.load(Ordering::Acquire) < 2)
+            && self.in_flight.load(Ordering::Acquire) < FRAMES_IN_FLIGHT)
     }
     #[cfg(test)]
     pub(super) fn worker_is_retired(&self) -> bool {
@@ -1208,10 +1257,10 @@ impl CanvasRenderer for RenderWorker {
     }
     fn has_pending_submission(&self) -> bool { self.settling_roots.iter().any(|r| r.try_data().is_none()) }
     fn can_submit(&self) -> bool {
-        !self.has_pending_submission() && self.in_flight.load(Ordering::Acquire) < 2
+        !self.has_pending_submission() && self.in_flight.load(Ordering::Acquire) < FRAMES_IN_FLIGHT
     }
-    fn has_pending_work(&self) -> bool {
-        self.report.pending_work.load(Ordering::Acquire)
+    fn next_frame(&self) -> FrameDemand {
+        if self.has_pending_submission() || self.report.pending_work.load(Ordering::Acquire) { FrameDemand::Work } else { FrameDemand::Wait }
     }
     fn set_transform_preview(
         &mut self,
@@ -1518,7 +1567,7 @@ impl CanvasRenderer for RenderWorker {
         let Some(geometry) = self.geometry else {
             return Err(BackendError("Canvas not allocated"));
         };
-        if self.in_flight.load(Ordering::Acquire) >= 2 {
+        if self.in_flight.load(Ordering::Acquire) >= FRAMES_IN_FLIGHT {
             return Err(BackendError("Canvas frame queue full"));
         }
         match packet.selection_overlays {
@@ -1653,6 +1702,7 @@ struct Worker {
     initial_completion: Option<Arc<AtomicBool>>,
     launch_frame: LaunchFrame,
     last_owner: Option<u64>,
+    hidden: bool,
 }
 impl Worker {
     #[cfg(test)]
@@ -1705,6 +1755,7 @@ impl Worker {
         report: &FrameReport,
         #[cfg(test)] worker_stats: Arc<std::sync::Mutex<crate::timing::Stats>>,
     ) -> Result<(), String> {
+        let reply = &Replies { sender: reply.clone(), area: self.area.clone(), status: self.presented_chrome.clone() };
         if reply.send(Reply::Initialized(self.view_color, self.renderer.snapshot_gpu(), self.renderer.shader_activity())).is_err() {
             return Ok(());
         }
@@ -1752,14 +1803,9 @@ impl Worker {
             if let Some(failure) = self.watch.failure() {
                 return Err(failure);
             }
-            self.renderer
-                .device()
-                .poll(wgpu::PollType::Poll)
-                .map_err(error)?;
             self.child.dispatch()?;
             if let Some(frame) = self.launch_frame.take_presented() {
                 reply.send(Reply::LaunchPresented(frame)).map_err(error)?;
-                wake_canvas(&self.area, &self.presented_chrome);
             }
             if self.child.take_initial_commit() && self.chrome.initial_applied() {
                 self.child.synchronize(false)?;
@@ -1772,12 +1818,10 @@ impl Worker {
             if self.screen_reported != Some(revision) {
                 self.screen_reported = Some(revision);
                 reply.send(Reply::Screen(screen)).map_err(error)?;
-                wake_canvas(&self.area, &self.presented_chrome);
             }
             if let Some(result) = self.presenter.screen_check_result() {
                 if let Err(e) = &result { eprintln!("Screen gamut check: {e}"); }
                 reply.send(Reply::ScreenClipped(self.checked_generation, result.ok())).map_err(error)?;
-                wake_canvas(&self.area, &self.presented_chrome);
             }
             let headroom = if self.hdr_encoding.is_some() { self.screen_headroom } else { 1. };
             if headroom != self.display_headroom {
@@ -1830,7 +1874,7 @@ impl Worker {
             if admitted != 0 {
                 last_canvas_frame = std::time::Instant::now();
                 document_drawn = true;
-                count.fetch_sub(admitted, Ordering::Release);
+                self.release_frames(count, admitted);
             }
             if context_capture.is_some() && pending_frames.is_empty() && !self.renderer.has_pending_submission() {
                 let request = context_capture.take().unwrap();
@@ -1925,38 +1969,24 @@ impl Worker {
                 PreparationCommand::Wait=>None,
                 PreparationCommand::Closed=>break,
             };
-            let next = if context_capture.is_some() {
-                queued.map(Ok).unwrap_or_else(|| receiver.recv_timeout(Duration::from_millis(1)))
-            } else if let Some(command) = queued {
-                Ok(command)
-            } else if !startup_progress.complete
-                || !pending_frames.is_empty()
-                || self.renderer.has_pending_submission()
-                || self.renderer.effect_validation_pending()
-                || self.renderer.filter_previews_pending()
-                || self.pending_present
-                || !self.chrome.can_present()
-                || self.chrome.first != FirstChrome::Visible
-                || stamp_flight || pending_stamp.is_some()
-                || self.renderer.thumbnails_pending()
-                || !pending_thumbnails.is_empty()
-                || self.renderer.color_sample_pending()
-                || self.renderer.selection_paint_pending()
-                || self.renderer.region_pending()
-                || self.child.feedback_pending()
-                || self.launch_frame.submitted
-                || self.presenter.screen_check_busy()
-            {
-                receiver.recv_timeout(Duration::from_millis(if thumbnail_ready || self.renderer.region_pending() { 1 } else { 8 }))
-            } else if self.hdr_encoding.is_some() {
-                // Display changes arrive on Wayland even when artwork is idle.
-                receiver.recv_timeout(Duration::from_millis(100))
-            } else if self.child.watching_display() || self.screen_check.is_some() {
-                receiver.recv_timeout(SCREEN_CHECK_DELAY)
-            } else {
-                receiver
-                    .recv()
-                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+            let next = match queued {
+                Some(command) => Ok(command),
+                None => {
+                    let quiet = last_canvas_frame + Duration::from_millis(50);
+                    let display = !self.hidden && (self.pending_present || !self.chrome.can_present() || self.chrome.first != FirstChrome::Visible
+                        || self.child.feedback_pending() || self.launch_frame.submitted || self.presenter.screen_check_busy());
+                    let idle = if thumbnail_ready { FrameDemand::after(Duration::from_millis(1)) }
+                        else if !pending_thumbnails.is_empty() || self.renderer.filter_previews_pending() && quiet > std::time::Instant::now() { FrameDemand::WaitUntil(quiet) }
+                        else { FrameDemand::Wait };
+                    let screen = if self.hdr_encoding.is_some() { FrameDemand::after(Duration::from_millis(100)) }
+                        else if self.child.watching_display() || self.screen_check.is_some() { FrameDemand::after(SCREEN_CHECK_DELAY) }
+                        else { FrameDemand::Wait };
+                    self.publish_demand(report);
+                    let regions = if self.renderer.region_step_runnable() { FrameDemand::Work } else { FrameDemand::Wait };
+                    let demand = [regions, idle, screen, if display { FrameDemand::after(Duration::from_millis(8)) } else { FrameDemand::Wait }]
+                        .into_iter().fold(FrameDemand::Wait, FrameDemand::sooner);
+                    receive(receiver, demand)
+                }
             };
             let mut command = match next {
                 Ok(command) => command,
@@ -1986,7 +2016,6 @@ impl Worker {
                             Err(layer_render_wgpu::GpuRasterError::ThumbnailUnavailable(_)) => {
                                 pending_thumbnails.pop_front();
                                 reply.send(Reply::ThumbnailCancelled(id)).map_err(error)?;
-                                wake_canvas(&self.area, &self.presented_chrome);
                             }
                             Err(failure) => return Err(error(failure)),
                         }
@@ -2010,7 +2039,7 @@ impl Worker {
                 }
                 continue;
             }
-            if self.initial_completion.is_some() && !matches!(command, Command::Stop | Command::Park(_) | Command::CanvasTransition(_) | Command::Wake | Command::PreparationReady | Command::ReleaseChrome(_)) {
+            if self.initial_completion.is_some() && !matches!(command, Command::Stop | Command::Park(_) | Command::CanvasTransition(_) | Command::Hidden(_) | Command::Wake | Command::PreparationReady | Command::ReleaseChrome(_)) {
                 deferred.push_back(command);
                 continue;
             }
@@ -2219,7 +2248,7 @@ impl Worker {
                     if admitted != 0 {
                         last_canvas_frame = std::time::Instant::now();
                         document_drawn = true;
-                        count.fetch_sub(admitted, Ordering::Release);
+                        self.release_frames(count, admitted);
                     }
                 }
                 Command::Asset(id, asset) => {
@@ -2251,6 +2280,7 @@ impl Worker {
                     self.renderer.set_canvas_transition(alpha);
                     self.pending_present = self.last_view.is_some();
                 }
+                Command::Hidden(hidden) => self.hidden = hidden,
                 Command::Stop => break,
                 Command::Park(reply) => { park = Some(reply); break; },
             }
@@ -2367,6 +2397,7 @@ impl Worker {
             initial_completion: None,
             launch_frame: LaunchFrame::default(),
             last_owner: None,
+            hidden: false,
         })
     }
     /// Publish whether the renderer has work for later frames, and wake an
@@ -2390,15 +2421,19 @@ impl Worker {
             && self.renderer.paper_overlay_ready(&overlay.paper) {
             report.paper_drawn.store(state.paper_generation, Ordering::Release);
         }
-        let pending = self.renderer.has_pending_work();
-        if pending && !report.pending_work.swap(pending, Ordering::AcqRel) {
+        self.publish_demand(report);
+    }
+    fn publish_demand(&self, report: &FrameReport) {
+        let pending = self.renderer.next_frame() == FrameDemand::Work;
+        if report.pending_work.swap(pending, Ordering::AcqRel) != pending && pending {
             wake_canvas(&self.area, &self.presented_chrome);
         }
-        report.pending_work.store(pending, Ordering::Release);
     }
-    fn report_display(&self, reply: &mpsc::Sender<Reply>) -> Result<(), String> {
+    fn release_frames(&self, count: &AtomicUsize, admitted: usize) {
+        if count.fetch_sub(admitted, Ordering::AcqRel) >= FRAMES_IN_FLIGHT { wake_canvas(&self.area, &self.presented_chrome); }
+    }
+    fn report_display(&self, reply: &Replies) -> Result<(), String> {
         reply.send(Reply::DisplayHeadroom(self.display_headroom, self.hdr_encoding)).map_err(error)?;
-        wake_canvas(&self.area, &self.presented_chrome);
         Ok(())
     }
     fn enable_hdr(&mut self) -> Result<(), String> {
@@ -2434,7 +2469,8 @@ impl Worker {
         #[cfg(test)] timing: &mut crate::timing::Timing,
     ) -> Result<bool, String> {
         if self.initial_completion.is_some() || !startup.canvas_ready
-            || !self.renderer.can_submit() || !frame.dabs.is_empty() && !startup.brush_ready {
+            || !self.renderer.can_submit() || !frame.dabs.is_empty() && !startup.brush_ready
+            || frame.waits_for_raster() && !self.renderer.raster_ready() {
             return Ok(false);
         }
         #[cfg(test)]
@@ -2481,7 +2517,7 @@ impl Worker {
             && self.presenter.pipelines_ready(&self.renderer) && self.presenter.chrome_ready() {
             let done = Arc::new(AtomicBool::new(false));
             let completed = done.clone();
-            self.renderer.queue().on_submitted_work_done(move || completed.store(true, Ordering::Release));
+            self.renderer.on_gpu_done(move || completed.store(true, Ordering::Release));
             self.initial_completion = Some(done);
         }
     }
@@ -2526,11 +2562,7 @@ impl Worker {
         if let Some(failure) = self.watch.failure() {
             return Err(failure);
         }
-        let draw_start = std::time::Instant::now();
-        while frame.scene.view().targets().any(|t| frame.scene.view().raster(t).is_some_and(|r| r.try_data().is_none())) && !self.renderer.raster_ready()
-        {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        let mut draw_start = std::time::Instant::now();
         if frame.present {
             self.set_chrome(&frame.chrome)?;
             self.apply_pending_chrome()?;
@@ -2544,13 +2576,13 @@ impl Worker {
         self.apply_overlays(&frame.overlays, #[cfg(test)] timing)?;
         let _presentation = self.renderer.prioritize_raster_presentation();
         #[cfg(test)]
-        if frame.scene.view().targets().any(|t| frame.scene.view().raster(t).is_some_and(|r| r.try_data().is_none())) {
+        if frame.waits_for_raster() {
             timing.raster_commit();
         }
         self.renderer.set_fill_preview(frame.fill_preview.clone());
         self.renderer.set_transform_preview(frame.transform_preview.as_ref()).map_err(error)?;
         self.renderer.set_fill_reveal(frame.fill_reveal);
-        match self.renderer.submit_when_ready(frame.packet(), frame.transform_preview.as_ref()) {
+        match submit_ready_frame(&mut self.renderer, frame.packet(), frame.transform_preview.as_ref(), &mut draw_start) {
             std::task::Poll::Pending => return Ok(false),
             std::task::Poll::Ready(result) => result.map_err(error)?,
         }
@@ -2680,7 +2712,7 @@ impl Worker {
         if let Some(timing) = &timing {
             timing.mark(1);
         }
-        self.renderer.queue().submit([commands]);
+        self.renderer.submit_commands([commands]);
         #[cfg(test)]
         if let Some(timing) = &timing {
             timing.mark(2);
@@ -2688,7 +2720,7 @@ impl Worker {
         let launch_commit = if let Some(completion) = self.launch_frame.submit(self.last_owner,
             self.renderer.showing_drawing() && !self.renderer.has_pending_submission()) {
             let done = completion.clone();
-            self.renderer.queue().on_submitted_work_done(move || done.gpu_completed());
+            self.renderer.on_gpu_done(move || done.gpu_completed());
             self.child.launch_frame(completion);
             true
         } else { false };

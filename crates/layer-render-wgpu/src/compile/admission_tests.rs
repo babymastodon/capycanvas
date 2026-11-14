@@ -9,7 +9,7 @@ fn declare(queue: &mut Queue<()>, owner: u64, key: usize, class: Class) {
             class,
         },
         true,
-        || ((), None),
+        || (),
     );
 }
 

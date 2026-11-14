@@ -2,8 +2,7 @@ use super::*;
 use layer_core::{Affine,Figure,FigurePaint,FigureShape,ImageTransform,Point,RasterOperation,RasterOperationKind,Selection};
 
 fn state(r:&WgpuRasterizer,id:SourceTarget)->(u64,u64,u64,Vec<[u32;2]>) {
-    let native=r.native_edit.as_ref().unwrap();
-    (native.color_cache_bytes,native.color_cache_pinned_bytes,r.paint_memory_bytes(),
+    (r.memory.raster_grant(),r.raster_tiers.raster.used(),r.paint_memory_bytes(),
         r.paint_layers.iter().filter(|layer|layer.id==id).flat_map(|layer|layer.pages.iter().map(|page|page.coordinate)).collect())
 }
 

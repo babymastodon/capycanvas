@@ -503,6 +503,7 @@ pub(crate) struct Positions {
     window: Option<(wgpu::Buffer, wgpu::BindGroup)>,
     target: Option<(wgpu::Texture, wgpu::TextureView)>,
     buffers: MeshBuffers,
+    charge: crate::residency::Charge,
 }
 impl Positions {
     pub fn new(device: &PipelineDevice) -> Self {
@@ -561,9 +562,11 @@ impl Positions {
         Self::from_pipelines(Arc::new(Pipelines { pipeline, layout }))
     }
     pub(super) fn from_pipelines(pipelines: Arc<Pipelines>) -> Self {
-        Self { pipelines, window: None, target: None, buffers: MeshBuffers::default() }
+        Self { pipelines, window: None, target: None, buffers: MeshBuffers::default(), charge: Arc::<crate::residency::Tier>::default().charge(0) }
     }
     pub fn fork(&self) -> Self { Self::from_pipelines(self.pipelines.clone()) }
+    pub(crate) fn charged(mut self, tier: &Arc<crate::residency::Tier>) -> Self { self.charge = tier.charge(self.charge.bytes()); self }
+    fn account(&mut self) { self.charge.resize(self.storage_bytes()); }
     /// Positions drawn with the transforms' pipeline.
     pub fn sharing(transforms: &PaintTransforms) -> Self {
         transforms.0[0].positions.fork()
@@ -595,12 +598,13 @@ impl Positions {
             });
             let view = texture.create_view(&Default::default());
             self.target = Some((texture, view));
+            self.account();
         }
         self.target.as_ref().unwrap().1.clone()
     }
     pub fn upload(&mut self, r: &mut WgpuRasterizer, encoder: &mut crate::submission::CommandEncoder,
         geometry: &Arc<MeshGeometry>,
-    ) -> Result<(), GpuRasterError> { self.buffers.upload(r, encoder, geometry) }
+    ) -> Result<(), GpuRasterError> { let uploaded = self.buffers.upload(r, encoder, geometry); self.account(); uploaded }
     /// Rasterize the uploaded mesh for the window whose first page is `page`.
     pub fn draw(
         &mut self,
@@ -631,6 +635,7 @@ impl Positions {
         {
             dst.copy_from_slice(&value.to_le_bytes());
         }
+        if self.window.is_none() { self.charge.resize(self.storage_bytes() + WINDOW_BYTES); }
         let (buffer, binding) = &*self.window.get_or_insert_with(|| {
             let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("mesh position window"),

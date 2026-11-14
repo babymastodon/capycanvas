@@ -193,8 +193,9 @@ impl Scene {
         }
         for (coordinate,tile) in tiles {
             let Some(tile)=tile else {continue;};let overlap=page_rect(coordinate).intersect(region);
-            copy(encoder,&tile.texture,&texture.0,[overlap.min_x()-coordinate[0]*PAGE_SIZE,overlap.min_y()-coordinate[1]*PAGE_SIZE],
-                [overlap.min_x()-region.min_x(),overlap.min_y()-region.min_y()],[overlap.width(),overlap.height()]);
+            encoder.copy_texture_to_texture(tile.texture.copy_at([overlap.min_x()-coordinate[0]*PAGE_SIZE,overlap.min_y()-coordinate[1]*PAGE_SIZE]),
+                wgpu::TexelCopyTextureInfo {origin:wgpu::Origin3d {x:overlap.min_x()-region.min_x(),y:overlap.min_y()-region.min_y(),z:0},..texture.0.as_image_copy()},
+                wgpu::Extent3d {width:overlap.width(),height:overlap.height(),depth_or_array_layers:1});
         }
         Ok(())
     }
@@ -352,7 +353,7 @@ impl WgpuRasterizer {
             let mut encoder=submission::CommandEncoder::new(&self.device,&Default::default());
             let result=self.drain_image_decodes(&mut encoder).and_then(|()|state.advance(self,packet,&mut encoder));
             if let Err(error)=result && !matches!(error,GpuRasterError::NotReady) {state.failure=Some(error);}
-            if encoder.has_work() {self.uploads.finish(&encoder);self.last_submission=Some(encoder.submit(&self.queue));}
+            if encoder.has_work() {self.uploads.finish(&encoder);self.last_submission=encoder.submit(&self.queue);}
         }
         let ready=!state.pending();self.fill_edges_preflight=Some(state);ready
     }
@@ -506,7 +507,7 @@ mod tests {
         let frame=FramePacket {view:layer_render::ViewState {width_px:384,height_px:384,document_to_surface:[0.046875,0.,0.,0.046875,0.,0.]},..packet(document.scene(),extent)};
         submit_ready(&mut r,frame).unwrap();
         let budget=r.factory.memory_budget().clone();budget.set_ram_override(Some(384<<20));
-        r.publish_memory(true);budget.flush_reports();r.refresh_memory_limits();
+        r.publish_memory();budget.flush_reports();r.refresh_memory_limits();
         let pressure=budget.admit_import(budget.import_headroom_bytes()).unwrap();r.refresh_memory_limits();
         let preview=layer_render::FillPreview {transaction:42,revision:0,target,operation};
         r.set_fill_preview(Some(preview.clone()));

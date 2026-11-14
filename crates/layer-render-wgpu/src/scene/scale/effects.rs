@@ -27,9 +27,11 @@ pub(super) fn capture_native_effect(
     let bounds = regions.iter().fold(PixelRect::EMPTY, |bounds, region| bounds.union(*region));
     let destination = Image { texture: target.view.texture().clone(), view: target.view.clone(), plan };
     let window = scene.cached_capture_window(packet.scene, bounds);
+    let output=scene::Output::EffectComposite(handle);
     let result = scene.prepare_region_in_frame(r, packet, (bounds, window), PixelRect::EMPTY, false, encoder)
-        .and_then(|()| scene.capture_prepared_regions_reuse(r, packet, &destination, &regions,
-            scene::Output::EffectComposite(handle), false, Some(&reserved), initialized, encoder));
+        .and_then(|()| scene.declare_capture(r,packet,&destination,&regions,output,Some(&reserved),initialized)?.accept_query(r,Some(scene)))
+        .and_then(|mut accepted| {accepted.clone().track(encoder);
+            scene.capture_prepared_regions_reuse(r, packet, &destination, &regions, output, false, Some(&reserved), initialized, encoder, &mut accepted)});
     scene.used.iter_mut().for_each(scratch::Usage::reset); scene.used[..reserved.len()].clone_from_slice(&reserved); scene.placement_display = true;
     result
 }
@@ -113,8 +115,12 @@ impl Evaluator<'_> {
             let bounds = self.region.aligned(side).intersect(target.plan.doc_bounds);
             self.capture_native_jobs(handle, &target, bounds)?;
         } else {
-            let mut strip = self.cache.exact_tile.get_or_insert_with(|| Image::new(self.r,
-                display_mips::Plan::at(exact_strip(self.packet.document_extent), 0), "exact composition working strip")).clone();
+            if self.cache.exact_tile.is_none() {
+                let strip = Image::new(self.r, display_mips::Plan::at(exact_strip(self.packet.document_extent), 0), "exact composition working strip");
+                self.cache.output_charge.resize(self.cache.output_charge.bytes() + strip.bytes());
+                self.cache.exact_tile = Some(strip);
+            }
+            let mut strip = self.cache.exact_tile.clone().unwrap();
             let side = 1 << target.plan.level;
             let region = self.region.aligned(side).intersect(target.plan.doc_bounds);
             for y in (region.min[1]..region.max[1]).step_by(strip.texture.height() as usize) {
@@ -127,8 +133,7 @@ impl Evaluator<'_> {
                     let [dx, dy, width, height] = paint_transform::texel_rect(target.plan.doc_bounds.local(bounds), side);
                     let mut values = [0; 20];
                     values[..8].copy_from_slice(&[dx, dy, width, height, size[0], size[1], side, 0]);
-                    let binding = RegionRecords::binding(self.r, &strip.view, &self.r.empty_view, &target.view);
-                    self.scene.jobs.push(Job::Reduce { binding, values, size: [width, height], kernel: super::super::Reduction::Pages,format:target.view.texture().format(),
+                    self.scene.jobs.push(Job::Reduce { output: target.view.clone(), values, size: [width, height], kernel: super::super::Reduction::Pages,format:target.view.texture().format(),
                         sources: [strip.view.clone(), self.r.empty_view.clone(), self.r.empty_view.clone(), self.r.empty_view.clone()] });
                 }
             }
@@ -147,7 +152,7 @@ impl Evaluator<'_> {
             for tile in regions.iter().flat_map(|region| page_coordinates(*region)) {
                 let covered = regions.iter().fold(PixelRect::EMPTY, |bounds, region| bounds.union(page_rect(tile).intersect(*region))).intersect(plan.bounds);
                 if covered.is_empty() { continue; }
-                match self.scene.capture_prepared_tile_jobs(self.r, packet, &destination, tile, covered, scene::Output::EffectComposite(handle), initialized.as_ref()) {
+                match self.scene.capture_prepared_tile_jobs(self.r, packet, &destination, tile, covered, scene::Output::EffectComposite(handle), initialized.as_ref(), self.accepted) {
                     Err(GpuRasterError::NotReady) => self.unit.waiting = true,
                     result => result?,
                 }

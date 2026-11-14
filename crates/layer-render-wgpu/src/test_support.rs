@@ -3,6 +3,10 @@ use layer_render::{DabBatchKind, DabStyle, FramePacket, ViewState};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct PassCounts {
+    pub material_encode_accepts:u64,
+    pub material_neighborhoods:u64,
+    pub material_bind_groups:u64,
+    pub transport_bind_groups:u64,
     pub total:u64,
     pub normalizations:u64,
     pub material_batches:u64,
@@ -10,28 +14,92 @@ pub(crate) struct PassCounts {
     pub raster_output_misses:u64,
     pub raster_write_defers:u64,
     pub store_page_visits:u64,
+    pub paint_page_visits:u64,
+    pub display_walks:u64,
     pub preview_revision_replays:u64,
+    pub unit_acceptances:u64,
+    pub projected_cells:u64,
+    pub projected_copies:u64,
+    pub composite_commits:u64,
+    pub declarations:u64,
+    pub store_gets:u64,
+    pub expected_keys:u64,
+    pub brush_acceptances:u64,
+    pub preview_computations:u64,
+    pub completion_callbacks:u64,
+    pub preview_definitions:u64,
+    pub warm_restore_extra_tiles:u64,
+    pub navigator_checks:u64,
+    pub graph_prepares:u64,
+    pub signature_reads:u64,
+    pub contact_declarations:u64,
+    pub destination_units:u64,
 }
 std::thread_local! {
-    static PASS_COUNTS:std::cell::Cell<PassCounts>=const {std::cell::Cell::new(PassCounts {total:0,normalizations:0,material_batches:0,source_input_misses:0,raster_output_misses:0,raster_write_defers:0,store_page_visits:0,preview_revision_replays:0})};
+    static PASS_COUNTS:std::cell::Cell<PassCounts>=const {std::cell::Cell::new(PassCounts {material_encode_accepts:0,material_neighborhoods:0,material_bind_groups:0,transport_bind_groups:0,total:0,normalizations:0,material_batches:0,source_input_misses:0,raster_output_misses:0,raster_write_defers:0,store_page_visits:0,paint_page_visits:0,display_walks:0,preview_revision_replays:0,unit_acceptances:0,projected_cells:0,projected_copies:0,composite_commits:0,declarations:0,store_gets:0,expected_keys:0,brush_acceptances:0,preview_computations:0,completion_callbacks:0,preview_definitions:0,warm_restore_extra_tiles:0,navigator_checks:0,graph_prepares:0,signature_reads:0,contact_declarations:0,destination_units:0})};
+}
+type PreviewName=(layer_core::SourceTarget,usize,[u32;2],crate::scene::PreviewStage);
+std::thread_local! {static PREVIEW_NAMES:std::cell::RefCell<Option<crate::IdMap<PreviewName,u32>>>=const {std::cell::RefCell::new(None)};}
+pub(crate) fn record_preview_name(name:PreviewName) {PREVIEW_NAMES.with(|names|if let Some(names)=names.borrow_mut().as_mut() {*names.entry(name).or_default()+=1;});}
+type PreviewRegion=(usize,[u32;4],crate::scene::PreviewStage,crate::scene::PreviewPass);
+std::thread_local! {static PREVIEW_REGIONS:std::cell::RefCell<Option<crate::IdMap<PreviewRegion,u32>>>=const {std::cell::RefCell::new(None)};}
+pub(crate) fn record_preview_region(region:PreviewRegion) {PREVIEW_REGIONS.with(|regions|if let Some(regions)=regions.borrow_mut().as_mut() {*regions.entry(region).or_default()+=1;});}
+pub(crate) fn preview_regions<T>(run:impl FnOnce()->T)->(T,crate::IdMap<PreviewRegion,u32>) {
+    PREVIEW_REGIONS.with(|regions|*regions.borrow_mut()=Some(Default::default()));
+    let value=run();
+    (value,PREVIEW_REGIONS.with(|regions|regions.borrow_mut().take().unwrap_or_default()))
+}
+type TransportRead=(usize,[u32;2],usize,u32);
+std::thread_local! {static TRANSPORT_READS:std::cell::RefCell<Option<crate::IdMap<TransportRead,u32>>>=const {std::cell::RefCell::new(None)};}
+pub(crate) fn record_transport_read(read:TransportRead) {TRANSPORT_READS.with(|reads|if let Some(reads)=reads.borrow_mut().as_mut() {*reads.entry(read).or_default()+=1;});}
+pub(crate) fn transport_reads<T>(run:impl FnOnce()->T)->(T,crate::IdMap<TransportRead,u32>) {
+    TRANSPORT_READS.with(|reads|*reads.borrow_mut()=Some(Default::default()));
+    let value=run();
+    (value,TRANSPORT_READS.with(|reads|reads.borrow_mut().take().unwrap_or_default()))
+}
+type MaterialRead=([u32;2],Option<crate::scene::PreviewStage>);
+std::thread_local! {static MATERIAL_READS:std::cell::RefCell<Option<crate::IdMap<MaterialRead,u32>>>=const {std::cell::RefCell::new(None)};}
+pub(crate) fn record_material_read(read:MaterialRead) {MATERIAL_READS.with(|reads|if let Some(reads)=reads.borrow_mut().as_mut() {*reads.entry(read).or_default()+=1;});}
+pub(crate) fn material_reads<T>(run:impl FnOnce()->T)->(T,crate::IdMap<MaterialRead,u32>) {
+    MATERIAL_READS.with(|reads|*reads.borrow_mut()=Some(Default::default()));
+    let value=run();
+    (value,MATERIAL_READS.with(|reads|reads.borrow_mut().take().unwrap_or_default()))
+}
+type SourcePreparation=(layer_core::SourceTarget,u32,[u32;2]);
+std::thread_local! {static SOURCE_PREPARATIONS:std::cell::RefCell<Option<crate::IdMap<SourcePreparation,u32>>>=const {std::cell::RefCell::new(None)};}
+pub(crate) fn record_source_preparation(page:SourcePreparation) {SOURCE_PREPARATIONS.with(|pages|if let Some(pages)=pages.borrow_mut().as_mut() {*pages.entry(page).or_default()+=1;});}
+pub(crate) fn count_source_preparations() {SOURCE_PREPARATIONS.with(|pages|*pages.borrow_mut()=Some(Default::default()));}
+pub(crate) fn source_preparations()->[u64;2] {
+    SOURCE_PREPARATIONS.with(|pages|pages.borrow().as_ref().map_or([0;2],|pages|[pages.values().map(|count|u64::from(*count)).sum(),pages.len() as u64]))
+}
+pub(crate) fn preview_names<T>(run:impl FnOnce()->T)->(T,crate::IdMap<PreviewName,u32>) {
+    PREVIEW_NAMES.with(|names|*names.borrow_mut()=Some(Default::default()));
+    let value=run();
+    (value,PREVIEW_NAMES.with(|names|names.borrow_mut().take().unwrap_or_default()))
 }
 impl PassCounts {
     pub fn snapshot()->Self {PASS_COUNTS.with(std::cell::Cell::get)}
     pub fn delta(self,before:Self)->Self {
-        Self {total:self.total-before.total,normalizations:self.normalizations-before.normalizations,
+        Self {material_encode_accepts:self.material_encode_accepts-before.material_encode_accepts,material_neighborhoods:self.material_neighborhoods-before.material_neighborhoods,material_bind_groups:self.material_bind_groups-before.material_bind_groups,transport_bind_groups:self.transport_bind_groups-before.transport_bind_groups,total:self.total-before.total,normalizations:self.normalizations-before.normalizations,
             material_batches:self.material_batches-before.material_batches,source_input_misses:self.source_input_misses-before.source_input_misses,
             raster_output_misses:self.raster_output_misses-before.raster_output_misses,raster_write_defers:self.raster_write_defers-before.raster_write_defers,
-            store_page_visits:self.store_page_visits-before.store_page_visits,
-            preview_revision_replays:self.preview_revision_replays-before.preview_revision_replays}
+            store_page_visits:self.store_page_visits-before.store_page_visits,paint_page_visits:self.paint_page_visits-before.paint_page_visits,display_walks:self.display_walks-before.display_walks,
+            preview_revision_replays:self.preview_revision_replays-before.preview_revision_replays,unit_acceptances:self.unit_acceptances-before.unit_acceptances,
+            projected_cells:self.projected_cells-before.projected_cells,projected_copies:self.projected_copies-before.projected_copies,composite_commits:self.composite_commits-before.composite_commits,
+            declarations:self.declarations-before.declarations,store_gets:self.store_gets-before.store_gets,expected_keys:self.expected_keys-before.expected_keys,
+            brush_acceptances:self.brush_acceptances-before.brush_acceptances,preview_computations:self.preview_computations-before.preview_computations,completion_callbacks:self.completion_callbacks-before.completion_callbacks,preview_definitions:self.preview_definitions-before.preview_definitions,warm_restore_extra_tiles:self.warm_restore_extra_tiles-before.warm_restore_extra_tiles,navigator_checks:self.navigator_checks-before.navigator_checks,graph_prepares:self.graph_prepares-before.graph_prepares,signature_reads:self.signature_reads-before.signature_reads,contact_declarations:self.contact_declarations-before.contact_declarations,destination_units:self.destination_units-before.destination_units}
     }
     pub fn record(self) {
         PASS_COUNTS.with(|counts| {
             let before=counts.get();
-            counts.set(Self {total:before.total+self.total,normalizations:before.normalizations+self.normalizations,
+            counts.set(Self {material_encode_accepts:before.material_encode_accepts+self.material_encode_accepts,material_neighborhoods:before.material_neighborhoods+self.material_neighborhoods,material_bind_groups:before.material_bind_groups+self.material_bind_groups,transport_bind_groups:before.transport_bind_groups+self.transport_bind_groups,total:before.total+self.total,normalizations:before.normalizations+self.normalizations,
                 material_batches:before.material_batches+self.material_batches,source_input_misses:before.source_input_misses+self.source_input_misses,
                 raster_output_misses:before.raster_output_misses+self.raster_output_misses,raster_write_defers:before.raster_write_defers+self.raster_write_defers,
-                store_page_visits:before.store_page_visits+self.store_page_visits,
-                preview_revision_replays:before.preview_revision_replays+self.preview_revision_replays});
+                store_page_visits:before.store_page_visits+self.store_page_visits,paint_page_visits:before.paint_page_visits+self.paint_page_visits,display_walks:before.display_walks+self.display_walks,
+                preview_revision_replays:before.preview_revision_replays+self.preview_revision_replays,unit_acceptances:before.unit_acceptances+self.unit_acceptances,
+                projected_cells:before.projected_cells+self.projected_cells,projected_copies:before.projected_copies+self.projected_copies,composite_commits:before.composite_commits+self.composite_commits,
+                declarations:before.declarations+self.declarations,store_gets:before.store_gets+self.store_gets,expected_keys:before.expected_keys+self.expected_keys,
+                brush_acceptances:before.brush_acceptances+self.brush_acceptances,preview_computations:before.preview_computations+self.preview_computations,completion_callbacks:before.completion_callbacks+self.completion_callbacks,preview_definitions:before.preview_definitions+self.preview_definitions,warm_restore_extra_tiles:before.warm_restore_extra_tiles+self.warm_restore_extra_tiles,navigator_checks:before.navigator_checks+self.navigator_checks,graph_prepares:before.graph_prepares+self.graph_prepares,signature_reads:before.signature_reads+self.signature_reads,contact_declarations:before.contact_declarations+self.contact_declarations,destination_units:before.destination_units+self.destination_units});
         });
     }
 }
@@ -277,7 +345,7 @@ impl StoredTiles {
     pub fn new(tiles:&layer_core::raster_storage::RetainedTiles,cache:layer_core::tile_io::ReadCache)->Self {
         Self::with_reads(tiles,cache,None)
     }
-    pub(crate) fn with_reads(tiles:&layer_core::raster_storage::RetainedTiles,cache:layer_core::tile_io::ReadCache,observe:Option<Arc<dyn Fn()+Send+Sync>>)->Self {
+    pub(crate) fn with_reads(tiles:&layer_core::raster_storage::RetainedTiles,cache:layer_core::tile_io::ReadCache,observe:Option<Arc<dyn Fn(u64,usize)+Send+Sync>>)->Self {
         use std::sync::atomic::{AtomicU64,Ordering};
         static NEXT:AtomicU64=AtomicU64::new(0);
         let path=std::env::temp_dir().join(format!("capy-render-store-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
@@ -337,7 +405,7 @@ impl GatedStore {
         let cache=tile_read_cache();
         let gate=Arc::new(ReadGate::default());
         let waiting=gate.clone();
-        let store=StoredTiles::with_reads(tiles,cache,Some(Arc::new(move ||waiting.wait())));
+        let store=StoredTiles::with_reads(tiles,cache,Some(Arc::new(move |_,_|waiting.wait())));
         if corrupt {store.corrupt();}
         Self {_store:store,gate}
     }
@@ -448,14 +516,32 @@ pub(crate) fn dry_display(r: &mut WgpuRasterizer, batch: &DabBatch, neighborhood
     Some(crate::dry_material::DisplayJob { gather: inputs.gather(&r.device, &r.style_buffer, r.pipelines.dry_material.in_place(), r.pipelines.dry_material.gather_layout(), output), inputs: inputs.inputs(r, neighborhood) })
 }
 
+pub(crate) fn dry_output(r: &WgpuRasterizer, write: &resident::RasterWrite<'_, PageSurface>) -> wgpu::BindGroup {
+    let changed = r.pipelines.dry_material.in_place().then(|| &r.changed_cells.as_ref().unwrap().disabled);
+    r.pipelines.dry_material.output(&r.device, &r.style_buffer, write, None, changed)
+}
+
 /// Dry kernels as a device without read-write storage builds them.
 pub(crate) fn write_only_dry_material(r: &mut WgpuRasterizer) {
     Arc::make_mut(&mut r.pipelines).dry_material = crate::dry_material::Pipelines::new(&r.device,
         [&r.target_layout, &r.material_layout, &r.advanced_texture_layout], false, &crate::dry_material::output_layouts(&r.device, false));
 }
 
-pub(crate) fn complete(r: &WgpuRasterizer) {
-    r.device
+pub(crate) fn evict_sources(r: &mut WgpuRasterizer) {
+    r.end_frame_memory();
+    r.scene_tiers.display.heap().evict(u64::MAX, crate::residency::Class::Authored);
+    r.refresh_memory_limits();
+    complete(r);
+    r.device.retirement_handle().flush().unwrap();
+}
+
+pub(crate) fn complete(r: &WgpuRasterizer) { complete_device(&r.device); }
+
+pub(crate) fn complete_device(device: &crate::PipelineDevice) {
+    #[cfg(not(target_arch="wasm32"))]
+    device.wait_queue().unwrap();
+    #[cfg(target_arch="wasm32")]
+    device
         .poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(READBACK_TIMEOUT) })
         .unwrap();
 }
@@ -512,6 +598,10 @@ pub(crate) fn submit_settled(r: &mut WgpuRasterizer, frame: FramePacket<'_>) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let idle = FramePacket { dabs: &[], dab_batches: &[], restore_rasters: &[],
         reset_layers: false, composite_all: false, ..frame };
+    let installed = r.preparation_wake.clone();
+    let (signal, woken) = std::sync::mpsc::channel();
+    let forward = installed.clone();
+    r.set_preparation_wake(Arc::new(move || { if let Some(wake) = &forward { wake(); } let _ = signal.send(()); }));
     let mut first = true;
     loop {
         r.poll_pending(frame.view).unwrap();
@@ -522,10 +612,14 @@ pub(crate) fn submit_settled(r: &mut WgpuRasterizer, frame: FramePacket<'_>) {
             first = false;
         }
         r.wait_idle().unwrap();
-        if !first && !r.has_pending_work() && r.raster_ready() && !r.has_pending_submission() { return; }
-        assert!(std::time::Instant::now() < deadline, "renderer work must settle");
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!remaining.is_zero(), "renderer work must settle");
+        if first { std::thread::sleep(std::time::Duration::from_millis(1)); continue; }
+        if r.next_frame() == layer_render::FrameDemand::Work { continue; }
+        if r.settled() { break; }
+        assert!(woken.recv_timeout(remaining).is_ok(), "an idle renderer waits on inputs whose completion never woke it");
     }
+    match installed { Some(wake) => r.set_preparation_wake(wake), None => r.preparation_wake = None }
 }
 
 /// Upload every requested worker decode into the decoded-tile cache.
@@ -557,7 +651,7 @@ pub(crate) fn query_ready<T>(r: &mut WgpuRasterizer, encoder: &mut crate::submis
     }
 }
 
-pub(crate) fn thumbnail(r: &mut WgpuRasterizer, id: u64, target: layer_render::ThumbnailTarget) -> Vec<u8> {
+pub(crate) fn thumbnail(r: &mut WgpuRasterizer, id: u64, target: layer_render::ThumbnailTarget) -> ReadbackImage {
     let deadline = std::time::Instant::now() + READBACK_TIMEOUT;
     while !r.prepare_thumbnail_batch(target).unwrap() {
         complete(r);
@@ -567,7 +661,7 @@ pub(crate) fn thumbnail(r: &mut WgpuRasterizer, id: u64, target: layer_render::T
     r.request_thumbnail(id, target).unwrap();
     loop {
         complete(r);
-        if let Some(image) = r.take_thumbnail() { return image.unwrap().bytes; }
+        if let Some(image) = r.take_thumbnail() { return image.unwrap(); }
         assert!(std::time::Instant::now() < deadline, "thumbnail readback must complete");
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -708,7 +802,8 @@ pub(crate) fn floats(bytes: &[u8]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-pub(crate) fn float_pixels(r: &WgpuRasterizer, texture: &wgpu::Texture) -> Vec<[f32; 4]> {
+pub(crate) fn float_pixels(r: &WgpuRasterizer, texture: impl Into<crate::source_access::TileTexture>) -> Vec<[f32; 4]> {
+    let texture=&texture.into();
     let bytes=crate::layer_tests::page_bytes(r,texture);
     if texture.format()==wgpu::TextureFormat::Rgba16Float {
         bytes.as_chunks::<8>().0.iter().map(|pixel|std::array::from_fn(|channel|
@@ -844,4 +939,88 @@ pub(crate) fn storm_surface_area(rect:PixelRect,view:ViewState)->f64 {
         polygon=clipped;
     }
     polygon.iter().zip(polygon.iter().cycle().skip(1)).take(polygon.len()).map(|(a,b)|a[0]*b[1]-a[1]*b[0]).sum::<f64>().abs()*0.5
+}
+
+fn bounded_work_timestamp_bytes(r:&WgpuRasterizer,result:&wgpu::Buffer)->Vec<u8> {
+    let output=r.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:result.size(),
+        usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+    let mut commands=r.device.create_command_encoder(&Default::default());
+    commands.copy_buffer_to_buffer(result,0,&output,0,result.size());
+    r.queue.submit([commands.finish()]);
+    let (send,receive)=std::sync::mpsc::channel();
+    output.slice(..).map_async(wgpu::MapMode::Read,move|result| {let _=send.send(result);});
+    r.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    receive.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+    let bytes=output.slice(..).get_mapped_range().unwrap().to_vec();output.unmap();bytes
+}
+pub(crate) fn bounded_outstanding_gpu_work(r:&WgpuRasterizer)->(crate::submission::CommandEncoder,impl Fn()->f64+'_,impl Fn(u32)->wgpu::CommandBuffer+'_ ) {
+    let module=r.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label:Some("bounded outstanding work"), source:wgpu::ShaderSource::Wgsl(r#"
+        @group(0) @binding(0) var<storage,read_write> output:array<u32>;
+        @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id:vec3<u32>) {
+            var value=output[id.x]+id.x;
+            for(var i=0u;i<4096u;i+=1u) { value=(value^(value>>13u))*1664525u+1013904223u; }
+            output[id.x]=value;
+        }
+        "#.into()),
+    });
+    let pipeline=r.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label:None,layout:None,module:&module,entry_point:Some("main"),
+        compilation_options:Default::default(),cache:None,
+    });
+    let storage=r.device.create_buffer(&wgpu::BufferDescriptor {
+        label:None,size:65536*4,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false,
+    });
+    let bind=r.device.create_bind_group(&wgpu::BindGroupDescriptor {label:None,
+        layout:&pipeline.get_bind_group_layout(0),entries:&[wgpu::BindGroupEntry {
+        binding:0,resource:storage.as_entire_binding(),
+        }],
+    });
+    let queries=r.device.create_query_set(&wgpu::QuerySetDescriptor {
+        label:None,ty:wgpu::QueryType::Timestamp,count:2,
+    });
+    let result=r.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:16,
+        usage:wgpu::BufferUsages::QUERY_RESOLVE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
+    let record=|count:u32| {
+        let mut e=crate::submission::CommandEncoder::new(&r.device,&Default::default());
+        { let mut pass=e.begin_compute_pass(&wgpu::ComputePassDescriptor {label:None,
+        timestamp_writes:Some(wgpu::ComputePassTimestampWrites {query_set:&queries,
+            beginning_of_pass_write_index:Some(0),end_of_pass_write_index:Some(1)})});
+        pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);
+        for _ in 0..count {pass.dispatch_workgroups(1024,1,1);}
+        }
+        e.resolve_query_set(&queries,0..2,&result,0);
+        e
+    };
+    let duration=|r: &WgpuRasterizer| {
+        let raw=bounded_work_timestamp_bytes(r,&result);
+        let start=u64::from_le_bytes(raw[..8].try_into().unwrap());
+        let end=u64::from_le_bytes(raw[8..16].try_into().unwrap());
+        (end-start) as f64*r.queue.get_timestamp_period() as f64/1e6
+    };
+    let mut count=128;
+    let mut calibrated=0.;
+    for _ in 0..4 {
+        record(count).submit(&r.queue);
+        r.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        calibrated=duration(&r);
+        if (40. ..=75.).contains(&calibrated) {break;}
+        count=((count as f64*50./calibrated).round() as u32).clamp(1,4096);
+    }
+    assert!((40. ..=75.).contains(&calibrated),"bounded calibration: {calibrated} ms, {count} dispatches");
+    let work=record(count);
+    let raw=move|divisor:u32| {
+        let mut e=r.device.create_command_encoder(&Default::default());
+        {let mut pass=e.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);
+            for _ in 0..(count/divisor).max(1) {pass.dispatch_workgroups(1024,1,1);}
+        }
+        e.finish()
+    };
+    (work,move|| {
+        let raw=bounded_work_timestamp_bytes(r,&result);
+        let start=u64::from_le_bytes(raw[..8].try_into().unwrap());
+        let end=u64::from_le_bytes(raw[8..16].try_into().unwrap());
+        (end-start) as f64*r.queue.get_timestamp_period() as f64/1e6
+    },raw)
 }

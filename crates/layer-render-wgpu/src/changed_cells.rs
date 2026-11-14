@@ -20,13 +20,19 @@ pub(super) struct ChangedCells {
     retired:Vec<wgpu::Buffer>,
     side:u32,
     admission:Option<(display_mips::Plan,u64)>,
+    charge:crate::residency::Charge,
 }
 impl ChangedCells {
-    pub fn new(device:&PipelineDevice)->Self {
+    pub fn new(device:&PipelineDevice,display:&Arc<crate::residency::Tier>)->Self {
         let disabled=device.create_buffer(&wgpu::BufferDescriptor {
             label:Some("disabled changed cells"),size:20,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false,
         });
-        Self {disabled,pages:BTreeMap::new(),forced:BTreeSet::new(),retired:Vec::new(),side:1,admission:None}
+        let charge=display.charge(disabled.size());
+        Self {disabled,pages:BTreeMap::new(),forced:BTreeSet::new(),retired:Vec::new(),side:1,admission:None,charge}
+    }
+    fn recharge(&mut self,r:&WgpuRasterizer) {
+        let bytes=self.storage_bytes();
+        if self.charge.bytes()!=bytes || !Arc::ptr_eq(self.charge.tier(),&r.scene_tiers.display) {self.charge=r.scene_tiers.display.charge(bytes);}
     }
     pub fn storage_bytes(&self)->u64 {
         self.disabled.size()+self.pages.first_key_value().map_or(0,|(_,b)|b.size()*self.pages.len() as u64)
@@ -47,6 +53,7 @@ impl ChangedCells {
             if let Some(secondary)=&page.secondary {secondary.clear_bindings();}
         }}
         self.retired.extend(self.pages.extract_if(..,|key,_|retired.contains(key)).map(|(_,buffer)|buffer));
+        self.recharge(r);
     }
     pub fn buffer(&self,id:SourceTarget,coordinate:[u32;2])->Option<&wgpu::Buffer> {
         self.pages.get(&(id,coordinate))
@@ -85,16 +92,14 @@ impl ChangedCells {
                     .map(move |p|(id,p.coordinate)))).collect();
         let bytes=16+u64::from((PAGE_SIZE/side).pow(2))*4;
         let required=self.disabled.size()+wanted.len() as u64*bytes;
-        let available=r.memory.limit(layer_core::MemoryOwnerKind::Scene,false)
+        let available=r.memory.display_grant()
             .saturating_sub(cache.storage_bytes()+r.scene.as_ref().map_or(0,|scene|scene.working_bytes()));
         if required>LIMIT || required>available {
             self.retire(r,&BTreeSet::new(),self.side);return;
         }
         self.retire(r,&wanted,side);
         let missing=wanted.iter().filter(|key|!self.pages.contains_key(key)).count() as u64*bytes;
-        let composition=[r.composition_storage_bytes()+self.storage_bytes(),cache.presentation_bytes()+self.storage_bytes()];
-        r.memory.sync_report(layer_core::MemoryOwnerKind::Scene,r.display_memory_report(r.scene.as_deref(),composition));
-        let Some(reservation)=r.memory.display_owner().admit_working(layer_core::MemoryGrant {ram_bytes:0,gpu_bytes:missing}) else {return;};
+        let Ok(reservation)=r.admit_display(None,crate::residency::Class::Authored,missing) else {return;};
         self.admission=Some(admission);
         self.side=side;
         for key in wanted {
@@ -106,8 +111,7 @@ impl ChangedCells {
             });
             encoder.clear_buffer(buffer,16,None);
         }
-        let composition=[r.composition_storage_bytes()+self.storage_bytes(),cache.presentation_bytes()+self.storage_bytes()];
-        r.memory.commit_reservation(layer_core::MemoryOwnerKind::Scene,reservation,r.display_memory_report(r.scene.as_deref(),composition)).expect("changed-cell reservation belongs to the display owner");
+        self.recharge(r);drop(reservation);
         for batch in packet.dab_batches {
             if batch.kind!=DabBatchKind::Preview && (!r.in_place_dry_material(batch) || revisits_stroke(&batch.style)) {
                 self.force_source(batch.target);

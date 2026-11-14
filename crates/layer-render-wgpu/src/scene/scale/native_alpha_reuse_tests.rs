@@ -128,23 +128,23 @@ fn compact_contribution_omits_unused_paint_and_matches_bound_source() {
             let state=page.state.as_ref().filter(|state|state.matches(persistent.stroke_id,&intent)).expect("committed contact coverage must match its stroke and selection");
             page.active().read(&state.version,None).unwrap()
         });
-        let paint=coverage.is_none().then(||r.read_layer_color(target,[0,0],intent.version(),None).unwrap());
-        let input=coverage.as_ref().or(paint.as_ref()).unwrap().value();
         let key=( [r.dab_buffer.clone(),r.material_records.binding().buffer.clone()],
             std::array::from_fn(|i|if i==9 {coverage.as_ref().map_or(&r.empty_scalar_view,|read|&read.value().view).clone()}else {r.empty_view.clone()}) );
-        input.material_input.get(key,||panic!("{preset:?} {name} {blend:?}: actual contribution must bind empty paint"));
+        r.material_bindings.get(&key,||panic!("{preset:?} {name} {blend:?}: actual contribution must bind empty paint"));
         let actual=crate::layer_tests::page_bytes(&r,&prediction_color(&r,target,[0,0]).value().texture);
-        let mut reference=resident::Resident::unwritten(create_page_surface(&r.device,&r.float_texture_layout,&r.sampler,[PAGE_SIZE>>r.preview_level;2],r.device.working_format(),"bound paint contribution oracle"));
+        let mut reference=resident::Resident::unwritten(create_page_surface(&r.device,&r.float_texture_layout,&r.sampler,[PAGE_SIZE>>r.preview_level;2],r.device.working_format(),"bound paint contribution oracle",&r.raster_tiers.paint));
         let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
         let receipt=encoder.submission();let write=reference.initialize(&receipt).unwrap();
-        let output=r.pipelines.dry_material.output(&r.device,&r.style_buffer,&write,None,None);
+        let output=crate::test_support::dry_output(&r,&write);
         let reference_version=layer_core::raster::ContentName::fresh();
         let display=r.dry_display_gathers(&preview).then_some(0);
         if display.is_some() && r.dry_display_inputs.is_empty() {
             let inputs=crate::dry_material::DisplayInputs::new(&r.device);r.dry_display_inputs.push(inputs);
         }
         r.preview_contribution=false;
-        let (source,display)=r.material_source_binding(&preview,0,[0,0],BrushEncodingTarget::Persistent,display,&mut encoder).unwrap();
+        r.brush_inputs=Some(r.prepare_brush_inputs(Some(target),None).unwrap());
+        let intent=r.raster_intent(target,RasterPlane::Color,[0,0]).unwrap();
+        let (source,display)=r.material_source_binding(&preview,0,[0,0],BrushEncodingTarget::Persistent,&intent,display,&mut encoder).unwrap();
         r.preview_contribution=true;
         let display=display.map(|inputs|crate::dry_material::DisplayJob {gather:r.dry_display_inputs[0].gather(&r.device,&r.style_buffer,r.pipelines.dry_material.in_place(),r.pipelines.dry_material.gather_layout(),&write),inputs});
         let reference_output=write.encoded(reference_version);
@@ -155,14 +155,16 @@ fn compact_contribution_omits_unused_paint_and_matches_bound_source() {
             }],
         );
         let actual_receipt=encoder.submission();reference_output.publish(&actual_receipt);
-        r.uploads.finish(&encoder);r.last_submission=Some(encoder.submit(&r.queue));r.wait_idle().unwrap();
+        r.uploads.finish(&encoder);r.last_submission=encoder.submit(&r.queue);r.wait_idle().unwrap();
         assert_eq!(actual,crate::layer_tests::page_bytes(&r,&reference.read(reference_version,None).unwrap().value().texture),"{name} {blend:?}: omitted original must preserve every prediction bit");
         if preset==DefaultBrushPreset::GPen {for (level,contribution,preset) in [(1,false,DefaultBrushPreset::GPen),(0,true,DefaultBrushPreset::GPen),(1,true,DefaultBrushPreset::CloneStamp)] {
             r.preview_level=level;r.preview_contribution=contribution;
             let mut fallback=preview.clone();fallback.style=crate::layer_tests::preset_style(preset);fallback.style.blend_space=blend;
             assert!(!r.compact_preview_contribution(&fallback));
             let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
-            r.material_source_binding(&fallback,0,[0,0],BrushEncodingTarget::Persistent,None,&mut encoder).unwrap();
+            r.brush_inputs=Some(r.prepare_brush_inputs(Some(target),None).unwrap());
+            let intent=r.raster_intent(target,RasterPlane::Color,[0,0]).unwrap();
+            r.material_source_binding(&fallback,0,[0,0],BrushEncodingTarget::Persistent,&intent,None,&mut encoder).unwrap();
             let receipt=encoder.submission();let intent=r.raster_intent(target,RasterPlane::Color,[0,0]).unwrap();
             let color=r.read_layer_color(target,[0,0],intent.version(),Some(&receipt)).unwrap();
             let layer=r.paint_layers.iter().find(|layer|layer.id==target).unwrap();
@@ -170,7 +172,7 @@ fn compact_contribution_omits_unused_paint_and_matches_bound_source() {
             let state=page.state.as_ref().filter(|state|state.matches(persistent.stroke_id,&intent)).unwrap();
             let coverage=page.active().read(&state.version,Some(&receipt)).unwrap();
             let key=([r.dab_buffer.clone(),r.material_records.binding().buffer.clone()],std::array::from_fn(|i|match i {4=>color.value().view.clone(),9=>coverage.value().view.clone(),_=>r.empty_view.clone()}));
-            coverage.value().material_input.get(key,||panic!("{name} {blend:?}: fallback {level} {contribution} {preset:?} must retain paint and coverage"));
+            r.material_bindings.get(&key,||panic!("{name} {blend:?}: fallback {level} {contribution} {preset:?} must retain paint and coverage"));
             r.uploads.finish(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
         }}
     }}}
@@ -204,7 +206,7 @@ fn native_alpha_reuse_admits_warm_pages_beside_cold_output_pages() {
         cache.pixels=Default::default();
         reset_page_store(&mut cache);
         let key=cache.page_key(cache.graph.root.clone().unwrap(),cache.plan.bounds);
-        let image=(*cache.pages.lock().unwrap().claim(&r,key.clone(),u64::MAX).unwrap()).clone();
+        let image=(*cache.pages.lock().unwrap().claim(&r,key.clone(),u64::MAX,crate::scene::scale::pages::WindowId::default(),crate::residency::Class::Visible).unwrap()).clone();
         assert!(cache.coverage_snapshot().written.is_empty());
         let output=Target {view:image.view.clone(),slot:Some(Slot::Root),plan:image.plan};
         let scratch=Target {slot:Some(Slot::Cache({let mut used=scratch::Usage::default();used.reserve();used.lease(0)})),..output.clone()};
@@ -213,11 +215,12 @@ fn native_alpha_reuse_admits_warm_pages_beside_cold_output_pages() {
         let mut scene=r.scene.take().unwrap();
         let warm=page_rect([0,0]);
         let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
-        let write=cache.pages.lock().unwrap().prepare_write(key.clone(),warm,pages::Accuracy::Exact,pages::Freshness::Current,0).unwrap();
+        let write=cache.pages.lock().unwrap().prepare_write(key.clone(),warm,pages::Accuracy::Exact,0).unwrap();
         scene.prepare_region_in_frame(&mut r,frame,(warm,warm.into()),PixelRect::EMPTY,false,&mut encoder).unwrap();
+        let mut accepted=scene.declare_capture(&mut r,frame,&image,&[warm],scene::Output::EffectComposite(handle),None,cache.initialized_pages(&output).as_ref()).unwrap().accept_query(&mut r,Some(&scene)).unwrap();
         scene.capture_prepared_regions_reuse(&mut r,frame,&image,&[warm],scene::Output::EffectComposite(handle),false,None,
-            cache.initialized_pages(&output).as_ref(),&mut encoder).unwrap();
-        cache.pages.lock().unwrap().commit(write,encoder.submission());
+            cache.initialized_pages(&output).as_ref(),&mut encoder,&mut accepted).unwrap();
+        cache.pages.lock().unwrap().commit(write,0,&mut encoder);
         r.uploads.finish(&encoder);
         encoder.submit(&r.queue);
         r.wait_idle().unwrap();
@@ -227,8 +230,9 @@ fn native_alpha_reuse_admits_warm_pages_beside_cold_output_pages() {
         let full=PixelRect::full(extent);
         let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
         scene.prepare_region_in_frame(&mut r,frame,(full,full.into()),PixelRect::EMPTY,false,&mut encoder).unwrap();
+        let mut accepted=scene.declare_capture(&mut r,frame,&image,&[full],scene::Output::EffectComposite(handle),None,cache.initialized_pages(&output).as_ref()).unwrap().accept_query(&mut r,Some(&scene)).unwrap();
         scene.capture_prepared_regions_reuse(&mut r,frame,&image,&[full],scene::Output::EffectComposite(handle),false,None,
-            cache.initialized_pages(&output).as_ref(),&mut encoder).unwrap();
+            cache.initialized_pages(&output).as_ref(),&mut encoder,&mut accepted).unwrap();
         r.uploads.finish(&encoder);
         encoder.submit(&r.queue);
         r.wait_idle().unwrap();
@@ -238,7 +242,8 @@ fn native_alpha_reuse_admits_warm_pages_beside_cold_output_pages() {
         let reference=Image::new(&r,image.plan,"full effect capture reference");
         let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
         scene.prepare_region_in_frame(&mut r,frame,(full,full.into()),PixelRect::EMPTY,false,&mut encoder).unwrap();
-        scene.capture_prepared_regions(&mut r,frame,&reference,&[full],scene::Output::EffectComposite(handle),false,None,&mut encoder).unwrap();
+        let mut accepted=scene.declare_capture(&mut r,frame,&reference,&[full],scene::Output::EffectComposite(handle),None,None).unwrap().accept_query(&mut r,Some(&scene)).unwrap();
+        scene.capture_prepared_regions(&mut r,frame,&reference,&[full],scene::Output::EffectComposite(handle),false,None,&mut encoder,&mut accepted).unwrap();
         r.uploads.finish(&encoder);
         encoder.submit(&r.queue);
         r.wait_idle().unwrap();
@@ -275,7 +280,7 @@ fn native_alpha_reuse_matches_canonical_paint_erase_and_history() {
             let deadline = std::time::Instant::now() + READBACK_TIMEOUT;
             loop {
                 engine.render_frame().unwrap(); engine.backend_mut().wait_idle().unwrap();
-                if !engine.has_pending_input() && (!settle || !engine.backend().has_pending_work()) { break; }
+                if !engine.has_pending_input() && (!settle || engine.backend().next_frame()!=layer_render::FrameDemand::Work) { break; }
                 assert!(std::time::Instant::now() < deadline);
             }
         };
@@ -348,7 +353,7 @@ fn native_alpha_reuse_auxiliaries_retire_with_predictions_sources_and_scale() {
             let auxiliary = r.changed_cells.as_ref().unwrap().storage_bytes();
             assert!(auxiliary <= 32 * 1024 * 1024 + disabled, "{name} auxiliary admission: {auxiliary}");
             let total = resident_bytes_with_pool(r.scale_display.as_ref().unwrap(), r.scene.as_ref().unwrap()) + auxiliary;
-            assert!(total <= CACHE_BYTES, "{name} admitted resident cache including auxiliaries: {total}");
+            assert!(total <= crate::memory::CACHE_BYTES, "{name} admitted resident cache including auxiliaries: {total}");
         }
         for _ in 0..2 { crate::test_support::submit_ready(&mut r, frame).unwrap(); r.wait_idle().unwrap(); }
         assert_eq!(r.changed_cells.as_ref().unwrap().storage_bytes(), warm, "{name} retired prediction-only flags must release their bytes");
@@ -402,7 +407,7 @@ fn native_alpha_reuse_real_unchanged_stores_leave_gpu_flags_clear() {
             let deadline = std::time::Instant::now() + READBACK_TIMEOUT;
             loop {
                 engine.render_frame().unwrap(); engine.backend_mut().wait_idle().unwrap();
-                if !engine.has_pending_input() && !engine.has_pending_document_edits() && (!settle || !engine.backend().has_pending_work()) { break; }
+                if !engine.has_pending_input() && !engine.has_pending_document_edits() && (!settle || engine.backend().next_frame()!=layer_render::FrameDemand::Work) { break; }
                 assert!(std::time::Instant::now() < deadline);
             }
         };
@@ -505,6 +510,36 @@ fn native_alpha_reuse_raw_mask_paint_forces_unchanged_paint_cells() {
         assert!(cached.metrics.native_effect_forced_cells > forced, "{name} mask write must exercise forced native-effect work");
         assert_presentation_mip(&cached);
     }}
+}
+
+#[test]
+fn a_mask_stroke_on_a_group_or_an_attached_filter_composes_like_the_unsplit_stack() {
+    let extent = [517, 259];
+    for owner in ["group", "brightness_to_opacity", "threshold"] {
+        let mut doc = document_at(extent);
+        let paint = source_at(&doc, 0);
+        let layer = doc.scene().source_owner(paint).unwrap();
+        let masked = if owner == "group" { crate::artwork_sample_tests::add_group(&mut doc, vec![layer], 0) } else { attach_filter(&mut doc, owner) };
+        let mask = coverage_mask(&mut doc, masked, Default::default(), None);
+        doc.artwork.coverage.get_mut(mask).unwrap().default_coverage = 0.;
+        let mut frame = packet(doc.scene(), extent);
+        frame.composite_all = true;
+        frame.view.document_to_surface = [0.25, 0., 0., 0.25, 0., 0.];
+        let mut r = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
+        crate::test_support::submit_ready(&mut r, frame).unwrap();
+        let mut stroke = |target: SourceTarget, center: [f32; 2], color: [f32; 4]| {
+            let mut dab = crate::tests::test_dab(center, color, 0.8);
+            dab.radii = [13.25, 11.75];
+            let batch = dab_batch(target, crate::layer_tests::preset_style(DefaultBrushPreset::GPen), dab.bounds());
+            crate::test_support::submit_ready(&mut r, FramePacket { dabs: std::slice::from_ref(&dab), dab_batches: std::slice::from_ref(&batch), ..frame }).unwrap();
+            for _ in 0..2 { crate::test_support::submit_ready(&mut r, frame).unwrap(); r.wait_idle().unwrap(); }
+            display_pixels(&r)
+        };
+        let masked_stroke = stroke(SourceTarget::Coverage(mask), [125.5, 126.5], [1.; 4]);
+        let unsplit = stroke(paint, [400.5, 200.5], [0.; 4]);
+        let error = crate::test_support::max_error(&masked_stroke, &unsplit);
+        assert!(error < 2e-5, "{owner}: a mask stroke must compose like the unsplit stack: error={error}");
+    }
 }
 
 #[test]

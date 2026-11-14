@@ -191,9 +191,9 @@ impl WgpuRasterizer {
         dabs: &[Dab],
         jobs: &[MaterialJob],
         layer_index: usize,
-        preview: bool,
-        sources_preview: bool,
+        target: BrushEncodingTarget,
     ) -> Result<(), GpuRasterError> {
+        let preview = target.is_preview();
         let started = self.telemetry.enabled.then(web_time::Instant::now);
         let extent = self.target_extent(batch.target);
         let operation = BrushPassPlan::for_style(&batch.style).material;
@@ -210,15 +210,18 @@ impl WgpuRasterizer {
         let mut publications=Vec::with_capacity(jobs.len()*3+usize::from(exchange.is_some()));
         let mut written=Vec::with_capacity(jobs.len()*3+usize::from(exchange.is_some()));
         let mut dispatches = Vec::with_capacity(jobs.len());
-        for (index,job) in jobs.iter().enumerate() {
-            let sources=self.transport_sources(encoder,batch_index,batch,job.coordinate,sources_preview,&mut dispatches,&mut publications,&mut written)?;
-            let color_ticket=preview.then(||self.preview_material_version(batch,batch_index,RasterPlane::Color,job.coordinate,scene::PreviewPass::Color)).transpose()?;
-            let coverage_ticket=(preview && job.coverage_index.is_some()).then(||self.preview_pass_version(batch.target,RasterPlane::Color,job.coordinate,scene::PreviewStage::AfterBatch(batch_index),scene::PreviewPass::Coverage)).transpose()?;
-            let wetness_ticket=(preview && operation==MaterialOperation::Watercolor).then(||self.preview_material_version(batch,batch_index,RasterPlane::WatercolorWetness,job.coordinate,scene::PreviewPass::Wetness)).transpose()?;
-            let receipt=encoder.submission();let intent=self.raster_intent(batch.target,RasterPlane::Color,job.coordinate)?;
-            self.validate_raster_intent(batch.target,&intent)?;
+        let intents=jobs.iter().map(|job| {
+            let intent=self.raster_intent(batch.target,RasterPlane::Color,job.coordinate)?;
             let wet_intent=(operation==MaterialOperation::Watercolor).then(||self.raster_intent(batch.target,RasterPlane::WatercolorWetness,job.coordinate)).transpose()?;
-            if let Some(intent)=&wet_intent {self.validate_raster_intent(batch.target,intent)?;}
+            Ok((intent,wet_intent))
+        }).collect::<Result<Vec<_>,GpuRasterError>>()?;
+        let source_bindings=jobs.iter().zip(&intents).map(|(job,(intent,_))|self.transport_sources(encoder,batch_index,batch,job.coordinate,target,intent))
+            .collect::<Result<Vec<_>,_>>()?;
+        for (((index,job),sources),(intent,wet_intent)) in jobs.iter().enumerate().zip(source_bindings).zip(intents) {
+            let color_ticket=preview.then(||self.preview_material_version(batch,batch_index,RasterPlane::Color,job.coordinate,scene::PreviewPass::Color,&intent)).transpose()?;
+            let coverage_ticket=(preview && job.coverage_index.is_some()).then(||self.preview_material_version(batch,batch_index,RasterPlane::Color,job.coordinate,scene::PreviewPass::Coverage,&intent)).transpose()?;
+            let wetness_ticket=wet_intent.as_ref().filter(|_|preview).map(|wet_intent|self.preview_material_version(batch,batch_index,RasterPlane::WatercolorWetness,job.coordinate,scene::PreviewPass::Wetness,wet_intent)).transpose()?;
+            let receipt=encoder.submission();
             let layer=&mut self.paint_layers[layer_index];
             let (color_pages,coverage_pages,wetness_pages)=if preview {(&mut self.preview_pages,&mut self.preview_coverage_pages,&mut self.preview_watercolor_wetness_pages)}
                 else {(&mut layer.pages,&mut layer.coverage_pages,&mut layer.watercolor_wetness_pages)};
@@ -236,7 +239,8 @@ impl WgpuRasterizer {
                     let WatercolorWetnessPage {primary,secondary:second,pending,..}=page;
                     let (state,written,_)=pending.as_ref().ok_or(GpuRasterError::Invariant("prepared encode transport jobs state is inconsistent"))?;
                     if !state.input.same_selection(wet_intent) || state.input.version().matches(wet_intent.version())!=Some(true) {return Err(GpuRasterError::Invariant("accepted write selection changed"));}
-                    (if secondary {second}else {primary}).continue_written(written,&receipt)
+                    let surface=if secondary {second}else {primary};
+                    if preview {surface.revise(written.version(),&receipt)}else {surface.continue_written(written,&receipt)}
                 }else if preview {page.surface_mut(secondary).overwrite(&receipt)}else {page.write(secondary,wet_intent,&receipt)};
                 Some(write.ok_or(GpuRasterError::Invariant("prepared encode transport jobs state is inconsistent"))?)
             }else {None};
@@ -257,8 +261,9 @@ impl WgpuRasterizer {
         }
         if let Some((_, last)) = exchange {
             let coordinate = std::array::from_fn(|i| ([last.center.x, last.center.y][i].max(0.) as u32 / PAGE_SIZE).min(extent[i].saturating_sub(1) / PAGE_SIZE));
-            let sources=self.transport_sources(encoder,batch_index,batch,coordinate,false,&mut dispatches,&mut publications,&mut written)?;
-            let receipt=encoder.submission();let intent=self.raster_intent(batch.target,RasterPlane::Color,coordinate)?;
+            let intent=self.raster_intent(batch.target,RasterPlane::Color,coordinate)?;
+            let sources=self.transport_sources(encoder,batch_index,batch,coordinate,target,&intent)?;
+            let receipt=encoder.submission();
             let destination=if self.reservoir.active_secondary {&mut self.reservoir.primary}else {&mut self.reservoir.secondary};
             let write=destination.overwrite(&receipt).ok_or(GpuRasterError::Invariant("accepted destination is not writable"))?;
             let output=self.pipelines.destination_material.output(&self.device,&self.style_buffer,&write,None,None);
@@ -274,48 +279,20 @@ impl WgpuRasterizer {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn transport_sources(
         &mut self,
         encoder: &mut crate::submission::CommandEncoder,
         batch_index: usize,
         batch: &DabBatch,
         coordinate: [u32; 2],
-        preview: bool,
-        dispatches: &mut Vec<Dispatch>,
-        publications:&mut Vec<MaterialPublication>,
-        written:&mut Vec<MaterialWritten>,
+        target: BrushEncodingTarget,
+        intent: &crate::raster::contents::Intent,
     ) -> Result<wgpu::BindGroup, GpuRasterError> {
         let timing = self.telemetry.enabled;
-        let offsets = self.material_offsets(batch);
-        self.encode_before_borrowing(encoder, batch_index, batch, coordinate, offsets, preview, dispatches,publications,written);
         let started = timing.then(web_time::Instant::now);
-        let target=if preview {BrushEncodingTarget::Preview {from_persistent:false}}else {BrushEncodingTarget::Persistent};
-        let (sources, _) = self.material_bind_group(batch,batch_index, coordinate, target, MaterialInputs::Neighborhood, None, encoder)?;
+        let (sources, _) = self.material_bind_group(batch,batch_index, coordinate, target, intent, MaterialInputs::Neighborhood, None, encoder)?;
         self.metrics.material_cpu_ms[4] += elapsed(started);
         Ok(sources)
-    }
-
-    /// The decoded-tile cache may reuse a slot that a pending dispatch reads,
-    /// so those dispatches are encoded before such a preparation.
-    #[allow(clippy::too_many_arguments)]
-    fn encode_before_borrowing(
-        &mut self,
-        encoder: &mut crate::submission::CommandEncoder,
-        batch_index: usize,
-        batch: &DabBatch,
-        coordinate: [u32; 2],
-        offsets: [Option<[i32; 2]>; 9],
-        preview: bool,
-        dispatches: &mut Vec<Dispatch>,
-        publications:&mut Vec<MaterialPublication>,
-        written:&mut Vec<MaterialWritten>,
-    ) {
-        if self.borrows_decoded_tiles(batch.target, coordinate, offsets, preview) {
-            self.encode_transport(encoder, batch_index, batch, dispatches);
-            let actual=encoder.submission();written.extend(publications.drain(..).map(|publication|publication.encoded(&actual)));
-            dispatches.clear();
-        }
     }
 
     fn encode_transport(&mut self, encoder: &mut crate::submission::CommandEncoder, batch_index: usize, batch: &DabBatch, dispatches: &[Dispatch]) {

@@ -127,6 +127,24 @@ impl Expression {
         visit(self, scene, false, &mut domains);
         domains
     }
+    pub(super) fn reads(&self) -> (BTreeSet<SourceTarget>, BTreeSet<OccurrenceHandle>) {
+        fn visit(node: &Expression, reads: &mut (BTreeSet<SourceTarget>, BTreeSet<OccurrenceHandle>)) {
+            match node {
+                Expression::Source { id, .. } => { reads.0.insert(*id); }
+                Expression::Opacity { input, .. } => visit(input, reads),
+                Expression::Combine { front, back, .. } => { visit(front, reads); visit(back, reads); }
+                Expression::Effect { input, chain, masks, .. } => {
+                    reads.1.extend(chain.iter().map(|(handle, ..)| *handle));
+                    visit(input, reads);
+                    for mask in masks.iter().flatten() { visit(mask, reads); }
+                }
+                Expression::Color(_) | Expression::Objects {..} | Expression::Vector { .. } | Expression::VectorPreview { .. } | Expression::VectorMotion { .. } => {}
+            }
+        }
+        let mut reads = Default::default();
+        visit(self, &mut reads);
+        reads
+    }
     pub(super) fn native_capture(&self, scene: SceneView<'_>, level: u32) -> bool {
         match self {
             Self::Opacity { input, .. } => input.native_capture(scene, level),
@@ -148,6 +166,17 @@ impl Expression {
             _ => {}
         }
     }
+    fn intern(node:&Node,table:&mut HashSet<Node>)->Node {
+        if let Some(existing)=table.get(node) {return existing.clone();}
+        let interned=match node.as_ref() {
+            Self::Opacity {input,opacity}=>Arc::new(Self::Opacity {input:Self::intern(input,table),opacity:*opacity}),
+            Self::Combine {front,back,blend,flags}=>Arc::new(Self::Combine {front:Self::intern(front,table),back:Self::intern(back,table),blend:*blend,flags:*flags}),
+            Self::Effect {input,chain,masks,radius}=>Arc::new(Self::Effect {input:Self::intern(input,table),chain:chain.clone(),
+                masks:masks.iter().map(|mask|mask.as_ref().map(|mask|Self::intern(mask,table))).collect(),radius:*radius}),
+            _=>node.clone(),
+        };
+        table.insert(interned.clone());interned
+    }
     fn fused_target(&self)->Option<SourceTarget> {
         match self {
             Self::Source {id,..}=>Some(*id),
@@ -161,6 +190,58 @@ impl Expression {
     }
 }
 
+struct Authored {
+    compositions: layer_core::authored::Store<layer_core::authored::Composition>,
+    stacks: layer_core::authored::Store<layer_core::authored::Stack>,
+    occurrences: layer_core::authored::Store<layer_core::authored::Occurrence>,
+    objects: layer_core::authored::Store<layer_core::authored::ImageObject>,
+    vectors: layer_core::authored::Store<layer_core::authored::vector::VectorObject>,
+    effects: layer_core::authored::Store<layer_core::authored::EffectApplication>,
+}
+impl PartialEq for Authored {
+    fn eq(&self, other: &Self) -> bool {
+        self.compositions.same_root(&other.compositions) && self.stacks.same_root(&other.stacks) && self.occurrences.same_root(&other.occurrences)
+            && self.objects.same_root(&other.objects) && self.vectors.same_root(&other.vectors) && self.effects.same_root(&other.effects)
+    }
+}
+#[derive(PartialEq)]
+struct Inputs {
+    scene: (u64, u64, [u64; 2]),
+    authored: Authored,
+    scope: Option<layer_core::authored::SceneScope>,
+    phases: Vec<(OccurrenceHandle, u32)>,
+    inspect_mask: Option<OccurrenceHandle>,
+    blend_space: layer_core::BlendSpace,
+    plan: display_mips::Plan,
+    active: Option<OccurrenceHandle>,
+    sources: Vec<(SourceTarget, SourceFrame, [u32; 2], u32)>,
+    object_moving: Option<OccurrenceHandle>,
+    motion_split: Option<super::super::MotionSplit>,
+    moving: Option<(OccurrenceHandle, Moving)>,
+    prepared: Option<(super::super::MotionSplit, (OccurrenceHandle, Moving), DocRect)>,
+}
+impl Inputs {
+    fn new(packet: FramePacket<'_>, sources: &Sources, plan: display_mips::Plan, active: Option<OccurrenceHandle>) -> Self {
+        let scene = packet.scene;let artwork = scene.artwork();
+        let outside = |id: SourceTarget| match id {
+            SourceTarget::Coverage(handle) => artwork.coverage.get(handle).map_or(0, |coverage| coverage.default_coverage.to_bits()),
+            _ => 0,
+        };
+        let mut framed: Vec<_> = sources.entries.keys().map(|id| (*id, source_frame(Some(sources), scene, *id), scene.target_extent(*id), outside(*id))).collect();
+        framed.sort_unstable_by_key(|(id, ..)| *id);
+        Self {
+            scene: (scene.owner(), scene.revision(), scene.offset().map(f64::to_bits)),
+            authored: Authored { compositions: artwork.compositions.clone(), stacks: artwork.stacks.clone(), occurrences: artwork.occurrences.clone(),
+                objects: artwork.objects.clone(), vectors: artwork.vectors.clone(), effects: artwork.effects.clone() },
+            scope: scene.scope().cloned(),
+            phases: scene.order().iter().filter(|handle| scene.effect(**handle).is_some())
+                .map(|handle| (*handle, crate::effects::effective_phase(scene, *handle, packet.time_seconds).to_bits())).collect(),
+            inspect_mask: packet.inspect_mask, blend_space: packet.blend_space, plan, active, sources: framed, object_moving: sources.object_moving,
+            motion_split: sources.motion_split.clone(), moving: sources.moving.clone(), prepared: sources.prepared.clone(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Graph {
     pub root: Option<Node>,
@@ -169,19 +250,28 @@ pub(super) struct Graph {
     pub prepared: Option<[Node; 2]>,
     pub split_changed: bool,
     cached: HashSet<Node>,
+    interned: HashSet<Node>,
     effects: HashMap<OccurrenceHandle, (metadata::Metadata, u64)>,
     revision: u64,
     blend_space: layer_core::BlendSpace,
     objects:object_spatial::SpatialIndex,
+    active: Option<OccurrenceHandle>,
+    inputs: Option<Inputs>,
 }
 impl Graph {
     pub fn objects(&self)->&object_spatial::SpatialIndex {&self.objects}
     pub fn blend_space(&self)->layer_core::BlendSpace {self.blend_space}
     pub fn without_pixels(&self) -> Self {
-        Self { root: self.root.clone(), content:self.content.clone(), motion: None, prepared: None, split_changed: false, cached: HashSet::new(), effects: self.effects.clone(),
-            revision: self.revision, blend_space: self.blend_space, objects:self.objects.clone() }
+        Self { root: self.root.clone(), content:self.content.clone(), motion: None, prepared: None, split_changed: false, cached: HashSet::new(), interned: self.interned.clone(), effects: self.effects.clone(),
+            revision: self.revision, blend_space: self.blend_space, objects:self.objects.clone(), active: self.active, inputs: None }
     }
-    pub fn prepare(&mut self, r: &WgpuRasterizer, packet: FramePacket<'_>, sources: &Sources, plan: display_mips::Plan) -> Result<(), GpuRasterError> {
+    pub fn prepare(&mut self, r: &WgpuRasterizer, packet: FramePacket<'_>, sources: &Sources, plan: display_mips::Plan, held: bool) -> Result<(), GpuRasterError> {
+        let mut stroked = packet.dab_batches.iter().map(|batch| packet.scene.source_owner(batch.target));
+        let active = match stroked.next() { Some(Some(owner)) if stroked.all(|other| other == Some(owner)) => Some(owner), _ => self.active };
+        let inputs = Inputs::new(packet, sources, plan, active);
+        if held && self.inputs.as_ref() == Some(&inputs) { return Ok(()); }
+        #[cfg(test)] crate::test_support::PassCounts {graph_prepares:1,..Default::default()}.record();
+        self.inputs = None;
         self.objects.prepare(packet.scene);
         self.blend_space=packet.blend_space;
         self.effects.retain(|id, _| packet.scene.effect(*id).is_some());
@@ -193,31 +283,38 @@ impl Graph {
             }
         }
         let before = self.motion.take();
-        let halves = |split: &super::super::MotionSplit, moving: &(OccurrenceHandle, Moving)| -> Result<[Node; 2], GpuRasterError> {
-            let half = |scope| compose(FramePacket { scene: packet.scene.with_scope(scope), ..packet }, Some(sources), Some(&self.effects), plan.level, r.device.working_space(), None, Some(moving))
-                .map(|node| if Expression::is_clear(&node) { node } else { Arc::new(Expression::Combine { front: node, back: Expression::color([0.; 4]), blend: 0, flags: 0 }) });
+        let mut halves = |split: &super::super::MotionSplit, moving: &(OccurrenceHandle, Moving)| -> Result<[Node; 2], GpuRasterError> {
+            let mut half = |scope| compose(FramePacket { scene: packet.scene.with_scope(scope), ..packet }, Some(sources), Some(&self.effects), plan.level, r.device.working_space(), None, Some(moving))
+                .map(|node| if Expression::is_clear(&node) { node } else { Arc::new(Expression::Combine { front: node, back: Expression::color([0.; 4]), blend: 0, flags: 0 }) })
+                .map(|node| Expression::intern(&node, &mut self.interned));
             Ok([half(&split.0)?, half(&split.1)?])
         };
         self.motion = sources.motion_split.as_ref().zip(sources.moving.as_ref()).map(|(split, moving)| halves(split, moving)).transpose()?;
         self.prepared = sources.prepared.as_ref().filter(|_| self.motion.is_none()).map(|(split, moving, _)| halves(split, moving)).transpose()?;
         self.split_changed = before != self.motion;
+        self.active = active;
         let root = match &self.motion {
             Some([above, below]) => Expression::combine(above.clone(), below.clone(), layer_core::LayerBlend::Normal, 0),
-            None => compose(packet, Some(sources), Some(&self.effects), plan.level, r.device.working_space(), Some(&mut self.objects), sources.moving.as_ref())?,
+            None => split_root(packet, Some(sources), Some(&self.effects), plan.level, r.device.working_space(), Some(&mut self.objects), sources.moving.as_ref(), self.active)?,
         };
+        let root = Expression::intern(&root, &mut self.interned);
+        let content = if self.root.as_ref() == Some(&root) { self.content.clone() } else { Some(Expression::intern(&Expression::content(&root), &mut self.interned)) };
         let mut all = HashSet::new();
         Expression::visit(&root, &mut all);
         for node in self.prepared.iter().flatten() { Expression::visit(node, &mut all); }
         let unmoved: Vec<Node> = all.iter().filter_map(|node| match node.as_ref() {
-            Expression::Vector { owner, offset, moving: Some(_) } => Some(Arc::new(Expression::Vector { owner: *owner, offset: *offset, moving: None })),
+            Expression::Vector { owner, offset, moving: Some(_) } => Some(Expression::intern(&Arc::new(Expression::Vector { owner: *owner, offset: *offset, moving: None }), &mut self.interned)),
             _ => None,
         }).collect();
         all.extend(unmoved);
+        self.interned = all.clone();
+        for node in self.motion.iter().flatten().chain(&content) { Expression::visit(node, &mut self.interned); }
         self.cached = all.into_iter().filter(|n| !Arc::ptr_eq(n, &root)
             && matches!(n.as_ref(), Expression::Objects {..} | Expression::Vector { .. } | Expression::Combine { .. } | Expression::Effect { .. })
             && !matches!(n.as_ref(), Expression::Combine { front, .. } if matches!(front.as_ref(), Expression::VectorPreview { .. } | Expression::VectorMotion { .. }))).collect();
-        if self.root.as_ref()!=Some(&root) {self.content=Some(Expression::content(&root));}
+        self.content = content;
         self.root = Some(root);
+        self.inputs = Some(inputs);
         Ok(())
     }
     pub fn caches(&self, node: &Node) -> bool { self.cached.contains(node) }
@@ -225,6 +322,20 @@ impl Graph {
 
 }
 
+
+#[expect(clippy::too_many_arguments, reason = "The split root composes each part with the full root's inputs")]
+pub(super) fn split_root(
+    packet: FramePacket<'_>, sources: Option<&Sources>, effects: Option<&HashMap<OccurrenceHandle, (metadata::Metadata, u64)>>,
+    level: u32, space: layer_core::color::RgbSpace, mut objects: Option<&mut object_spatial::SpatialIndex>, moving: Option<&(OccurrenceHandle, Moving)>,
+    active: Option<OccurrenceHandle>,
+) -> Result<Node, GpuRasterError> {
+    let Some(split) = active.filter(|_| packet.inspect_mask.is_none()).and_then(|owner| crate::scene::active_split(packet.scene, owner)) else {
+        return compose(packet, sources, effects, level, space, objects, moving);
+    };
+    let mut part = |scope| compose(FramePacket { scene: packet.scene.with_scope(scope), ..packet }, sources, effects, level, space, objects.as_deref_mut(), moving);
+    let [above, active, below] = [part(&split[0])?, part(&split[1])?, part(&split[2])?];
+    Ok(Expression::combine(above, Expression::combine(active, below, layer_core::LayerBlend::Normal, 0), layer_core::LayerBlend::Normal, 0))
+}
 
 pub(super) fn compose(
     packet: FramePacket<'_>, sources: Option<&Sources>, effects: Option<&HashMap<OccurrenceHandle, (metadata::Metadata, u64)>>,
@@ -333,59 +444,80 @@ impl stack::Compositor for Builder<'_> {
 
 impl Cache {
     pub(super) fn initialized_pages(&self,target:&Target)->Option<BTreeSet<[u32;2]>> {
+        if self.pixels.root().is_some_and(|window|window.view==target.view) {return Some(self.shown_pages(target.plan.bounds));}
         self.pages.lock().unwrap().initialized_view(&target.view,target.plan.bounds)
-
     }
 }
 impl Evaluator<'_> {
-    pub(super) fn evaluate_root(&mut self, node: &Node, _direct: bool) -> Result<Value, GpuRasterError> {
-        self.evaluate_page(node,false)?.ok_or(GpuRasterError::NotReady)
-    }
-    fn evaluate_page(&mut self,node:&Node,optional:bool)->Result<Option<Value>,GpuRasterError> {
+    pub(super) fn evaluate_root(&mut self, node: &Node, target: Root) -> Result<Value, GpuRasterError> {
+        if target==Root::Store || self.accepted.declaring() {return self.evaluate_page(node,self.class)?.ok_or(GpuRasterError::NotReady);}
         let region=self.region.in_frame(self.cache.plan.extent);
-        let required_input_level=if self.cache.evaluation==Evaluation::Native {0}else {self.input.level};
+        let key=self.cache.page_key(node.clone(),region);
+        let mut write=if self.cache.gesture.is_some() {pages::Write::keyless(key,region)}
+            else {self.cache.pages.lock().unwrap().prepare_write(key,region,pages::Accuracy::Display,self.cache.required_input_level())?};
+        let window=self.cache.pixels.root().ok_or(GpuRasterError::NotReady)?;
+        let output=Target {view:window.view.clone(),slot:Some(Slot::Root),plan:window.plan};
+        let fused=(window.texture.format()==wgpu::TextureFormat::Rgba32Float).then(||output.clone());
+        let outer=std::mem::replace(&mut self.approximate,false);
+        let value=self.evaluate_uncached(node,fused)?;
+        if super::refinement::exact_at_view_level(self.packet.scene) && !self.approximate {write.accuracy=pages::Accuracy::Exact;}
+        self.approximate|=outer;
+        let value=self.materialize(value,Some(output))?;
+        self.unit.window.push(write);
+        Ok(value)
+    }
+    fn evaluate_page(&mut self,node:&Node,class:Class)->Result<Option<Value>,GpuRasterError> {
+        if self.accepted.declaring() {return self.evaluate_uncached(node,None).map(Some);}
+        let region=self.region.in_frame(self.cache.plan.extent);
+        let required_input_level=self.cache.required_input_level();
         let mut key=self.cache.page_key(node.clone(),region);
+        let exact_at_view=super::refinement::exact_at_view_level(self.packet.scene);
+        let presented=super::refinement::presented_accuracy(self.r,self.packet.scene,self.preview);
+        let exact_input_level=if exact_at_view {required_input_level} else {0};
         let cached={
             let mut store=self.cache.pages.lock().unwrap();
-            store.get(&key,region,pages::Accuracy::Display,required_input_level).or_else(||store.get(&key,region,pages::Accuracy::Exact,0)).map(|image| {
-                let exact=store.get(&key,region,pages::Accuracy::Exact,0).is_some();(image,exact)
+            store.get(&key,region,pages::Accuracy::Display,required_input_level,self.class).or_else(||store.get(&key,region,pages::Accuracy::Exact,0,self.class)).map(|image| {
+                let exact=store.get(&key,region,pages::Accuracy::Exact,exact_input_level,self.class).is_some();(image,exact)
             })
         };
-        if let Some((image,exact))=cached {
+        if let Some((image,exact))=cached.filter(|(_,exact)|*exact || presented==pages::Accuracy::Display) {
             if self.cache.graph.content.as_ref()==Some(&key.expression) {self.cache.pages.lock().unwrap().set_visible(&key);}
             self.approximate|=!exact;
-            self.unit.reads.push((pages::Key {format:image.texture.format(),..key.clone()},image.clone()));
+            self.unit.reads.push(image.clone());
             return Ok(Some(Target {view:image.view.clone(),slot:Some(Slot::Root),plan:image.plan}.value()));
         }
-        if !self.cache.pages.lock().unwrap().coverage(&key,region,required_input_level).needs(region,pages::Accuracy::Display) {
+        if !self.cache.pages.lock().unwrap().coverage(&key,region,required_input_level).needs(region,presented) {
             return Err(GpuRasterError::NotReady);
         }
-        let reduction=self.cache.pages.lock().unwrap().reduction(&key,required_input_level);
-        if matches!(&reduction,Some((_,pages::Accuracy::Exact,_))) {key.format=wgpu::TextureFormat::Rgba32Float;}
-        let Some(image)=self.cache.claim_page(self.scene,self.r,key.clone(),self.retained,optional)? else {return Ok(None);};
-        self.unit.reads.push((key.clone(),image.clone()));
-        if let Some((inputs,accuracy,freshness))=reduction {
-            let write=self.cache.pages.lock().unwrap().prepare_write(key.clone(),image.plan.bounds,accuracy,freshness,required_input_level)?;
-            for (input_key,input) in inputs {
+        let reduction=self.cache.pages.lock().unwrap().reduction(&key,required_input_level,self.class)
+            .filter(|(_,accuracy)|*accuracy==pages::Accuracy::Exact || presented==pages::Accuracy::Display);
+        if !exact_at_view && matches!(&reduction,Some((_,pages::Accuracy::Exact))) {key.format=wgpu::TextureFormat::Rgba32Float;}
+        let Ok(image)=self.cache.claim_page(self.scene,self.r,key.clone(),class)? else {return Ok(None);};
+        self.unit.reads.push(image.clone());
+        if let Some((inputs,accuracy))=reduction {
+            let write=self.cache.pages.lock().unwrap().prepare_write(key.clone(),image.plan.bounds,accuracy,required_input_level)?;
+            for (_,input) in inputs {
                 let covered=input.plan.bounds.intersect(image.plan.bounds);
                 let side=1<<image.plan.level;
                 let [x,y,width,height]=paint_transform::texel_rect(covered.window_local(image.plan.bounds),side);
                 let sources=[input.view.clone(),self.r.empty_view.clone(),self.r.empty_view.clone(),self.r.empty_view.clone()];
-                let binding=RegionRecords::inputs(self.r,sources.each_ref(),&image.view);
                 let mut values=[0;20];
                 values[..8].copy_from_slice(&[x,y,width,height,input.plan.bounds.width(),input.plan.bounds.height(),2,(input.plan.level<<8)|8]);
                 values[14]=((x*2) as f32).to_bits();values[15]=((y*2) as f32).to_bits();
-                self.scene.jobs.push(Job::Reduce {binding,sources,values,size:[width,height],kernel:Reduction::Pages,format:image.texture.format()});
-                self.unit.reads.push((input_key,input));
+                self.scene.jobs.push(Job::Reduce {output:image.view.clone(),sources,values,size:[width,height],kernel:Reduction::Pages,format:image.texture.format()});
+                self.unit.reads.push(input);
             }
-            self.approximate|=accuracy==pages::Accuracy::Display || freshness==pages::Freshness::Stale;
+            self.approximate|=accuracy==pages::Accuracy::Display;
             self.unit.pages.push(write);
             return Ok(Some(Target {view:image.view.clone(),slot:Some(Slot::Root),plan:image.plan}.value()));
         }
-        let write=self.cache.pages.lock().unwrap().prepare_write(key.clone(),region,pages::Accuracy::Display,pages::Freshness::Current,required_input_level)?;
+        let mut write=self.cache.pages.lock().unwrap().prepare_write(key.clone(),region,pages::Accuracy::Display,required_input_level)?;
         let output=Target {view:image.view.clone(),slot:Some(Slot::Root),plan:image.plan};
         let direct=(image.texture.format()==wgpu::TextureFormat::Rgba32Float).then(||output.clone());
+        let outer=std::mem::replace(&mut self.approximate,false);
         let value=self.evaluate_uncached(node,direct)?;
+        if exact_at_view && !self.approximate {write.accuracy=pages::Accuracy::Exact;}
+        self.approximate|=outer;
         let value=self.materialize(value,Some(output))?;
         self.unit.pages.push(write);
         Ok(Some(value))
@@ -407,9 +539,9 @@ impl Evaluator<'_> {
     }
     fn evaluate_into(&mut self, node: &Node, output: Option<Target>) -> Result<Value, GpuRasterError> {
         let region=self.region.in_frame(self.cache.plan.extent);
-        if output.is_none() && self.cache.graph.caches(node)
+        if output.is_none() && self.cache.graph.caches(node) && !self.cache.contact_reads(node)
             && DocRect::from(region)==self.region && self.cache.page_key(node.clone(),region).plan().bounds==region
-            && let Some(value)=self.evaluate_page(node,true)? {return Ok(value);}
+            && let Some(value)=self.evaluate_page(node,self.class.max(Class::Prefetch))? {return Ok(value);}
         self.evaluate_uncached(node,output)
     }
     fn evaluate_uncached(&mut self,node:&Node,output:Option<Target>)->Result<Value,GpuRasterError> {
@@ -480,17 +612,17 @@ mod reuse_tests {
             let cache = renderer.scale_display.as_ref().unwrap();
             let pages=retained_branch_pages(cache);
             assert!(!pages.is_empty(),"fixture must commit optional branch pages");
-            assert!(cache.storage_bytes()<=CACHE_BYTES);
+            assert!(cache.storage_bytes()<=crate::memory::CACHE_BYTES);
             let mut store=cache.pages.lock().unwrap();
             for (key,before) in &previous_pages {
-                let current=store.get(key,key.plan().bounds,pages::Accuracy::Display,key.level).expect("an unchanged sub-expression stays current");
-                assert!(Arc::ptr_eq(&before.upgrade().expect("an unchanged sub-expression stays retained"),&current),
+                let current=store.get(key,key.plan().bounds,pages::Accuracy::Display,key.level,crate::residency::Class::Visible).expect("an unchanged sub-expression stays current");
+                assert!(Arc::ptr_eq(&before.upgrade().expect("an unchanged sub-expression stays retained"),current.image()),
                     "same-key unchanged branch pages must retain their image");
             }
             previous_pages=pages.iter().filter(|page|matches!(page.key.expression.as_ref(),Expression::Effect {chain,..}
                 if chain.iter().any(|(handle,..)|*handle==unchanged))).map(|page| {
-                    let image=store.get(&page.key,page.key.plan().bounds,pages::Accuracy::Display,page.key.level).unwrap();
-                    (page.key.clone(),Arc::downgrade(&image))
+                    let image=store.get(&page.key,page.key.plan().bounds,pages::Accuracy::Display,page.key.level,crate::residency::Class::Visible).unwrap();
+                    (page.key.clone(),Arc::downgrade(image.image()))
                 }).collect();
             assert!(!previous_pages.is_empty(),"fixture must commit the unchanged sub-expression");
             drop(store);
@@ -531,7 +663,7 @@ fn native_level_retained_branches_batch_live_graph_pages_and_keep_islands_separa
             let mut encoder = submission::CommandEncoder::new(&r.device, &Default::default()); let mut commands = RegionRecords::new(&r);
             let work = r.metrics.composited_pixels;
             cache.render_graph(&mut scene, &mut r, frame, PixelRect::EMPTY,
-                &mut Encoding { encoder: &mut encoder, commands: &mut commands, retained:[0;2] }, Destination::View, Some(&BTreeSet::new()), 0).unwrap();
+                &mut Encoding { encoder: &mut encoder, commands: &mut commands, retained:0, budget:&mut Scene::begin_work(false) }, Destination::View, Some(&BTreeSet::new())).unwrap();
             scene.encode_jobs(&mut r, &mut encoder).unwrap();
             let passes = encoder.pass_count(); let pages = if sparse { 2 } else { count };
             let batches = if sparse { 2 } else { count.div_ceil(SOURCE_SLOTS as u32) };
@@ -548,7 +680,7 @@ fn native_level_retained_branches_batch_live_graph_pages_and_keep_islands_separa
             assert!(!effects.is_empty());
             for node in effects {for coordinate in pages::coordinates(cache.plan.bounds,cache.plan.level) {
                 let key=cache.page_key(node.clone(),pages::bounds(coordinate,cache.plan.level,extent));
-                assert!(cache.pages.lock().unwrap().get(&key,key.plan().bounds,pages::Accuracy::Display,key.level).is_some(),
+                assert!(cache.pages.lock().unwrap().get(&key,key.plan().bounds,pages::Accuracy::Display,key.level,crate::residency::Class::Visible).is_some(),
                     "every retained effect branch page must remain committed and current");
             }}
         }

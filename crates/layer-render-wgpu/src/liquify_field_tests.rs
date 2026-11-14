@@ -76,7 +76,7 @@ fn seeded_context(r:&WgpuRasterizer,doc:&Document,map:impl Fn(u32,u32)->([f32;2]
     seed_map(r,&tile,&bytes);
     let source=Arc::new(placement::paint(doc).clone());
     layer_core::liquify::Context {current:source.clone(),original:source,amount:None,field:Some(Arc::new(Field{content:layer_core::raster::ContentName::fresh(),
-        device:(*r.device).clone(),tiles:BTreeMap::from([([0,0],tile)]),originals:Arc::new(Mutex::new(Originals::default())),
+        device:(*r.device).clone(),tiles:BTreeMap::from([([0,0],tile)]),originals:Arc::new(Mutex::new(Originals::new(r.raster_versions(doc.scene(),placement::target(doc)).unwrap()))),
     }))}
 }
 
@@ -153,10 +153,11 @@ fn liquify_sparse_original_atlas_chunks_match_unfragmented_source() {
             let base = &originals.atlases[0];
             let texture = base.texture.clone();
             let view = base.view.clone();
+            let tier = base._charge.tier().clone();
             for _ in 1..12 {
                 originals.atlases.push(OriginalAtlas {
                     id: NEXT_RESOURCE.fetch_add(1, Ordering::Relaxed),
-                    texture: texture.clone(), view: view.clone(),
+                    texture: texture.clone(), view: view.clone(), _charge: tier.charge(0),
                 });
             }
             let distant = originals.tiles[&[1, 0]].clone();
@@ -372,14 +373,6 @@ fn fit_persistent_preview_preserves_untouched_prior_compression_in_same_tile() {
     assert_eq!(old_map_changes,0,"the prior compressed region must retain exact packed map values");
     assert_ne!(stroke.colored_tiles[&[0,0]].id,stroke.field.tiles[&[0,0]].id,
         "the unresolved field map must differ from the last color-resolved map");
-    let accounted=r.liquify.as_ref().unwrap().storage_bytes();
-    assert!(r.metrics().paint_state_storage_bytes>=accounted,
-        "paint-state metrics must include retained resolved maps");
-    let old=r.liquify.as_mut().unwrap().strokes.get_mut(&target).unwrap().colored_tiles.remove(&[0,0]).unwrap();
-    let without_old=r.liquify.as_ref().unwrap().storage_bytes();
-    assert_eq!(accounted-without_old,old.pixels.storage_bytes(),
-        "storage accounting must include the retained resolved map while color is deferred");
-    r.liquify.as_mut().unwrap().strokes.get_mut(&target).unwrap().colored_tiles.insert([0,0],old);
     let raw_after={
         let page=r.paint_layers.iter().find(|layer|layer.id==target).unwrap().pages.iter()
             .find(|page|page.coordinate==[0,0]).unwrap();
@@ -465,9 +458,9 @@ fn untouched_own_map_survives_when_it_is_in_a_later_source_chunk() {
     }));
     crate::test_support::submit_ready(&mut r, FramePacket{reset_layers:true,..crate::test_support::packet(doc.scene(),extent)}).unwrap();
     let seed=seeded_context(&r,&doc,|_,_|([0.375,0.],[1e-5,0.,0.,1.]));
-    let bytes={
+    let (bytes,originals)={
         let field=seed.field.as_ref().unwrap().as_any().downcast_ref::<Field>().unwrap();
-        crate::layer_tests::page_bytes(&r,&map_texture(&field.tiles[&[0,0]]))
+        (crate::layer_tests::page_bytes(&r,&map_texture(&field.tiles[&[0,0]])),field.originals.clone())
     };
     let tile_bytes=|x:u32| {
         let mut tile_bytes=bytes.clone();
@@ -482,7 +475,7 @@ fn untouched_own_map_survives_when_it_is_in_a_later_source_chunk() {
         ([x,0],tile)
     }).collect();
     let context=layer_core::liquify::Context{field:Some(Arc::new(Field{content:layer_core::raster::ContentName::fresh(),
-        device:(*r.device).clone(),tiles,originals:Arc::new(Mutex::new(Originals::default())),
+        device:(*r.device).clone(),tiles,originals,
     })),..seed};
     let mut style=preset_style(preset);
     style.liquify=Some(Arc::new(context));
@@ -1406,7 +1399,7 @@ fn a_new_stroke_prepares_the_displaced_footprint_of_its_saved_field() {
     let r=WgpuRasterizer::new_native_headless(Default::default()).unwrap();
     let extent=[2048;2];let document=placement::paint_document(extent,"saved field bounds");
     let source=Arc::new(placement::paint(&document).clone());
-    let field=Field {content:layer_core::raster::ContentName::fresh(),device:(*r.device).clone(),tiles:[([0;2],Arc::new(Tile::new(&r,PixelRect::new(0,0,1536,1536))))].into(),originals:Default::default()};
+    let field=Field {content:layer_core::raster::ContentName::fresh(),device:(*r.device).clone(),tiles:[([0;2],Arc::new(Tile::new(&r,PixelRect::new(0,0,1536,1536))))].into(),originals:Arc::new(Mutex::new(Originals::new(r.raster_versions(document.scene(),placement::target(&document)).unwrap())))};
     let mut style=preset_style(DefaultBrushPreset::LiquifyPush);
     style.liquify=Some(Arc::new(layer_core::liquify::Context {current:source.clone(),original:source,amount:Some(0.5),field:Some(Arc::new(field))}));
     let mut batch=crate::test_support::dab_batch(placement::target(&document),style,layer_core::Rect::from_extent([256;2]));

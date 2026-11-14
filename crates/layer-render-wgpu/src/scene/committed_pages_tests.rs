@@ -43,16 +43,16 @@ fn cold_late_object_window_publishes_only_coherent_committed_pages() {
     let complete=float_pixels(&reference,reference.presentation_views().unwrap()[0].texture());
     r.submit(packet(doc.scene(),extent)).unwrap();r.wait_idle().unwrap();
     assert!(crate::scene::scale::tests::publication_pending(&r));
-    assert!(r.has_pending_work(),"native hosts keep scheduled work while a cold image prepares");
+    assert!(r.next_frame()==layer_render::FrameDemand::Work,"native hosts keep scheduled work while a cold image prepares");
     assert!(r.metrics.image_window_submissions>windows+1,"an earlier filter window submitted before the later cold tile");
     assert!(max_error(&expected,&float_pixels(&r,r.presentation_views().unwrap()[0].texture()))<3e-5);
     assert!(r.has_presentable_frame());
-    assert!(r.metrics.composite_storage_bytes>=r.scale_display.as_ref().unwrap().storage_bytes());
+    assert!(r.scene_tiers.display.used()>=r.scale_display.as_ref().unwrap().storage_bytes());
     for _ in 0..2000 {
-        if !r.has_pending_work() {break;}
+        if r.next_frame()!=layer_render::FrameDemand::Work {break;}
         std::thread::sleep(std::time::Duration::from_millis(1));
         r.submit(FramePacket {composite_all:false,reset_layers:false,..packet(doc.scene(),extent)}).unwrap();r.wait_idle().unwrap();
-        if r.has_pending_work() {
+        if r.next_frame()==layer_render::FrameDemand::Work {
             let pixels=float_pixels(&r,r.presentation_views().unwrap()[0].texture());
             assert_eq!(pixels.len(),complete.len());
             assert!(r.has_presentable_frame());
@@ -62,7 +62,7 @@ fn cold_late_object_window_publishes_only_coherent_committed_pages() {
             }
         }
     }
-    assert!(!r.has_pending_work(),"bounded worker preparation and exact sampling complete");
+    assert!(r.next_frame()!=layer_render::FrameDemand::Work,"bounded worker preparation and exact sampling complete");
     assert!(!r.scale_display.as_ref().unwrap().approximating());
     assert!(max_error(&expected,&float_pixels(&r,r.presentation_views().unwrap()[0].texture()))>0.5);
     let completed=float_pixels(&r,r.presentation_views().unwrap()[0].texture());

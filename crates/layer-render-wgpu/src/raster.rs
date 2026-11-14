@@ -7,7 +7,7 @@ use layer_core::raster::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::Ordering,
 };
 
 const CAPTURE_CHUNK: u64 = 16 * 1024 * 1024;
@@ -49,6 +49,7 @@ impl std::task::Wake for PreparationWake {
 #[derive(Default)]
 pub(super) struct RasterRuntime {
     targets: BTreeMap<SourceTarget, Target>,
+    generation: u64,
     worker: Option<CaptureWorker>,
     preparation_wake: Arc<PreparationWake>,
     #[cfg(target_arch = "wasm32")]
@@ -66,41 +67,26 @@ impl RasterRuntime {
         Ok(())
     }
 }
-struct Reserved<'a>(&'a AtomicU64, u64);
-impl<'a> Reserved<'a> {
-    fn new(counter: &'a AtomicU64, bytes: u64) -> Self {
-        counter.fetch_add(bytes, Ordering::Relaxed);
-        Self(counter, bytes)
-    }
-}
-impl Drop for Reserved<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(self.1, Ordering::Relaxed);
-    }
-}
 #[cfg(not(target_arch = "wasm32"))]
 struct CaptureWorker {
-    sender: Option<mpsc::SyncSender<NativeCapture>>,
-    pending: Arc<AtomicUsize>,
+    sender: Option<mpsc::SyncSender<(NativeCapture,[crate::residency::Charge;2])>>,
+    pending: Arc<crate::residency::Tier>,
     thread: Option<std::thread::JoinHandle<()>>,
-    staging: Arc<AtomicU64>,
+    staging: Arc<crate::residency::Tier>,
     error: Arc<std::sync::Mutex<Option<String>>>,
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl CaptureWorker {
     fn new(wake:Arc<PreparationWake>)->Result<Self,GpuRasterError> {
-        let (sender, receiver) = mpsc::sync_channel::<NativeCapture>(16);
-        let pending = Arc::new(AtomicUsize::new(0));
-        let count = pending.clone();
-        let staging = Arc::new(AtomicU64::new(0));
-        let bytes = staging.clone();
+        let (sender, receiver) = mpsc::sync_channel::<(NativeCapture,[crate::residency::Charge;2])>(16);
+        let pending = Arc::default();
+        let staging = Arc::default();
         let error = Arc::new(std::sync::Mutex::new(None));
         let failure = error.clone();
         let thread = std::thread::Builder::new()
             .name("capy-raster-backing".into())
             .spawn(move || {
-                while let Ok(captures) = receiver.recv() {
-                    let size = captures.storage_bytes();
+                while let Ok((captures,charges)) = receiver.recv() {
                     // Dropped tickets publish failures even if a driver callback or
                     // compression panics; never leave backpressure permanently set.
                     let result = if failure.lock().unwrap().is_some() {
@@ -115,8 +101,7 @@ impl CaptureWorker {
                     if let Err(message) = result {
                         *failure.lock().unwrap() = Some(message);
                     }
-                    bytes.fetch_sub(size, Ordering::Release);
-                    count.fetch_sub(1, Ordering::Release);
+                    drop(charges);
                     std::task::Wake::wake_by_ref(&wake);
                 }
             })
@@ -135,16 +120,12 @@ impl CaptureWorker {
         // and one active 16 MiB transfer, live pending storage is <= 1.25 GiB.
         // The mapped-only path retains its 512 MiB ceiling. Spare pool memory
         // is accounted separately; these limits allocate nothing eagerly.
-        self.pending.load(Ordering::Acquire) < 16
-            && self.staging.load(Ordering::Acquire) <= MAX_CAPTURE_BYTES - CAPTURE_CHUNK
+        self.pending.used() < 16
+            && self.staging.used() <= MAX_CAPTURE_BYTES - CAPTURE_CHUNK
     }
     fn submit_batch(&self, captures: NativeCapture) -> Result<(), GpuRasterError> {
-        let size = captures.storage_bytes();
-        self.staging.fetch_add(size, Ordering::Release);
-        self.pending.fetch_add(1, Ordering::Release);
-        if self.sender.as_ref().unwrap().try_send(captures).is_err() {
-            self.pending.fetch_sub(1, Ordering::Release);
-            self.staging.fetch_sub(size, Ordering::Release);
+        let charges = [self.staging.charge(captures.storage_bytes()), self.pending.charge(1)];
+        if self.sender.as_ref().unwrap().try_send((captures, charges)).is_err() {
             return Err(GpuRasterError::Effect(
                 "Raster backing queue is full or stopped".into(),
             ));
@@ -179,21 +160,18 @@ struct Chunk {
     ready: futures_channel::oneshot::Receiver<Result<(), String>>,
 }
 impl Chunk {
-    fn map(buffer: wgpu::Buffer, entries: Vec<Entry>) -> Self {
+    fn map(device:&PipelineDevice,buffer: wgpu::Buffer, entries: Vec<Entry>) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let (tx, ready) = mpsc::channel();
         #[cfg(target_arch = "wasm32")]
         let (tx, ready) = futures_channel::oneshot::channel();
         buffer
             .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
+            .map_async(wgpu::MapMode::Read, {let callback=move |result:Result<(),wgpu::BufferAsyncError>| {
                 let _ = tx.send(result.map_err(|e| e.to_string()));
-            });
-        Self {
-            buffer,
-            entries,
-            ready,
-        }
+            }; #[cfg(not(target_arch="wasm32"))] let callback=device.callback(callback);callback});
+        device.request_poll();
+        Self {buffer,entries,ready}
     }
 }
 
@@ -277,14 +255,14 @@ pub(super) struct PreparedCapture {
     pool: Arc<BufferPool>,
 }
 impl PreparedCapture {
-    fn submitted_device(mut self, _device: &wgpu::Device) -> RasterCapture {
+    fn submitted_device(mut self, _device: &PipelineDevice) -> RasterCapture {
         RasterCapture {
             #[cfg(not(target_arch = "wasm32"))]
-            device: _device.clone(),
+            device: _device.for_resource(),
             chunks: self
                 .chunks
                 .drain(..)
-                .map(|(b, e)| Chunk::map(b, e))
+                .map(|(b, e)| Chunk::map(_device,b,e))
                 .collect(),
             pool: self.pool.clone(),
         }
@@ -302,36 +280,20 @@ impl Drop for PreparedCapture {
     }
 }
 
-// A blocking Device::poll holds wgpu's snatchable-resource read lock across
-// the GPU wait. Concurrent submission/resource retirement can need its write
-// lock. Sleep on the mapping notification outside wgpu instead; headless owners
-// still make progress, with no busy spin and the same failure deadline.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn wait_mapping(
-    device: &wgpu::Device,
-    ready: &mpsc::Receiver<Result<(), String>>,
-) -> Result<(), String> {
-    let deadline = std::time::Instant::now() + READBACK_TIMEOUT;
-    loop {
-        match ready.try_recv() {
-            Ok(result) => return result,
-            Err(mpsc::TryRecvError::Disconnected) => return Err("Raster mapping was abandoned".into()),
-            Err(mpsc::TryRecvError::Empty) => {}
-        }
-        device.poll(wgpu::PollType::Poll).map_err(|e| e.to_string())?;
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() { return Err("Raster mapping timed out".into()); }
-        match ready.recv_timeout(remaining.min(std::time::Duration::from_millis(1))) {
-            Ok(result) => return result,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err("Raster mapping was abandoned".into()),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-    }
+pub(crate) fn wait_mapping(device:&PipelineDevice,ready:&mpsc::Receiver<Result<(),String>>)->Result<(),String> {
+    let deadline=std::time::Instant::now()+READBACK_TIMEOUT;
+    device.request_poll();
+    ready.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).map_err(|error|match error {
+        mpsc::RecvTimeoutError::Disconnected=>"Raster mapping was abandoned".to_owned(),
+        mpsc::RecvTimeoutError::Timeout=>"Raster mapping timed out".to_owned(),
+    })?
 }
 
 /// Maps the first `size` bytes, parses them and unmaps before replying, so a
 /// persistent staging buffer stays reusable after a failed mapped-range access.
-pub(crate) fn map_then<T>(
+pub(crate) fn map_then<T: 'static>(
+    device:&PipelineDevice,
     encoder: Option<&wgpu::CommandEncoder>,
     buffer: &wgpu::Buffer,
     size: wgpu::BufferAddress,
@@ -339,6 +301,7 @@ pub(crate) fn map_then<T>(
     reply: impl FnOnce(Result<T, GpuRasterError>) + Send + 'static,
 ) {
     let ready = buffer.clone();
+    let reply = Reply(Some(reply), std::marker::PhantomData);
     let mapped = move |result:Result<(),wgpu::BufferAsyncError>| {
         let parsed = result
             .map_err(|e| GpuRasterError::MapFailed(e.to_string()))
@@ -350,10 +313,20 @@ pub(crate) fn map_then<T>(
                 parse(&data)
             });
         ready.unmap();
-        reply(parsed);
+        reply.send(parsed);
     };
+    #[cfg(not(target_arch="wasm32"))]
+    let mapped=device.callback(mapped);
     if let Some(encoder)=encoder {encoder.map_buffer_on_submit(buffer,wgpu::MapMode::Read,..size,mapped);}
-    else {buffer.slice(..size).map_async(wgpu::MapMode::Read,mapped);}
+    else {buffer.slice(..size).map_async(wgpu::MapMode::Read,mapped);device.request_poll();}
+}
+
+struct Reply<T,F:FnOnce(Result<T,GpuRasterError>)>(Option<F>,std::marker::PhantomData<fn(T)>);
+impl<T,F:FnOnce(Result<T,GpuRasterError>)> Reply<T,F> {
+    fn send(mut self,result:Result<T,GpuRasterError>) {if let Some(reply)=self.0.take() {reply(result);}}
+}
+impl<T,F:FnOnce(Result<T,GpuRasterError>)> Drop for Reply<T,F> {
+    fn drop(&mut self) {if let Some(reply)=self.0.take() {reply(Err(GpuRasterError::WaitFailed("GPU device service retired".into())));}}
 }
 
 pub(crate) fn unpadded_rows(bytes: &[u8], stride: u32, row_bytes: u32) -> Vec<u8> {
@@ -366,7 +339,7 @@ pub(crate) fn unpadded_rows(bytes: &[u8], stride: u32, row_bytes: u32) -> Vec<u8
 
 pub struct RasterCapture {
     #[cfg(not(target_arch = "wasm32"))]
-    device: wgpu::Device,
+    device: PipelineDevice,
     chunks: Vec<Chunk>,
     pool: Arc<BufferPool>,
 }
@@ -379,7 +352,7 @@ impl RasterCapture {
     #[cfg(not(target_arch="wasm32"))]
     fn finish_recycling(mut self,recycle:impl Fn(wgpu::Buffer)+Sync)->Result<(),String> {
         let result: Result<(), String> = (|| {
-            fn finish_chunk(device:&wgpu::Device,chunk:&Chunk,pool:&BufferPool,lanes:usize,recycle:&(impl Fn(wgpu::Buffer)+Sync))->Result<(),String> {
+            fn finish_chunk(device:&PipelineDevice,chunk:&Chunk,pool:&BufferPool,lanes:usize,recycle:&(impl Fn(wgpu::Buffer)+Sync))->Result<(),String> {
                 wait_mapping(device, &chunk.ready)?;
                 let mapped = chunk
                     .buffer
@@ -390,7 +363,7 @@ impl RasterCapture {
                 // accesses. Copy once into cached memory, then return the GPU
                 // allocation immediately. At most four 16 MiB chunks exist here.
                 let bytes = mapped.to_vec();
-                let _scratch = Reserved::new(&pool.working, bytes.len() as u64);
+                let _scratch = pool.working.charge(bytes.len() as u64);
                 drop(mapped);
                 chunk.buffer.unmap();
                 recycle(chunk.buffer.clone());
@@ -554,7 +527,7 @@ impl WgpuRasterizer {
     #[cfg(all(test,not(target_arch="wasm32")))]
     pub(crate) fn raster_publication_pending(&self)->bool {
         self.raster.as_ref().and_then(|runtime|runtime.worker.as_ref())
-            .is_some_and(|worker|worker.pending.load(Ordering::Acquire)!=0)
+            .is_some_and(|worker|worker.pending.used()!=0)
     }
 
     pub fn raster_ready(&self) -> bool {
@@ -604,7 +577,9 @@ impl WgpuRasterizer {
                 return Err(GpuRasterError::Effect(error));
             }
             let retained = source_access::retained_targets(packet.scene);
+            let count=runtime.targets.len();
             runtime.targets.retain(|id, _| retained.contains_key(id));
+            if runtime.targets.len()!=count {runtime.generation+=1;}
             for (&target, scene) in retained.iter().filter(|(t, scene)| scene.raster(**t).is_some()) {
                 for (id, revision) in std::iter::once((target, scene.raster(target).unwrap()))
                 {
@@ -622,11 +597,11 @@ impl WgpuRasterizer {
                         Some(restored.try_data().ok_or(GpuRasterError::NotReady)?.map_err(GpuRasterError::Effect)?)
                     } else { wanted };
                     if let Some(current) = runtime.targets.get_mut(&id) {
-                        if wanted.is_none() {current.revision=revision.clone();}
+                        if wanted.is_none() && current.revision!=*revision {current.revision=revision.clone();runtime.generation+=1;}
                         if reset || (wanted.is_some() && (current.revision != *revision || packet.restore_rasters.iter().any(|(target,_)|*target==id))) {
                             let data = wanted.unwrap_or_else(|| current.contents.data().clone());
                             self.restore_target(id, current, data, reset, &mut damage)?;
-                            current.revision = revision.clone();
+                            current.revision = revision.clone();runtime.generation+=1;
                         }
                     } else {
                         // A target inserted with pending pixels, such as a
@@ -637,6 +612,7 @@ impl WgpuRasterizer {
                                 .selection_regions(&data,self.target_extent(id)).into_iter().map(|rect|(id,rect)));
                             self.restore_live_raster(id, &RasterData::default(), &data)?;
                         }
+                        runtime.generation+=1;
                         runtime.targets.insert(
                             id,
                             Target {
@@ -656,9 +632,9 @@ impl WgpuRasterizer {
     }
 
     pub(super) fn raster_staging_bytes(&self) -> u64 {
-        self.raster_buffers.bytes.load(Ordering::Relaxed)
-            + self.raster_buffers.working.load(Ordering::Relaxed)
-            + self.raster_buffers.transfer.load(Ordering::Relaxed)
+        self.raster_buffers.retained.used()
+            + self.raster_buffers.working.used()
+            + self.raster_buffers.transfer.used()
     }
 
     fn raster_inputs(
@@ -666,7 +642,7 @@ impl WgpuRasterizer {
     )->Result<(BTreeMap<TileKey,crate::resident::Resident<source_access::RawTile>>,Option<RasterWatercolor>),GpuRasterError> {
         fn alias<T:crate::resident::TextureStorage>(read:crate::resident::Read<'_,T>)
             ->Result<crate::resident::Resident<source_access::RawTile>,GpuRasterError> {
-            let pixels=source_access::RawTile {texture:read.value().texture().clone(),view:read.value().view().clone()};
+            let pixels=source_access::RawTile {texture:read.value().texture().clone().into(),view:read.value().view().clone()};
             read.alias(pixels).ok_or(GpuRasterError::Invariant("snapshot aliases different physical storage"))
         }
         let mut inputs=BTreeMap::new();let mut watercolor=None;
@@ -714,7 +690,7 @@ impl WgpuRasterizer {
     fn restore_colour_batch(&mut self,batch:&mut Vec<(Arc<TileBlob>,layer_core::raster::ContentVersion,LayerPage)>,colors:&mut Vec<LayerPage>)->Result<(),GpuRasterError> {
         if batch.is_empty() {return Ok(());}
         let space=self.document_color().space;
-        self.prepare_raster_uploads(&batch.iter().map(|(blob,_,_)|(blob.clone(),space,space)).collect::<Vec<_>>())?;
+        let inputs=self.prepare_raster_uploads(&batch.iter().map(|(blob,_,_)|(blob.clone(),space,space)).collect::<Vec<_>>())?;
         self.submit_restore(|r,scene,encoder| {
             let receipt=encoder.submission();let mut outputs=Vec::with_capacity(batch.len());
             for (_,name,page) in batch.iter_mut() {
@@ -725,7 +701,8 @@ impl WgpuRasterizer {
                 let index=index.min(batch.len()-1);
                 crate::native_tiles::NativeTileRestore {blob:&batch[index].0,space,destination:space,working:&outputs[index].0}
             });
-            scene.restore_native_tiles(r,&requests[..batch.len()],encoder)?;
+            scene.restore_native_tiles(r,&requests[..batch.len()],&inputs,encoder)?;
+            inputs.track(encoder);
             let receipt=encoder.submission();
             for (_,output) in outputs {output.publish(&receipt);}
             Ok(())
@@ -775,14 +752,14 @@ impl WgpuRasterizer {
                 },
                 RasterPlane::WatercolorWetness=> {
                     self.restore_colour_batch(&mut native_batch,&mut colors)?;
-                    let mut primary=resident::Resident::unwritten(self.create_scalar_page_surface("restored watercolor wetness"));
+                    let mut primary=resident::Resident::unwritten(self.create_scalar_page_surface(&self.raster_tiers.paint,"restored watercolor wetness"));
                     self.submit_restore(|r,scene,encoder| {
                         let receipt=encoder.submission();let write=primary.initialize(&receipt).ok_or(GpuRasterError::Invariant("prepared output was already initialized"))?;
                         scene.restore_native_scalars(r,&[crate::native_tiles::scalar::NativeScalarRestore {blob:&blob,working:&write.value().texture}],encoder)?;
                         write.publish(tile.content_version());Ok(())
                     })?;
                     wetness.push(WatercolorWetnessPage {pending:None,derived:None,coordinate:key.coordinate,primary,
-                        secondary:resident::Resident::unwritten(self.create_scalar_page_surface("watercolor wetness companion")),
+                        secondary:resident::Resident::unwritten(self.create_scalar_page_surface(&self.raster_tiers.paint,"watercolor wetness companion")),
                         active_secondary:false,primary_needs_clear:false,secondary_needs_clear:true});
                 },
             }
@@ -946,4 +923,70 @@ fn prepare_capture_compared(
         chunks,
         pool: pool.clone(),
     })
+}
+
+#[cfg(all(test,not(target_arch="wasm32")))]
+mod terminal_mapping_tests {
+    use super::*;
+    #[test]
+    fn retirement_abandons_a_registered_map_on_a_valid_device() {
+        let r=crate::WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+        let binding=crate::pipeline_device::DeviceRecipes::from(&r.device).poll_binding();
+        r.device.initialize_poll_owner().unwrap();
+        let buffer=r.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+        let encoder=r.device.create_command_encoder(&Default::default());
+        let (send,ready)=mpsc::channel();
+        let callback=move|result:Result<(),wgpu::BufferAsyncError>| {let _=send.send(result.map_err(|error|error.to_string()));};
+        let callback=r.device.callback(callback);
+        encoder.map_buffer_on_submit(&buffer,wgpu::MapMode::Read,..,callback);
+        binding.retire_lost(||{});
+        let outcome=ready.recv_timeout(std::time::Duration::from_secs(1));
+        drop(encoder);
+        assert!(matches!(outcome,Err(mpsc::RecvTimeoutError::Disconnected)),"registered map was not abandoned: {outcome:?}");
+    }
+    #[test]
+    fn an_abandoned_readback_delivers_a_terminal_error_to_a_receiver_its_owner_keeps() {
+        let r=crate::WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+        let binding=crate::pipeline_device::DeviceRecipes::from(&r.device).poll_binding();
+        r.device.initialize_poll_owner().unwrap();
+        let buffer=r.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+        let encoder=r.device.create_command_encoder(&Default::default());
+        let (send,ready)=mpsc::channel();let retained=send.clone();
+        map_then(&r.device,Some(&encoder),&buffer,4,|_|Ok(()),move|result|{let _=send.send(result);});
+        binding.retire_lost(||{});
+        let outcome=ready.recv_timeout(std::time::Duration::from_secs(1));
+        drop(encoder);drop(retained);
+        assert!(matches!(outcome,Ok(Err(GpuRasterError::WaitFailed(_)))),"abandoned readback left its request pending: {outcome:?}");
+    }
+    #[test]
+    fn a_readback_completing_while_the_host_waits_wakes_the_host() {
+        let r=crate::WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+        let (wake,woken)=mpsc::channel();
+        let buffer=r.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+        let mut encoder=r.device.create_command_encoder(&Default::default());encoder.clear_buffer(&buffer,0,None);
+        let (send,ready)=mpsc::channel();
+        map_then(&r.device,Some(&encoder),&buffer,4,|_|Ok(()),move|result|{let _=send.send(result);});
+        r.device.submit(&r.queue,[encoder.finish()]).unwrap();
+        let wake:Arc<dyn Fn()+Send+Sync>=Arc::new(move||{let _=wake.send(());});
+        loop {
+            r.device.retirement_handle().on_next_completion(&wake);
+            if let Ok(result)=ready.try_recv() {result.unwrap();break;}
+            woken.recv_timeout(std::time::Duration::from_secs(5)).expect("the completed readback never woke the waiting host");
+        }
+    }
+    #[test]
+    fn callback_registered_after_retirement_is_dropped_without_running() {
+        struct Abandoned(mpsc::Sender<()>);
+        impl Drop for Abandoned {fn drop(&mut self) {let _=self.0.send(());}}
+        let r=crate::WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+        let binding=crate::pipeline_device::DeviceRecipes::from(&r.device).poll_binding();
+        r.device.initialize_poll_owner().unwrap();binding.retire_lost(||{});
+        let (send,ready)=mpsc::channel();let guard=Abandoned(send);
+        let (ran,executed)=mpsc::channel();
+        let callback=r.device.callback(move|()| {let _=ran.send(());drop(guard);});
+        let abandoned=ready.recv_timeout(std::time::Duration::from_secs(1));
+        drop(callback);
+        assert!(abandoned.is_ok(),"retired callback retained its publisher: {abandoned:?}");
+        assert!(executed.try_recv().is_err(),"retired callback ran instead of being abandoned");
+    }
 }

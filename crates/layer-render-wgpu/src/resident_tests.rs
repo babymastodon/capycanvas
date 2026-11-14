@@ -340,7 +340,7 @@ fn preview_expected_and_producer_share_write_once_captured_contact_inputs() {
     let mut batch=crate::test_support::dab_batch(target,style,layer_core::Rect::from_extent([64;2]));batch.kind=DabBatchKind::Preview;
     let dab=Dab {center:layer_core::Point {x:32.,y:32.},radii:[8.;2],rotation:[1.,0.],motion:[0.;2],color_rgba_linear:[1.;4],flow:1.,hardness:1.,texture_sign:[1.;2],material:[0.;4],previous:[0.;4],contact:[0.;4],previous_contact:[0.;4]};
     let packet=layer_render::FramePacket {dab_batches:&[batch],dabs:&[dab],..crate::test_support::packet(document.scene(),[256;2])};
-    let declaration=Arc::new(PreviewDeclaration::from_scene(packet,Default::default(),Default::default(),PreviewQuality::default(),None).unwrap().unwrap());
+    let declaration=Arc::new(PreviewDeclaration::from_scene(packet,Default::default(),Default::default(),PreviewQuality::default(),None,None).unwrap().unwrap());
     assert!(matches!(declaration.version(target,RasterPlane::Color,[0;2],PreviewStage::Final),Err(crate::GpuRasterError::NotReady)));
     let producer=receipt(SubmissionState::Encoding);let name:layer_core::raster::ContentVersion=ContentName::fresh().into();let mut contact=Resident::unwritten(());contact.initialize(&producer).unwrap().publish(&name);
     declaration.accept_inputs(target,RasterPlane::Color,[0;2],PreviewStage::AfterBatch(0),PreviewPass::Color,vec![contact.read(&name,Some(&producer)).unwrap().input()]).unwrap();

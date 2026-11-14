@@ -37,7 +37,7 @@ fn photo(extent: [u32; 2]) -> Arc<SourceImage> {
     Arc::new(builder.finish().unwrap())
 }
 pub(crate) fn thumbnail(r: &mut WgpuRasterizer, target: ThumbnailTarget) -> Vec<u8> {
-    crate::test_support::thumbnail(r, 7, target)
+    crate::test_support::thumbnail(r, 7, target).bytes
 }
 
 #[test]

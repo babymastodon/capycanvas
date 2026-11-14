@@ -12,6 +12,7 @@ pub(crate) struct Contents {
     fork: Option<Fork>,
     selection: Arc<()>,
     defaults: [ContentVersion; 3],
+    generation: [u64; 2],
 }
 
 #[derive(Clone)]
@@ -21,6 +22,7 @@ pub(crate) struct Versions {
 }
 
 impl Versions {
+    pub fn authored(&self,plane:RasterPlane,coordinate:[u32;2])->bool {self.pages[index(plane)].tile_version(coordinate).is_some()}
     pub fn tile(&self,plane:RasterPlane,coordinate:[u32;2])->ContentVersion {
         self.pages[index(plane)].tile_version(coordinate).unwrap_or_else(||fallback(&self.defaults[index(plane)],coordinate))
     }
@@ -34,6 +36,12 @@ impl Versions {
     pub fn root(&self, plane: RasterPlane) -> ContentVersion {
         ContentVersion::derive(index(plane) as u128,
             &[self.defaults[index(plane)].clone(), self.pages[index(plane)].root_version()])
+    }
+
+    pub fn changes(&self, after: &Self, mut changed: impl FnMut([u32; 2])) -> bool {
+        if self.defaults.iter().zip(&after.defaults).any(|(before, after)| before.identity() != after.identity()) { return false; }
+        for (before, after) in self.pages.iter().zip(&after.pages) { before.changes(after, &mut changed); }
+        true
     }
 
     #[cfg(test)]
@@ -56,7 +64,7 @@ impl Intent {
     pub fn same_selection(&self,other:&Self)->bool {Arc::ptr_eq(&self.selection,&other.selection)}
 }
 
-fn planes() -> [RasterPlane; 3] { [RasterPlane::Color, RasterPlane::Mask, RasterPlane::WatercolorWetness] }
+pub(super) fn planes() -> [RasterPlane; 3] { [RasterPlane::Color, RasterPlane::Mask, RasterPlane::WatercolorWetness] }
 pub(crate) fn index(plane: RasterPlane) -> usize {
     match plane { RasterPlane::Color => 0, RasterPlane::Mask => 1, RasterPlane::WatercolorWetness => 2 }
 }
@@ -134,6 +142,9 @@ impl WgpuRasterizer {
         let data=root.try_data().ok_or(GpuRasterError::NotReady)?.map_err(GpuRasterError::Effect)?;
         Ok(selected_version(scene,target,&data,TileKey {plane,coordinate}))
     }
+    fn frame_version_for(&self,scene:SceneView<'_>,target:SourceTarget,plane:RasterPlane,coordinate:[u32;2],wanted:Option<&scene::SignatureFrame>)->Result<ContentVersion,GpuRasterError> {
+        match wanted.and_then(|frame|frame.tile_version(target,plane,coordinate)) {Some(version)=>Ok(version),None=>self.raster_version_for(scene,target,plane,coordinate)}
+    }
     pub(crate) fn raster_tile_for(&self,scene:SceneView<'_>,target:SourceTarget,plane:RasterPlane,coordinate:[u32;2])->Result<Option<Arc<TileBlob>>,GpuRasterError> {
         let root=scene.raster(target).ok_or(GpuRasterError::MissingPaintLayer(target))?;
         let current=self.raster.as_ref().and_then(|runtime|runtime.targets.get(&target)).filter(|current|current.revision==*root);
@@ -154,41 +165,21 @@ impl WgpuRasterizer {
     }
     pub(crate) fn read_scene_color_input<'a>(&'a self,scene:SceneView<'_>,target:SourceTarget,page:&'a LayerPage,predicted:bool,wanted:Option<&scene::SignatureFrame>,consumer:Option<&submission::Submission>)
         ->Result<Option<crate::resident::Read<'a,PageSurface>>,GpuRasterError> {
-        if let Some(frame)=wanted {
-            if let Some(capture)=frame.capture_for(target) {
-                let transforms=self.transforms.as_ref().ok_or(GpuRasterError::NotReady)?;
-                if let Some(read)=transforms.read_native(self,target,RasterPlane::Color,page.coordinate,capture,consumer)? {return Ok(Some(read));}
-                if !transforms.display_source(target) {return Err(GpuRasterError::NotReady);}
-            }
-        }
         if predicted {
             let expected=self.preview_input_version(target,RasterPlane::Color,page.coordinate,wanted)?;
             return page.active().read(expected,consumer).map(Some).ok_or(GpuRasterError::NotReady);
         }
-        let expected=self.raster_version_for(scene,target,RasterPlane::Color,page.coordinate)?;
+        let expected=self.frame_version_for(scene,target,RasterPlane::Color,page.coordinate,wanted)?;
         Ok(page.active().read(expected,consumer))
     }
     pub(crate) fn read_scene_wetness_input<'a>(&'a self,scene:SceneView<'_>,target:SourceTarget,page:&'a WatercolorWetnessPage,predicted:bool,wanted:Option<&scene::SignatureFrame>,consumer:Option<&submission::Submission>)
         ->Result<Option<crate::resident::Read<'a,PageSurface>>,GpuRasterError> {
-        if let Some(frame)=wanted {
-            if let Some(capture)=frame.capture_for(target) {
-                let transforms=self.transforms.as_ref().ok_or(GpuRasterError::NotReady)?;
-                if let Some(read)=transforms.read_native(self,target,RasterPlane::WatercolorWetness,page.coordinate,capture,consumer)? {return Ok(Some(read));}
-                if !transforms.display_source(target) {return Err(GpuRasterError::NotReady);}
-            }
-        }
         if predicted {
             let expected=self.preview_input_version(target,RasterPlane::WatercolorWetness,page.coordinate,wanted)?;
             return page.active().read(expected,consumer).map(Some).ok_or(GpuRasterError::NotReady);
         }
-        let expected=self.raster_version_for(scene,target,RasterPlane::WatercolorWetness,page.coordinate)?;
+        let expected=self.frame_version_for(scene,target,RasterPlane::WatercolorWetness,page.coordinate,wanted)?;
         Ok(page.active().read(expected,consumer))
-    }
-    pub(crate) fn read_scene_color<'a>(&self,scene:SceneView<'_>,target:SourceTarget,page:&'a LayerPage,preview:bool,consumer:Option<&submission::Submission>)
-        ->Result<crate::resident::Read<'a,PageSurface>,GpuRasterError> {
-        if preview {return self.read_color_page(target,page,true,consumer);}
-        let expected=self.raster_version_for(scene,target,RasterPlane::Color,page.coordinate)?;
-        page.active().read(expected,consumer).ok_or(GpuRasterError::NotReady)
     }
     pub(crate) fn read_wetness<'a>(&self,target:SourceTarget,page:&'a WatercolorWetnessPage,consumer:Option<&submission::Submission>)
         ->Result<crate::resident::Read<'a,PageSurface>,GpuRasterError> {
@@ -229,7 +220,7 @@ impl WgpuRasterizer {
                 self.transforms.as_ref().ok_or(GpuRasterError::NotReady)?.requested_version_for_capture(self,capture,RasterPlane::Mask,coordinate)?
             } else if let Some(preview)=frame.preview_for(target).filter(|preview|preview.affects(page_rect(coordinate))) {
                 preview.version(target,RasterPlane::Mask,coordinate,scene::PreviewStage::Final)?
-            } else {selected.clone()}
+            } else {frame.tile_version(target,RasterPlane::Mask,coordinate).unwrap_or_else(||selected.clone())}
         } else {selected.clone()};
         if expected.matches(&selected)!=Some(true) {
             let preview=self.layer_masks.previews.get(&(target,coordinate)).filter(|preview|preview.matches(&selected))
@@ -249,6 +240,10 @@ impl WgpuRasterizer {
         if self.raster.as_ref().and_then(|runtime|runtime.targets.get(&target)).is_some_and(|target|target.contents.accepts(intent)) {Ok(())}
         else {crate::resident::write_refused();Err(GpuRasterError::Invariant("accepted write selection changed"))}
     }
+    pub(crate) fn raster_generation(&self,target:SourceTarget)->Option<[u64;3]> {
+        let runtime=self.raster.as_ref()?;let current=runtime.targets.get(&target)?.contents.generation();
+        Some([runtime.generation+runtime.targets.values().map(|target|target.contents.generation()[0]).sum::<u64>(),current[0],current[1]])
+    }
     pub(crate) fn record_raster_write(&mut self,target:SourceTarget,written:crate::resident::Written)->Result<(),GpuRasterError> {
         if self.raster.as_mut().and_then(|runtime|runtime.targets.get_mut(&target)).is_some_and(|target|target.contents.written(written)) {Ok(())}
         else {Err(GpuRasterError::Invariant("authored publication does not match its target"))}
@@ -267,11 +262,12 @@ pub(crate) fn declared_coverage_versions(source:&layer_core::authored::CoverageS
 
 impl Contents {
     pub fn new(selected: Arc<RasterData>) -> Self {
-        Self { selected, fork: None, selection: Arc::new(()), defaults: std::array::from_fn(|plane| ContentVersion::derive(plane as u128, &[])) }
+        Self { selected, fork: None, selection: Arc::new(()), defaults: std::array::from_fn(|plane| ContentVersion::derive(plane as u128, &[])), generation: [0; 2] }
     }
     pub fn data(&self) -> &Arc<RasterData> { &self.selected }
+    pub fn generation(&self) -> [u64; 2] { self.generation }
     pub fn select(&mut self, selected: Arc<RasterData>) { self.published(selected); self.selection = Arc::new(()); }
-    pub fn published(&mut self, selected: Arc<RasterData>) { self.selected = selected; self.fork = None; }
+    pub fn published(&mut self, selected: Arc<RasterData>) { self.selected = selected; self.fork = None; self.generation[0] += 1; }
     pub fn versions(&self) -> Versions { Versions { pages: self.pages(), defaults: self.defaults.clone() } }
 
     pub fn configure(&mut self, scene: SceneView<'_>, target: SourceTarget) {
@@ -279,10 +275,12 @@ impl Contents {
         if self.defaults.iter().zip(&defaults).any(|(a,b)| a.identity() != b.identity()) {
             self.defaults = defaults;
             self.selection = Arc::new(());
+            self.generation[0] += 1;
         }
     }
 
     pub fn retain(&mut self, keep: impl Fn([u32; 2]) -> bool) {
+        self.generation[0] += 1;
         if self.selected.tiles.keys().any(|key| !keep(key.coordinate)) {
             Arc::make_mut(&mut self.selected).tiles.retain(|key, _| keep(key.coordinate));
         }
@@ -367,6 +365,7 @@ impl Contents {
             self.fork = Some(Fork { before: pages.clone(), pages, submission: submission.clone() });
         }
         self.fork.as_mut().unwrap().pages[index(intent.key.plane)].set_version(intent.key.coordinate, written.version().clone());
+        self.generation = self.generation.map(|count| count + 1);
         true
     }
 }

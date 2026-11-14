@@ -86,8 +86,11 @@ impl crate::WgpuRasterizer {
         if requests.is_empty() {
             return Ok(());
         }
-        self.prepare_raster_uploads(&requests.iter().map(|request|(request.blob.clone(),request.space,request.destination)).collect::<Vec<_>>())?;
-        self.submit_restore(|r, scene, encoder| scene.restore_native_tiles(r, requests, encoder))
+        let inputs=self.prepare_raster_uploads(&requests.iter().map(|request|(request.blob.clone(),request.space,request.destination)).collect::<Vec<_>>())?;
+        self.submit_restore(|r, scene, encoder| {
+            scene.restore_native_tiles(r,requests,&inputs,encoder)?;
+            inputs.track(encoder);Ok(())
+        })
     }
     /// Restorations submit their own commands, possibly while a frame is still
     /// recording. Their uploads use a separate staging belt, so recalling it
@@ -107,7 +110,7 @@ impl crate::WgpuRasterizer {
         std::mem::swap(&mut self.uploads, &mut self.restore_uploads);
         self.scene = Some(scene);
         if result.is_ok() {
-            self.last_submission = Some(encoder.submit(&self.queue));
+            self.last_submission = encoder.submit(&self.queue);
             self.metrics.native_restore_submissions += 1;
         }
         result

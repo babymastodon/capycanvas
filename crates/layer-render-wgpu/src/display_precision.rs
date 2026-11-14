@@ -14,3 +14,11 @@ impl DisplayPrecision {
         match self { Self::Half => wgpu::TextureFormat::Rgba16Float, Self::Full => wgpu::TextureFormat::Rgba32Float }
     }
 }
+
+impl crate::WgpuRasterizer {
+    pub(super) fn display_precision(&self,scene:layer_core::SceneView<'_>)->DisplayPrecision {
+        #[cfg(test)]
+        if self.test.reference {return DisplayPrecision::Full;}
+        DisplayPrecision::for_scene(scene)
+    }
+}

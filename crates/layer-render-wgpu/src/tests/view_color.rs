@@ -517,7 +517,7 @@ fn native_export_thumbnails_and_raw_samples_keep_their_declared_color_coordinate
                     let alpha = f64::from(codes[3]) / 65535.;
                     let export = r.readback_srgb_rgba8().unwrap();
                     close(&export[0..4], bytes(expected, alpha), "sRGB export");
-                    let thumbnail = crate::test_support::thumbnail(&mut r,7,ThumbnailTarget::Occurrence(owner(&layer)));
+                    let thumbnail = crate::test_support::thumbnail(&mut r,7,ThumbnailTarget::Occurrence(owner(&layer))).bytes;
                     let i = (16 * 32 + 16) * 4;
                     close(
                         &thumbnail[i..i + 4],
@@ -717,7 +717,7 @@ fn native_paint_thumbnail_converts_the_same_color_as_export() {
         });
         let mut r = WgpuRasterizer::new_native_headless(color).unwrap();
         frame(&mut r, &mut layer);
-        let thumbnail = crate::test_support::thumbnail(&mut r,7,ThumbnailTarget::Occurrence(owner(&layer)));
+        let thumbnail = crate::test_support::thumbnail(&mut r,7,ThumbnailTarget::Occurrence(owner(&layer))).bytes;
         close(
             &thumbnail[(16 * 32 + 16) * 4..][..4],
             bytes(linear(space, codes, RgbSpace::Srgb), 1.),
@@ -754,7 +754,7 @@ fn hdr_paint_and_photo_thumbnails_follow_the_sdr_rendition_without_clipping() {
         let original = crate::layer_tests::page_bytes(&r, crate::test_support::document_texture(&r));
         for recipe in [SdrRendition::default(), SdrRendition { exposure: -2., ..Default::default() }, SdrRendition::default()] {
             r.set_ui_rendition(Some(recipe)).unwrap();
-            let thumbnail = crate::test_support::thumbnail(&mut r,7,ThumbnailTarget::Occurrence(owner(&layer)));
+            let thumbnail = crate::test_support::thumbnail(&mut r,7,ThumbnailTarget::Occurrence(owner(&layer))).bytes;
             let expected = recipe.mapper(RgbSpace::Srgb, RgbSpace::Srgb).map_rgb(pixel[..3].try_into().unwrap());
             close(&thumbnail[(16 * 32 + 16) * 4..][..4], bytes(expected.map(f64::from), 1.), "HDR thumbnail");
         }

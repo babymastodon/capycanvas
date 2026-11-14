@@ -8,7 +8,7 @@ fn settle(engine: &mut CanvasEngine<WgpuRasterizer>) {
     loop {
         engine.render_frame().unwrap();
         engine.backend_mut().wait_idle().unwrap();
-        if !engine.has_pending_input() && !engine.has_pending_document_edits() && !engine.backend().has_pending_work() { return; }
+        if !engine.has_pending_input() && !engine.has_pending_document_edits() && engine.backend().next_frame()!=layer_render::FrameDemand::Work { return; }
         assert!(std::time::Instant::now() < deadline, "the canvas did not settle");
     }
 }

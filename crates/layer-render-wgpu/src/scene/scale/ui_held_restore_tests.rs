@@ -61,8 +61,7 @@ fn a_real_ui_contact_waiting_eight_seconds_after_undo_keeps_every_sample_and_ras
     {
         let r=actual.session.renderer_mut();let samples=&r.device.source_samples;let limit=samples.stats().limit_bytes;
         samples.set_limit(0);samples.trim_unused(usize::MAX);samples.set_limit(limit);
-        let mut sources=r.source_tiles.borrow_mut();let [bytes,uploads]=sources.admitted_bytes();let mips=sources.mip_budget();
-        sources.admit_limits(0,uploads,mips);sources.admit_limits(bytes,uploads,mips);
+        crate::test_support::evict_sources(r);
     }
     actual.undo();actual.step();store.gate.entered();
     assert!(actual.session.engine().has_pending_document_edits(),"the selected S0 destination must really remain unmaterialized");

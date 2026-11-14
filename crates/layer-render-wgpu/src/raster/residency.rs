@@ -4,6 +4,7 @@
 use super::*;
 
 impl WgpuRasterizer {
+    #[cfg(test)]
     pub(crate) fn color_memory_bytes(&self) -> u64 {
         self.paint_layers.iter().flat_map(|layer| &layer.pages).map(color_page_bytes).sum()
     }
@@ -16,13 +17,16 @@ impl WgpuRasterizer {
         let required = self.restore_preflight.as_ref().map_or(&[][..], |restore| restore.dependencies());
         self.paint_layers.iter().map(|layer| {
             let contents = self.raster.as_ref().and_then(|raster| raster.targets.get(&layer.id)).map(|target| &target.contents);
+            let held = |coordinate: [u32; 2]| required.iter().any(|(target, coordinates)| *target == layer.id && coordinates.binary_search(&coordinate).is_ok());
             layer.pages.iter().filter(|page| {
                 page.stroke_start.is_none()
                     && !contents.is_some_and(|contents| contents.modified(page.coordinate))
-                    && !required.iter().any(|(target, coordinates)| *target == layer.id && coordinates.binary_search(&page.coordinate).is_ok())
+                    && !held(page.coordinate)
                     && native.backing.get(&layer.id).and_then(|data| data.tiles.get(&TileKey { plane: RasterPlane::Color, coordinate: page.coordinate }))
                         .is_some_and(|tile| matches!(tile.try_backing(), Some(Ok(_))))
             }).map(|page| page.primary.storage_bytes() + page.secondary.as_ref().map_or(0, |surface|surface.storage_bytes())).sum::<u64>()
+            + layer.coverage_pages.iter().filter(|page| page.owner.is_none_or(|owner| Some(owner) != self.live_stroke) && !held(page.coordinate))
+                .map(|page| page.primary.storage_bytes() + page.secondary.storage_bytes()).sum::<u64>()
         }).sum::<u64>()
     }
     pub(crate) fn native_backing(&self, id: SourceTarget) -> Option<&Arc<RasterData>> {
@@ -164,60 +168,91 @@ impl WgpuRasterizer {
         Ok(())
     }
 
-    /// Retire disposable blend scratch, then evict completed canonical color.
-    /// This cache target is not a hard active-stroke/transform allocation limit;
-    /// those workloads need separate scheduling. No backing wait or readback
-    /// happens here.
-    pub(crate) fn trim_native_color_cache(&mut self, batches: &[DabBatch], tiles: &[Vec<BrushTile>]) -> Vec<PageSurface> {
-        let limit = self.native_edit.as_ref().map_or(0, |native| native.color_cache_bytes.saturating_add(native.color_cache_pinned_bytes));
-        self.trim_native_color_cache_to(batches, tiles, limit)
+    pub(crate) fn evict_raster(&mut self, bytes: u64, batches: &[DabBatch], tiles: &[Vec<BrushTile>], encoder: &mut submission::CommandEncoder) {
+        let (pages, leases) = self.evict_color(bytes, batches, tiles);
+        self.retire_native_color(pages, leases, encoder);
     }
-    pub(crate) fn trim_native_color_cache_to(&mut self, batches: &[DabBatch], tiles: &[Vec<BrushTile>], limit: u64) -> Vec<PageSurface> {
-        let mut retired = Vec::new();
-        let Some(native) = &self.native_edit else { return retired; };
-        if self.transform_preview.is_some() || self.transforms.as_ref().is_some_and(|t| t.has_preview()) { return retired; }
-        let mut bytes = self.color_memory_bytes();
-        if bytes <= limit { return retired; }
+    pub(crate) fn evict_color(&mut self, bytes: u64, batches: &[DabBatch], tiles: &[Vec<BrushTile>]) -> (Vec<PageSurface>, Vec<Arc<crate::residency::Lease>>) {
+        if bytes == 0 { return Default::default(); }
+        let leases = self.offer_native_color(batches, tiles);
+        self.raster_tiers.raster.heap().evict(bytes, crate::residency::Class::Fallback);
+        self.raster_buffers.release_evicted();
+        self.take_evicted_color(leases)
+    }
+    fn offer_native_color(&self, batches: &[DabBatch], tiles: &[Vec<BrushTile>]) -> std::collections::HashMap<(SourceTarget, [u32; 2], Offered), Arc<crate::residency::Lease>> {
+        let mut leases = std::collections::HashMap::new();
+        let Some(native) = &self.native_edit else { return leases; };
+        if self.transform_preview.is_some() || self.transforms.as_ref().is_some_and(|t| t.has_preview()) { return leases; }
         let destinations = self.destination_pages(batches, tiles);
         let required = self.restore_preflight.as_ref().map_or(&[][..], |restore| restore.dependencies());
-        for layer in &mut self.paint_layers {
-            for page in &mut layer.pages {
-                if bytes <= limit || retired.len() == SOURCE_SLOTS { return retired; }
-                if page.stroke_start.is_some() || destinations.contains(&(layer.id, page.coordinate))
-                    || required.iter().any(|(target,coordinates)|*target==layer.id && coordinates.binary_search(&page.coordinate).is_ok()) { continue; }
-                let Some(mut spare) = page.secondary.take() else { continue; };
-                if page.active_secondary {
-                    std::mem::swap(&mut page.primary, &mut spare);
-                    page.primary_needs_clear = false;
+        let (heap, notice) = (self.raster_tiers.raster.heap(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let mut offer = |key, bytes, work| { let lease = heap.lease(&notice); lease.offer(bytes, work); leases.insert(key, lease); };
+        for layer in &self.paint_layers {
+            let data = native.backing.get(&layer.id);
+            let contents = self.raster.as_ref().and_then(|r| r.targets.get(&layer.id)).map(|target| &target.contents);
+            let held = |coordinate: [u32; 2]| destinations.contains(&(layer.id, coordinate))
+                || required.iter().any(|(target, coordinates)| *target == layer.id && coordinates.binary_search(&coordinate).is_ok());
+            for page in &layer.pages {
+                if page.stroke_start.is_some() || held(page.coordinate) { continue; }
+                if let Some(spare) = &page.secondary { offer((layer.id, page.coordinate, Offered::Spare), spare.storage_bytes(), 0); }
+                let ready = data.and_then(|data| data.tiles.get(&TileKey { plane: RasterPlane::Color, coordinate: page.coordinate }))
+                    .is_some_and(|tile| matches!(tile.try_backing(), Some(Ok(_))));
+                if ready && !contents.is_some_and(|contents| contents.modified(page.coordinate)) {
+                    let bytes = color_page_bytes(page);
+                    offer((layer.id, page.coordinate, Offered::Color), bytes, crate::residency::rebuild_value(bytes, bytes));
                 }
-                page.active_secondary = false;
-                bytes -= spare.storage_bytes();retired.push(spare.retire());
-                for coverage in layer.coverage_pages.iter().filter(|p| p.coordinate == page.coordinate) { coverage.release_color_bindings(); }
+            }
+            for page in layer.coverage_pages.iter().filter(|page| page.owner.is_none_or(|owner| Some(owner) != self.live_stroke) && !held(page.coordinate)) {
+                offer((layer.id, page.coordinate, Offered::coverage(page)), page.primary.storage_bytes() + page.secondary.storage_bytes(), 0);
             }
         }
+        leases
+    }
+    fn take_evicted_color(&mut self, mut leases: std::collections::HashMap<(SourceTarget, [u32; 2], Offered), Arc<crate::residency::Lease>>) -> (Vec<PageSurface>, Vec<Arc<crate::residency::Lease>>) {
+        let (mut retired, mut evicted) = (Vec::new(), Vec::new());
+        let mut take = |key| leases.remove(&key).filter(|lease: &Arc<crate::residency::Lease>| lease.evicted()).map(|lease| evicted.push(lease)).is_some();
         for layer in &mut self.paint_layers {
-            let Some(data) = native.backing.get(&layer.id) else { continue; };
-            let contents = self.raster.as_ref().and_then(|r| r.targets.get(&layer.id)).map(|target| &target.contents);
             let mut index = 0;
             while index < layer.pages.len() {
-                if bytes <= limit || retired.len() == SOURCE_SLOTS { return retired; }
-                let page = &layer.pages[index];
-                let keep = contents.is_some_and(|contents| contents.modified(page.coordinate))
-                    || page.stroke_start.is_some() || destinations.contains(&(layer.id, page.coordinate))
-                    || required.iter().any(|(target, coordinates)| *target == layer.id && coordinates.binary_search(&page.coordinate).is_ok());
-                let ready = data.tiles.get(&TileKey { plane: RasterPlane::Color, coordinate: page.coordinate })
-                    .is_some_and(|tile| matches!(tile.try_backing(), Some(Ok(_))));
-                let count = 1 + usize::from(page.secondary.is_some());
-                if keep || !ready || retired.len() + count > SOURCE_SLOTS { index += 1;continue; }
-                for coverage in layer.coverage_pages.iter().filter(|p| p.coordinate == page.coordinate) { coverage.release_color_bindings(); }
-                let page = layer.pages.swap_remove(index);
-                bytes -= color_page_bytes(&page);
-                retired.push(page.primary.retire());retired.extend(page.secondary.map(resident::Resident::retire));
+                let coordinate = layer.pages[index].coordinate;
+                if take((layer.id, coordinate, Offered::Color)) {
+                    for coverage in layer.coverage_pages.iter().filter(|p| p.coordinate == coordinate) { coverage.release_color_bindings(); }
+                    let page = layer.pages.swap_remove(index);
+                    retired.push(page.primary.retire());retired.extend(page.secondary.map(resident::Resident::retire));
+                    continue;
+                }
+                let page = &mut layer.pages[index];
+                if take((layer.id, coordinate, Offered::Spare)) && let Some(mut spare) = page.secondary.take() {
+                    if page.active_secondary {
+                        std::mem::swap(&mut page.primary, &mut spare);
+                        page.primary_needs_clear = false;
+                    }
+                    page.active_secondary = false;
+                    retired.push(spare.retire());
+                    for coverage in layer.coverage_pages.iter().filter(|p| p.coordinate == coordinate) { coverage.release_color_bindings(); }
+                }
+                index += 1;
+            }
+            let mut index = 0;
+            while index < layer.coverage_pages.len() {
+                let page = &layer.coverage_pages[index];
+                if !take((layer.id, page.coordinate, Offered::coverage(page))) { index += 1; continue; }
+                for color in layer.pages.iter().filter(|color| color.coordinate == page.coordinate) {
+                    color.primary.clear_bindings();
+                    if let Some(spare) = &color.secondary { spare.clear_bindings(); }
+                }
+                let page = layer.coverage_pages.swap_remove(index);
+                retired.push(page.primary.retire());retired.push(page.secondary.retire());
             }
         }
-        retired
+        (retired, evicted)
     }
+}
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Offered { Color, Spare, Coverage(u32, wgpu::TextureFormat) }
+impl Offered {
+    fn coverage(page: &StrokeCoveragePage) -> Self { Self::Coverage(page.primary.size().height, page.primary.format()) }
 }
 
 fn color_page_bytes(page: &LayerPage) -> u64 {

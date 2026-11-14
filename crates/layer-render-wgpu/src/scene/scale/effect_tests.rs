@@ -48,9 +48,9 @@ fn assert_window_matches_full(window: &WgpuRasterizer, full: &WgpuRasterizer, co
 fn assert_spatial_storage_accounted(r: &WgpuRasterizer) {
     let cache = r.scale_display.as_ref().unwrap();
     let actual = resident_bytes_with_pool(cache, r.scene.as_ref().unwrap());
-    let granted = r.memory.scene_limit();
+    let granted = r.memory.display_grant();
     assert!(actual <= granted, "spatial resident storage={actual}, Scene grant={granted}");
-    assert!(actual <= CACHE_BYTES, "spatial resident storage={actual}");
+    assert!(actual <= crate::memory::CACHE_BYTES, "spatial resident storage={actual}");
 }
 
 #[test]
@@ -148,8 +148,11 @@ fn native_level_pointwise_writes_branch_without_materialization_and_initializes_
             let mut encoder = submission::CommandEncoder::new(&r.device, &Default::default());
             let mut unit=Unit::default();
             scene.used.iter_mut().for_each(super::scratch::Usage::reset);
-            let mut evaluator = Evaluator { cache: &mut cache, scene: &mut scene, packet: frame,
-                r: &mut r, encoder: &mut encoder, region: region.into(), input: plan, tiled: true, unit: &mut unit, previous_motion:None,retained:[0;2], approximate:false,preview:false };
+            let target=Target { view: destination.view.clone(), slot: None, plan };
+            let mut accepted=cache.declare_unit(&mut scene,&mut r,frame,region,plan,true,false,0,crate::residency::Class::Visible,&mut encoder,
+                |evaluator|evaluator.effect(input,chain,masks,Some(target.clone())).map(drop)).unwrap().accept_query(&mut r,Some(&scene)).unwrap();
+            let mut evaluator = Evaluator {class:crate::residency::Class::Visible, accepted:&mut accepted, cache: &mut cache, scene: &mut scene, packet: frame,
+                r: &mut r, encoder: &mut encoder, region: region.into(), input: plan, tiled: true, unit: &mut unit, previous_motion:None,retained:0, approximate:false,preview:false };
             let output = evaluator.effect(input, chain, masks, Some(Target { view: destination.view.clone(), slot: None, plan })).unwrap();
             assert_eq!(output.view(), Some(&destination.view));
             let initialized = paint_transform::aligned(region, PAGE_SIZE, extent).intersect(plan.bounds);
@@ -231,7 +234,7 @@ fn native_pointwise_captures_reuse_source_bindings_across_strips() {
     let mut frame = packet(doc.scene(), extent);
     frame.view.document_to_surface = [0.25, 0., 0., 0.25, 0., 0.];
     crate::test_support::submit_settled(&mut r, frame);
-    {let cache=r.scale_display.as_ref().unwrap();evict_composite_pages(&cache,&[cache.plan.bounds]);}
+    {let cache=r.scale_display.as_ref().unwrap();evict_composite_pages(&cache,&[cache.plan.bounds]);cache.evict_window(cache.plan.bounds);}
     assert!(r.can_submit());
     assert!(r.raster_dependencies_ready(frame, None));
     crate::test_support::submit_ready(&mut r, frame).unwrap();
@@ -501,7 +504,7 @@ fn global_filter_keeps_its_scale_cache_across_consecutive_frames() {
     let filter=effect_occurrence(&mut doc,adjustment,"global exposure");
     insert_occurrence(&mut doc,filter,0);
     assert!(scene::stack::support(doc.scene(),0).is_none());
-    assert!(Scene::capture_image_bound(doc.scene(),PixelRect::full(extent))>CACHE_BYTES);
+    assert!(Scene::capture_image_bound(doc.scene(),PixelRect::full(extent))>crate::memory::CACHE_BYTES);
     let budget=layer_core::MemoryBudget::with_facts(layer_core::MemoryFacts {
         host_default_bytes:Some(1<<40),override_bytes:Some(1<<40),..Default::default()
     });
@@ -517,7 +520,7 @@ fn global_filter_keeps_its_scale_cache_across_consecutive_frames() {
     let retained=retained_root_pages(cache);
     assert!(!retained.is_empty());
     assert!(matches!(Scene::window_plan(doc.scene(),extent,
-        r.native_edit.as_ref().unwrap().image_pixel_budget(cache.pages.lock().unwrap().bytes()),
+        r.image_pixel_budget(cache.pages.lock().unwrap().bytes()),
         r.device.limits().max_texture_dimension_2d,r.scene.as_deref()),Ok(None)));
     let geometry=cache.geometry.clone();
     let work=r.metrics.composited_pixels;
@@ -558,13 +561,13 @@ fn native_filters_beyond_the_display_budget_render_and_settle_at_a_coarser_level
     let idle = FramePacket { composite_all: false, reset_layers: false, ..frame };
     let pages = page_coordinates(PixelRect::full(extent)).count();
     for step in 0..=pages {
-        if !r.has_pending_work() { break; }
+        if r.next_frame()!=layer_render::FrameDemand::Work { break; }
         assert!(step < pages, "coarser display did not settle within one visit per native page");
         r.wait_idle().unwrap();
         crate::test_support::submit_ready(&mut r, idle).unwrap();
         assert_eq!(r.artwork_revision, revision);
     }
-    assert!(!r.has_pending_work());
+    assert!(r.next_frame()!=layer_render::FrameDemand::Work);
     let source_plan = r.scale_display.as_ref().unwrap().plan;
     let source = display_pixels(&r);
     assert_eq!(source.len(), source_plan.size[0] as usize * source_plan.size[1] as usize);
@@ -580,7 +583,7 @@ fn native_filters_beyond_the_display_budget_render_and_settle_at_a_coarser_level
     let composed = r.metrics.composited_pixels;
     crate::test_support::submit_ready(&mut r, idle).unwrap();
     assert_eq!(r.metrics.composited_pixels, composed);
-    assert!(!r.has_pending_work());
+    assert!(r.next_frame()!=layer_render::FrameDemand::Work);
 }
 
 #[test]
@@ -606,7 +609,7 @@ fn reduced_output_windows_keep_global_dependencies_in_the_input_plan() {
         let cache = r.scale_display.as_ref().unwrap();
         assert!(cache.evaluation == Evaluation::Display);
         let bytes = resident_bytes_with_pool(cache, r.scene.as_ref().unwrap());
-        assert!(bytes <= CACHE_BYTES, "{extent:?} resident storage={bytes}");
+        assert!(bytes <= crate::memory::CACHE_BYTES, "{extent:?} resident storage={bytes}");
         assert_spatial_storage_accounted(&r);
     }
     let mut frame = packet(doc.scene(), doc.composition().size);
@@ -699,10 +702,10 @@ fn finite_radius_windows_match_full_chains_through_navigation_damage_and_support
         frame.view.height_px = 128;
         frame.view.document_to_surface = [0.25, 0., 0., 0.25, -152.5, -152.5];
         crate::test_support::submit_ready(&mut window, frame).unwrap();
-        assert!(window.has_pending_work());
+        assert!(window.next_frame()==layer_render::FrameDemand::Work);
         let mut scene = window.scene.take().unwrap();
         let mut encoder = crate::submission::CommandEncoder::new(&window.device, &Default::default());
-        scene.refine_display(&mut window, frame, &mut encoder).unwrap();
+        scene.refine_display(&mut window, frame, &mut encoder,&mut Scene::begin_work(false)).unwrap();
         drop(encoder);
         window.scene = Some(scene);
         crate::test_support::submit_ready(&mut window, FramePacket { composite_all: false, ..frame }).unwrap();
@@ -1065,7 +1068,7 @@ fn decoded_gaussian_display_refinement_finishes_with_bounded_chunks() {
     for cap in [256u64<<20,96<<20] {
     let mut r = crate::memory::memory_tests::legacy_scene_renderer(doc.composition().color);
     r.native_edit.as_mut().unwrap().image_pixel_bytes=Some(cap);
-    r.source_tiles.get_mut().admit_limits(64 << 20, 16 << 20, 44 << 20);
+    r.source_tiles.get_mut().admit_limits(16 << 20);
     let mut frame=packet(doc.scene(),extent);frame.composite_all=false;
     frame.view.width_px=512;frame.view.height_px=320;
     frame.view.document_to_surface=[0.25,0.,0.,0.25,0.,0.];
@@ -1075,7 +1078,7 @@ fn decoded_gaussian_display_refinement_finishes_with_bounded_chunks() {
     let revision=r.artwork_revision;
     let mut records=Vec::new();
     for step in 0..=pages {
-        if !r.has_pending_work(){break;}
+        if r.next_frame()!=layer_render::FrameDemand::Work{break;}
         assert!(step<pages,"Gaussian display refinement did not finish within one visit per native page");
         r.wait_idle().unwrap();
         let composed=r.metrics.composited_pixels;
@@ -1089,7 +1092,7 @@ fn decoded_gaussian_display_refinement_finishes_with_bounded_chunks() {
         assert_eq!(r.artwork_revision,revision);
         records.push((step,produced,r.metrics.command_passes-passes,image_after-image_before));
     }
-    assert!(!r.has_pending_work());
+    assert!(r.next_frame()!=layer_render::FrameDemand::Work);
     assert!(r.scale_display.as_ref().unwrap().resident_bytes()>0);
     let image_pixels=records.iter().map(|r|r.3).sum::<u64>();
     let single_page_pixels=page_coordinates(PixelRect::full(extent)).map(|c| {
@@ -1426,9 +1429,7 @@ fn native_gaussian_windows_bound_decoded_sources_across_budget_and_support_chang
         submit_published(&mut exact, frame);let reference=pixels(&exact,crate::test_support::document_texture(&exact));
         let mut window=crate::memory::memory_tests::renderer_for_restore(&doc);
         crate::memory::memory_tests::declare_source_budget(&mut window, frame, 64, 16 << 20, 44 << 20);
-        let [resident,uploads]=window.source_tiles.borrow().admitted_bytes();
-        let source_grant=resident+window.source_tiles.borrow().non_slot_bytes();
-        assert!(u64::from(extent[0].div_ceil(PAGE_SIZE)*extent[1].div_ceil(PAGE_SIZE))*u64::from(PAGE_SIZE).pow(2)*16>resident);
+        let uploads=window.source_tiles.borrow().upload_limit();
         let tight=if sigma==21. {128u64<<20}else{160<<20};let mut allocated=0;
         for cap in [320u64<<20,tight] {
             window.native_edit.as_mut().unwrap().image_pixel_bytes=Some(cap);window.metrics.image_window_peak_bytes=0;
@@ -1446,8 +1447,8 @@ fn native_gaussian_windows_bound_decoded_sources_across_budget_and_support_chang
             let image_bytes=window.scene.as_ref().unwrap().image_cache_bytes();
             if windows>0 {assert_eq!(image_bytes,0);}else{assert!(image_bytes<=cap);}
             let sources=window.source_tiles.borrow();
-            assert_eq!(sources.admitted_bytes()[0]+sources.non_slot_bytes(),source_grant,"image-window caps must keep the total source grant fixed");
-            let bytes=sources.gpu_bytes();assert!(bytes<=resident+4*(1<<20));
+            assert!(window.scene_tiers.display.used()<=window.scene_tiers.display.limit(),"decoded sources stay within the display tier");
+            let bytes=sources.gpu_bytes();
             if allocated!=0 {assert_eq!(bytes,allocated,"source working-set changes must not grow the fixed decoded allocation");}allocated=bytes;
             println!("{id} sigma={sigma} cap={cap} submissions={windows} image peak={} source bytes={bytes} upload peak={} misses={} hits={} maximum={maximum}",metrics.image_window_peak_bytes,metrics.source_upload_peak_bytes,metrics.source_tile_misses,metrics.source_tile_hits);
             if id=="gaussian_blur" {for x in [2047,2048,2049,3071,3072,4099] {
@@ -1566,4 +1567,49 @@ fn animated_filters_move_on_the_reduced_grid_and_match_native_reduction() {
         }
         assert_ne!(frames[0], frames[1], "{id} moves on the reduced grid");
     }
+}
+
+#[test]
+fn scene_counters_match_a_structure_walk_after_seeded_allocations_and_frees() {
+    let extent = [517, 259];
+    let mut doc = document_at(extent);
+    paint_mut(&mut doc, 0).base = Some(layer_core::authored::PaintBase::new(rgba8_source(extent, |x, y| [(x % 251) as u8, (y % 241) as u8, 90, 200]).into()));
+    let mut r = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
+    let mut blurs = Vec::new();
+    let mut seed = 0x9e37_79b9_u32;
+    for step in 0..24 {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        match seed % 5 {
+            0 | 1 => { let blur = effect(&mut doc, "gaussian_blur"); set_effect_value(&mut doc, blur, "sigma", EffectValue::Number((seed % 23 + 1) as f32)); insert_occurrence(&mut doc, blur, 0); blurs.push(blur); }
+            2 if !blurs.is_empty() => { let blur = blurs.swap_remove(seed as usize % blurs.len()); remove_occurrence(&mut doc, blur); }
+            3 => { if let Some(&blur) = blurs.first() { set_effect_value(&mut doc, blur, "sigma", EffectValue::Number((seed % 31 + 1) as f32)); } }
+            _ => { if let Some(scene) = r.scene.as_ref() { scene.valid.store(false, std::sync::atomic::Ordering::Release); } }
+        }
+        let mut frame = packet(doc.scene(), extent);
+        let scale = 1. / (1 << (seed >> 8) % 3) as f32;
+        frame.view.document_to_surface = [scale, 0., 0., scale, 0., 0.];
+        frame.composite_all = seed & 64 != 0;
+        if seed & 128 != 0 { crate::memory::memory_tests::legacy_scene_frame(&mut r, frame); } else { submit_published(&mut r, frame); }
+        let scene = r.scene.as_ref().unwrap();
+        let [counted, walked] = [scene.usage(), scene.walked_usage()];
+        assert_eq!([counted.working, counted.ram, counted.gpu, counted.pinned], [walked.working, walked.ram, walked.gpu, walked.pinned], "step {step}");
+    }
+}
+
+#[test]
+fn admissions_count_every_live_scene_of_the_renderer() {
+    let extent = [517, 259];
+    let doc = document_at(extent);
+    let mut r = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
+    submit_published(&mut r, packet(doc.scene(), extent));
+    let working = |r: &WgpuRasterizer| r.scene.as_ref().unwrap().usage().working;
+    let before = working(&r);
+    let preview = crate::scene::Scene::new(&r).unwrap();
+    assert_eq!(working(&r), before + preview.walked_usage().working, "a live secondary Scene counts against the renderer");
+    drop(preview);
+    assert_eq!(working(&r), before);
+    let report = r.current_display_memory_report().gpu_bytes;
+    let taken = r.scene.take();
+    assert_eq!(r.current_display_memory_report().gpu_bytes, report, "a Scene taken out of the renderer still counts");
+    r.scene = taken;
 }

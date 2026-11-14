@@ -107,7 +107,7 @@ impl CanvasRenderer for Recorder {
     }
     fn has_pending_submission(&self) -> bool { self.settling }
     fn paint_ready(&self, _document: &Document, _brush: &layer_core::BrushSnapshot, _transform: bool) -> bool { !self.painting_unready }
-    fn has_pending_work(&self) -> bool { self.refining }
+    fn next_frame(&self) -> layer_render::FrameDemand { if self.refining || self.settling { layer_render::FrameDemand::Work } else { layer_render::FrameDemand::Wait } }
     fn shader_input(&mut self) { self.shader_inputs += 1; }
     fn shader_idle(&mut self, idle: bool, speculative_idle: bool) { self.shader_idle = (idle, speculative_idle); }
     fn prepare_context(&mut self, _document: &Document, _brush: &layer_core::BrushSnapshot, context: layer_render::PreparationContext) { self.selection_brush_preparations += usize::from(context.selection); }

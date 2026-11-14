@@ -389,7 +389,7 @@ impl RawRegions {
         }
         let mut ready=true;let space=r.document_color().space;
         for blob in rasters {
-            if r.source_tiles.borrow().prepared_raster_any_view(&blob,space,space).is_none() {r.request_raster_decode_to(blob,space,r.device.working_space())?;ready=false;}
+            if r.source_tiles.borrow().prepared_raster_any_view(&blob,space,space).is_none() {r.request_raster_decode_to(blob,space,space,crate::residency::Class::Visible)?;ready=false;}
         }
         for (base,coordinate) in bases {ready &= source_access::prepare_paint_base(r,&base,coordinate)?;}
         if ready {Ok(())}else {Err(GpuRasterError::NotReady)}
@@ -676,7 +676,7 @@ impl RawRegions {
                     if self.captured.len() <= slot { self.captured.push(crate::create_color_target(&r.device, [PAGE_SIZE; 2], "raw region capture")); }
                     let (texture, view) = self.captured[slot].clone();
                     self.capture.region_into(r, frame.as_ref().unwrap().packet([w, h]), region, &texture, encoder)?;
-                    Some(source_access::RawTile { texture, view })
+                    Some(source_access::RawTile { texture: texture.into(), view })
                 };
                 if let Some(source) = &source { leases.extend(r.source_tiles.borrow().lease(&source.view)); }
                 views[slot] = source.map_or_else(|| r.empty_view.clone(), |t| t.view);

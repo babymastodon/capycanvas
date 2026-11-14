@@ -332,24 +332,10 @@ fn resident_code_cloner(depth: layer_core::color::SampleDepth) -> (
     let (input, mut engine) = cloner(doc, PHOTO, RetouchSource::Editing, false);
     let r = engine.backend_mut();
     crate::test_support::complete(r);
-    let (decoded_grant, upload_grant, mip_grant) = {
-        let mut sources = r.source_tiles.borrow_mut();
-        let [decoded, upload] = sources.admitted_bytes();
-        let grants = (decoded + sources.non_slot_bytes(), upload, sources.mip_budget());
-        sources.require_images(std::iter::empty());
-        let overhead = sources.non_slot_bytes();
-        sources.admit_limits(overhead, upload, grants.2);
-        grants
-    };
-    while r.source_tiles.borrow().gpu_bytes() > r.source_tiles.borrow().non_slot_bytes() {
-        let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
-        r.source_tiles.borrow_mut().flush_retired(&mut encoder);
-        assert_eq!(r.source_tiles.borrow().allocated_slots(),0,"completed fixture sources must remain evictable");
-        encoder.submit(&r.queue);
-        crate::test_support::complete(r);
-    }
+    crate::test_support::evict_sources(r);
+    assert_eq!(r.source_tiles.borrow().allocated_slots(),0,"completed fixture sources must remain evictable");
+    assert_eq!(r.source_tiles.borrow().gpu_bytes(),r.source_tiles.borrow().non_slot_bytes());
     assert!(r.source_tiles.borrow().prepared_view(&source, [1, 1]).is_none());
-    r.source_tiles.borrow_mut().admit_limits(decoded_grant, upload_grant, mip_grant);
     let mut encoder = crate::submission::CommandEncoder::new(&r.device, &Default::default());
     for coordinate in page_coordinates(PixelRect::full(extent)) {
         let prepared = crate::prepare_image_tile(&source, coordinate, r.document_color().space, &r.device.source_samples, None).unwrap();

@@ -8,6 +8,9 @@ struct Version {
     name: ContentVersion,
     submission: Submission,
 }
+impl Version {
+    fn same(&self,other:&Self)->bool {self.name.identity()==other.name.identity() && self.submission.same(&other.submission)}
+}
 
 #[derive(Default)]
 struct Names {
@@ -35,6 +38,11 @@ pub(crate) trait TextureStorage:Storage {
     fn view(&self)->&wgpu::TextureView;
 }
 impl<T:TextureStorage> Resident<T> {
+    #[cfg(test)]
+    pub(crate) fn value_view(&self)->&wgpu::TextureView {self.value.view()}
+    pub(crate) fn texture_reference(&self)->Resident<crate::source_access::RawTile> {
+        Resident {value:crate::source_access::RawTile {texture:self.value.texture().clone().into(),view:self.value.view().clone()},names:self.names.clone()}
+    }
     pub(crate) fn account_texture(&self,textures:&mut crate::RetainedTextures)->bool {textures.insert(self.value.texture().clone())}
     pub(crate) fn holds_texture(&self,texture:&wgpu::Texture)->bool {self.value.texture()==texture}
     pub fn format(&self)->wgpu::TextureFormat {self.value.texture().format()}
@@ -55,6 +63,7 @@ pub(crate) struct Input {
 
 impl Input {
     pub fn version(&self)->&ContentVersion {&self.version.name}
+    pub(crate) fn same(&self,other:&Self)->bool {Arc::ptr_eq(&self.names,&other.names) && self.version.same(&other.version)}
 }
 
 pub(crate) struct RasterWrite<'a, T> {
@@ -154,6 +163,7 @@ impl<T> Resident<T> {
 impl<'a, T> Read<'a, T> {
     pub fn value(&self) -> &'a T { self.value }
     pub fn input(&self)->Input {Input {version:self.version.clone(),names:self.names.clone()}}
+    pub(crate) fn witnessed_by(&self,input:&Input)->bool {Arc::ptr_eq(&self.names,&input.names) && self.version.same(&input.version)}
     #[cfg(test)]
     pub fn name(&self) -> layer_core::raster::ContentStamp { self.version.name.identity() }
     pub fn version(&self) -> &ContentVersion { &self.version.name }
@@ -195,17 +205,12 @@ impl Encoding {
 
 impl Resident<crate::PageSurface> {
     pub(crate) fn shared_storage(&self)->Self {
-        let value=crate::PageSurface {
-            texture:self.value.texture.clone(),view:self.value.view.clone(),texture_bind_group:self.value.texture_bind_group.clone(),
-            preview:Default::default(),material_input:Default::default(),material_in_place_input:Default::default(),
-            material_output:Default::default(),scene_output:Default::default(),
-        };
-        debug_assert_eq!(value.texture,self.value.texture);debug_assert_eq!(value.view,self.value.view);
-        Self {value,names:self.names.clone()}
+        Self {value:self.value.sharing(),names:self.names.clone()}
     }
     pub(crate) fn clear_bindings(&self) {
-        self.value.material_input.clear();self.value.material_in_place_input.clear();self.value.material_output.clear();
+        self.value.material_output.clear();
     }
+    pub(crate) fn discharge(&mut self) {self.value.discharge();}
     pub(crate) fn set_preview(&self,preview:Option<(crate::SourceTarget,[u32;2])>) {self.value.preview.set(preview);}
     pub(crate) fn preview(&self)->Option<(crate::SourceTarget,[u32;2])> {self.value.preview.get()}
 }

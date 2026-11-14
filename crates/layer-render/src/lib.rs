@@ -24,6 +24,8 @@ pub use outline::{TipOutline, mask_outline};
 pub use telemetry::{FrameRate, FrameRateSource, PresentationRate, RendererTelemetry, TimingSamples,
     GpuMemory, GpuMemoryKind, MemoryPeak, MemorySnapshot, MemoryBudgetSummary, ProcessMemory, ProcessMemoryKind};
 
+pub struct ReadySubmission(());
+
 #[derive(Clone, Debug)]
 #[expect(clippy::large_enum_variant, reason = "Snapshot handoffs move captured plans without per-request boxing")]
 pub enum SnapshotRequest {
@@ -219,6 +221,20 @@ pub struct ViewState {
     pub height_px: u32,
     /// Affine document-to-surface transform `[a, b, c, d, tx, ty]`.
     pub document_to_surface: [f32; 6],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameDemand { Animate, Work, WaitUntil(web_time::Instant), Wait }
+impl FrameDemand {
+    pub fn sooner(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Animate, _) | (_, Self::Animate) => Self::Animate,
+            (Self::Work, _) | (_, Self::Work) => Self::Work,
+            (Self::WaitUntil(a), Self::WaitUntil(b)) => Self::WaitUntil(a.min(b)),
+            (Self::Wait, demand) | (demand, Self::Wait) => demand,
+        }
+    }
+    pub fn after(delay: std::time::Duration) -> Self { Self::WaitUntil(web_time::Instant::now() + delay) }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -920,6 +936,8 @@ pub trait CanvasRenderer {
     fn seed_evaluation_context(&mut self,_context:EvaluationContext) {}
     fn poll_pending(&mut self, _view: ViewState) -> Result<(), Self::Error> { Ok(()) }
     fn has_pending_submission(&self) -> bool { false }
+    fn next_frame(&self) -> FrameDemand { FrameDemand::Wait }
+    fn waits_for_frame_slot(&self) -> bool { false }
     /// Host frame-mailbox backpressure before consuming input.
     fn can_submit(&self) -> bool {
         true
@@ -936,11 +954,6 @@ pub trait CanvasRenderer {
     }
     fn paint_ready(&self, _document: &layer_core::Document, _brush: &layer_core::BrushSnapshot, _transform: bool) -> bool {
         true
-    }
-    /// Work that later frames finish without new input, such as the
-    /// full-resolution result of a preview first drawn at display resolution.
-    fn has_pending_work(&self) -> bool {
-        false
     }
     /// The layer a placement or transform that just began may move. The
     /// renderer may prepare what drawing its drag needs while idle. None
@@ -1033,13 +1046,18 @@ pub trait CanvasRenderer {
     fn prepare_asset(&mut self, asset: &AssetId, image: HostImage<'_>) -> Result<(), Self::Error>;
     fn release_asset(&mut self, asset: &AssetId);
     fn submit(&mut self, packet: FramePacket<'_>) -> Result<(), Self::Error>;
-    fn submit_when_ready(&mut self, packet: FramePacket<'_>, preview: Option<&TransformPreview>)
-        -> std::task::Poll<Result<(), Self::Error>> {
-        if !self.raster_dependencies_ready(packet, preview) { return std::task::Poll::Pending; }
+    fn ready_submission(&mut self, packet: FramePacket<'_>, preview: Option<&TransformPreview>) -> Option<ReadySubmission> {
+        self.raster_dependencies_ready(packet, preview).then_some(ReadySubmission(()))
+    }
+    fn submit_ready(&mut self, _ready: ReadySubmission, packet: FramePacket<'_>) -> Result<(), Self::Error> {
         let result = self.submit(packet);
         debug_assert!(!result.as_ref().is_err_and(Self::is_preparation_pending),
             "a ready frame must not defer preparation during submission");
-        std::task::Poll::Ready(result)
+        result
+    }
+    fn submit_when_ready(&mut self, packet: FramePacket<'_>, preview: Option<&TransformPreview>)
+        -> std::task::Poll<Result<(), Self::Error>> {
+        self.ready_submission(packet, preview).map_or(std::task::Poll::Pending, |ready| std::task::Poll::Ready(self.submit_ready(ready, packet)))
     }
 
     /// Small asynchronous UI previews, never full-resolution paint readback.

@@ -257,7 +257,7 @@ fn native_pointwise_batches(preload: bool, admitted: bool) {
         cached.begin_frame_memory(loaded);
         submit_published(&mut cached, loaded);
         for _ in 0..32 {
-            if !cached.has_pending_work() { break; }
+            if cached.next_frame()!=layer_render::FrameDemand::Work { break; }
             cached.wait_idle().unwrap();
             crate::test_support::submit_ready(&mut cached, FramePacket { composite_all: false, reset_layers: false, ..loaded }).unwrap();
         }
@@ -283,14 +283,14 @@ fn native_pointwise_batches(preload: bool, admitted: bool) {
             frame.view.document_to_surface = [0.25, 0., 0., 0.25, -(extent[0] as f32-305.) * 0.25, -410. * 0.25];
         }
         let command_passes = cached.metrics.command_passes;
-        if admitted { cached.begin_frame_memory(frame); }
-        else { crate::memory::memory_tests::scene_frame_with_budget(&mut cached, frame, 64 << 20); }
+        let _budget = if admitted { cached.begin_frame_memory(frame); None }
+            else { Some(crate::memory::memory_tests::display_frame_with_budget(&mut cached, frame, 64 << 20)) };
         submit_published(&mut cached, frame);
         let command_passes = cached.metrics.command_passes - command_passes;
         submit_published(&mut exact, packet(doc.scene(), extent));
         let cache = cached.scale_display.as_ref().unwrap();
         assert!(cache.retained_ready());
-        assert!(cache.pages.lock().unwrap().bytes()<=cache_bytes(&cached));
+        assert!(cache.pages.lock().unwrap().bytes()<=cached.memory.display_owner().grant().gpu_bytes);
         assert!(!cache.has_pending_work(&cached), "full exact native updates must leave no unnecessary refinement: preload={preload} admitted={admitted} state={state} plan={:?}", cache.plan);
         let reference = pixels(&exact, crate::test_support::document_texture(&exact));
         let error = quality(&display_pixels(&cached), &reference, cache.plan, cache.texture().format());
@@ -341,7 +341,7 @@ fn native_pointwise_batches(preload: bool, admitted: bool) {
     if !admitted {
         let mut frame=packet(doc.scene(),extent);frame.composite_all=false;
         frame.view.document_to_surface=[0.25,0.,0.,0.25,0.,0.];
-        crate::memory::memory_tests::scene_frame_with_budget(&mut cached, frame, 64 << 20);
+        let _budget = crate::memory::memory_tests::display_frame_with_budget(&mut cached, frame, 64 << 20);
         submit_published(&mut cached, frame);submit_published(&mut exact, frame);
         let strip=cached.scale_display.as_ref().unwrap().exact_tile.as_ref().unwrap().texture.clone();
         for positions in [[[73.,67.],[4117.,613.]],[[4117.,613.],[73.,67.]]] {
@@ -352,7 +352,7 @@ fn native_pointwise_batches(preload: bool, admitted: bool) {
             let work=cached.metrics.composited_pixels;
             crate::test_support::submit_ready(&mut cached, stroke).unwrap();crate::test_support::submit_ready(&mut exact, stroke).unwrap();
             let cache=cached.scale_display.as_ref().unwrap();
-            assert!(cache.pages.lock().unwrap().bytes()<=cache_bytes(&cached));assert!(!cache.has_pending_work(&cached));
+            assert!(cache.pages.lock().unwrap().bytes()<=cached.memory.display_owner().grant().gpu_bytes);assert!(!cache.has_pending_work(&cached));
             assert_eq!(cache.exact_tile.as_ref().unwrap().texture,strip);
             let error=quality(&display_pixels(&cached),&pixels(&exact,crate::test_support::document_texture(&exact)),cache.plan, cache.texture().format());
             assert!(error[2]<2e-5,"sparse disjoint working-strip contacts {positions:?}: {error:?}");

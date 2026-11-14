@@ -1523,7 +1523,7 @@ fn native_document_tabs_canvas_transition() {
     for theme in [Theme::Light,Theme::Dark] {
         w.dispatch(UiAction::SetTheme {theme:Some(theme)}); new_photo::ready(&w);
         for operation in ["select","close","open"] {
-        until(||!ui_session(&w).wants_continuous_frames(),"old artwork presentation settled");
+        until(||ui_session(&w).frame_demand() == layer_render::FrameDemand::Wait,"old artwork presentation settled");
         let name=format!("canvas-transition-{theme:?}-{operation}").to_lowercase();
         let mut prepared=if operation=="open" {
             let path=file.clone(); let names=layer_ui::photo_name("transition-blue.capy",&localization);
@@ -1550,7 +1550,7 @@ fn native_document_tabs_canvas_transition() {
             pause.store(false,Ordering::Release);
             if operation=="open" {until(||w.documents.len()==2 && !w.documents.changing.get() && !w.documents.has_pending_open(),"prepared file opened in this window");incoming.set(w.documents.selected());}
             new_photo::ready(&w);
-            until(||!ui_session(&w).wants_continuous_frames(),"incoming artwork presentation settled");
+            until(||ui_session(&w).frame_demand() == layer_render::FrameDemand::Wait,"incoming artwork presentation settled");
         });
         paints.finish();
         for (region,offset) in [("canvas",0),("navigator",1024)] {
@@ -1656,7 +1656,7 @@ fn cold_store_motion(zoom: Option<f32>) {
     w.dispatch(UiAction::SetBrushSize {value:384.});
     w.dispatch(UiAction::SetColor {rgba:[1.,0.,1.,1.]});
     new_photo::ready(&w);
-    until(||!ui_session(&w).wants_continuous_frames(),"warm raster presentation settled");
+    until(||ui_session(&w).frame_demand() == layer_render::FrameDemand::Wait,"warm raster presentation settled");
     let baseline=glib::MainContext::default().block_on(read_canvas_pixels(&w,8300)).unwrap().bytes;
     if let Some(zoom)=zoom {w.dispatch(UiAction::SetZoom {zoom});new_photo::ready(&w);}
     let [x,y]=super::canvas_bar_tests::canvas_point(&w,[384.,128.]);
@@ -1715,7 +1715,7 @@ fn cold_store_motion(zoom: Option<f32>) {
             }
             contact_end=glib::monotonic_time()as u64*1000;
             new_photo::ready(&w);
-            until(||!ui_session(&w).wants_continuous_frames(),"cold motion presentation settled");
+            until(||ui_session(&w).frame_demand() == layer_render::FrameDemand::Wait,"cold motion presentation settled");
         });
         let stats=stats.into_inner().unwrap();let rows=stats.lock().unwrap();
         let publication=rows.raster_commits.first().and_then(|[id,_]|rows.presented.iter().find(|p|p[0]==*id&&p[3]==1).map(|p|p[1]));

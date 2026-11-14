@@ -85,6 +85,32 @@ fn photo_document(extent: [u32; 2], pixel: impl Fn(u32, u32) -> [u8; 4]) -> Docu
 
 fn document(extent: [u32; 2]) -> Document { photo_document(extent, pattern) }
 
+#[test]
+fn a_retouch_source_keeps_its_accepted_view_until_submission() {
+    let document=document([PAGE_SIZE;2]);
+    let mut r=WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+    r.ensure_document_metadata(document.composition().size,document.scene()).unwrap();
+    let base=document.scene().paint_base(PHOTO).unwrap();
+    let mut upload=submission::CommandEncoder::new(&r.device,&Default::default());
+    crate::test_support::query_ready(&mut r,&mut upload,|r,encoder|r.paint_base_tile(base,[0,0],encoder)).unwrap();
+    r.uploads.finish(&upload);upload.submit(&r.queue);crate::test_support::complete(&r);
+    let mut sources=RetouchSources::new(&mut r);
+    let mut encoder=submission::CommandEncoder::new(&r.device,&Default::default());
+    let view=sources.target_page(&mut r,PHOTO,None,[0,0],&mut encoder).unwrap().unwrap();
+    assert_eq!([view.texture().width(),view.texture().height()],[PAGE_SIZE;2]);
+    crate::test_support::evict_sources(&mut r);
+    let validation=r.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let output=r.device.create_texture(&wgpu::TextureDescriptor {label:None,size:view.texture().size(),mip_level_count:1,sample_count:1,
+        dimension:wgpu::TextureDimension::D2,format:view.texture().format(),usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
+    encoder.copy_texture_to_texture(view.texture().as_image_copy(),output.as_image_copy(),output.size());encoder.submit(&r.queue);
+    let error=pollster::block_on(validation.pop());
+    assert!(error.is_none(),"a retouch input must survive pressure before its submission: {error:?}");
+    for (index,pixel) in crate::test_support::float_pixels(&r,&output).into_iter().enumerate() {
+        let expected=reference(index as u32%PAGE_SIZE,index as u32/PAGE_SIZE);
+        assert!(pixel.into_iter().zip(expected).all(|(actual,expected)|(actual-expected).abs()<2e-6));
+    }
+}
+
 fn set_blend(doc: &mut Document, blend: layer_core::BlendSpace) {
     let mut composition = doc.composition().clone();
     composition.blend = blend;
@@ -106,7 +132,7 @@ fn flush(engine: &mut CanvasEngine<WgpuRasterizer>) {
     let deadline = std::time::Instant::now() + READBACK_TIMEOUT;
     loop {
         engine.render_frame().unwrap();
-        if !engine.has_pending_input() && !engine.has_pending_document_edits() && !engine.backend().has_pending_work() {
+        if !engine.has_pending_input() && !engine.has_pending_document_edits() && engine.backend().next_frame()!=layer_render::FrameDemand::Work {
             break;
         }
         assert!(std::time::Instant::now() < deadline);
@@ -427,12 +453,11 @@ fn the_reference_cache_follows_its_frame_and_evicts_the_least_recent_page() {
     let bytes = r.retouch.as_ref().unwrap().storage_bytes();
     let page = u64::from(PAGE_SIZE * PAGE_SIZE) * 16;
     assert_eq!(bytes, (16 + REFERENCE_PAGES as u64) * page + PARAMETER_BYTES, "idle sources keep only their pages");
-    assert_eq!(r.metrics().retouch_storage_bytes, bytes);
     r.set_telemetry_enabled(true);
     assert!(r.telemetry().resident_bytes >= bytes);
     r.prepare_retouch(None);
     r.submit(crate::test_support::packet(doc.scene(), [2560, 2560])).unwrap();
-    assert_eq!(r.metrics().retouch_storage_bytes, 0);
+    assert_eq!(r.retouch.as_ref().map_or(0, |retouch| retouch.storage_bytes()), 0);
 }
 
 fn scribble(
@@ -464,8 +489,7 @@ fn contacts_neither_upload_nor_wait_and_a_miss_replays_after_pen_up() {
         {
             let r = engine.backend_mut();
             let color = r.document_color();
-            let slots = r.source_tiles.borrow().admitted_bytes()[0] / scene::sources::NORMALIZED_PAGE_BYTES;
-            let pressure: Vec<_> = (0..slots.saturating_sub(SOURCE_SLOTS as u64)).map(|seed| {
+            let pressure: Vec<_> = (0..4u64).map(|seed| {
                 let pixel = [seed as u8, (seed >> 8) as u8, (seed >> 16) as u8, 255];
                 Arc::new(layer_core::raster::TileBlob::encode(color.paint_descriptor(), &pixel.repeat((PAGE_SIZE * PAGE_SIZE) as usize)).unwrap())
             }).collect();
@@ -475,7 +499,7 @@ fn contacts_neither_upload_nor_wait_and_a_miss_replays_after_pen_up() {
                     blob, working: &scratch, space: color.space, destination: color.space,
                 }])).unwrap();
             }
-            crate::test_support::complete(r);
+            crate::test_support::evict_sources(r);
             let references = r.retouch.as_ref().unwrap();
             let frame = references.cache.frame.as_ref().unwrap();
             assert!(references.capture.would_block(r, frame.packet(r.document_extent), page_rect([3, 0])), "unrelated restoration evicts the far reference source");

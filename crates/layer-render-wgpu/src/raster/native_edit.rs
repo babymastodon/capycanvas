@@ -49,10 +49,6 @@ impl Recipes {
 
 pub(crate) struct NativeEdit {
     pub(super) backing: BTreeMap<SourceTarget, Arc<RasterData>>,
-    pub(crate) color_cache_bytes: u64,
-    pub(crate) color_cache_pinned_bytes: u64,
-    pub(crate) display_complete_bytes: u64,
-    pub(crate) composition_bytes: u64,
     #[cfg(test)]
     pub image_pixel_bytes: Option<u64>,
     transfer: NativeTransfer,
@@ -81,15 +77,9 @@ impl NativeEdit {
         let scalars = (0..scratch_count)
             .map(|_| Self::scratch_texture(&r.device, wgpu::TextureFormat::R32Float))
             .collect();
-        let display_complete_bytes = r.memory_limit(layer_core::MemoryOwnerKind::Scene);
         let recipes = Recipes::shared(&r.device, in_place);
         Self {
             backing: BTreeMap::new(),
-            color_cache_bytes: r.memory.color_limit(r.memory_limit(layer_core::MemoryOwnerKind::RasterPool),
-                r.raster_buffers.bytes.load(std::sync::atomic::Ordering::Acquire)),
-            color_cache_pinned_bytes: r.memory.color_pinned(),
-            display_complete_bytes,
-            composition_bytes: display_complete_bytes,
             #[cfg(test)]
             image_pixel_bytes: None,
             transfer,
@@ -152,14 +142,6 @@ impl NativeEdit {
             + self.preview_scalars.iter().map(wgpu::Buffer::size).sum::<u64>()
         // Transfer storage is owned/accounted by the shared scene decoder cache.
     }
-    pub(crate) fn image_pixel_allowance(&self)->u64 {
-        self.composition_bytes
-    }
-    pub(crate) fn image_pixel_budget(&self, resident: u64) -> u64 {
-        #[cfg(test)]
-        if let Some(bytes) = self.image_pixel_bytes { return bytes; }
-        self.image_pixel_allowance().saturating_sub(resident)
-    }
 
 }
 
@@ -179,13 +161,13 @@ enum NativeAccess<'a> {
     Private(&'a wgpu::Texture),
 }
 impl NativeAccess<'_> {
-    fn texture(&self)->&wgpu::Texture {match self {Self::Write(write)=>&write.value().texture,Self::Read(read)=>&read.value().texture,Self::Private(texture)=>texture}}
+    fn texture(&self)->&wgpu::Texture {match self {Self::Write(write)=>crate::resident::TextureStorage::texture(write.value()),Self::Read(read)=>crate::resident::TextureStorage::texture(read.value()),Self::Private(texture)=>texture}}
     fn encoded(self,name:layer_core::raster::ContentVersion)->Option<crate::resident::Encoding> {
         match self {Self::Write(write)=>Some(write.encoded(name)),_=>None,}
     }
 }
 pub(crate) struct NativeAdmission {
-    allocation:layer_core::MemoryReservation,
+    allocation:crate::residency::Reservation,
     comparisons:Option<crate::native_tiles::comparison::CanonicalComparisons>,
     capacity:usize,
     bytes:u64,
@@ -268,14 +250,15 @@ impl WgpuRasterizer {
 
     /// Admitted display, decoded-source and in-flight upload ceilings in bytes.
     pub fn display_memory_limits(&self) -> [u64; 3] {
-        let display = self.native_edit.as_ref().map_or(0, |n| n.display_complete_bytes);
-        let [sources, uploads] = self.source_tiles.borrow().admitted_bytes();
-        [display, sources, uploads]
+        [self.memory.display_grant(), self.scene_tiers.display.limit(), self.source_tiles.borrow().upload_limit()]
     }
-
+    pub(crate) fn image_pixel_budget(&self, resident: u64) -> u64 {
+        #[cfg(test)]
+        if let Some(bytes) = self.native_edit.as_ref().and_then(|native| native.image_pixel_bytes) { return bytes; }
+        self.memory.display_grant().saturating_sub(resident)
+    }
     pub(crate) fn preparation_memory_limits(&self) -> [u64; 2] {
-        [self.memory_limit(layer_core::MemoryOwnerKind::Scene),
-            crate::memory::retained_limit(self.memory_limit(layer_core::MemoryOwnerKind::RasterPool), self.raster_buffers.memory_bytes()[1])]
+        [self.memory.display_grant(), crate::memory::retained_limit(self.memory.raster_grant(), self.raster_buffers.memory_bytes()[1])]
     }
 
     /// A private candidate shares immutable source samples with the current
@@ -360,10 +343,9 @@ impl WgpuRasterizer {
         let mut renderer=Self::from_factory_inner(self.factory.clone(),self.device.clone(),Initialization::Snapshot)?;
         renderer.initialize_native_from(self.document_color(),self.native_edit.as_ref())?;
         renderer.snapshot_worker=false;
-        renderer.source_tiles=std::cell::RefCell::new(crate::scene::sources::DecodedTiles::new(self.document_color().space));
+        renderer.source_tiles=std::cell::RefCell::new(crate::scene::sources::DecodedTiles::within(&renderer.scene_tiers.display,self.document_color().space));
         renderer.memory.invalidate_limits();
         renderer.refresh_memory_limits();
-        if let Some(native)=&mut renderer.native_edit {native.color_cache_bytes=0;}
         renderer.compilation=self.compilation.clone();
         #[cfg(not(target_arch="wasm32"))]
         if let Some(wake)=&self.preparation_wake {renderer.set_preparation_wake(wake.clone());}
@@ -387,7 +369,7 @@ impl WgpuRasterizer {
         self.device = self.device.clone().with_depth(color.depth);
         self.ui_rendition = color.depth.is_float().then_some(Default::default());
         self.scene = None;
-        self.source_tiles = std::cell::RefCell::new(crate::scene::sources::DecodedTiles::new(color.space));
+        self.source_tiles = std::cell::RefCell::new(crate::scene::sources::DecodedTiles::within(&self.scene_tiers.display,color.space));
         let transfer=if let Some(source)=source {source.transfer.clone()}else {self.prepare_native_transfer(color.space)?};
         self.native_edit = Some(NativeEdit::new(self,transfer));
         self.memory.invalidate_limits();
@@ -452,8 +434,9 @@ impl WgpuRasterizer {
         let readback=if capacity==0 {0}else {bytes.min(CAPTURE_CHUNK).next_power_of_two().max((largest+crate::native_tiles::comparison::RESULT_BYTES).next_power_of_two())};
         let status=if capacity==0 {0}else {crate::native_tiles::comparison::CanonicalComparisons::bytes(capacity)?};
         let total=bytes.checked_add(readback).and_then(|n|n.checked_add(status)).ok_or(GpuRasterError::SizeOverflow)?;
-        let allocation=self.admit_raster_working(total).ok_or(GpuRasterError::NotReady)?;
-        let comparisons=if capacity==0 {None}else {Some(crate::native_tiles::comparison::CanonicalComparisons::reserved(self,capacity,&allocation)?)};
+        let allocation=self.admit_raster_working(total);self.note_restore_admission(&allocation);
+        let mut allocation=allocation.map_err(|_|GpuRasterError::NotReady)?;
+        let comparisons=if capacity==0 {None}else {Some(crate::native_tiles::comparison::CanonicalComparisons::reserved(self,capacity,&mut allocation)?)};
         Ok(NativeAdmission {allocation,comparisons,capacity,bytes,readback})
     }
 
@@ -503,7 +486,7 @@ impl WgpuRasterizer {
                 for (key,pixels) in physical {
                     let intent=current.contents.intent(key);
                     let read=pixels.read(intent.version(),submission).ok_or(GpuRasterError::Invariant("accepted input is not readable"))?;
-                    let texture=read.value().texture.clone();
+                    let texture=crate::resident::TextureStorage::texture(read.value()).clone();
                     let (tile,name)=RasterTile::pending_from_live(key.plane.descriptor_for(self.document_color(),scene.color_mode(id)),intent.version().clone());
                     canonical.push(Some(name));intents.push(Some(intent));working_inputs.push(Some(pixels));
                     inputs.push((texture,tile.clone(),scene.color_mode(id)));
@@ -544,7 +527,7 @@ impl WgpuRasterizer {
             (admission.allocation,admission.comparisons,admission.readback)
         }else {
             let readback=if output_bytes==0 {0}else {output_bytes.min(CAPTURE_CHUNK).next_power_of_two()};
-            let Some(allocation)=self.admit_raster_working(output_bytes.saturating_add(readback)) else {return Err(GpuRasterError::NotReady);};
+            let Ok(allocation)=self.admit_raster_working(output_bytes.saturating_add(readback)) else {return Err(GpuRasterError::NotReady);};
             (allocation,None,readback)
         };
         for publication in &frame.publications {
@@ -557,13 +540,14 @@ impl WgpuRasterizer {
         frame.capture = Some(NativeCapture {
             outputs: Vec::with_capacity(inputs.len()),
             pool: self.raster_buffers.clone(),
-            device: (*self.device).clone(),
+            device: self.device.for_resource(),
             queue: self.queue.clone(),
             readback:None,
             allocation,
+            owner:self.memory.raster_owner(),
         });
         frame.capture.as_mut().unwrap().prepare_readback(readback);
-        self.materialize_raster_working(&frame.capture.as_ref().unwrap().allocation,readback)?;
+        drop(frame.capture.as_mut().unwrap().allocation.split(readback).ok_or(GpuRasterError::Invariant("native readback exceeds its working reservation"))?);
         self.native_edit.as_mut().unwrap().reserve_scratch(&self.device, &inputs);
         let changes=frame.canonical_pages.iter().map(|&(id,coordinate)|self.changed_cells.as_ref().and_then(|c|c.buffer(id,coordinate)).cloned()).collect();
         Ok(NativeJob {frame,inputs,views:Default::default(),changes,comparisons,canonical,intents,working_inputs,encoded:0,started:false})
@@ -571,6 +555,8 @@ impl WgpuRasterizer {
 
     pub(crate) fn encode_private_tiles(&mut self, inputs: Vec<(wgpu::Texture, RasterTile, layer_core::color::LayerColorMode)>, encoder: &mut submission::CommandEncoder)
         -> Result<NativeCapture, GpuRasterError> {
+        #[cfg(test)]
+        crate::scene::sources::assert_reading("private tile capture");
         let frame = NativeFrame { capture: None, publications: Vec::new(), canonical_pages: Vec::new() };
         let count=inputs.len();
         let mut job = self.native_capture_job(frame, inputs,vec![None;count],vec![None;count],vec![None;count])?;
@@ -703,7 +689,7 @@ impl WgpuRasterizer {
         }
         job.encoded=end;
         let bytes=job.inputs[end-chunk.len()..end].iter().map(|(_,tile,_)|tile.descriptor().byte_len([PAGE_SIZE;2]).unwrap() as u64).sum();
-        self.materialize_raster_working(&capture.allocation,bytes)?;
+        drop(capture.allocation.split(bytes).ok_or(GpuRasterError::Invariant("native outputs exceed their working reservation"))?);
         Ok(true)
     }
 

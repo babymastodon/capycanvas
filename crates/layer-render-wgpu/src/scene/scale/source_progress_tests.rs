@@ -37,11 +37,9 @@ fn scene_page_output_binding_survives_frames_and_both_compute_layouts() {
         scene.encode_jobs(&mut r, &mut encoder).unwrap();
         for _ in 0..3 { scene.begin_frame(); }
         let target = scene.pool[slot].view.clone();
-        let binding = views_group(&r.device, "page binding watercolor inputs", &r.watercolor_layout,
-            [&r.empty_view; 5].into_iter().chain([&r.empty_scalar_view; 5]));
         scene.jobs.push(Job::Clear(target.clone(), wgpu::Color::TRANSPARENT));
         scene.jobs.push(Job::Watercolor { coordinates: (r.target_bind_group.clone(), 0), target,
-            binding, record: 0 });
+            views: std::iter::repeat_n(r.empty_view.clone(),5).chain(std::iter::repeat_n(r.empty_scalar_view.clone(),5)).collect(), record: 0 });
         pollster::block_on(scene.prepare_capture_work_async(&mut r)).unwrap();
         scene.encode_jobs(&mut r, &mut encoder).unwrap();
         assert_eq!(scene.pool[slot].scene_output(&r, &r.scene_pipelines.constant.0), &accepted);
@@ -96,7 +94,7 @@ fn deferred_fine_objects_keep_committed_coarse_pages_without_backup() {
     r.scale_display=Some(cache);r.moving_images=Default::default();
     let mut scene=r.scene.take().unwrap();scene.object_results.clear();
     let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
-    let result=scene.compose(&mut r,frame,PixelRect::EMPTY,&mut encoder,None);
+    let result=scene.compose(&mut r,frame,PixelRect::EMPTY,&mut encoder,None,&mut Scene::begin_work(false));
     assert!(result.is_ok() || matches!(result,Err(GpuRasterError::NotReady)),"{result:?}");
     r.scene=Some(scene);r.uploads.finish(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
     assert!(r.has_presentable_frame(),"a pending fine window must retain its committed coarse fallback");
@@ -121,22 +119,22 @@ fn deferred_fine_objects_keep_committed_coarse_pages_without_backup() {
         let cache=r.scale_display.as_ref().unwrap();
         let key=cache.page_key(cache.graph.root.as_ref().unwrap().clone(),PixelRect::full([PAGE_SIZE;2]));
         let area=key.plan().bounds;
-        assert!(cache.pages.lock().unwrap().get(&key,area,pages::Accuracy::Exact,0).is_none(),"stale fallback cannot satisfy an exact dependency");
+        assert!(cache.pages.lock().unwrap().get(&key,area,pages::Accuracy::Exact,0,crate::residency::Class::Visible).is_none(),"stale fallback cannot satisfy an exact dependency");
         let mut abandoned=pages::Store::default();
         abandoned.set_expected(cache.pages.lock().unwrap().expected().unwrap().clone());
-        let image=abandoned.claim(&r,key.clone(),u64::MAX).unwrap();
+        let image=abandoned.claim(&r,key.clone(),u64::MAX,crate::scene::scale::pages::WindowId::default(),crate::residency::Class::Visible).unwrap();
         let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
-        let write=abandoned.prepare_write(key.clone(),area,pages::Accuracy::Exact,pages::Freshness::Current,0).unwrap();
+        let write=abandoned.prepare_write(key.clone(),area,pages::Accuracy::Exact,0).unwrap();
         {
             let attachments=[Some(attachment(&image.view,wgpu::LoadOp::Clear(wgpu::Color::WHITE)))];
             let _pass=encoder.begin_render_pass(&descriptor(&attachments));
         }
-        abandoned.commit(write,encoder.submission());
+        abandoned.commit(write,0,&mut encoder);
         drop(encoder);
-        assert!(abandoned.get(&key,area,pages::Accuracy::Display,key.level).is_none(),"abandoned page writes must not publish coverage");
+        assert!(abandoned.get(&key,area,pages::Accuracy::Display,key.level,crate::residency::Class::Visible).is_none(),"abandoned page writes must not publish coverage");
         assert!(abandoned.retained_pages().is_empty());
         let replacement=pages::Key {expression:Arc::new(graph::Expression::Color([0;4])),..key};
-        assert!(cache.pages.lock().unwrap().get(&replacement,area,pages::Accuracy::Exact,0).is_none(),"a different content key cannot resurrect the previous drawing's pages");
+        assert!(cache.pages.lock().unwrap().get(&replacement,area,pages::Accuracy::Exact,0,crate::residency::Class::Visible).is_none(),"a different content key cannot resurrect the previous drawing's pages");
     }
     crate::test_support::submit_settled(&mut r,frame);
     assert!(!crate::scene::scale::tests::publication_pending(&r));
@@ -155,7 +153,7 @@ fn reduced_photo_larger_than_decoded_cache_publishes_only_after_prefixes_finish(
     let view = ViewState { width_px: 320, height_px: 256, document_to_surface: [0.125, 0., 0., 0.125, 0., 0.] };
     let previous_frame = FramePacket { view, blend_space: layer_core::BlendSpace::Linear, ..packet(previous.scene(), EXTENT) };
     crate::memory::memory_tests::declare_source_budget(&mut r, previous_frame, 64, 16 << 20, 44 << 20);
-    assert_eq!(r.source_tiles.borrow().admitted_bytes()[0], 64 * u64::from(PAGE_SIZE).pow(2) * 16);
+    assert!(r.source_tiles.borrow().free_slots() >= 64);
     crate::test_support::submit_settled(&mut r, previous_frame);
     let mut presenter = crate::test_support::float_presenter(&r);
     present(&r, &mut presenter, view);
@@ -190,7 +188,7 @@ fn reduced_photo_larger_than_decoded_cache_publishes_only_after_prefixes_finish(
                 presentation_change = Some((step, prefix, index, *actual, *expected));
             }
         }
-        if !r.has_pending_work() && !r.has_pending_submission() { settled = true; break; }
+        if r.next_frame()!=layer_render::FrameDemand::Work && !r.has_pending_submission() { settled = true; break; }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let levels = r.scale_display.as_ref().map(|cache|source_levels(cache,target).into_iter().map(|(level,chunks)|(level,chunks.len())).collect::<Vec<_>>());
@@ -306,7 +304,7 @@ fn an_empty_store_rebuilds_without_a_cache_readiness_flag() {
     scene.begin_frame();commands.begin();
     let mut encoder=crate::submission::CommandEncoder::new(&r.device,&Default::default());
     cache.render_coarse_preview(&mut scene,&mut r,frame,PixelRect::full(extent),
-        &mut Encoding {encoder:&mut encoder,commands:&mut commands, retained:[0;2]},None).unwrap();
+        &mut Encoding {encoder:&mut encoder,commands:&mut commands, retained:0, budget:&mut Scene::begin_work(false)},None).unwrap();
     scene.encode_jobs(&mut r,&mut encoder).unwrap();r.uploads.finish(&encoder);encoder.submit(&r.queue);r.wait_idle().unwrap();
     assert!(cache.coverage_complete(),"ready without valid coverage must rebuild the coarse preview");
 }
