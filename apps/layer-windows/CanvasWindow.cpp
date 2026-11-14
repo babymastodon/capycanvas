@@ -327,6 +327,7 @@ void CanvasWindow::Open() {
     titlebar.ButtonForegroundColor(Windows::UI::Color{255,225,225,229});
     titlebar.PreferredHeightOption(TitleBarHeightOption::Standard);
     root.RequestedTheme(ElementTheme::Default);
+    root.BringIntoViewRequested([](auto&&,BringIntoViewRequestedEventArgs const& e){e.Handled(true);});
     auto& pointerMode=CapyUi::MouseScrollbars::current();scrollbarInput=pointerMode.source;pointerMode.observe(root);
     root.PreviewKeyDown([weak=weak_from_this()](auto&&,KeyRoutedEventArgs const& event){if(auto self=weak.lock();self&&event.Key()==Windows::System::VirtualKey::Escape){
         bool canceled=self->header&&self->header->CancelNativeContacts();

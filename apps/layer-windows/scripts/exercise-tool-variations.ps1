@@ -167,7 +167,7 @@ function Sketch-Drawers {
     $entries=@((Model).header.model.zones|ForEach-Object {$_}|Where-Object {$_.item.kind -eq 'tool'})
     $keys=@($entries|ForEach-Object {$c=$_.item.control;$c.kind+':'+$c.command+$c.panel+$c.slot})
     if((($keys|Sort-Object) -join ',') -ne ((@('panel:adjustments','command:select','command:scale_rotate','command:drawing_brush','command:sculpt','command:eraser','tool_slot:fill','panel:layers','color:')|Sort-Object) -join ',')){throw 'Sketch did not retain every default header tool'}
-    $records=@()
+    $records=@();$titleBar=(Control 'title-bar' -Arranged).Current.BoundingRectangle
     foreach($entry in $entries){
         $id=$entry.id;$spec=@((Model).header.items|Where-Object id -eq $id)[0]
         $source=Control "header-item-$id" -Arranged
@@ -182,6 +182,7 @@ function Sketch-Drawers {
         if(!$drawer.Current.IsEnabled -or !$root.Current.BoundingRectangle.Contains($native)){throw "Sketch drawer is disabled or outside its window: $($spec.label)"}
         $geometry=$drawer.Current.ItemStatus|ConvertFrom-Json;$anchor=$geometry.placement.anchor
         $bar=(Control 'title-bar').Current.BoundingRectangle;$scale=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.
+        if($bar -ne $titleBar){throw "Sketch drawer moved the window content: $($spec.label)"}
         $actual=(Control "header-item-$id" -Arranged).Current.BoundingRectangle
         foreach($pair in @(@($actual.X,($bar.X+$anchor.x*$scale)),@($actual.Y,($bar.Y+$anchor.y*$scale)),@($actual.Width,($anchor.width*$scale)),@($actual.Height,($anchor.height*$scale)))){
             if([Math]::Abs($pair[0]-$pair[1]) -gt 1){throw "Sketch drawer anchor differs from its native header tool: $($spec.label)"}
