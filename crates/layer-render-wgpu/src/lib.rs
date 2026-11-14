@@ -3555,9 +3555,10 @@ impl WgpuRasterizer {
         self.preparation_wake=Some(wake);
     }
     pub fn preparation_progress(&self) -> u64 { self.preparation_progress }
-    fn gpu_results_pending(&self) -> bool {
+    fn gpu_results_pending(&self) -> bool { self.frame_results_pending() || self.thumbnails_pending() }
+    fn frame_results_pending(&self) -> bool {
         self.settling.is_some() || !self.background_ready.load(std::sync::atomic::Ordering::Acquire)
-            || self.color_sample_pending() || self.selection_paint_pending() || self.region_pending() || self.thumbnails_pending()
+            || self.color_sample_pending() || self.selection_paint_pending() || self.region_pending()
             || self.filter_previews_pending() || self.effect_validation_pending() || self.brush_stamp_pending() || self.fill_preview_in_flight()
     }
     pub fn raster_preparation_ready(&self, previous: u64) -> bool {

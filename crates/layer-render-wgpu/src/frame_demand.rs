@@ -85,7 +85,7 @@ impl WgpuRasterizer {
     fn completion_edge(&self) -> bool {
         let Some(wake) = self.preparation_wake.as_ref().filter(|_| self.gpu_results_pending()) else { return false; };
         let completions = self.device.on_next_completion(wake);
-        self.observed_completions.swap(completions, std::sync::atomic::Ordering::AcqRel) != completions
+        self.observed_completions.swap(completions, std::sync::atomic::Ordering::AcqRel) != completions && self.frame_results_pending()
     }
     pub(crate) fn frame_demand(&self) -> FrameDemand {
         if self.region_step_runnable() || self.completion_edge() || self.frame_work() { return FrameDemand::Work; }
