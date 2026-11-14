@@ -743,6 +743,28 @@ fn a_grayscale_preview_stroke_start_over_paint_seeds_what_its_declaration_record
 }
 
 #[test]
+fn a_persistent_stroke_start_preview_redrawn_under_its_held_declaration_accepts_its_recorded_inputs() {
+    for preset in [layer_core::DefaultBrushPreset::Paintbrush, layer_core::DefaultBrushPreset::ScatterBlender] { redrawn_persistent_stroke_start_preview(preset); }
+}
+
+fn redrawn_persistent_stroke_start_preview(preset: layer_core::DefaultBrushPreset) {
+    let mut r = WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+    let document = paint_document([1024; 2], "redrawn persistent stroke start preview");
+    let mut base = dab([0.6, 0.3, 0.2, 0.8]); base.center = Point { x: 512., y: 512. }; base.radii = [600.; 2];
+    let mut background = batch(target(&document)); background.damage = base.bounds();
+    crate::test_support::submit_ready(&mut r, FramePacket { dabs: &[base], dab_batches: &[background], ..packet(document.scene(), [1024; 2]) }).unwrap();
+    let mut ink = dab([0.2, 0.3, 0.4, 0.9]); ink.center = Point { x: 256., y: 256. }; ink.radii = [120.; 2];
+    let mut preview = batch(target(&document));
+    preview.style = preset_style(preset);
+    preview.stroke_id = StrokeId(7); preview.kind = DabBatchKind::Preview; preview.stroke_end = false; preview.damage = ink.bounds();
+    assert!(WgpuRasterizer::tracks_stroke_start(&preview) && r.preview_from_persistent(std::slice::from_ref(&preview)), "{preset:?}");
+    let frame = FramePacket { dabs: &[ink], dab_batches: std::slice::from_ref(&preview), ..packet(document.scene(), [1024; 2]) };
+    crate::test_support::submit_ready(&mut r, frame).unwrap();
+    let mut panned = frame; panned.view.document_to_surface[4] += 1.;
+    crate::test_support::submit_ready(&mut r, panned).unwrap();
+}
+
+#[test]
 fn a_color_png_preview_declaration_is_not_reused_after_its_batch_index_changes() {
     let extent = [512; 2];
     let mut png = Vec::new();

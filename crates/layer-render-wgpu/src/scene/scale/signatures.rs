@@ -779,7 +779,10 @@ impl PreviewDeclaration {
         Ok(Some(Self {source:packet.scene.snapshot(),target,versions,inputs,commands,fill,quality,wetness_before,transport_outputs,seed_inputs:IdMap::default(),selection:None,context:context.0,accepted:Arc::default(),memo:Arc::default(),
             stamps:stamps.map(|stamps|(stamps,layer_core::raster::ContentName::fresh().stamp()))}))
     }
-    pub fn captured_version(pass:PreviewPass,versions:&[ContentVersion])->ContentVersion {ContentVersion::derive(recipe(&pass),versions)}
+    pub fn captured_version(pass:PreviewPass,versions:&[ContentVersion])->ContentVersion {
+        let mut distinct=versions.to_vec();distinct.sort_unstable_by_key(ContentVersion::identity);distinct.dedup_by_key(|version|version.identity());
+        ContentVersion::derive(recipe(&pass),&distinct)
+    }
     pub fn matches_metadata(&self,candidate:&Self)->Result<bool,GpuRasterError> {
         if self.target!=candidate.target || self.quality!=candidate.quality || self.inputs.len()!=candidate.inputs.len()
             || self.wetness_before!=candidate.wetness_before || self.transport_outputs!=candidate.transport_outputs
