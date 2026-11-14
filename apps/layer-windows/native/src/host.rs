@@ -87,7 +87,6 @@ impl SurfaceReadiness {
         });
     }
     fn ready(&self)->bool {self.ready.load(std::sync::atomic::Ordering::Acquire)}
-    #[cfg(test)]
     fn pending(&self)->bool {
         self.queued&&(!self.ready()||self.completed_chrome.load(std::sync::atomic::Ordering::Acquire)<self.queued_chrome
             ||self.launch.as_ref().is_some_and(|(_,completed)|!completed.load(std::sync::atomic::Ordering::Acquire)))
