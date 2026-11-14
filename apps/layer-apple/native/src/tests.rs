@@ -1730,6 +1730,12 @@ fn staged_paper_preserves_pending_ink_and_reaches_brush_readiness() {
     use layer_render_wgpu::WgpuRasterizer;
     use std::time::{Duration, Instant};
     for platform in [0, 1] {
+        let paper = {
+            let blank = App::new(platform);
+            blank.borrow().host.session.renderer_mut().0 = Some(native_renderer());
+            blank.draw_until_idle();
+            blank.pixels()
+        };
         let app = App::new(platform);
         let reference = native_renderer();
         let staged = WgpuRasterizer::from_wgpu_native_staged(
@@ -1753,7 +1759,6 @@ fn staged_paper_preserves_pending_ink_and_reaches_brush_readiness() {
             assert!(!host.startup.canvas_ready);
             assert!(host.dirty, "Startup must keep the frame driver awake");
         }
-        let paper = app.pixels();
         app.action(json!({"type": "set_brush_opacity", "value": 0.4}));
         assert!((app.state()["brush"]["opacity"].as_f64().unwrap() - 0.4).abs() < 0.00001);
         let deadline = Instant::now() + Duration::from_secs(15);
