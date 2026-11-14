@@ -1691,6 +1691,56 @@ fn refused_native_capture_keeps_painted_revision_pending_until_admission_returns
 }
 
 #[test]
+fn a_native_capture_larger_than_the_raster_room_publishes_in_windows_within_the_limit() {
+    let extent = [8192; 2];
+    let mut doc = Document::new(PortableId::random(), extent[0], extent[1], layer_core::DocumentNames { paint: "Ink".into(), paper: "Paper".into() });
+    let target = doc.active_target().unwrap();
+    let SourceTarget::Paint(paint) = target else { unreachable!() };
+    doc.artwork.paint.get_mut(paint).unwrap().raster = RasterRevision::pending();
+    let dabs = (0..64).map(|n| crate::tests::test_dab([(n % 32 * PAGE_SIZE + 128) as f32, (n / 32 * PAGE_SIZE + 128) as f32], [1., 0., 1., 1.], 1.)).collect::<Vec<_>>();
+    let damage = dabs.iter().copied().map(layer_render::Dab::bounds).fold(layer_core::Rect::EMPTY, layer_core::Rect::union);
+    let batch = layer_render::DabBatch { dab_count: dabs.len() as u32, ..crate::test_support::dab_batch(target, crate::tests::test_style(BrushExecution::Dry), damage) };
+    let frame = FramePacket { dabs: &dabs, dab_batches: std::slice::from_ref(&batch), view: view(), ..crate::test_support::packet(doc.scene(), extent) };
+    let renderer = || crate::memory::memory_tests::renderer(doc.composition().color, layer_core::DeviceMemoryFacts { budget_bytes: Some(4 << 30), ..Default::default() }).unwrap();
+    let ready = |r: &mut WgpuRasterizer| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !r.raster_dependencies_ready(frame, None) { assert!(std::time::Instant::now() < deadline, "the frame becomes ready"); std::thread::sleep(std::time::Duration::from_millis(1)); }
+    };
+    let mut whole = renderer();
+    ready(&mut whole);
+    let admission = whole.restore_preflight.as_ref().unwrap().native.as_ref().unwrap();
+    let (outputs, readback, held) = (admission.bytes, admission.readback, whole.raster_tiers.raster.used());
+    assert!(admission.whole() && outputs >= readback, "the unconstrained fixture admits a whole capture of many outputs: outputs {outputs}, readback {readback}");
+    drop(whole);
+    let mut r = renderer();
+    let budget = r.factory.memory_budget().clone();
+    let other = budget.register_owner(layer_core::MemoryOwnerKind::Other, layer_core::MemoryClass::Pinned, Some(budget.snapshot().devices[0].device));
+    let limit = |r: &WgpuRasterizer| r.memory.raster_owner().gpu_working_limit();
+    let room = held.saturating_sub(outputs / 2);
+    let pin = limit(&r).saturating_sub(r.raster_tiers.raster.used()).saturating_sub(room);
+    other.report(layer_core::MemoryReport { gpu_bytes: pin, pinned_gpu_bytes: pin, ..Default::default() });
+    budget.flush_reports();
+    let revision = doc.artwork.paint.get(paint).unwrap().raster.clone();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut submitted = false;
+    while revision.try_data().is_none() {
+        assert!(std::time::Instant::now() < deadline, "a capture of {outputs} bytes never published within a {room} byte raster room: submitted {submitted}, settling {}, terms {:?}",
+            r.settling.is_some(), r.outstanding_terms());
+        r.poll_pending(frame.view).unwrap();
+        if r.can_submit() && let std::task::Poll::Ready(result) = r.submit_when_ready(if submitted { FramePacket { dabs: &[], dab_batches: &[], ..frame } } else { frame }, None) { result.unwrap(); submitted = true; }
+        let physical = r.telemetry().resident_bytes;
+        let device = budget.snapshot().devices[0].limit_bytes;
+        assert!(physical.saturating_add(pin) <= device, "the capture exceeded the device limit: physical {physical} beside a {pin} byte pin, limit {device}");
+        r.wait_idle().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let data = revision.wait_data().unwrap();
+    assert_eq!(data.tiles.keys().filter(|key| key.plane == RasterPlane::Color).count(), 64, "the windowed capture published every painted tile");
+    assert!(data.tiles.values().all(|tile| tile.wait_backing().is_ok()), "every windowed output reached its backing");
+    drop(other);
+}
+
+#[test]
 fn native_mask_capture_consumes_preflight_and_preserves_unchanged_working_names() {
     use layer_core::raster::ContentName;
     for in_place in [false,true] {

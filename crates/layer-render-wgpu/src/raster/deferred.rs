@@ -96,6 +96,10 @@ impl NativeCapture {
     fn recycle_readback(&mut self) {
         if let Some(readback)=self.readback.take() {self.pool.put_charged(pool::Resource::Buffer(readback.buffer),readback.charge);}
     }
+    pub(super) fn take_window(&mut self)->Self {
+        Self {outputs:std::mem::take(&mut self.outputs),pool:self.pool.clone(),device:self.device.clone(),queue:self.queue.clone(),
+            readback:self.readback.take(),allocation:self.allocation.split(0).unwrap(),owner:self.owner.clone()}
+    }
     pub fn append(&mut self,mut other:Self) {
         if self.readback.as_ref().map_or(0,|readback|readback.buffer.size())<other.readback.as_ref().map_or(0,|readback|readback.buffer.size()) {
             std::mem::swap(&mut self.readback,&mut other.readback);

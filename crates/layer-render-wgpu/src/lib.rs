@@ -3949,6 +3949,12 @@ impl CanvasRenderer for WgpuRasterizer {
             };
         }
         let work = healing || pending.capture.as_ref().is_some_and(|capture| !capture.complete());
+        if !healing && let Some(capture) = &mut pending.capture {
+            match self.admit_native_window(capture) {
+                Err(error) if error.is_preparation_pending() => { self.settling = Some(pending); return Ok(()); },
+                result => result?,
+            }
+        }
         if work {
             let mut encoder = submission::CommandEncoder::new(&self.device, &wgpu::CommandEncoderDescriptor { label: Some("healing settle") });
             self.telemetry.begin(&self.device, &self.queue, encoder.diagnostics(), self.metrics.submissions);

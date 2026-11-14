@@ -259,6 +259,16 @@ impl WgpuRasterizer {
         };
         self.memory.invalidate_limits();self.refresh_memory_limits();Ok(reservation)
     }
+    pub(crate) fn admit_raster_window(&mut self,least:u64,most:u64,reserve:u64)->Result<crate::residency::Reservation,crate::residency::Blocked> {
+        let wanted=most.saturating_add(reserve);
+        let mut reservation=self.admit_raster_working(wanted).or_else(|blocked| {
+            let fits=wanted.saturating_sub(blocked.deficit());
+            if fits<least.saturating_add(reserve) {return Err(blocked);}
+            self.admit_raster_working(fits)
+        })?;
+        drop(reservation.split(reserve));
+        Ok(reservation)
+    }
     pub(crate) fn commit_raster_working(&mut self,reservation:crate::residency::Reservation) {
         drop(reservation);self.sync_raster_report();
         self.memory.invalidate_limits();self.refresh_memory_limits();
