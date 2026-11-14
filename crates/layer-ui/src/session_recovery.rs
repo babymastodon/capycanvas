@@ -194,11 +194,11 @@ impl<R:CanvasRenderer> UiSession<R> {
         let Self {asset_writer:_,bubble_state:_,color_history:_,zen_peek:_,pressure_calibration:_,pressure_meter_changed:_,engine,state,files:_,screen_headroom:_,histogram_captions:_,histogram:_,effect_analyses:_,
             tonal_histogram:_,auto_levels:_,targeted_curve:_,localization_generation:_,renderer_generation:_,preferences_revision:_,
             panel_measurements:_,panel_copy:_,customization_copy:_,command_search:_,last_toolbar_context:_,frame_commands_pending:_,brush_stamps:_,canvas_bar:_,notices:_,
-            pen:_,pen_input:_,finger:_,input_pending:_,host_requests_changed:_,pen_contact:_,discarded_contacts:_,rendering_suspended:_,window_hidden:_,frame_clock:_,storage_activity:_,drawing_switch_pending:_,launch_finished:_,touch:_,navigation:_,navigator_drag:_,
+            pen:_,pen_input:_,finger:_,input_pending:_,host_requests_changed:_,pen_contact:_,discarded_contacts:_,rendering_suspended:_,window_hidden:_,frame_clock:_,storage_activity:_,drawing_switch_pending:_,launch_finished:_,workspace_attention:_,host_attention:_,touch:_,navigation:_,navigator_drag:_,
             effect_gesture:_,preview_target:_,paper_preview:_,papers:_,object_motion:_,property_editor:_,sdr_gesture:_,last_proof_mode:_,proof_setup_pending:_,filter_previews:_,
             eyedropper:_,region_tools:_,selection_tools:_,tonal_tools:_,painted_selections:_,vector_lines:_,vector_moves:_,vector_paths:_,vector_points:_,figure_options:_,deferred_edits:_,selection_masks:_,
             canvas_size:_,image_size:_,frequency_separation:_,content_bounds:_,conversion:_,rulers:_,retouch:_,operation:_,objects:_,
-            system_theme:_,system_accent:_,platform_prediction_available:_,logical_viewport:_,initial_fit:_,restored_view:_,preparation_context:_,
+            system_theme:_,system_accent:_,platform_prediction_available:_,logical_viewport:_,initial_fit:_,restored_view:_,preparation_context:_,toolbar_brushes:_,
             automatic_camera_revision:_,workspace_view_revision:_,divider_drag:_,edge_contacts:_,floating_resize:_,floating_auto_fit:_,workspace_drag:_,workspace_tab_drag:_,
             workspace_drag_tabs:_,workspace_model_revision:_,workspace_content_revision:_,workspace_history:_,
             workspace_transition:_,workspace_read_only:_,workspace_preview:_,managed_workspace:_,interaction:_,
@@ -405,6 +405,14 @@ impl SessionManifest {
         Self::parse(&bytes).map(Some).map_err(SessionReadError::Invalid)
     }
     #[cfg(not(target_arch="wasm32"))]
+    pub fn read_claimed(path:&std::path::Path)->Result<ClaimedManifest,String> {
+        match Self::read(path) {
+            Ok(manifest)=>Ok(manifest.map_or(ClaimedManifest::Missing,ClaimedManifest::Ready)),
+            Err(SessionReadError::Invalid(error))=>Ok(ClaimedManifest::SetAside {error,preserved:layer_core::package::session_store::preserve(path)?}),
+            Err(error)=>Err(error.to_string()),
+        }
+    }
+    #[cfg(not(target_arch="wasm32"))]
     pub fn publish(&self,path:&std::path::Path)->Result<(),String> {
         self.publish_checked(path).map_err(|failure|failure.error)
     }
@@ -413,7 +421,7 @@ impl SessionManifest {
         use layer_core::package::session_store::{AtomicReplaceError,atomic_replace_checked,sync_directory};
         let unpublished=|error:String|AtomicReplaceError{published:false,error};
         self.validate().map_err(unpublished)?;
-        if let Some(previous)=Self::read(path).map_err(|error|unpublished(error.to_string()))? {
+        if let ClaimedManifest::Ready(previous)=Self::read_claimed(path).map_err(unpublished)? {
             if previous==*self {
                 let parent=path.parent().ok_or_else(||unpublished("Session has no parent directory".into()))?;
                 return sync_directory(parent).map_err(|error|AtomicReplaceError{published:true,error});
@@ -429,6 +437,8 @@ impl SessionManifest {
 #[cfg(not(target_arch="wasm32"))]
 #[derive(Debug)]
 pub enum SessionReadError { Io(std::io::Error), Invalid(String) }
+#[cfg(not(target_arch="wasm32"))]
+pub enum ClaimedManifest { Missing, Ready(SessionManifest), SetAside { error: String, preserved: std::path::PathBuf } }
 #[cfg(not(target_arch="wasm32"))]
 impl std::fmt::Display for SessionReadError {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
@@ -934,19 +944,21 @@ pub(crate) mod tests {
         let mut source=session(Platform::Gtk);source.frame(0,0).unwrap();layer(&mut source,LayerAction::New{group:false,clipped:false});source.frame(1,1).unwrap();
         pollster::block_on(source.capture_session().unwrap().checkpoint(&mut store,&cancel)).unwrap();drop(store);
         let surviving=SessionManifest::read(&path).unwrap().unwrap();let reachable=surviving.drawings.iter().map(|drawing|drawing.key.clone()).collect();
-        pollster::block_on(collect_unreferenced_stores(&root,&reachable,&cancel)).unwrap();
+        pollster::block_on(collect_unreferenced_stores(&root,&reachable,&cancel));
         let mut reopened=pollster::block_on(SessionStore::open(&root.join(&surviving.drawings[0].key))).unwrap();let copy=SessionRestore::from_core(pollster::block_on(reopened.load(ProjectLimits::default(),&cancel)).unwrap().unwrap()).unwrap();
         assert_eq!(copy.document().artwork,source.engine.document().artwork);assert!(copy.editor.can_undo());drop(copy);drop(reopened);drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[cfg(not(target_arch="wasm32"))]
     #[test]
-    fn durable_membership_rejects_stale_publication_and_preserves_unreadable_index() {
+    fn durable_membership_rejects_stale_publication_and_sets_an_unreadable_index_aside() {
         let root=std::env::temp_dir().join(format!("capy-session-ui-{}",layer_core::PortableId::random()));std::fs::create_dir(&root).unwrap();let path=root.join("session.json");
         let original=manifest();original.publish(&path).unwrap();let closed=original.remove(7).unwrap();closed.publish(&path).unwrap();
         assert!(!original.publish_checked(&path).unwrap_err().published);assert_eq!(SessionManifest::read(&path).unwrap().unwrap(),closed);
         closed.publish_checked(&path).unwrap();
-        std::fs::write(&path,b"incomplete session").unwrap();assert!(closed.publish(&path).is_err());assert_eq!(std::fs::read(&path).unwrap(),b"incomplete session");
+        std::fs::write(&path,b"incomplete session").unwrap();closed.publish(&path).unwrap();assert_eq!(SessionManifest::read(&path).unwrap().unwrap(),closed);
+        assert!(std::fs::read_dir(&root).unwrap().any(|entry|entry.unwrap().file_name().to_string_lossy().starts_with("preserved-")));
+        assert!(std::fs::read_dir(&root).unwrap().any(|entry|std::fs::read(entry.unwrap().path()).is_ok_and(|bytes|bytes==b"incomplete session")));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

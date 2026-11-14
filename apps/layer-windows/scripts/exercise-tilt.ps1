@@ -3,7 +3,6 @@ if($Journey.EndsWith('-light')){$Journey=$Journey.Substring(0,$Journey.Length-6)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'CapyUia.ps1')
 Add-Type -Path (Join-Path $PSScriptRoot 'RowPointerDriver.cs')
-Add-Type -Path (Join-Path $PSScriptRoot 'CanvasTouchDriver.cs')
 Add-Type -AssemblyName System.Drawing
 $CapyCaptureDelay=250
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
@@ -117,7 +116,7 @@ function Start-Review([switch]$Maximized){
     $script:stderr=Join-Path $run "stderr-$launch.log"
     $script:review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle;$owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Model).brush_ready} 'Tilt review did not start' 45
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Review-Ready)} 'Tilt review did not start' 45
     $script:root=$owned.window.Root;$script:drawingWindow=$owned.window.Handle
     if($Maximized){Maximize-DrawingWindow}
     Use-PaintWorkspace
@@ -127,7 +126,6 @@ function Start-Review([switch]$Maximized){
     Control 'canvas-view-info' -Arranged|Out-Null;Fit-Canvas
 }
 function Close-Review{
-    [CapyCanvasTouch]::Dispose()
     [CapyRowPointer]::Dispose()
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Close -DiscardUnsaved
     if((Get-Item -LiteralPath $stderr).Length){throw "Tilt native stderr requires inspection: $stderr"}
@@ -308,7 +306,6 @@ function First-CurveContact{
 }
 function Deferred-CurveContact([switch]$PriorEdit){
     Start-Review -Maximized;Tool 'lasso';Open-Tilt;Assert-Geometry
-    [CapyCanvasTouch]::Initialize([uint32]$review.Id)
     if((Tilt).ready){throw 'Deferred first-contact case already knows a pen'}
     if($PriorEdit){Native-Click 'pen-tilt-lighter';Set-Axes 1}
     $stage=if($PriorEdit){'deferred-prior-edit'}else{'deferred-neutral'}
@@ -316,18 +313,18 @@ function Deferred-CurveContact([switch]$PriorEdit){
     $bounds=(Tilt).bounds;$epoch=(Tilt).editor.controls.epoch;$owner=Json (Control 'pen-tilt-curve').GetRuntimeId()
     $from=At .4 .4;$to=At .5 .6;$next=At .6 .7
     $at=Center 'pen-tilt-direction' -NoReveal
-    [CapyCanvasTouch]::Down(1,$from[0],$from[1])
+    [CapyRowPointer]::Down('mouse',$from[0],$from[1])
     try{
-        [CapyCanvasTouch]::Move(1,$to[0],$to[1]);Wait-Until {@(Points).Count -eq 3 -and [Math]::Abs((Points)[1][0]-.5) -lt .02} 'Unbound touch did not capture and edit its curve'
+        [CapyRowPointer]::Move($to[0],$to[1]);Wait-Until {@(Points).Count -eq 3 -and [Math]::Abs((Points)[1][0]-.5) -lt .02} 'Unbound mouse did not capture and edit its curve'
         $heldDirection=Center 'pen-tilt-direction' -NoReveal
-        if((Json $heldDirection)-cne(Json $at)){throw 'Held touch changed the arranged direction target'}
+        if((Json $heldDirection)-cne(Json $at)){throw 'Held mouse changed the arranged direction target'}
         [CapyRowPointer]::PenTilt(40,20);[CapyRowPointer]::PenHover($at[0],$at[1]);[CapyRowPointer]::PenLeave()
-        [CapyCanvasTouch]::Move(1,$next[0],$next[1])
-        Wait-Until {[Math]::Abs((Points)[1][0]-.6) -lt .02 -and [Math]::Abs((Points)[1][1]-.7) -lt .02} 'First pen sensing interrupted the existing touch curve capture'
-        if((Tilt).ready -or (Tilt).editor.controls.epoch -ne $epoch -or (Json (Control 'pen-tilt-curve').GetRuntimeId()) -ne $owner -or !(Same-Bounds (Tilt).bounds $bounds)){throw 'First binding did not defer while the existing touch curve gesture remained active'}
+        [CapyRowPointer]::Move($next[0],$next[1])
+        Wait-Until {[Math]::Abs((Points)[1][0]-.6) -lt .02 -and [Math]::Abs((Points)[1][1]-.7) -lt .02} 'First pen sensing interrupted the existing mouse curve capture'
+        if((Tilt).ready -or (Tilt).editor.controls.epoch -ne $epoch -or (Json (Control 'pen-tilt-curve').GetRuntimeId()) -ne $owner -or !(Same-Bounds (Tilt).bounds $bounds)){throw 'First binding did not defer while the existing mouse curve gesture remained active'}
         Evidence ($stage+'-held') @{epoch=$epoch;owner=$owner;points=(Points);bounds=(Tilt).bounds;ready=(Tilt).ready;prior_edit=[bool]$PriorEdit}
         Capture ($stage+'-held') -WithModel -Composed
-    }finally{[CapyCanvasTouch]::CancelAll();[CapyRowPointer]::Cancel()}
+    }finally{try{[CapyRowPointer]::Key(0x1B)}finally{[CapyRowPointer]::Cancel()}}
     Wait-Until {(Tilt).ready -and (Curve) -eq $draft -and (Json (Tilt).axes) -eq $axes} 'Cancel did not bind the sensed pen and restore prior unbound edit intent'
     if((Tilt).editor.controls.epoch -ne $epoch -or !(Same-Bounds (Tilt).bounds $bounds)){throw 'Deferred binding changed the editor epoch or manual placement'}
     Untouched $stage $before $paper $pixels
@@ -385,8 +382,8 @@ function Move-Utility([double]$X,[double]$Y){
     Wait-Until {$actual=(Control 'pen-tilt-dialog' -Arranged).Current.BoundingRectangle;[Math]::Abs($actual.Left-$X) -lt 2 -and [Math]::Abs($actual.Top-$Y) -lt 2} 'Utility did not reach its native overlap target'
 }
 function Park-UtilityCapture{
-    $window=$root.Current.BoundingRectangle
-    [CapyRowPointer]::Hover([int]($window.Left+$window.Width/2),[int]($window.Top+42*$scale))
+    $at=Canvas-Point
+    [CapyRowPointer]::Hover($at[0],$at[1])
     Wait-Until {!@(Capy-Tooltips $review.Id).Count} 'Utility tooltip did not leave the capture area'
 }
 function Utility-Overlays{
@@ -430,7 +427,7 @@ function Utility-Overlays{
     Evidence 'utility-over-column' @{default_bounds=$initial;work_area=$work;drawer=$drawer;overlap=$bounds;connections=$connections;samples=$samples}
     foreach($sample in $samples){if($sample.after_pixels -ne $sample.pixels){throw "$($sample.kind) paints through the opaque utility interior"}}
     $window=$root.Current.BoundingRectangle;$frame=(Control 'pen-tilt-dialog' -Arranged).Current.BoundingRectangle
-    Move-Utility $frame.Left ($view.Top+4*$scale)
+    Move-Utility $frame.Left ($view.Top+((Model).titlebar_insets[2]+4)*$scale)
     $at=Center 'pen-tilt-title';$header=(Screen-Bounds @{x=0;y=0;width=(Model).layout.viewport[0];height=$work.y})
     if(!$header.Contains([double]$at[0],[double]$at[1])){throw 'The native utility title does not overlap the header'}
     $frame=(Control 'pen-tilt-dialog' -Arranged).Current.BoundingRectangle;Move-Utility ($frame.Left-20*$scale) ($frame.Top+4*$scale)
@@ -566,7 +563,6 @@ try{
     try{Capture 'failure' -WithModel}catch{}
     [IO.File]::WriteAllText((Join-Path $run 'failure.txt'),($_|Out-String)+$_.ScriptStackTrace);throw
 }finally{
-    [CapyCanvasTouch]::Dispose()
     [CapyRowPointer]::Dispose()
     Exit-CapyEnvironment
 }

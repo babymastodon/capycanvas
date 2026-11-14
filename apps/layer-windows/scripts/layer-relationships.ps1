@@ -226,7 +226,7 @@ function Test-LayerRelationships{
     }finally{[CapyRowPointer]::Dispose()}
 }
 
-function Test-LayerUnit{
+function Test-LayerUnit([scriptblock]$Open){
     if(!('CapyLocaleLayout' -as [type])){Add-Type -TypeDefinition @'
 using System;using System.Runtime.InteropServices;
 public static class CapyLocaleLayout {
@@ -237,8 +237,7 @@ public static class CapyLocaleLayout {
     function Unit-TextScale{[double](& powershell.exe -NoProfile -NonInteractive -Command '[Windows.UI.ViewManagement.UISettings,Windows.UI.ViewManagement,ContentType=WindowsRuntime]::new().TextScaleFactor')}
     $path='HKCU:\Software\Microsoft\Accessibility'
     $saved=Get-ItemProperty -LiteralPath $path -Name TextScaleFactor -ErrorAction SilentlyContinue
-    $previous=Unit-TextScale;$initialTheme=(Model).state.theme;$edits=[Collections.Generic.List[object]]::new();$receipts=[Collections.Generic.List[object]]::new()
-    $before=(Model).state.layers;$authoredIds=@($before.id);$top=$authoredIds[0]
+    $previous=Unit-TextScale;$initialTheme=$null;$before=$null;$edits=[Collections.Generic.List[object]]::new();$receipts=[Collections.Generic.List[object]]::new()
     $unitError=$null;$cleanupErrors=[Collections.Generic.List[object]]::new()
     function Unit-Error($Record){@{message=$Record.Exception.Message;exception_type=$Record.Exception.GetType().FullName;id=$Record.FullyQualifiedErrorId;position=$Record.InvocationInfo.PositionMessage;stack=$Record.ScriptStackTrace}}
     try{
@@ -246,6 +245,12 @@ public static class CapyLocaleLayout {
         Set-ItemProperty -LiteralPath $path -Name TextScaleFactor -Type DWord -Value 130
         [CapyLocaleLayout]::NotifyTextSize()
         Wait-Until {[Math]::Abs((Unit-TextScale)-1.3) -lt .01} 'Layers unit requires Windows text scale 130 percent' 15
+        & $Open
+        $initialTheme=(Model).state.theme;$before=(Model).state.layers;$authoredIds=@($before.id);$top=$authoredIds[0]
+        $launched=@{model=$null}
+        Wait-Until {$launched.model=Model;@($launched.model.layout.measurement_requests|Where-Object panel -eq 'layers')[0].body_measured} 'Layers did not publish its launch measurement'
+        $launchScale=$launched.model.layout_input.cache.context.text_scale
+        if([Math]::Abs($launchScale-1.3) -gt .01){throw "Layers unit launch measured text_scale=$launchScale instead of 130 percent"}
         $scroll=Scroll-Pattern (Control 'layer-list');$scroll.SetScrollPercent(-1,0)
         Wait-Until {$row=Find "layer-row-$top" -Visible;$row -and $row.Current.BoundingRectangle.Height -gt 0} 'Plain top row did not realize at large text'
         $scale=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.
@@ -282,7 +287,7 @@ public static class CapyLocaleLayout {
         }
     }catch{$unitError=$_}finally{
         try{
-            if((Model).state.theme -ne $initialTheme){Relationship-Theme}
+            if($initialTheme -and (Model).state.theme -ne $initialTheme){Relationship-Theme}
         }catch{$cleanupErrors.Add((Unit-Error $_))}finally{
             try{
                 if($saved){Set-ItemProperty -LiteralPath $path -Name TextScaleFactor -Type DWord -Value $saved.TextScaleFactor}else{Remove-ItemProperty -LiteralPath $path -Name TextScaleFactor}

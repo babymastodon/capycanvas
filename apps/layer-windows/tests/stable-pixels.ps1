@@ -7,6 +7,9 @@ foreach($name in 'Wait-PresentedFrame','Wait-StablePixels'){
     if(!$helper){throw "Pixel stability helper is missing: $name"}
     . ([scriptblock]::Create($helper.Extent.Text))
 }
+function State-File{throw 'Pixel stability control unexpectedly requested a review trace'}
+function Read-Snapshot{throw 'Pixel stability control unexpectedly read a review snapshot'}
+function Wait-Until{throw 'Pixel stability control unexpectedly waited for presentation'}
 function Capture-CallerPixels{
     $sample=[pscustomobject]@{kind='column';x=1640;y=116;pixels='owned-pixels'}
     Wait-StablePixels {"$($sample.kind):$($sample.x),$($sample.y):$($sample.pixels)"}

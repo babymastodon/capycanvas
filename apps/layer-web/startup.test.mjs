@@ -14,19 +14,64 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
     }
     throw Error(`Workspace startup timed out: ${condition}; ${await evaluate(`JSON.stringify({body:document.body.dataset,ready:window.layerApp?.state().workspace_ready,view:window.layerApp&&JSON.parse(layerApp.app.workspace_view()),probe:window.workspaceStartup,styles:[...document.querySelectorAll('#workspace > .chrome')].map(node=>({visibility:getComputedStyle(node).visibility,opacity:getComputedStyle(node).opacity,rect:node.getBoundingClientRect().toJSON()}))},(_,value)=>typeof value==='bigint'?String(value):value)`)}`);
   };
-  for (const theme of ['light', 'dark']) for (const mobile of [false, true]) {
+  for (const theme of ['light', 'dark']) for (const device of [
+    {id:'desktop',mobile:false,width:1300,height:900,mark:'zen-looking-up'},
+    {id:'mobile',mobile:true,width:390,height:844,zen:'bathing',mark:'zen-bathing'},
+    {id:'mobile-landscape',mobile:true,width:844,height:390,zen:'sleeping',mark:'zen-sleeping'},
+  ]) {
+    const {mobile}=device;
+    const preferences=JSON.stringify({version:1,theme,...device.zen&&{zen_icon:device.zen}});
     const scenarioUrl = new URL(baseUrl);
-    scenarioUrl.hostname = `${theme}-${mobile ? 'mobile' : 'desktop'}.localhost`;
+    scenarioUrl.hostname = `${theme}-${device.id}.localhost`;
     const url = scenarioUrl.href;
     await call('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:theme}]});
+    await call('Emulation.setDeviceMetricsOverride',{width:device.width,height:device.height,deviceScaleFactor:1,mobile,screenWidth:device.width,screenHeight:device.height});
     const capture = async phase => {
       const directory = process.env.LAYER_TEST_ARTIFACTS || 'artifacts/ui/launch';
       await mkdir(directory,{recursive:true});
       const shot = await call('Page.captureScreenshot',{format:'png'});
-      await writeFile(`${directory}/${theme}-${mobile?'mobile':'desktop'}-${phase}.png`,Buffer.from(shot.data,'base64'));
+      await writeFile(`${directory}/${theme}-${device.id}-${phase}.png`,Buffer.from(shot.data,'base64'));
+    };
+    const geometry=()=>evaluate("(()=>{const mark=document.querySelector('.launch-capy').getBoundingClientRect(),caption=document.querySelector('.launch-caption').getBoundingClientRect();const node=document.querySelector('.launch-caption'),style=getComputedStyle(node),context=document.createElement('canvas').getContext('2d');context.font=`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;const ink=context.measureText(node.textContent),baseline=(parseFloat(style.lineHeight)-ink.fontBoundingBoxAscent-ink.fontBoundingBoxDescent)/2+ink.fontBoundingBoxAscent;return{mark:mark.toJSON(),caption:caption.toJSON(),inkTop:caption.y+baseline-ink.actualBoundingBoxAscent,width:innerWidth,height:innerHeight};})()");
+    const checkGeometry=async early=>{
+      const actual=await geometry(),copy=await evaluate('(()=>{const v=layerApp.app.bootstrap_view();return {size:v.launch_mark_size,fit:v.launch_mark_max_fraction,gap:v.launch_caption_gap,inkBottom:v.launch_mark.ink_bottom,icon:v.launch_mark.icon};})()');
+      assert.equal(copy.icon,device.mark,'Bootstrap names the saved Zen capy');
+      assert.deepEqual(await evaluate("(()=>{const mark=document.querySelector('.launch-capy');return {icon:mark.dataset.icon,visible:mark.checkVisibility({checkVisibilityCSS:true}),mask:getComputedStyle(mark).maskImage.includes(`/icons/layer-${mark.dataset.icon}-symbolic.svg`)};})()"),
+        {icon:device.mark,visible:true,mask:true},'The cover shows the chosen capy');
+      const size=Math.min(copy.size,copy.fit*Math.min(actual.width,actual.height));
+      for(const value of [actual.mark.width,actual.mark.height])assert.ok(Math.abs(value-size)<.5,'The mark uses the shared fitted size');
+      assert.ok(Math.abs(actual.mark.x+actual.mark.width/2-actual.width/2)<.5);
+      assert.ok(Math.abs(actual.mark.y+actual.mark.height/2-actual.height/2)<.5);
+      assert.ok(Math.abs(actual.inkTop-actual.mark.y-actual.mark.height*copy.inkBottom-copy.gap)<.5,'The caption ink follows the chosen mark with the shared gap');
+      assert.ok(actual.caption.bottom<=actual.height,'The caption fits inside the window');
+      for(const key of ['x','y','width','height'])assert.ok(Math.abs(actual.mark[key]-early.mark[key])<.5,'Bootstrap must not move or resize the pre-Wasm mark box');
+    };
+    const reveal=async phase=>{
+      const duration=await evaluate('Number(layerApp.app.bootstrap_view().launch_reveal_ms)');
+      const observation=await evaluate(`new Promise(resolve=>{const cover=document.querySelector('#gpu-notice');const observer=new MutationObserver(()=>{if(cover.dataset.launch==='leaving'){observer.disconnect();const begin=performance.now();function frame(now){const opacity=Number(getComputedStyle(cover).opacity);if(opacity>.5){requestAnimationFrame(frame);return;}resolve({hidden:cover.hidden,opacity,duration:parseFloat(getComputedStyle(cover).transitionDuration)*1000,elapsed:now-begin});}requestAnimationFrame(frame);}});observer.observe(cover,{attributes:true,attributeFilter:['data-launch']});workspaceStartup.release();})`);
+      assert.equal(observation.hidden,false,'The cover remains mounted at half opacity');
+      assert.ok(observation.opacity>0&&observation.opacity<1,'The full cover fades through a real intermediate opacity over the editor');
+      assert.equal(observation.duration,duration,'CSS reveal timing matches shared Bootstrap');
+      await capture(`${phase}-mid-reveal`);
+      const directory=process.env.LAYER_TEST_ARTIFACTS||'artifacts/ui/launch';
+      await writeFile(`${directory}/${theme}-${device.id}-${phase}-mid-reveal.json`,JSON.stringify(observation,null,2));
     };
     const onlyLaunch = async () => {
-      const exposed = await evaluate(`(()=>{const cover=document.querySelector('#gpu-notice'),walker=document.createTreeWalker(document.querySelector('#workspace'),NodeFilter.SHOW_TEXT),exposed=[];let text;while(text=walker.nextNode()){if(!text.textContent.trim()||cover.contains(text))continue;const range=document.createRange();range.selectNodeContents(text);for(const r of range.getClientRects()){const x=r.x+r.width/2,y=r.y+r.height/2,owner=text.parentElement;if(r.width&&r.height&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight&&owner.contains(document.elementFromPoint(x,y)))exposed.push({text:text.textContent.trim(),owner:owner.className,z:getComputedStyle(owner).zIndex});}}return exposed;})()`);
+      const exposed = await evaluate(`(()=>{
+        const cover=document.querySelector('#gpu-notice'),inert=[...document.querySelectorAll('[inert]')],probe=document.createElement('style'),exposed=[];
+        const shown=node=>node.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+        probe.textContent='*{pointer-events:auto!important}';document.head.append(probe);for(const node of inert)node.inert=false;
+        try{
+          for(const node of document.querySelectorAll('dialog:modal,:popover-open,.document-transition'))if(shown(node))exposed.push({surface:node.id||node.className});
+          const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let text;
+          while(text=walker.nextNode()){
+            const owner=text.parentElement;
+            if(!text.textContent.trim()||cover.contains(text)||!shown(owner))continue;
+            const range=document.createRange();range.selectNodeContents(text);
+            for(const r of range.getClientRects()){const x=r.x+r.width/2,y=r.y+r.height/2;if(r.width&&r.height&&x>=0&&y>=0&&x<innerWidth&&y<innerHeight&&owner.contains(document.elementFromPoint(x,y)))exposed.push({text:text.textContent.trim(),owner:owner.id||owner.className,z:getComputedStyle(owner).zIndex});}
+          }
+        }finally{for(const node of inert)node.inert=true;probe.remove();}
+        return exposed;})()`);
       assert.deepEqual(exposed,[],'Only the capy and its delayed caption may appear over a healthy launch cover');
     };
     const awaitCaption = async phase => {
@@ -40,17 +85,21 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
     const releaseCode = async phase => {
       await wait("window.workspaceStartup?.releaseCode && window.layerApp == null && document.querySelector('.launch-capy')?.getBoundingClientRect().width > 0");
       await wait(`document.body.dataset.theme === ${JSON.stringify(theme)}`);
-      assert.equal(await evaluate("window.layerApp == null"),true,'The HTML capy appears before Wasm can initialize');
+      assert.equal(await evaluate("window.layerApp == null"),true,'The HTML cover appears before Wasm can initialize');
+      assert.deepEqual(await evaluate("(()=>{const mark=document.querySelector('.launch-capy');return {icon:mark.dataset.icon??null,visible:mark.checkVisibility({checkVisibilityCSS:true}),mask:getComputedStyle(mark).maskImage};})()"),
+        {icon:null,visible:false,mask:'none'},'No capy appears before Bootstrap names the chosen one');
       assert.equal(await evaluate("[...document.querySelectorAll('#workspace button,#workspace input,#workspace select,#workspace textarea,#workspace [tabindex],#workspace a[href]')].every(node=>node.closest('[inert]')!==null)"),true,'Raw HTML workspace controls are inert before Wasm initializes');
       assert.equal(await evaluate("document.querySelector('#gpu-notice').textContent.trim()"),'');
-      assert.ok(await evaluate("(()=>{const b=document.querySelector('.launch-capy').getBoundingClientRect();return Math.abs(b.x+b.width/2-innerWidth/2)<2&&Math.abs(b.y+b.height/2-innerHeight/2)<2})()"),'The early capy is centered in the full window');
+      assert.ok(await evaluate("(()=>{const b=document.querySelector('.launch-capy').getBoundingClientRect();return Math.abs(b.x+b.width/2-innerWidth/2)<2&&Math.abs(b.y+b.height/2-innerHeight/2)<2})()"),'The early mark box is centered in the full window');
       await capture(`${phase}-before-wasm`);
       await onlyLaunch();
+      const early=await geometry();
       await evaluate('workspaceStartup.releaseCode()');
+      return early;
     };
     await activateForReload(call);
     const {identifier} = await call('Page.addScriptToEvaluateOnNewDocument', {source:`
-      localStorage.setItem('layer.preferences.v1',JSON.stringify({version:1,theme:${JSON.stringify(theme)}}));
+      localStorage.setItem('layer.preferences.v1',${JSON.stringify(preferences)});
       Object.defineProperty(navigator,'userAgentData',{value:{mobile:${mobile}},configurable:true});
       Object.defineProperty(navigator,'userAgent',{value:${JSON.stringify(mobile ? 'Android' : 'Desktop')},configurable:true});
       Object.defineProperty(navigator,'platform',{value:'Linux',configurable:true});
@@ -66,7 +115,7 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
         workspaceStore.execute=async request=>{p.traffic.push(request);await held;return execute(request)};
       });
       function frame(){
-        const visible=[...document.querySelectorAll('#workspace > .chrome,#workspace > .dock-group,#workspace > .collapsed-column')]
+        const visible=[...document.querySelectorAll('#workspace > .chrome,#workspace > .dock-group,#workspace > .collapsed-column,#phone-frame')]
           .some(node=>node.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}))
           && document.querySelector('#gpu-notice').hidden;
         if(visible){
@@ -79,8 +128,9 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
     `});
     try {
       await call('Page.navigate', {url});
-      await releaseCode('initial');
+      const initialGeometry=await releaseCode('initial');
       await wait('window.layerApp && workspaceStartup.release');
+      await checkGeometry(initialGeometry);
       await awaitCaption('initial');
       assert.deepEqual(await evaluate('workspaceStartup.frames'), [], 'Slow storage must never expose a provisional workspace');
       assert.equal(await evaluate('layerApp.state().workspace_ready'), false);
@@ -88,38 +138,41 @@ export async function checkWorkspaceStartup({call, evaluate, settle}) {
       assert.ok(await evaluate("(()=>{const b=document.querySelector('#gpu-notice').getBoundingClientRect();return b.x===0&&b.y===0&&b.width===innerWidth&&b.height===innerHeight})()"),'The launch cover fills the window after workspace measurement');
       await capture('initial-caption');
       await onlyLaunch();
-      await evaluate('workspaceStartup.release()');
+      await reveal('initial');
       await wait('document.body.hasAttribute("data-workspace-ready") && workspaceStartup.frames.length');
       assert.deepEqual(await evaluate('workspaceStartup.frames[0]'), {ready:true,name:mobile?'Sketch':'Paint',zen:false});
       await capture('initial-revealed');
       await wait('layerApp.app.brush_ready()');
       await evaluate(`layerApp.dispatch({type:'workspace_manager',command:{type:'switch',id:'builtin:workspace:photographer'}})`);
       await wait('JSON.parse(layerApp.app.workspace_view()).name === "Photo" && !JSON.parse(layerApp.app.workspace_view()).busy');
-      await evaluate(`layerApp.dispatch({type:'invoke',command:'zen_mode'});layerApp.app.workspace_observe()`);
-      await wait('JSON.parse(layerApp.app.workspace_view()).dirty');
+      if(!mobile) {
+        assert.equal(await evaluate(`layerApp.dispatch({type:'invoke',command:'zen_mode'});layerApp.app.workspace_observe();layerApp.app.workspace_tick();JSON.parse(layerApp.app.workspace_view()).dirty`),true,'Zen changes publish a dirty workspace before its asynchronous save');
+      }
       await wait('!JSON.parse(layerApp.app.workspace_view()).dirty && !JSON.parse(layerApp.app.workspace_view()).busy && !JSON.parse(layerApp.app.workspace_view()).saving');
       await settle();
       await activateForReload(call);
       await call('Page.reload', {ignoreCache:true});
-      await releaseCode('restored');
+      const restoredGeometry=await releaseCode('restored');
       await wait('window.layerApp && workspaceStartup.release');
+      await checkGeometry(restoredGeometry);
       await awaitCaption('restored');
       assert.deepEqual(await evaluate('workspaceStartup.frames'), [], 'Restart must keep the saved workspace hidden until adoption');
       await capture('restored-caption');
       await onlyLaunch();
-      await evaluate('workspaceStartup.release()');
+      await reveal('restored');
       await wait('document.body.hasAttribute("data-workspace-ready") && workspaceStartup.frames.length');
-      assert.deepEqual(await evaluate('workspaceStartup.frames[0]'), {ready:true,name:'Photo',zen:true}, 'The first controls after restart belong to the saved workspace');
+      assert.deepEqual(await evaluate('workspaceStartup.frames[0]'), {ready:true,name:'Photo',zen:!mobile}, 'The first controls after restart belong to the saved workspace');
       assert.equal(await evaluate('layerApp.state().theme'), theme);
       await capture('restored-revealed');
       await wait('layerApp.app.brush_ready()');
     } finally {
       await call('Page.removeScriptToEvaluateOnNewDocument', {identifier});
       await call('Emulation.setEmulatedMedia',{features:[]});
+      await call('Emulation.clearDeviceMetricsOverride');
     }
   }
   await checkWorkspaceStartupFailure({call,evaluate,wait,settle},baseUrl);
-  console.log('Workspace startup: desktop/mobile defaults and saved Photo/Zen first frames, slow storage, light/dark');
+  console.log('Workspace startup: desktop/mobile defaults and saved Photo/Zen first frames, saved capy poses, slow storage, light/dark');
 }
 
 async function checkWorkspaceStartupFailure({call,evaluate,wait,settle},baseUrl) {

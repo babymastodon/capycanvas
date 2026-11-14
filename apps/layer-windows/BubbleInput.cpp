@@ -78,10 +78,7 @@ void WorkspaceBubbles::Impl::begin(std::shared_ptr<Contact> const& c,Point at,ui
         auto panel=object(data->colorPreview,L"view");if(!panel.Size())panel=object(data->model,L"color_panel");
         auto shape=str(panel,L"shape");c->wheel=capy_color_hit(float(local.X+size/2),float(local.Y+size/2),float(size),shape==L"circle"?2:shape==L"triangle"?1:0);pick(c,at);
     }else if(hitKind==L"ring"||hitKind==L"intensity"){
-        auto scale=workspace.XamlRoot()?workspace.XamlRoot().RasterizationScale():1.;
-        auto slop=std::max(8.,double(std::max(GetSystemMetrics(SM_CXDOUBLECLK),GetSystemMetrics(SM_CYDOUBLECLK)))/scale);
-        bool repeated=lastRing&&std::get<0>(*lastRing)==c->record->id&&timestamp-std::get<1>(*lastRing)<=uint64_t(GetDoubleClickTime())*1000&&distance(at,std::get<2>(*lastRing))<=slop;
-        if(repeated)lastRing.reset();else lastRing=std::tuple(c->record->id,timestamp,at);
+        bool repeated=lastRing.Next(PressRepeat::System(workspace.XamlRoot()?workspace.XamlRoot().RasterizationScale():1.),timestamp,at.X,at.Y,c->record->id);
         if(hitKind==L"intensity"){
             c->wheel=3;c->mode=repeated?L"reset":L"intensity";
             if(repeated)send(O({{L"type",S(L"set_intensity")},{L"id",N(c->record->id)},{L"stops",N(0)}}));else pick(c,at);

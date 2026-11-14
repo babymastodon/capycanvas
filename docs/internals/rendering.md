@@ -228,12 +228,11 @@ and starts its own 150 ms fade on a full-scope refresh. Until then it holds the
 old image, or shows the panel when no compatible image exists. Both parts share
 one transient charge and release independently when their fades finish.
 
-The artwork pipelines leave out the paper lighting code; a second set with it
-compiles the first time paper lighting shows, in the background where a startup
-compiler runs, and the plain set draws until it is ready.
-Waiting for optional paper shaders does not mark renderer work pending, keeps
-canvas and brush readiness, and does not block layer thumbnail readbacks.
-Prepared bake steps resume when the compiler wakes the host.
+The presenter's bound paper-lighting variant and its slope programs run at
+Required before a lit canvas can present. The other two lit variants run at
+Validation after the first lit frame. Unlit canvases and standalone Navigators
+do not require lit viewport pipelines. Paper bake steps resume when the compiler
+wakes the host.
 
 Viewport and backdrop uniforms are encoded into the frame that consumes them.
 An unchanged layer-style table reuses its uploaded bytes; buffer replacement or
@@ -1382,11 +1381,15 @@ which samples every second even while Stats is closed. Linux and Android report 
 Windows reports private commit and its lifetime peak; Apple reports physical
 footprint and the highest sampled footprint. GPU readings cover the selected
 Vulkan device-local heap, DXGI process usage in local memory and its budget, or Metal allocations
-and its working-set recommendation. These are raw readings, separate from cache
-admission allowances. Limit, tracked, pinned and debt rows come from the shared
-ledger. Missing queries, including browser process memory, remain unavailable.
-Process and GPU readings can overlap and are not additive. Canvas storage
-remains tracked renderer allocation, excluding driver overhead.
+and its working-set recommendation. Diagnostics draws one meter per pool from the
+shared ledger: RAM, and the renderer's own device when it has separate memory. A
+device that shares RAM is counted inside the RAM meter and listed by name; the
+meter adds the driver's reading to process memory except on Apple, whose
+footprint already includes it, and never shows less than the ledger. Each
+meter fills to the OS or driver reading against the computer's RAM or the card's
+memory, split into held memory, cache and the rest of the app, with the
+allowance as a notch. Without those readings, as in browsers, it shows tracked
+memory against the allowance.
 
 Live composite color samples and region classification retain their frame while
 cold image-object captures prepare on workers. Polling advances prepared GPU

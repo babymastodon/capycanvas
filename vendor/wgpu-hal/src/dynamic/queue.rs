@@ -14,6 +14,13 @@ pub trait DynQueue: DynResource {
         surface_textures: &[&dyn DynSurfaceTexture],
         signal_fence: (&dyn DynFence, FenceValue),
     ) -> Result<(), DeviceError>;
+    fn supports_nonblocking_present(&self, _surface: &dyn DynSurface) -> bool { false }
+
+    unsafe fn try_present(
+        &self,
+        _surface: &dyn DynSurface,
+        _texture: &dyn DynSurfaceTexture,
+    ) -> Result<crate::PresentAttempt, SurfaceError> { Ok(crate::PresentAttempt::Unsupported) }
     unsafe fn present(
         &self,
         surface: &dyn DynSurface,
@@ -40,6 +47,18 @@ impl<Q: Queue + DynResource> DynQueue for Q {
             .collect::<Vec<_>>();
         let signal_fence = (signal_fence.0.expect_downcast_ref(), signal_fence.1);
         unsafe { Q::submit(self, &command_buffers, &surface_textures, signal_fence) }
+    }
+
+    fn supports_nonblocking_present(&self, surface: &dyn DynSurface) -> bool {
+        Q::supports_nonblocking_present(self, surface.expect_downcast_ref())
+    }
+
+    unsafe fn try_present(
+        &self,
+        surface: &dyn DynSurface,
+        texture: &dyn DynSurfaceTexture,
+    ) -> Result<crate::PresentAttempt, SurfaceError> {
+        unsafe { Q::try_present(self, surface.expect_downcast_ref(), texture.expect_downcast_ref()) }
     }
 
     unsafe fn present(

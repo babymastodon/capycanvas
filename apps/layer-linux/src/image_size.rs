@@ -55,11 +55,11 @@ impl ImageSizeDialog {
         content.append(&fields[0]);
         content.append(&fields[1]);
         let options = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let unit = gtk::DropDown::from_strings(&[]);
+        let unit = crate::panel_controls::dropdown(&[]);
         unit.set_widget_name("image-size-unit");
         unit.set_hexpand(true);
         options.append(&unit);
-        let constrain = gtk::CheckButton::new();
+        let constrain = crate::panel_controls::check("");
         constrain.set_widget_name("image-size-constrain");
         options.append(&constrain);
         content.append(&options);
@@ -69,7 +69,7 @@ impl ImageSizeDialog {
         resample_label.set_xalign(0.);
         resample_label.set_hexpand(true);
         resample_row.append(&resample_label);
-        let resample = gtk::DropDown::from_strings(&[]);
+        let resample = crate::panel_controls::dropdown(&[]);
         resample.set_widget_name("image-size-resample");
         resample_row.append(&resample);
         content.append(&resample_row);

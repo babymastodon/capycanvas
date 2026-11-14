@@ -164,7 +164,7 @@ private struct DraftRoot: SwiftUI.View {
                         "Pending bounds queries retain the native container, field and focused draft")
                     let viewport = store.snapshot["layout"]["viewport"]
                     let visible = CGRect(x: 0, y: 0, width: viewport[0].number,
-                        height: max(0, viewport[1].number - store.keyboardInset))
+                        height: max(0, viewport[1].number - store.obscuredBottom))
                     let bounds = projection["bounds"].rect.intersection(visible)
                     let actual = state.contentFrame()
                     precondition(projection["kind"].string == "page" && abs(actual.minX - bounds.minX) < 1
@@ -177,17 +177,17 @@ private struct DraftRoot: SwiftUI.View {
                 let keyboard = CGRect(x: window.bounds.minX, y: window.bounds.maxY - 200, width: window.bounds.width, height: 200)
                 NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
                     userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: window.convert(keyboard, to: window.screen.coordinateSpace))])
-                await wait(window, "Native keyboard end-frame notifications report the owning window's bottom overlap") { store.keyboardInset == 200 }
+                await wait(window, "Native keyboard end-frame notifications report the owning window's bottom overlap") { store.keyboardInset == 200 && store.state["phone"]["keyboard"].number == 200 }
                 precondition(field.isFirstResponder && field.text == "140", "Refreshing native keyboard facts keeps the focused page field")
                 let floating = CGRect(x: window.bounds.midX, y: window.bounds.midY, width: window.bounds.width / 2, height: 100)
                 NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
                     userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: window.convert(floating, to: window.screen.coordinateSpace))])
-                await wait(window, "Floating keyboards do not reserve bottom clearance") { store.keyboardInset == 0 }
+                await wait(window, "Floating keyboards do not reserve bottom clearance") { store.keyboardInset == 0 && store.state["phone"]["keyboard"].number == 0 }
                 let hidden = CGRect(x: window.bounds.minX, y: window.bounds.maxY, width: window.bounds.width, height: 200)
                 NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
                     userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: window.convert(hidden, to: window.screen.coordinateSpace))])
                 field.resignFirstResponder()
-                await wait(window, "The owning window keyboard dismissal is reported") { store.keyboardInset == 0 }
+                await wait(window, "The owning window keyboard dismissal is reported") { store.keyboardInset == 0 && store.state["phone"]["keyboard"].number == 0 }
             }
         }
         try await store.projectFiles.newDrawingStep(["op": "cancel"])

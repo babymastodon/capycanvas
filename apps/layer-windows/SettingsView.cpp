@@ -471,10 +471,13 @@ struct SettingsView::Impl : std::enable_shared_from_this<Impl> {
         auto captionHeight=insets.Size()==3?insets.GetAt(2).GetNumber():0.;
         frame.Height(std::max(240.,std::min(DialogHeight,double(size.Height)-40-2*captionHeight)));
     }
+    CanvasModelInputs inputs;
     void apply(J const& snapshot){
         data->adoptLocalization(snapshot);
         if(!snapshot.HasKey(L"state"))return;
-        data->state=object(snapshot,L"state");data->refreshPalette();data->model=snapshot;auto model=preferences(data);
+        data->state=branch(snapshot,L"state");data->model=snapshot;
+        auto presentation=data->presentation(inputs);if(!presentation)return;
+        data->refreshPalette();auto model=preferences(data);
         auto document=str(object(snapshot,L"windows_document"),L"type");bool managing=document==L"workflow"||document==L"workflow_busy";
         if(profileReturn==ProfileReturn::Requested&&managing)profileReturn=ProfileReturn::Managing;
         else if(profileReturn==ProfileReturn::Managing&&!managing){profileReturn=ProfileReturn::None;data->dispatch(O({{L"type",S(L"open_settings")},{L"page",S(L"color")}}));}

@@ -48,7 +48,7 @@ export function createShortcutPage({ onKey, app, element, button, icon, send, vi
       next.animate([{ transform: `translateX(${forward ? 24 : -24}%)`, opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 200, easing: "cubic-bezier(.2,.8,.2,1)" });
   }
 
-  function recordingRow(capture, captureIcon) {
+  function recordingRow(capture, captureIcon, target) {
     const row = element("div", "preference-row recording");
     row.id = "shortcut-recording"; row.tabIndex = -1;
     const glyph = icon({information:"info",keyboard:"keyboard",warning:"warning"}[captureIcon]);
@@ -59,7 +59,21 @@ export function createShortcutPage({ onKey, app, element, button, icon, send, vi
     const replace = !!capture.conflict;
     const confirm = button(()=>capture.existing ? copy.open : replace ? copy.reassign : copy.add, () => send({ type: "confirm_shortcut", replace }), "suggested-action");
     confirm.id = "confirm-shortcut"; confirm.disabled = !capture.chord || !!capture.error;
-    row.append(glyph, text, cancel, confirm);
+    const actions=element('div','recording-actions');actions.append(cancel,confirm);
+    row.append(glyph,text,actions);
+    const arrange=()=>{
+      const width=row.getBoundingClientRect().width;if(!width)return;
+      const page=target.node.classList.contains('dialog-page');
+      if(page&&actions.parentNode!==target.footer)target.footer.append(actions);
+      else if(!page&&actions.parentNode!==row)row.append(actions);
+      target.footer.hidden=!page;
+      const natural=node=>{const style=node.style.cssText;node.style.cssText+=';flex:none;width:max-content;max-width:none;white-space:nowrap';const measured=node.getBoundingClientRect().width;node.style.cssText=style;return measured;};
+      const beside=app.toolbar_ui({type:'notice_layout',text:natural(text),content:width-22,actions:natural(actions),gap:6,min_text_width:width-22}).beside;
+      row.classList.toggle('recording-stacked',!page&&!beside);
+    };
+    const resize=new ResizeObserver(arrange);
+    resize.observe(row);resize.observe(text);
+    row.disposeRecording=()=>resize.disconnect();row.arrangeRecording=arrange;
     return row;
   }
 
@@ -70,10 +84,11 @@ export function createShortcutPage({ onKey, app, element, button, icon, send, vi
     exit.id = `${id}-close`; bindCopy(exit,()=>common.close,"ariaLabel"); bindCopy(exit,()=>common.close,"title");
     header.append(title, exit);
     const content=kit.body(),body=content.content;body.classList.add('preference-stack');
-    node.append(header, content.root); document.body.append(node);
+    const footer=kit.footer({separator:true});footer.hidden=true;
+    node.append(header, content.root,footer); document.body.append(node);
     node.addEventListener("close", () => { node.signature = ""; });
     const host=createDialogHost({onKey,app,dialog:node,header,cancel:exit,icon,copy:common,onCancel:onDismiss,search,clearSearch,cancelLabel:()=>common.close});
-    return { node, header, title, body, content, host, signature: "" };
+    return { node, header, title, body, content, footer, host, signature: "" };
   }
   const dismissRecording = close => () => (view()?.capture ? send({ type: "cancel_shortcut" }) : close());
   const editor = sheet("shortcut-editor", dismissRecording(() => send({ type: "close_shortcut_editor" })));
@@ -103,7 +118,7 @@ export function createShortcutPage({ onKey, app, element, button, icon, send, vi
   let importSignature = '';
 
   function present(target, intent) {
-    if(intent){target.presented=target.host.present(intent)||target.presented;}
+    if(intent){target.presented=target.host.present(intent)||target.presented;target.node.querySelector('#shortcut-recording')?.arrangeRecording?.();}
     else target.host.hide();
   }
 
@@ -315,6 +330,7 @@ export function createShortcutPage({ onKey, app, element, button, icon, send, vi
     const signature = JSON.stringify([spec, capture, error]);
     if (editor.signature !== signature) {
       editor.signature = signature;
+      editor.node.querySelector('#shortcut-recording')?.disposeRecording?.();editor.footer.replaceChildren();editor.footer.hidden=true;
       editor.title.textContent = spec.label;
       const description = element("p", "settings-description sheet-summary", spec.description);
       const section = group("", [app.native_caption({type:'shortcut_defaults',keys:spec.defaults}), ...spec.overlaps].join("\n"));
@@ -324,7 +340,7 @@ export function createShortcutPage({ onKey, app, element, button, icon, send, vi
         row.append(element("span", "preference-text", binding), flatButton("delete", ()=>copy.remove_shortcut, () => send({ type: "remove_shortcut", id: spec.id, index }), `remove-shortcut-${index}`));
         section.list.append(row);
       });
-      if (capture) section.list.append(recordingRow(capture, model.capture_icon));
+      if (capture) section.list.append(recordingRow(capture, model.capture_icon,editor));
       else if (spec.can_add) {
         const add = button("", () => send({ type: "begin_shortcut", id: spec.id }), "preference-row button-row"); add.id = "add-shortcut";
         add.append(icon("plus"), element("span", "", ()=>copy.add_shortcut)); section.list.append(add);
@@ -355,8 +371,9 @@ export function createShortcutPage({ onKey, app, element, button, icon, send, vi
     const signature = JSON.stringify(capture);
     if (modifierSheet.signature !== signature) {
       modifierSheet.signature = signature;
+      modifierSheet.node.querySelector('#shortcut-recording')?.disposeRecording?.();modifierSheet.footer.replaceChildren();modifierSheet.footer.hidden=true;
       modifierSheet.title.textContent=capture.label;
-      const section = group(); section.list.append(recordingRow(capture, model.capture_icon));
+      const section = group(); section.list.append(recordingRow(capture, model.capture_icon,modifierSheet));
       modifierSheet.body.replaceChildren(element("p", "settings-description sheet-summary", ()=>copy.press_hold_key), section.section);
     }
     present(modifierSheet, model.dialog);

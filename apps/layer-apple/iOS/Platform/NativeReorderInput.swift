@@ -410,7 +410,7 @@ final class ReorderInputView: UIView, UIGestureRecognizerDelegate, UIPointerInte
     @objc private func pressed(_ recognizer: UILongPressGestureRecognizer) {
         if let phoneInput, phoneInput.pointerDown {
             switch recognizer.state {
-            case .began: phoneInput.arm()
+            case .began: phoneInput.arm(at: recognizer.location(in: self))
             case .ended: phoneInput.finish(at: recognizer.location(in: self))
             case .cancelled: if pan.state != .began && pan.state != .changed { phoneInput.cancel() }
             default: break

@@ -27,6 +27,7 @@ import Vision
         for platform: UInt32 in [0, 1] {
             let store = EditorStore(platform: platform, persistence: EditorPersistence(root: nil))
             try await wait("Initial Settings owner", failure: { store.failure }) { !store.state.isNull && !store.catalog.isNull }
+            try await uncover(store)
             store.invoke("about")
             try await wait("About page", failure: { store.failure }) { store.snapshot["preferences"]["page"].string == "about" }
             let layers = store.state["layers"].stableKey
@@ -129,7 +130,7 @@ import Vision
                 let preferences = store.snapshot["preferences"]
                 return preferences["page_requested"].bool && preferences["page"].string == "about" && preferences["query"].string.isEmpty
             }
-            try require(try text(in: host).contains { $0.string.contains("github.com/capyatelier/capycanvas") },
+            try require(try text(in: host).contains { $0.string.contains("github.com/babymastodon/capycanvas") },
                 "Opening the Settings search result must render its shared Source code destination")
             note("PASS platform \(platform): native Settings Website/Source code rejection displays an error; accepted retry clears it and preserves artwork")
         }

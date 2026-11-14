@@ -417,11 +417,47 @@ private struct ShortcutSearchChord {
     }
 }
 
-private struct RecordingRow: View {
+private struct RecordingActions: View {
     @ObservedObject var store: EditorStore
     let capture: JSON
     private func action(_ value: [String: Any]) { store.dispatch(["type": "preferences", "action": value]) }
     var body: some View {
+        HStack(spacing: 6) {
+            Button(store.bootstrap["common"]["cancel"].string) { action(["type": "cancel_shortcut"]) }.accessibilityIdentifier("shortcut-cancel")
+            Button(capture["existing"].bool ? store.catalog["native_copy"]["shortcuts"]["open"].string : capture["conflict"].isNull ? store.catalog["native_copy"]["shortcuts"]["add"].string : store.catalog["native_copy"]["shortcuts"]["reassign"].string) {
+                action(["type": "confirm_shortcut", "replace": !capture["conflict"].isNull])
+            }.buttonStyle(.borderedProminent).disabled(capture["chord"].isNull || !capture["error"].isNull)
+                .accessibilityIdentifier("shortcut-confirm")
+        }
+    }
+}
+
+private struct RecordingRowLayout: Layout {
+    let language: String
+    private func sizes(_ proposal: ProposedViewSize, _ subviews: Subviews) -> (CGSize, CGSize, Bool) {
+        let text = subviews[0].sizeThatFits(.unspecified), actions = subviews[1].sizeThatFits(.unspecified)
+        let width = proposal.width ?? text.width + 6 + actions.width
+        let beside = ToolbarUI.cached(["type": "notice_layout", "text": text.width, "content": width,
+            "actions": actions.width, "gap": 6, "min_text_width": width], language: language)["beside"].bool
+        return (subviews[0].sizeThatFits(ProposedViewSize(width: beside ? max(0, width - actions.width - 6) : width, height: nil)), actions, beside)
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let (text, actions, beside) = sizes(proposal, subviews)
+        return CGSize(width: proposal.width ?? (beside ? text.width + 6 + actions.width : max(text.width, actions.width)),
+            height: beside ? max(text.height, actions.height) : text.height + 6 + actions.height)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let (text, actions, beside) = sizes(ProposedViewSize(bounds.size), subviews)
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: beside ? bounds.midY - text.height / 2 : bounds.minY), proposal: ProposedViewSize(text))
+        subviews[1].place(at: CGPoint(x: bounds.maxX - actions.width, y: beside ? bounds.midY - actions.height / 2 : bounds.minY + text.height + 6), proposal: ProposedViewSize(actions))
+    }
+}
+
+private struct RecordingRow: View {
+    @ObservedObject var store: EditorStore
+    let capture: JSON
+    var actions = true
+    private var text: some View {
         HStack(spacing: 10) {
             SharedIcon(name: capture["existing"].bool || !capture["notice"].string.isEmpty ? "info" : "keyboard")
                 .foregroundStyle(!capture["notice"].string.isEmpty && !capture["existing"].bool ? Color.orange : Color.primary)
@@ -431,20 +467,38 @@ private struct RecordingRow: View {
                     Text(capture["notice"].string).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Spacer()
-            Button(store.bootstrap["common"]["cancel"].string) { action(["type": "cancel_shortcut"]) }.accessibilityIdentifier("shortcut-cancel")
-            Button(capture["existing"].bool ? store.catalog["native_copy"]["shortcuts"]["open"].string : capture["conflict"].isNull ? store.catalog["native_copy"]["shortcuts"]["add"].string : store.catalog["native_copy"]["shortcuts"]["reassign"].string) {
-                action(["type": "confirm_shortcut", "replace": !capture["conflict"].isNull])
-            }.buttonStyle(.borderedProminent).disabled(capture["chord"].isNull || !capture["error"].isNull)
-                .accessibilityIdentifier("shortcut-confirm")
+        }
+    }
+    var body: some View {
+        Group {
+            if actions {
+                RecordingRowLayout(language: store.interfaceLanguage) {
+                    text
+                    RecordingActions(store: store, capture: capture)
+                }
+            } else { text }
         }.background(ShortcutKeyCapture { key, latin, command, shift, alt in
             store.captureShortcut(key: key, latin: latin, command: command, shift: shift, alt: alt)
         }.frame(width: 1, height: 1))
     }
 }
 
+private struct RecordingFooter: View {
+    @ObservedObject var store: EditorStore
+    let capture: JSON
+    @Environment(\.editorPalette) private var palette
+    var body: some View {
+        VStack(spacing: 0) {
+            EditorLine(color: palette.settingsBorder)
+            HStack { Spacer(); RecordingActions(store: store, capture: capture) }
+                .padding(.horizontal, 16).padding(.vertical, 8)
+        }.background(palette["settings"])
+    }
+}
+
 private struct ShortcutEditorSheet: View {
     @ObservedObject var store: EditorStore
+    @Environment(\.editorDialogPage) private var page
     @State private var defaultsCaption = ""
     private var model: JSON { store.snapshot["preferences"] }
     private var editor: JSON { model["shortcut_editor"] }
@@ -471,7 +525,7 @@ private struct ShortcutEditorSheet: View {
                         }
                     }
                     if !capture.isNull {
-                        RecordingRow(store: store, capture: capture)
+                        RecordingRow(store: store, capture: capture, actions: !page)
                     } else if editor["can_add"].bool {
                         Button {
                             action(["type": "begin_shortcut", "id": editor["id"].string])
@@ -496,6 +550,9 @@ private struct ShortcutEditorSheet: View {
                     } header: { Text(store.catalog["native_copy"]["shortcuts"]["pen_touch"].string) } footer: { Text(store.catalog["native_copy"]["shortcuts"]["pen_page_help"].string) }
                 }
             }.formStyle(.grouped)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if page && !capture.isNull { RecordingFooter(store: store, capture: capture) }
+                }
                 .navigationTitle(editor["label"].string)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
@@ -513,13 +570,17 @@ private struct ShortcutEditorSheet: View {
 
 private struct ModifierCaptureSheet: View {
     @ObservedObject var store: EditorStore
+    @Environment(\.editorDialogPage) private var page
     private var capture: JSON { store.snapshot["preferences"]["capture"] }
     var body: some View {
         NavigationStack {
             Form {
                 Text(store.catalog["native_copy"]["shortcuts"]["press_hold_key"].string).foregroundStyle(.secondary)
-                if !capture.isNull { Section { RecordingRow(store: store, capture: capture) } }
-            }.formStyle(.grouped).navigationTitle(store.catalog["native_copy"]["shortcuts"]["new_modifier"].string)
+                if !capture.isNull { Section { RecordingRow(store: store, capture: capture, actions: !page) } }
+            }.formStyle(.grouped)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if page && !capture.isNull { RecordingFooter(store: store, capture: capture) }
+                }.navigationTitle(store.catalog["native_copy"]["shortcuts"]["new_modifier"].string)
         }.modifier(EditorDialogFrame(minWidth: 360, idealWidth: 420, minHeight: 220))
     }
 }

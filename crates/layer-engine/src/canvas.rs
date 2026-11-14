@@ -4805,6 +4805,46 @@ mod tests {
     }
 
     #[test]
+    fn mask_inspection_apply_undo_redo_recomposite_without_changing_checkpoint() {
+        let (_, mut engine) = engine("mask inspection", 64, 64);
+        let document = engine.document();
+        let owner = document.working.occurrence.unwrap();
+        let mut mask = layer_core::CoverageSnapshot::reveal_all(document.artwork.coverage.next_handle(), [64; 2], [0; 2]);
+        let coverage = layer_core::RecordChange::insert(&document.artwork.coverage, mask.source);
+        mask.use_.source = coverage.handle;
+        let target = SourceTarget::Coverage(coverage.handle);
+        let mut occurrence = document.artwork.occurrences.get(owner).unwrap().clone();
+        occurrence.mask = Some(mask.use_);
+        let occurrence = layer_core::RecordChange::replace(&document.artwork.occurrences, owner, Some(occurrence)).unwrap();
+        engine.apply_edit(Edit::Batch(vec![Edit::Coverage(coverage), Edit::Occurrence(occurrence)])).unwrap();
+        let mut working = engine.document().working.clone();
+        working.target = Some(target);
+        working.selection = Some(layer_core::Selection::full());
+        engine.apply_edit(Edit::Working(working)).unwrap();
+        engine.render_frame().unwrap();
+        assert!(!engine.composite_all);
+        let checkpoint = engine.editor.checkpoint();
+        let mut working = engine.document().working.clone();
+        working.inspect_mask = Some(owner);
+        engine.apply_edit(Edit::Working(working)).unwrap();
+        assert_eq!(engine.document().working.inspect_mask, Some(owner));
+        assert!(engine.composite_all);
+        assert_eq!(engine.editor.checkpoint(), checkpoint);
+        engine.render_frame().unwrap();
+        assert!(!engine.composite_all);
+        assert!(engine.undo().unwrap());
+        assert_eq!(engine.document().working.inspect_mask, None);
+        assert!(engine.composite_all);
+        assert_eq!(engine.editor.checkpoint(), checkpoint);
+        engine.render_frame().unwrap();
+        assert!(!engine.composite_all);
+        assert!(engine.redo().unwrap());
+        assert_eq!(engine.document().working.inspect_mask, Some(owner));
+        assert!(engine.composite_all);
+        assert_eq!(engine.editor.checkpoint(), checkpoint);
+    }
+
+    #[test]
     fn a_bake_retains_its_removed_occurrences_and_roots_until_it_has_run() {
         let (_, mut engine) = engine("bake", 1024, 768);
         let lower = engine.document().working.occurrence.unwrap();

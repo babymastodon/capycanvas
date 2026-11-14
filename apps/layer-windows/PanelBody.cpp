@@ -26,6 +26,7 @@ FrameworkElement CapyUi::panelIcon(std::shared_ptr<WorkspaceData> const& data,hs
 }
 PanelBody::PanelBody(std::shared_ptr<WorkspaceData> source,J const& panel,J const& geometry,
     std::function<void()> layoutChanged,std::shared_ptr<WorkspaceGestures> const& gestures,bool scrollable,std::function<J()> tools):data(std::move(source)){
+        auto capture=data->inputs(inputs);find(data->model,L"panels",L"id",str(panel,L"id"));
         auto tileGeometry=object(geometry,L"tiles");
         if(str(panel,L"id")==L"navigator"&&shows(panel,L"navigator")){
             navigator=std::make_unique<NavigatorView>(data,std::move(layoutChanged));
@@ -56,7 +57,7 @@ PanelBody::PanelBody(std::shared_ptr<WorkspaceData> source,J const& panel,J cons
                     tileElements.emplace(uint32_t(id),element);tileOrder.push_back(uint32_t(id));components.emplace(uint32_t(id),component);
                     place(element,bounds);component->Layout(bounds,vertical);tiles.Children().Append(element);
                     bindings.emplace_back([data=data,component,panelId,id]{
-                        auto current=findId(array(find(array(data->model,L"panels"),L"id",panelId),L"tiles"),id);
+                        auto current=findId(find(data->model,L"panels",L"id",panelId),L"tiles",id);
                         if(object(current,L"component").Size())component->Update(current);
                     });
                     continue;
@@ -67,7 +68,7 @@ PanelBody::PanelBody(std::shared_ptr<WorkspaceData> source,J const& panel,J cons
                     slot.Content(line);dividers.emplace(uint32_t(id),line);tiles.Children().Append(slot);attach(slot);
                     tileControls.emplace(uint32_t(id),slot);
                     AutomationProperties::SetAutomationId(slot,L"tile-"+panelId+L"-"+to_hstring(uint32_t(id)));
-                    bindings.emplace_back([data=data,slot,panelId,id]{auto tile=findId(array(find(array(data->model,L"panels"),L"id",panelId),L"tiles"),id);AutomationProperties::SetName(slot,str(tile,L"label"));});
+                    bindings.emplace_back([data=data,slot,panelId,id]{auto tile=findId(find(data->model,L"panels",L"id",panelId),L"tiles",id);AutomationProperties::SetName(slot,str(tile,L"label"));});
                     continue;
                 }
                 bool picker=pickerControl(object(tile,L"control"));
@@ -75,7 +76,7 @@ PanelBody::PanelBody(std::shared_ptr<WorkspaceData> source,J const& panel,J cons
                 auto pick=button(data,str(tile,L"label"),[data=data,id,panelId,presses,weak=std::weak_ptr<WorkspaceGestures>(gestures)]{
                     if(auto gestures=weak.lock();gestures&&gestures->SuppressClick()){presses->reset();return;}
                     if(presses->second()){
-                        auto current=findId(array(find(array(data->model,L"panels"),L"id",panelId),L"tiles"),id);
+                        auto current=findId(find(data->model,L"panels",L"id",panelId),L"tiles",id);
                         auto control=object(current,L"resolved_control");
                         if(flag(current,L"double_click")){
                             data->dispatch(O({{L"type",S(L"double_click_tool")},{L"control",control}}));return;
@@ -112,11 +113,11 @@ PanelBody::PanelBody(std::shared_ptr<WorkspaceData> source,J const& panel,J cons
                     auto text=label(data,str(tile,L"label"),flag(tileGeometry,L"tile_label_bold"));text.TextWrapping(TextWrapping::Wrap);
                     text.MaxLines(int(num(tileGeometry,L"tile_label_lines")));text.TextTrimming(TextTrimming::CharacterEllipsis);text.Margin({0,0,4,0});
                     text.VerticalAlignment(VerticalAlignment::Center);Grid::SetColumn(text,1);content.Children().Append(text);
-                    bindings.emplace_back([data=data,text,panelId,id]{auto current=findId(array(find(array(data->model,L"panels"),L"id",panelId),L"tiles"),id);text.Text(str(current,L"label"));text.Margin({0,0,flag(current,L"has_variants")?16.:4.,0});});
+                    bindings.emplace_back([data=data,text,panelId,id]{auto current=findId(find(data->model,L"panels",L"id",panelId),L"tiles",id);text.Text(str(current,L"label"));text.Margin({0,0,flag(current,L"has_variants")?16.:4.,0});});
                     pick.HorizontalContentAlignment(HorizontalAlignment::Stretch);pick.Content(content);
                 }
                 bindings.emplace_back([data=data,pick,slot,tileContent,variants,panelId,id,picker,tileIcon,tileIconName,radius]{
-                    auto currentPanel=find(array(data->model,L"panels"),L"id",panelId);
+                    auto currentPanel=find(data->model,L"panels",L"id",panelId);
                     auto current=findId(array(currentPanel,L"tiles"),id);
                     auto role=flag(current,L"tears_bubble")?L"input":L"free";
                     if(str(slot.Tag().as<J>(),L"edge_contact")!=role)edgeTag(slot,L"edge_contact",S(role));
@@ -141,7 +142,7 @@ PanelBody::PanelBody(std::shared_ptr<WorkspaceData> source,J const& panel,J cons
             if(grip.Size()&&gestures){
                 auto caption=[source=std::weak_ptr<WorkspaceData>(data),id=str(panel,L"id")]{
                     auto current=source.lock();if(!current)return hstring();
-                    auto currentPanel=find(array(current->model,L"panels"),L"id",id);
+                    auto currentPanel=find(current->model,L"panels",L"id",id);
                     return current->caption(O({{L"type",S(L"move_panel")},{L"title",S(str(currentPanel,L"title"))}}));
                 };
                 auto handle=button(data,LocalizedCopy(caption(),caption),[]{});
@@ -163,7 +164,7 @@ PanelBody::PanelBody(std::shared_ptr<WorkspaceData> source,J const& panel,J cons
             if(panelId==L"proof"){content.VerticalAlignment(VerticalAlignment::Top);content.Children().Append(ProofPanel(data,bindings,layoutChanged));}
             FrameworkElement fittedControl{nullptr};std::function<double(double)> fittedHeight;size_t visibleControls=0;
             for(auto value:array(panel,L"controls"))if(flag(value.GetObject(),L"visible_in_panel"))visibleControls++;
-            auto brushValue=[data=data](wchar_t const* key){return num(object(data->state,L"brush"),key);};
+            auto brushValue=[data=data](wchar_t const* key){return num(data->state,{L"brush",key});};
             for(auto value:array(panel,L"controls")){
                 auto control=value.GetObject();if(!flag(control,L"visible_in_panel"))continue;
                 auto kind=str(control,L"control");
@@ -257,8 +258,14 @@ double PanelBody::ContentHeight(double width)const{
     if(navigator)return navigator->NaturalHeight(width);
     return contentHeight?contentHeight(width):-1;
 }
-void PanelBody::Apply(bool visible){
+void PanelBody::Apply(bool visible,bool refresh){
+    bool changed=appliedState!=data->state||appliedCatalog!=data->catalog;
+    bool force=refresh||!appliedState||appliedCatalog!=data->catalog||wasVisible!=visible||(changed&&(data->changes.Touches({L"state",L"document_file",L"epoch"})||data->changes.Touches({L"windows_gpu_generation"})));
+    refresh=force||(changed&&inputs.Changed(data->changes));
+    appliedState=data->state;appliedCatalog=data->catalog;wasVisible=visible;
+    auto capture=data->presentation(inputs,force,&data->changes);
+    if(!refresh||!capture)return;
     if(navigator)navigator->Apply(visible);
-    for(auto const& binding:bindings)binding();
+    for(auto const& binding:bindings)binding.Apply();
     if(iconTheme!=data->theme()){iconTheme=data->theme();std::set<void*> seen;refreshAssetIconTheme(root,iconTheme,seen);}
 }

@@ -1,5 +1,5 @@
 param([Parameter(Mandatory)][string]$Executable,
-    [ValidateSet('dark-mouse','dark-touch','dark-pen','light-mouse','light-touch','light-pen','edge-dark-mouse','edge-dark-touch','edge-dark-pen','edge-light-mouse','edge-light-touch','edge-light-pen','row-pair-dark','row-pair-light','card-metrics-dark','card-metrics-light','inertia-dark','inertia-light','native-controls-dark','native-controls-light','blenders-dark','blenders-light','sliders-dark','sliders-light','blender-controls-dark','blender-controls-light','hdr-f16-dark','hdr-f16-light','slider-preference-dark','slider-preference-light','retire-dark-mouse')][string]$Variant='dark-mouse',[switch]$RapidOnly,[switch]$ZenOnly,[switch]$SlidersOnly,[switch]$BlendersOnly,[switch]$EraserOnly,[switch]$EraserLightOnly,[switch]$HistoryOnly,[switch]$HistoryLightOnly,[switch]$NativeControlsOnly,[switch]$ScrollEpochOnly,[switch]$NumericOnly,[switch]$CurveOnly,[switch]$MenuOnly,[switch]$ObserverOnly,[switch]$VisualOnly,[switch]$BeadTransitionsOnly,[switch]$HdrOnly,[switch]$HdrRetirementOnly,[switch]$HdrPreviewOnly,[switch]$HdrContactsOnly,[switch]$ColorUndoOnly,[ValidateSet('F16','F32')][string]$HdrDepth='F16')
+    [ValidateSet('dark-mouse','dark-touch','dark-pen','light-mouse','light-touch','light-pen','edge-dark-mouse','edge-dark-touch','edge-dark-pen','edge-light-mouse','edge-light-touch','edge-light-pen','row-pair-dark','row-pair-light','card-metrics-dark','card-metrics-light','inertia-dark','inertia-light','native-controls-dark','native-controls-light','blenders-dark','blenders-light','sliders-dark','sliders-light','blender-controls-dark','blender-controls-light','hdr-dark','hdr-light','hdr-f16-dark','hdr-f16-light','slider-preference-dark','slider-preference-light','retire-dark-mouse')][string]$Variant='dark-mouse',[switch]$RapidOnly,[switch]$ZenOnly,[switch]$SlidersOnly,[switch]$BlendersOnly,[switch]$EraserOnly,[switch]$EraserLightOnly,[switch]$HistoryOnly,[switch]$HistoryLightOnly,[switch]$NativeControlsOnly,[switch]$ScrollEpochOnly,[switch]$NumericOnly,[switch]$CurveOnly,[switch]$MenuOnly,[switch]$ObserverOnly,[switch]$VisualOnly,[switch]$BeadTransitionsOnly,[switch]$HdrOnly,[switch]$HdrRetirementOnly,[switch]$HdrPreviewOnly,[switch]$HdrContactsOnly,[switch]$ColorUndoOnly,[ValidateSet('F16','F32')][string]$HdrDepth='F16')
 $ErrorActionPreference='Stop'
 $retireOnly=$Variant -eq 'retire-dark-mouse';if($retireOnly){$Variant='dark-mouse'}
 $edgeOnly=$Variant.StartsWith('edge-');if($edgeOnly){$Variant=$Variant.Substring(5)}
@@ -7,6 +7,7 @@ $cardMetricsOnly=$Variant.StartsWith('card-metrics-');if($cardMetricsOnly){$Vari
 $rowPairOnly=$Variant.StartsWith('row-pair-');if($rowPairOnly){$NativeControlsOnly=$true;$Variant=$Variant.Substring(9)+'-touch'}
 $inertiaOnly=$Variant.StartsWith('inertia-');if($inertiaOnly){$NativeControlsOnly=$true;$Variant=$Variant.Substring(8)+'-touch'}
 if($Variant -match '^native-controls-(dark|light)$'){$NativeControlsOnly=$true;$Variant=$Matches[1]+'-touch'}
+if($Variant -match '^hdr-(dark|light)$'){$HdrOnly=$true;$Variant=$Matches[1]+'-mouse'}
 if($Variant -match '^hdr-f16-(dark|light)$'){$HdrOnly=$true;$HdrPreviewOnly=$true;$HdrDepth='F16';$Variant=$Matches[1]+'-mouse'}
 $sliderPreferenceOnly=$Variant.StartsWith('slider-preference-')
 if($Variant -match '^slider-preference-(dark|light)$'){$SlidersOnly=$true;$Variant=$Matches[1]+'-mouse'}
@@ -77,6 +78,12 @@ function Document-Point([double]$X,[double]$Y,[long]$IgnoreBubble=-1){
     $point=Screen (($camera.translation[0]+$document.width*$X*$camera.zoom)/$scale) (($camera.translation[1]+$document.height*$Y*$camera.zoom)/$scale)
     foreach($packet in Packets){if($packet.view.id -ne $IgnoreBubble){$center=Center $packet.view.id $packet;$reach=($packet.reach+5)*$scale;if([Math]::Abs($point.x-$center.x) -lt $reach -and [Math]::Abs($point.y-$center.y) -lt $reach){throw 'Artwork sample overlaps another bubble reach'}}}
     return $point
+}
+function Placed([long]$Id){
+    $m=Model;$item=@($m.state.workspace.layout.bubbles.bubbles|Where-Object id -eq $Id)[0];$basis=@(0,0)
+    if($item.corner -match 'right'){$basis[0]=$m.layout.viewport[0]};if($item.corner -match 'bottom'){$basis[1]=$m.layout.viewport[1]}
+    $authored=Screen ($basis[0]+$item.offset[0]) ($basis[1]+$item.offset[1]);$visible=Center $Id
+    [Math]::Abs($authored.x-$visible.x) -lt 2 -and [Math]::Abs($authored.y-$visible.y) -lt 2
 }
 function Card-Bounds([long]$Id,$Element=$null,$CardView=$null){
     if(!$Element){$Element=Control "bubble-card-$Id" -Arranged}
@@ -514,7 +521,7 @@ function Restart-BubbleReview([string]$LogName='restart-stderr.log',$SavedState=
     [CapyRowPointer]::Dispose();$script:stderr=Join-Path $run $LogName
     $script:review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle;$owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window -and (Model).brush_ready -and (Model).canvas_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Owned slider persistence restart did not become ready' 60
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window -and (Review-Ready) -and (Model).canvas_ready -and !(Model).windows_workspace.busy} 'Owned slider persistence restart did not become ready' 60
     $script:root=$owned.window.Root;$script:drawingWindow=$owned.window.Handle
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null;[CapyRowPointer]::SetForegroundWindow($drawingWindow)|Out-Null;[CapyRowPointer]::Initialize([uint32]$review.Id)
     if($SavedState){
@@ -662,6 +669,8 @@ function Invoke-BlenderCellChecks([int]$Preset,[string]$CellId,[double]$DefaultC
     }
     Wait-Until {!(Find $tool.label -Name -Type ([System.Windows.Automation.ControlType]::MenuItem) -Visible)} 'Tool settings menu did not dismiss before Blender ring input'
     if(Find 'panel-tab-tool_settings' -Visible){Invoke 'panel-tab-tool_settings'}
+    $size=Blender-Field 'size';$sizeValue=$size.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+    if([single]$sizeValue -ne [single]@((Model).state.tool_settings|Where-Object id -eq 'size')[0].value){throw 'Reopened Tool settings did not adopt the selected brush size'}
     $cell=Blender-Field $CellId;$cellValue=$cell.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
     if([double]$cellValue -ne $DefaultCell){throw 'Native Blender Cell Size does not show its shared default'}
     $observations=@()
@@ -1186,7 +1195,7 @@ function Native-CurveContacts([long]$Id){
     }finally{[CapyCanvasTouch]::Dispose()}
     Wait-Until {$m=Model;(Curve-Points) -eq $before -and @($m.windows_tabs.session_stamps|Where-Object id -eq $m.windows_tabs.selected)[0].stamp.checkpoint -eq $checkpoint} 'Second native curve finger did not roll back exact curve and checkpoint'
     @{before=$before;after=(Curve-Points);checkpoint=$checkpoint;before_center=$center;after_center=(Center $Id)}|ConvertTo-Json -Depth 10|Set-Content (Join-Path $run 'curve-pair-rollback.json')
-    Settle-Bubbles
+    Wait-Until {Placed $Id} 'Paired native card did not reach its authored position'
     Invoke "bubble-properties-$Id";Wait-Until {!(View $Id).card.properties} 'All layers page did not open after curve rollback'
     Invoke "layer-$ownerLayer-name" -Within (Card $Id);Wait-Until {(Model).state.layer_properties.layer -eq $ownerLayer} 'Original native owner row did not become active'
     Invoke "bubble-properties-$Id";Wait-Until {(View $Id).card.properties} 'Native owner Properties page did not reopen'
@@ -1374,12 +1383,7 @@ function Rapid-Reopen([long]$Id){
         $bounds=Card-Bounds $Id;$current=Center $Id;$area=(Model).layout.work_area;$desired=Screen ($area.x+$area.width*.5) ($area.y+$area.height*.5)
         $from=@{x=[int]($bounds.X+3*$scale);y=[int]($bounds.Y+$bounds.Height*.5)};$to=@{x=($from.x+$desired.x-$current.x);y=($from.y+$desired.y-$current.y)}
         Drag $from $to;Start-Sleep -Milliseconds 500
-        Wait-Until {
-            $m=Model;$item=@($m.state.workspace.layout.bubbles.bubbles|Where-Object id -eq $Id)[0];$basis=@(0,0)
-            if($item.corner -match 'right'){$basis[0]=$m.layout.viewport[0]};if($item.corner -match 'bottom'){$basis[1]=$m.layout.viewport[1]}
-            $authored=Screen ($basis[0]+$item.offset[0]) ($basis[1]+$item.offset[1]);$visible=Center $Id
-            [Math]::Abs($authored.x-$visible.x) -lt 2 -and [Math]::Abs($authored.y-$visible.y) -lt 2
-        } 'Rapid card visible center does not match its authored position'
+        Wait-Until {Placed $Id} 'Rapid card visible center does not match its authored position'
     }
     $center=Center $Id;$outside=Screen ($width*.90) ($height*.78)
     if($RapidOnly){
@@ -1411,7 +1415,7 @@ try{
     $stderr=Join-Path $run 'stderr.log'
     $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -PassThru -RedirectStandardError $stderr
     $null=$review.Handle;$owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Owned bubble fixture did not become ready' 60
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window -and (Review-Ready)} 'Owned bubble fixture did not become ready' 60
     $root=$owned.window.Root;$drawingWindow=$owned.window.Handle
     $null=[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4));$null=[CapyRowPointer]::SetForegroundWindow($drawingWindow)
     [CapyRowPointer]::Initialize([uint32]$review.Id);$scale=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.

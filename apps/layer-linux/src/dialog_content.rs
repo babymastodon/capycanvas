@@ -51,6 +51,7 @@ glib::wrapper! {
 impl DialogContent {
     pub fn orientation(&self) -> gtk::Orientation { self.imp().body.orientation() }
     pub fn append(&self, child: &impl IsA<gtk::Widget>) { self.imp().body.append(child); }
+    pub fn remove(&self, child: &impl IsA<gtk::Widget>) { self.imp().body.remove(child); }
     pub fn set_orientation(&self, orientation: gtk::Orientation) { self.imp().body.set_orientation(orientation); }
     pub fn set_spacing(&self, spacing: i32) { self.imp().body.set_spacing(spacing); }
 }

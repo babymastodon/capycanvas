@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(host.header_request(begin()).unwrap(), json!(true));
         let finish = |cancel| HeaderRequest::Finish { position: [700., 20.], cancel };
         let measure = || HeaderRequest::Geometry(layer_ui::HeaderGeometryRequest { model: model.clone(), editing: true, documents: 1,
-            width: 1400., insets: [0., 0.], metrics: metrics.clone() });
+            width: 1400., insets: [0., 0.], caption_insets: [0.; 3], metrics: metrics.clone() });
         assert_eq!(host.header_request(measure()).unwrap(), json!(geometry));
         assert!(host.header_drag.is_some());
         let preview = host.header_request(HeaderRequest::Preview {

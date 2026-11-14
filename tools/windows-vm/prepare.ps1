@@ -2,10 +2,12 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 if (!(Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'))) {
-    $release = Invoke-RestMethod 'https://api.github.com/repos/PowerShell/PowerShell/releases/latest' -UseBasicParsing
-    $asset = $release.assets | Where-Object name -Like 'PowerShell-*-win-x64.msi' | Select-Object -First 1
-    $installer = Join-Path $env:TEMP $asset.name
-    Invoke-WebRequest $asset.browser_download_url -OutFile $installer -UseBasicParsing
+    $url = 'https://github.com/PowerShell/PowerShell/releases/download/v7.6.10/PowerShell-7.6.10-win-x64.msi'
+    $expected = '7d8daea48b450d4d62fcd1ac4d6faa7ac2db5e11aba5061ee81b7496adca8c07'
+    $installer = Join-Path $env:TEMP 'PowerShell-7.6.10-win-x64.msi'
+    Invoke-WebRequest $url -OutFile $installer -UseBasicParsing
+    $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+    if ($actual -ne $expected) { throw "PowerShell 7 package $url SHA256 mismatch: expected $expected; actual $actual." }
     $process = [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{ FileName = 'msiexec.exe'; Arguments = "/i `"$installer`" /quiet /norestart ADD_PATH=1"; UseShellExecute = $false })
     $process.WaitForExit()
     Remove-Item -LiteralPath $installer
@@ -46,16 +48,6 @@ function Enable-FixtureJapaneseInput {
             throw 'Japanese Basic input capability did not install'
         }
     }
-    $tip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
-    $languages = Get-WinUserLanguageList
-    if ($languages | Where-Object { $_.InputMethodTips -contains $tip }) { return }
-    $japanese = @($languages | Where-Object LanguageTag -eq 'ja-JP')[0]
-    if (!$japanese) {
-        $japanese = (New-WinUserLanguageList -Language 'ja-JP')[0]
-        $languages.Add($japanese)
-    }
-    if ($japanese.InputMethodTips -notcontains $tip) { $japanese.InputMethodTips.Add($tip) }
-    Set-WinUserLanguageList -LanguageList $languages -Force
 }
 Enable-FixtureJapaneseInput
 

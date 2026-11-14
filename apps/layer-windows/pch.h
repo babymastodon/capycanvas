@@ -21,3 +21,8 @@
 
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <winrt/Windows.UI.Xaml.Interop.h>
+
+inline winrt::Windows::UI::ViewManagement::UISettings const& SystemUiSettings(){
+    static thread_local auto settings=::new winrt::Windows::UI::ViewManagement::UISettings();
+    return *settings;
+}

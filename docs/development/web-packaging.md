@@ -7,9 +7,9 @@ The package adds installation metadata and an offline service worker, and works
 unchanged at a domain root or a subpath such as `/capycanvas/`. The
 [release workflow](releasing.md) attaches the package to each release as a ZIP.
 `editor.capycanvas.art` runs the latest `main` instead: the **Deploy editor**
-workflow in [capycanvas-release](https://github.com/capyatelier/capycanvas-release)
+workflow in [capycanvas-release](https://github.com/babymastodon/capycanvas-release)
 builds a chosen commit, `main` by default, with that repository's license and
-package checks and publishes it.
+package checks, and that repository's `release/cloudflare/deploy.mjs` publishes it.
 
 ## Build
 
@@ -94,10 +94,11 @@ node apps/layer-web/test.mjs --package --smoke
 ```
 
 `--package` serves the build at `/` and `/nested/capy/` in a fresh Chrome
-profile. It checks installability, the fullscreen button, cold offline start
-with the HTTP cache disabled, GPU ink and brush previews in both themes, touch
-taps without sticky hover, recovery from an integrity mismatch, and isolation
-between installations on different paths. Its update fixture changes real JS
+profile. It checks that a first visit downloads each file once, installability,
+the fullscreen button, cold offline start with the HTTP cache disabled, GPU ink
+and brush previews in both themes, touch taps without sticky hover, recovery
+from an integrity mismatch, and isolation between installations on different
+paths. Its update fixture changes real JS
 and CSS and checks that one ordinary refresh runs the new code while a second
 open editor keeps its state and can still fetch old assets offline.
 `--gpu-startup` injects missing API, adapter and device failures and delayed
@@ -142,6 +143,8 @@ Troubleshooting a user's GPU report:
   `sw.js`, `manifest.webmanifest`, `apple-touch-icon.png` and the license pages
   at stable URLs with revalidation (`Cache-Control: no-cache` where the host
   allows). Never apply immutable caching to the whole site.
+- Answer conditional requests with `ETag` or `Last-Modified`. Installing a
+  release revalidates every file, so the browser downloads only changed files.
 - Publish the complete package together, including `.nojekyll`, preferably
   atomically. During a non-atomic rollout, keep the previous hashed assets so
   HTML already in flight can load. Do not hardcode a `CNAME` or edit the precache

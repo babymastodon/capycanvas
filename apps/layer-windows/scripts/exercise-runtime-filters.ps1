@@ -120,7 +120,7 @@ try {
     $null=$review.Handle
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/runtime-filters-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned runtime filter review $($review.Id)"
-    Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Model).brush_ready -and !(Load-State).pending} 'Runtime filter startup did not finish' 60
+    Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Review-Ready) -and !(Load-State).pending} 'Runtime filter startup did not finish' 60
     if((Load-State).phase -ne 'ready'){throw ((Load-State)|ConvertTo-Json)}
     [CapyRuntimeFilterCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     $root=$registeredWindow.Root

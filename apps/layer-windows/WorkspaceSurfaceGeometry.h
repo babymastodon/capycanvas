@@ -3,8 +3,28 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 namespace CapyUi {
+struct TabShapeInputs {
+    float width=0,height=0;
+    std::array<float,2> bottom{};
+    bool operator==(TabShapeInputs const&)const=default;
+};
+template<class Point,class Color> struct TabSurfaceInputs {
+    float width=0,height=0,clipLeft=0,clipRight=0;
+    std::vector<Point> band,tab;
+    Color strip{},panel{};
+    bool operator==(TabSurfaceInputs const&)const=default;
+};
+template<class String> struct ResizeHandleInputs {
+    bool floating=false;
+    uint32_t id=0;
+    String edge;
+    bool resetColumn=false;
+    bool operator==(ResizeHandleInputs const&)const=default;
+};
 inline constexpr float WorkspaceShadowPadding=48;
 struct ShadowRaster {
     std::array<float,2> panel{},extent{};

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -47,8 +48,13 @@ internal class CanvasContent(context: Context, private val host: CanvasHost) : A
             }
         }
         ReportDrawnWhen { host.snapshot?.objectOrNull("launch")?.optBoolean("finished") == true }
+        val splash = (context as? MainActivity)?.launchSplash
+        val content = LocalView.current
         Box(Modifier.fillMaxSize()) {
-            Box(if (host.launchCovered()) Modifier.clearAndSetSemantics {} else Modifier) { CapyApp(host) }
+            Box((if (host.launchHolding(splash?.reveal)) Modifier.clearAndSetSemantics {} else Modifier).drawWithContent {
+                drawContent()
+                splash?.readyDrawn(content)
+            }) { CapyApp(host) }
             LaunchSplash(host)
         }
     }

@@ -5,6 +5,7 @@ $layoutOnly=$Theme.StartsWith('layout-');if($layoutOnly){$Theme=$Theme.Substring
 $CapyFind='visible'
 $CapyCaptureDelay=250
 Add-Type -Path (Join-Path $PSScriptRoot 'RowPointerDriver.cs')
+Add-Type -AssemblyName System.Windows.Forms
 if($env:CAPY_PRIVATE_DESKTOP){[CapyRowPointer]::VerifyPrivateDesktop($env:CAPY_PRIVATE_DESKTOP)}
 $CapyEach={if($env:CAPY_PRIVATE_DESKTOP){[CapyRowPointer]::VerifyPrivateDesktop($env:CAPY_PRIVATE_DESKTOP)};[CapyRowPointer]::Verify()}
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
@@ -42,9 +43,22 @@ function Choose-Form([int]$Row,[string]$Form){
     elseif($item.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)){$pattern.Select()}
     else{$item.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()}
 }
-function Clipboard-Text{Sta {[Windows.Forms.Clipboard]::GetText()}}
+if(!('ClipboardLock' -as [type])){Add-Type -TypeDefinition 'public static class ClipboardLock{[System.Runtime.InteropServices.DllImport("user32.dll")]public static extern bool OpenClipboard(System.IntPtr owner);[System.Runtime.InteropServices.DllImport("user32.dll")]public static extern bool CloseClipboard();[System.Runtime.InteropServices.DllImport("user32.dll")]public static extern System.IntPtr GetOpenClipboardWindow();[System.Runtime.InteropServices.DllImport("user32.dll")]public static extern uint GetClipboardSequenceNumber();}'}
+function Clipboard-Closed{Wait-Until {[ClipboardLock]::GetOpenClipboardWindow() -eq [IntPtr]::Zero} 'The clipboard stayed open after a fixture clipboard call'}
+function Clipboard-Text{$text=Sta {[Windows.Forms.Clipboard]::GetText()};Clipboard-Closed;$text}
+function Set-ClipboardText([string]$Text){Sta {param($value)[Windows.Forms.Clipboard]::SetText($value)} @($Text);Clipboard-Closed}
+function Copied-Text([scriptblock]$Copy){
+    $sequence=[ClipboardLock]::GetClipboardSequenceNumber();& $Copy
+    Wait-Until {[ClipboardLock]::GetClipboardSequenceNumber() -ne $sequence -and [ClipboardLock]::GetOpenClipboardWindow() -eq [IntPtr]::Zero} 'Edit Color did not finish writing the clipboard'
+    Clipboard-Text
+}
+function Busy-Clipboard([scriptblock]$Action){
+    if(![ClipboardLock]::OpenClipboard([IntPtr]::Zero)){throw 'The fixture could not hold the clipboard open'}
+    try{& $Action}finally{[ClipboardLock]::CloseClipboard()|Out-Null}
+}
+function Clipboard-Refusal{$refusal=Find 'edit-color-error' -Within $editorFrame;$refusal -and !$refusal.Current.IsOffscreen -and $refusal.Current.Name -eq 'Could not use the clipboard. Try again.'}
 function Paste([string]$Text){
-    Sta {param($value)[Windows.Forms.Clipboard]::SetText($value)} @($Text)
+    Set-ClipboardText $Text
     (Control 'edit-color-current').SetFocus()
     [CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(17),0x56)
 }
@@ -126,13 +140,16 @@ function Numeric-Input([string]$Device,[ValidateSet('cancel','outside','modifier
 function Check-EditorRegrow([string]$Kind){
     $window=$root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
     $window.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
+    $null=[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))
+    $work=[System.Windows.Forms.Screen]::FromHandle($drawingWindow).WorkingArea
+    $root.GetCurrentPattern([System.Windows.Automation.TransformPattern]::Pattern).Move($work.Left,$work.Top)
     $scale=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.
-    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width ([int](1000*$scale)) -Height ([int](900*$scale))
+    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width ([int][Math]::Min(1000*$scale,$work.Width)) -Height ([int][Math]::Min(900*$scale,$work.Height))
     Open-Editor
     $retained=(Control 'edit-color-wheel' -Within $editorFrame).GetRuntimeId() -join ':'
     $receipts=[Collections.Generic.List[object]]::new()
     foreach($stage in @(@{name='tall';width=1000;height=900},@{name='short';width=1000;height=360},@{name='regrown';width=1000;height=900},@{name='wider';width=1180;height=900})){
-        & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width ([int]($stage.width*$scale)) -Height ([int]($stage.height*$scale))
+        & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width ([int][Math]::Min($stage.width*$scale,$work.Width)) -Height ([int][Math]::Min($stage.height*$scale,$work.Height))
         $arranged=@{box=$null}
         Wait-Until {
             $arranged.box=(Control 'edit-color-wheel' -Within $editorFrame -Arranged).Current.BoundingRectangle
@@ -157,7 +174,7 @@ try {
     $null=$review.Handle
     Write-Output "Owned color editor review $($review.Id): $run"
     $owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Color editor review did not start' 90
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Review-Ready) -and !(Model).windows_workspace.busy} 'Color editor review did not start' 90
     $root=$owned.window.Root;$drawingWindow=$owned.window.Handle
     $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
     Start-Sleep -Milliseconds 600
@@ -198,15 +215,17 @@ try {
     Paste 'rgb(202 75 53)'
     Wait-Until {(Shown 'edit-color-hex') -eq '#CA4B35'} 'Pasting a CSS color did not set the draft'
     if(((Row 0) -join ',') -ne '202,75,53'){throw 'Pasted color did not update the RGB row'}
-    Invoke 'edit-color-copy-0';Wait-Until {(Clipboard-Text) -eq 'rgb(202 75 53)'} 'RGB copy did not use the standard notation'
-    Invoke 'edit-color-hex-copy';Wait-Until {(Clipboard-Text) -eq '#CA4B35'} 'Hex copy did not copy the hex'
+    if((Copied-Text {Invoke 'edit-color-copy-0'}) -ne 'rgb(202 75 53)'){throw 'RGB copy did not use the standard notation'}
+    if((Copied-Text {Invoke 'edit-color-hex-copy'}) -ne '#CA4B35'){throw 'Hex copy did not copy the hex'}
+    Busy-Clipboard {Invoke 'edit-color-copy-0';Wait-Until {(Clipboard-Refusal) -and (Shown 'edit-color-hex') -eq '#CA4B35'} 'A busy clipboard did not refuse the Edit Color copy'}
+    Paste '#CA4B35'
+    Wait-Until {!(Clipboard-Refusal) -and (Shown 'edit-color-hex') -eq '#CA4B35'} 'The clipboard refusal stayed after a later paste succeeded'
     if(!(Same (Foreground) $white)){throw 'Editing the draft changed the paint'}
     $artwork=Artwork-Identity
-    Sta {[Windows.Forms.Clipboard]::SetText('native clipboard sentinel')}
+    Set-ClipboardText 'native clipboard sentinel'
     (Control 'edit-color-current').SetFocus()
-    [CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),0x43)
-    Wait-Until {(Clipboard-Text) -eq '#CA4B35'} 'Ctrl+C outside a color text field did not copy the whole color'
-    Sta {[Windows.Forms.Clipboard]::SetText('native clipboard sentinel')}
+    if((Copied-Text {[CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),0x43)}) -ne '#CA4B35'){throw 'Ctrl+C outside a color text field did not copy the whole color'}
+    Set-ClipboardText 'native clipboard sentinel'
     [CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),0x58)
     Start-Sleep -Milliseconds 400
     if((Clipboard-Text) -ne 'native clipboard sentinel' -or (Artwork-Identity) -ne $artwork){throw 'Ctrl+X outside a color text field fell through to the artwork'}
@@ -214,14 +233,14 @@ try {
     $entry=Control 'edit-color-hex-entry';$entry.SetFocus()
     $text=$entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
     [CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),0x41);Key 0x27
-    Sta {[Windows.Forms.Clipboard]::SetText('native clipboard sentinel')}
+    Set-ClipboardText 'native clipboard sentinel'
     foreach($key in @(0x43,0x58)){
         [CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),$key);Start-Sleep -Milliseconds 200
         if((Clipboard-Text) -ne 'native clipboard sentinel' -or $entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -ne $text){throw 'Copy or Cut without a native text selection fell through to the color or artwork'}
     }
     [CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),0x41)
-    [CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),0x58)
-    Wait-Until {(Clipboard-Text) -eq $text -and $entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -eq ''} 'Ctrl+X did not cut the selected native color text'
+    $cut=Copied-Text {[CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),0x58)}
+    Wait-Until {$cut -eq $text -and $entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -eq ''} 'Ctrl+X did not cut the selected native color text'
     [CapyRowPointer]::Chord([uint32]$review.Id,@(0x11),0x56)
     Wait-Until {$entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -eq $text} 'Ctrl+V did not restore the selected native color text'
     Key 0x1B;Wait-Until {!(Find 'edit-color-hex-entry')} 'Escape did not leave the color text field'

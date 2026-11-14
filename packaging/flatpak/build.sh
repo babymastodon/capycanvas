@@ -24,14 +24,18 @@ flatpak build --share=network --filesystem="$state" \
     --env="CARGO_TARGET_DIR=$state/cargo-target" --env="CAPY_GTK_BUILD_DIR=$state/gtk-runtime" \
     --env="PATH=$state/cargo/bin:/usr/lib/sdk/node24/bin:/app/bin:/usr/bin" \
     --env="RUST_VERSION=$rust_version" --env="CAPY_BUILD_JOBS=${CAPY_BUILD_JOBS:-4}" \
+    --env="CAPY_PUBLIC_RELEASE=${CAPY_PUBLIC_RELEASE:-}" --env="CAPY_SOURCE_REVISION=$(sh tools/build/source-revision.sh)" \
     --env=CARGO_TERM_COLOR=never "$state/app" bash packaging/flatpak/compile.sh
 sed 's/^name=art.capycanvas.CapyCanvas$/name=art.capycanvas.CapyCanvas.Devel/' \
     "$state/app/metadata" > "$state/app/metadata-compose"
 flatpak build --metadata=metadata-compose "$state/app" appstreamcli compose \
     --no-net --prefix=/ --origin=art.capycanvas.CapyCanvas \
     --result-root=/app --data-dir=/app/share/app-info/xmls \
-    --icons-dir=/app/share/app-info/icons/flatpak --components=art.capycanvas.CapyCanvas /app
+    --icons-dir=/app/share/app-info/icons/flatpak --icon-policy=64x64=cached,128x128=cached \
+    --components=art.capycanvas.CapyCanvas /app
 rm "$state/app/metadata-compose"
 test -s "$state/app/files/share/app-info/xmls/art.capycanvas.CapyCanvas.xml.gz"
+test "$(zcat "$state/app/files/share/app-info/xmls/art.capycanvas.CapyCanvas.xml.gz" | grep -o '<icon type="cached"[^>]*>' | sort | tr -d '\n')" \
+    = '<icon type="cached" width="128" height="128"><icon type="cached" width="64" height="64">'
 python3 tools/build/app_names.py catalog "$state/app/files/share/app-info/xmls/art.capycanvas.CapyCanvas.xml.gz"
-flatpak build-finish --command=capycanvas --socket=wayland --device=dri "$state/app"
+flatpak build-finish --command=capycanvas --socket=wayland --socket=fallback-x11 --device=dri "$state/app"

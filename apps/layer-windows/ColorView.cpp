@@ -138,7 +138,7 @@ struct View:std::enable_shared_from_this<View>{
     std::shared_ptr<WorkspaceData> data;
     Grid root;Canvas stage,wheel,readoutBody;
     bool fitHeight=false;
-    Image image;TextBlock drawError;
+    Image image,markers;TextBlock drawError;
     std::array<Button,3> swatches;
     std::array<std::shared_ptr<PointerClick>,2> slotClicks;
     struct SlotHold {PointerGesture recognizer;std::optional<uint32_t> pointer;};
@@ -265,7 +265,8 @@ struct View:std::enable_shared_from_this<View>{
         AutomationProperties::SetAutomationId(stage,L"color-panel");copyName(data,stage,data->copyCaption(L"color",L"picker"));
         wheel.Background(clear());copyName(data,image,data->copyCaption(L"color",L"wheel"));
         AutomationProperties::SetAutomationId(image,L"color-wheel");
-        image.IsHitTestVisible(false);image.Stretch(Stretch::Fill);wheel.Children().Append(image);stage.Children().Append(wheel);
+        image.IsHitTestVisible(false);image.Stretch(Stretch::Fill);wheel.Children().Append(image);
+        markers.IsHitTestVisible(false);markers.Stretch(Stretch::Fill);AutomationProperties::SetAccessibilityView(markers,Automation::Peers::AccessibilityView::Raw);wheel.Children().Append(markers);stage.Children().Append(wheel);
         drawError.Text(data->caption(L"color",L"wheel_unavailable"));drawError.TextWrapping(TextWrapping::Wrap);drawError.FontSize(12);
         data->copyView([target=make_weak(drawError),resolve=data->copyCaption(L"color",L"wheel_unavailable").current]{if(auto text=target.get()){text.Text(resolve());return true;}return false;});
         drawError.Foreground(data->brush(L"text"));drawError.IsHitTestVisible(false);drawError.Visibility(Visibility::Collapsed);wheel.Children().Append(drawError);
@@ -314,7 +315,7 @@ struct View:std::enable_shared_from_this<View>{
             self->refresh();
         }});
         root.Unloaded([weak](auto&&,auto&&){if(auto self=weak.lock()){self->touches.cancel(*self->data,self->stage);self->scaleChanged.revoke();}});
-        contentsLost=CompositionTarget::SurfaceContentsLost(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock()){self->key=L"";self->drawing.surface=nullptr;self->refresh();}});
+        contentsLost=CompositionTarget::SurfaceContentsLost(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock()){self->key=L"";self->drawing.surface=nullptr;self->drawing.markerSurface=nullptr;self->refresh();}});
         listener=data->colorView([weak]{if(auto self=weak.lock())self->refresh();});
         drawing.start([weak]{if(auto self=weak.lock()){self->key=L"";self->data->queueColors();}});
         edit=control(data->caption(L"color",L"edit"),[weak]{if(auto self=weak.lock();self&&!self->transparentSlot())self->editColor();});
@@ -442,7 +443,9 @@ struct View:std::enable_shared_from_this<View>{
     }
     void updateReadout(J const& view){
         bool focused=readout.FocusState()==FocusState::Keyboard;
-        auto next=view.Stringify()+layout.Stringify()+to_hstring(layoutScale)+data->theme()+(focused?L"/focus":L"");
+        auto shown=O({{L"label",S(str(view,L"readout_label"))},{L"gamut",B(flag(view,L"out_of_gamut"))},{L"text",array(view,L"readout_layout_text")},
+            {L"mode",S(str(view,L"readout"))},{L"description",S(str(view,L"readout_description"))},{L"outer",N(num(object(view,L"geometry"),L"outer"))}});
+        auto next=shown.Stringify()+layout.Stringify()+to_hstring(layoutScale)+data->theme()+(focused?L"/focus":L"");
         if(next==readoutKey)return;readoutKey=next;
         static thread_local GlyphRasterizer rasterizer;
         double half=array(layout,L"readout").GetNumberAt(2),radius=num(layout,L"readout_radius");
@@ -520,17 +523,17 @@ struct View:std::enable_shared_from_this<View>{
         intensityArc->present(view,panelSize,hdr,!transparentSlot());
         if(!hdr)return;
         double stops=num(view,L"intensity");
-        auto ramps=array(view,L"intensity_ramp");auto markerColor=array(view,L"marker_color");
-        auto next=to_hstring(stops)+ramps.Stringify()+markerColor.Stringify()+to_hstring(panelSize)+data->theme();
-        if(next==arcKey)return;arcKey=next;
         wchar_t text[32];swprintf(text,32,L"%s%.2f EV",stops>=0?L"+":L"",stops);
         double font=num(object(layout,L"intensity_caption"),L"font_size");
+        auto ink=data->brush(L"text").as<SolidColorBrush>().Color();
+        auto next=hstring(text)+L"/"+to_hstring(font)+L"/"+to_hstring(panelSize)+L"/"+to_hstring(layoutScale)+L"/"+to_hstring(uint32_t(ink.R*65536+ink.G*256+ink.B));
+        if(next==arcKey)return;arcKey=next;
         if(measuredFont!=font){advances.clear();measuredFont=font;metrics.FontSize(GlyphRasterizer::fontSize(font));}
         double digit=0;for(wchar_t c=L'0';c<=L'9';c++)digit=std::max(digit,advance(c));
         A cells;for(auto c:std::wstring_view(text))cells.Append(N((c==L' '||(c>=L'0'&&c<=L'9'))?digit:advance(c)));
         auto placements=colorUi(data->localization.get(),O({{L"type",S(L"intensity_caption")},{L"size",N(panelSize)},{L"advances",cells}})).GetArray();
         static thread_local GlyphRasterizer rasterizer;
-        auto ink=data->brush(L"text").as<SolidColorBrush>().Color();size_t index=0;
+        size_t index=0;
         for(auto c:std::wstring_view(text)){
             if(index==captionGlyphs.size()){
                 Glyph glyph;glyph.image.IsHitTestVisible(false);glyph.image.Stretch(Stretch::Fill);
@@ -541,14 +544,20 @@ struct View:std::enable_shared_from_this<View>{
             double angle=glyphPoint.GetNumberAt(2)*3.141592653589793/180,cs=std::cos(angle),sn=std::sin(angle),glyphX=-advance(c)*.5;
             Matrix position{cs,sn,-sn,cs,glyphPoint.GetNumberAt(0)+cs*glyphX,glyphPoint.GetNumberAt(1)+sn*glyphX};
             glyph.image.Visibility(c==L' '?Visibility::Collapsed:Visibility::Visible);
-            if(c!=L' ')rasterizer.draw(glyph.image,std::wstring_view(&c,1),font,false,position,layoutScale,ink,.8f);
+            std::array<double,9> stamp{font,position.M11,position.M12,position.M21,position.M22,position.OffsetX,position.OffsetY,layoutScale,double(ink.R*65536+ink.G*256+ink.B)};
+            if(c!=L' '&&(glyph.scalar!=c||glyph.key!=stamp)){
+                rasterizer.draw(glyph.image,std::wstring_view(&c,1),font,false,position,layoutScale,ink,.8f);glyph.scalar=c;glyph.key=stamp;
+            }
         }
         for(;index<captionGlyphs.size();index++)captionGlyphs[index].image.Visibility(Visibility::Collapsed);
     }
     void refresh(){
-        auto view=model();if(!view.Size()||!root.XamlRoot())return;
-        auto nextContext=editingContext();if(context!=nextContext){cancel();context=nextContext;}
-        if(arcCapture&&arcCapture->Active()&&arcContext!=intensityContext())cancelArc();
+        auto view=model(),colors=paintColors();
+        auto nextContext=editingContext(),nextIntensityContext=intensityContext();
+        auto theme=data->theme(),language=data->language();auto textBrush=data->brush(L"text");
+        if(!view.Size()||!root.XamlRoot())return;
+        if(context!=nextContext){cancel();context=nextContext;}
+        if(arcCapture&&arcCapture->Active()&&arcContext!=nextIntensityContext)cancelArc();
         double scale=root.XamlRoot().RasterizationScale();
         bool hdr=flag(view,L"hdr");
         double available=std::floor(root.ActualWidth()*scale)/scale,height=fitHeight?root.ActualHeight():0;
@@ -567,7 +576,7 @@ struct View:std::enable_shared_from_this<View>{
             // Browser canvas paint snaps the two layout edges to logical pixels.
             // Keep shared hit geometry while matching its final image placement.
             double inset=box.GetNumberAt(0),paintInset=std::round(inset),paintSide=std::round(inset+side)-paintInset;
-            image.Width(paintSide);image.Height(paintSide);Canvas::SetLeft(image,paintInset-inset);Canvas::SetTop(image,paintInset-inset);
+            for(auto const& layer:{image,markers}){layer.Width(paintSide);layer.Height(paintSide);Canvas::SetLeft(layer,paintInset-inset);Canvas::SetTop(layer,paintInset-inset);}
             drawError.Width(side);Canvas::SetTop(drawError,side*.4);
             placeBox(readout,array(layout,L"readout"));placeBox(swap,array(layout,L"swap"));placeBox(edit,array(layout,L"edit"));
             for(int i=0;i<2;i++)placeBox(shapes[i],array(layout,L"shapes").GetArrayAt(i));
@@ -576,12 +585,12 @@ struct View:std::enable_shared_from_this<View>{
                 auto swatchBox=array(layout,slots[i]);placeBox(swatches[i],swatchBox);
             }
         }
-        auto icons=data->theme()+data->language()+array(view,L"other_shapes").Stringify();
+        auto icons=theme+language+array(view,L"other_shapes").Stringify();
         if(icons!=iconKey){
-            iconKey=icons;swapGlyph.Source(icon(L"color-swap",data->theme()).Source());
+            iconKey=icons;swapGlyph.Source(icon(L"color-swap",theme).Source());
             for(int i=0;i<2;i++){
                 auto shape=array(view,L"other_shapes").GetStringAt(i);Grid content;Shapes::Ellipse hit;hit.Fill(clear());content.Children().Append(hit);
-                auto glyph=colorIcon(shape,shapeHovered[i]?accent(data):data->brush(L"text"));
+                auto glyph=colorIcon(shape,shapeHovered[i]?accent(data):textBrush);
                 RotateTransform rotation;rotation.CenterX(8);rotation.CenterY(8);rotation.Angle(array(layout,L"shape_rotations").GetNumberAt(i));
                 for(auto child:glyph.Children())child.as<Shapes::Path>().Data().Transform(rotation);
                 content.Children().Append(glyph);shapes[i].Content(content);shapeGlyphs[i]=glyph;
@@ -589,10 +598,10 @@ struct View:std::enable_shared_from_this<View>{
                 AutomationProperties::SetName(shapes[i],title);tooltip(shapes[i],title);
             }
         }
-        for(int i=0;i<2;i++)for(auto child:shapeGlyphs[i].Children())child.as<Shapes::Path>().Stroke(shapeHovered[i]?accent(data):data->brush(L"text"));
-        swapFill.Fill(buttonFeedbackBrush(swap,data->brush(L"text"),31,41));
+        for(int i=0;i<2;i++)for(auto child:shapeGlyphs[i].Children())child.as<Shapes::Path>().Stroke(shapeHovered[i]?accent(data):textBrush);
+        swapFill.Fill(buttonFeedbackBrush(swap,textBrush,31,41));
         bool editable=!transparentSlot();edit.IsEnabled(editable);edit.Opacity(editable?1.:.36);
-        editFill.Fill(buttonFeedbackBrush(edit,data->brush(L"text"),31,41));
+        editFill.Fill(buttonFeedbackBrush(edit,textBrush,31,41));
         updateArc(view);
         const std::array<hstring,3> slots{L"background",L"foreground",L"transparent"};
         auto front=str(view,L"front_swatch");
@@ -601,15 +610,14 @@ struct View:std::enable_shared_from_this<View>{
             int z=slots[i]==front?1:0;
             if(Canvas::GetZIndex(swatches[i])!=z)Canvas::SetZIndex(swatches[i],z);
             bool selected=flag(swatch,L"selected");
-            swatchFaces[i].feedback.Fill(buttonFeedbackBrush(swatches[i],data->brush(L"text")));
+            swatchFaces[i].feedback.Fill(buttonFeedbackBrush(swatches[i],textBrush));
             swatchFaces[i].Update(data,array(swatch,L"rgba"),array(layout,slots[i].c_str()).GetNumberAt(2),scale,selected,i==1,hovered[i]);
             AutomationProperties::SetName(swatches[i],str(swatch,L"label"));AutomationProperties::SetItemStatus(swatches[i],selected?data->caption(L"search",L"selected"):L"");
         }
         auto nextKey=view.Stringify()+to_hstring(side)+L"/"+to_hstring(scale);
         if(nextKey!=key){
             try{
-                auto colors=paintColors();
-                drawing.present(image,view,colors,side,scale);
+                drawing.present(image,markers,view,colors,side,scale);
                 data->colorFieldPixels=drawing.fieldPixels;
                 key=nextKey;drawError.Visibility(Visibility::Collapsed);AutomationProperties::SetItemStatus(image,data->caption(L"header",L"ready"));
             }catch(hresult_error const&){drawError.Visibility(Visibility::Visible);AutomationProperties::SetItemStatus(image,data->caption(L"color",L"wheel_failed"));}
@@ -624,5 +632,5 @@ double ColorPanelNaturalHeight(std::shared_ptr<WorkspaceData> const& data,double
     return num(View::geometry(data,size,flag(object(data->model,L"color_panel"),L"hdr")),L"height",size);
 }
 FrameworkElement ColorPanel(std::shared_ptr<WorkspaceData> const& data,Bindings& bindings,bool fitHeight){
-    auto view=std::make_shared<View>(data,fitHeight);view->init();bindings.emplace_back([view]{view->refresh();});return view->root;
+    auto view=std::make_shared<View>(data,fitHeight);view->init();bindings.emplace_back([view]{view->data->queueColors();});return view->root;
 }

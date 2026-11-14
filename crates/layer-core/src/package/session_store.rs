@@ -30,7 +30,7 @@ mod head;
 mod io;
 mod metadata;
 pub use metadata::MetadataStore;
-pub async fn store_retired(io:&dyn super::store_io::FileTransport)->Result<bool,String> {io::marker(io,".retired",b"").await}
+pub async fn store_retired(io:&dyn super::store_io::FileTransport)->Result<bool,String> {io::marker(io,".retired").await}
 const RESOURCE_CHECKSUM_FAILED:&str="Recovery resource checksum failed";
 #[derive(Clone,Debug)]
 pub enum ImportFailure {Invalid(String),Unsupported(String),MemoryBudgetExceeded,Changed,Io(String)}
@@ -319,18 +319,17 @@ impl SessionStore {
     }
     pub async fn retirement_transport(path:PathBuf,transport:Arc<dyn super::store_io::FileTransport>,lease:Arc<dyn Send+Sync>)->Result<Option<Self>,String> {
         let (owner,writer)=claim_store_with(&path,||Ok(Some((transport,lease))))?.ok_or("Recovery drawing is already open")?;
-        if io::marker(&*owner.io,".retired",b"").await? {return Ok(None);}
-        io::marker(&*owner.io,".retiring",b"retiring\n").await?;
-        let store=Self::for_retirement(path,owner,writer);store.validate_layout().await?;Ok(Some(store))
+        let store=Self::for_retirement(path,owner,writer);
+        Ok((!io::marker(&*store._owner.io,".retired").await? && store.validate_layout().await.is_ok()).then_some(store))
     }
-    pub async fn collect_unreferenced_transport(path:PathBuf,transport:Arc<dyn super::store_io::FileTransport>,lease:Arc<dyn Send+Sync>)->Result<bool,String> {
-        let Some((owner,writer))=claim_store_with(&path,||Ok(Some((transport,lease))))? else {return Ok(false);};
-        Self::collect_unreferenced_claim(path,owner,writer).await
+    pub async fn collect_unreferenced_transport(path:PathBuf,transport:Arc<dyn super::store_io::FileTransport>,lease:Arc<dyn Send+Sync>)->bool {
+        let Ok(Some((owner,writer)))=claim_store_with(&path,||Ok(Some((transport,lease)))) else {return false;};
+        Self::collect_unreferenced_claim(path,owner,writer).await.unwrap_or(false)
     }
     async fn collect_unreferenced_claim(path:PathBuf,owner:Arc<StoreOwner>,writer:Arc<()>)->Result<bool,String> {
         let entries=owner.io.list("").await?;
-        let terminal=io::marker(&*owner.io,".retired",b"").await?;
-        let retiring=io::marker(&*owner.io,".retiring",b"retiring\n").await?;
+        let terminal=io::marker(&*owner.io,".retired").await?;
+        let retiring=io::marker(&*owner.io,".retiring").await?;
         if entries.iter().any(|entry|matches!(entry.name.as_str(),"head.0"|"head.1"|"head.json")) && !terminal && !retiring {return Ok(false);}
         if entries.is_empty() || terminal && entries.iter().all(|entry|matches!(entry.name.as_str(),".retired"|".lock")) {return Ok(false);}
         let mut store=Self::for_retirement(path,owner,writer);store.validate_layout().await?;
@@ -341,8 +340,7 @@ impl SessionStore {
         Self::initialize(path,owner,writer,reads).await
     }
     async fn initialize(path:PathBuf,owner:Arc<StoreOwner>,writer:Arc<()>,reads:ReadCache)->Result<Self,String> {
-        if io::marker(&*owner.io,".retired",b"").await? {return Err("This drawing's session copy was retired".into());}
-        io::marker(&*owner.io,".retiring",b"retiring\n").await?;
+        if io::marker(&*owner.io,".retired").await? {return Err("This drawing's session copy was retired".into());}
         let published=head::read(&*owner.io).await?;
         let (head,sequence)=match published {
             Some(published)=>(Some(published.head),published.sequence),
@@ -424,7 +422,7 @@ impl SessionStore {
     }
     async fn publish_packed(&mut self,metadata:Vec<u8>,roots:GenerationRoots,programs:&super::TrustedPrograms,cancelled:&AtomicBool)->Result<PortableId,String> {
         check_cancelled(cancelled)?;self.validate_layout().await?;self.refresh_head().await?;
-        if io::marker(&*self._owner.io,".retired",b"").await? {return Err("This drawing's session copy was retired".into());}
+        if io::marker(&*self._owner.io,".retired").await? {return Err("This drawing's session copy was retired".into());}
         if metadata.len() as u64>ProjectLimits::default().metadata_bytes {return Err("Packed recovery metadata exceeds admission limit".into());}
         let mut reservation=super::storage_budget::reserve(&*self._owner.io,metadata.len() as u64+head::SLOT_BYTES as u64).await?;
         let generation=PortableId::random();
@@ -454,7 +452,7 @@ impl SessionStore {
     async fn store_inputs(&mut self,inputs:Vec<StoreInput>,cancelled:&AtomicBool)->Result<StoredInputs,String> {
         self.seal_compaction_output();
         self.validate_layout().await?;
-        if io::marker(&*self._owner.io,".retired",b"").await? {return Err("This drawing's session copy was retired".into());}
+        if io::marker(&*self._owner.io,".retired").await? {return Err("This drawing's session copy was retired".into());}
         let mut owners=BTreeSet::new();let mut bytes=0u64;
         for input in &inputs {
             if self.existing(input)?.is_none() && owners.insert(input.owner_key()) {bytes=bytes.checked_add(input.length.max(1)).ok_or("Drawing storage size overflow")?;}
@@ -632,7 +630,7 @@ impl SessionStore {
     pub async fn load_with_budget(&mut self,limits:ProjectLimits,cancelled:&AtomicBool,budget:crate::MemoryBudget)->Result<Option<OpenSession>,String> {
         check_cancelled(cancelled)?;
         self.validate_layout().await?;
-        if io::marker(&*self._owner.io,".retired",b"").await? { return Err("This drawing was closed and its session copy was retired".into()); }
+        if io::marker(&*self._owner.io,".retired").await? { return Err("This drawing was closed and its session copy was retired".into()); }
         self.refresh_head().await?;
         let Some(head) = self.head.clone() else { return Ok(None) };
         let mut failure = None;
@@ -721,14 +719,13 @@ impl SessionStore {
 
     pub async fn retire(&mut self)->Result<(),String> {
         self.validate_layout().await?;
-        io::marker(&*self._owner.io,".retiring",b"retiring\n").await?;
-        if !io::marker(&*self._owner.io,".retired",b"").await? {io::create(&*self._owner.io,".retired",b"",&AtomicBool::new(false)).await?;}
+        if !io::marker(&*self._owner.io,".retired").await? {io::create(&*self._owner.io,".retired",b"",&AtomicBool::new(false)).await?;}
         for name in [".retiring","head.0","head.1","head.json"] {super::storage_budget::remove(&*self._owner.io,name).await?;}
         self.head=None;self.loaded=None;self.programs.clear();self.compaction=None;self.compaction_fallback=None;self.compaction_refusal=None;self.collect_garbage().await
     }
     pub async fn prepare_retirement(&mut self)->Result<(),String> {
-        if io::marker(&*self._owner.io,".retired",b"").await? {return Err("This drawing's session copy was retired".into());}
-        if !io::marker(&*self._owner.io,".retiring",b"retiring\n").await? {io::create(&*self._owner.io,".retiring",b"retiring\n",&AtomicBool::new(false)).await?;}
+        if io::marker(&*self._owner.io,".retired").await? {return Err("This drawing's session copy was retired".into());}
+        if !io::marker(&*self._owner.io,".retiring").await? {io::create(&*self._owner.io,".retiring",b"retiring\n",&AtomicBool::new(false)).await?;}
         Ok(())
     }
     pub async fn collect_garbage(&mut self) -> Result<(), String> {
@@ -769,7 +766,7 @@ impl SessionStore {
             if weak.strong_count()!=0 {packs.insert(id);}
         }
         if self.append.is_some_and(|(id,_)|!packs.contains(&id)) {self.append=None;}
-        let terminal=io::marker(&*self._owner.io,".retired",b"").await?;
+        let terminal=io::marker(&*self._owner.io,".retired").await?;
         for (name,retained,suffix) in [("generations",&generations,".json"),("resources",&resources,".bin"),("packs",&packs,".bin")] {
             io::clean(&*self._owner.io,name,retained,suffix).await?;
             if terminal && retained.is_empty() && self._owner.io.list(name).await?.is_empty() {super::storage_budget::remove(&*self._owner.io,name).await?;}

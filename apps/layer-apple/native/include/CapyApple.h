@@ -6,6 +6,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+float capy_apple_launch_mark_size(float width, float height);
 
 typedef uint64_t CapyApple;
 typedef uint64_t CapyText;
@@ -187,6 +188,18 @@ int32_t capy_apple_color_field(uint32_t side, float hue, uint32_t shape, const c
    Returned JSON is owned; release using capy_apple_string_free. NULL is either
    no changed snapshot or failure (consult capy_apple_error). */
 CapyText capy_apple_request(CapyApple app, uint32_t request, const char *json);
+typedef uint64_t CapyBrushStamp;
+typedef struct {
+    uint64_t request;
+    bool pending;
+    uint32_t size;
+    float extent;
+    size_t count;
+} CapyBrushStampInfo;
+CapyBrushStamp capy_apple_toolbar_stamp(CapyApple app, const char *context, uint64_t known_request);
+bool capy_brush_stamp_read(CapyBrushStamp stamp, CapyBrushStampInfo *output);
+bool capy_brush_stamp_copy(CapyBrushStamp stamp, size_t offset, uint8_t *output, size_t count);
+void capy_brush_stamp_free(CapyBrushStamp stamp);
 /* Nonblocking owner poll. The owned atlas is independent of the editor; decode
    and free on a worker. All info pointers are borrowed until previews_free.
    Pixels are straight Display P3 RGBA8, with equal-height rows in filters JSON order. */

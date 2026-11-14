@@ -526,6 +526,9 @@ pub enum PipelineCacheError {
     Device(#[from] DeviceError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PresentAttempt { Unsupported, Pending, Presented }
+
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum SurfaceError {
     #[error("Surface is lost")]
@@ -1291,6 +1294,21 @@ pub trait Queue: WasmNotSendSync {
         surface_textures: &[&<Self::A as Api>::SurfaceTexture],
         signal_fence: (&<Self::A as Api>::Fence, FenceValue),
     ) -> Result<(), DeviceError>;
+    fn supports_nonblocking_present(&self, _surface: &<Self::A as Api>::Surface) -> bool { false }
+
+    /// Attempt presentation without consuming the texture on backpressure.
+    ///
+    /// # Safety
+    /// The texture must be acquired, unpresented and undiscarded on this surface,
+    /// in PRESENT state with every writer submitted on this queue's device.
+    /// The caller must exclude concurrent queue operations and keep both alive.
+    /// Presented consumes the HAL acquisition; Pending and errors do not.
+    unsafe fn try_present(
+        &self,
+        _surface: &<Self::A as Api>::Surface,
+        _texture: &<Self::A as Api>::SurfaceTexture,
+    ) -> Result<PresentAttempt, SurfaceError> { Ok(PresentAttempt::Unsupported) }
+
     /// Present a surface texture to the screen.
     ///
     /// This consumes the surface texture, returning it to the swapchain.

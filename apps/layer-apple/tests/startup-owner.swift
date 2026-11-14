@@ -55,6 +55,11 @@ private final class StartupErrors: @unchecked Sendable {
         return (attribute(root, "accessibilityChildren") as? [NSObject] ?? []).lazy.compactMap { button($0, label: label) }.first
     }
 
+    @MainActor static func shows(_ root: NSObject, text: String) -> Bool {
+        [attribute(root, "accessibilityLabel"), attribute(root, "accessibilityValue")].contains { $0 as? String == text }
+            || (attribute(root, "accessibilityChildren") as? [NSObject] ?? []).contains { shows($0, text: text) }
+    }
+
     @MainActor static func hierarchy(_ root: NSObject, depth: Int = 0) -> String {
         let frame = bounds(root)
         let row = "\(String(repeating: " ", count: depth))\(type(of: root)) \(attribute(root, "accessibilityRole") ?? "nil") \(attribute(root, "accessibilityIdentifier") ?? "nil") \(attribute(root, "accessibilityLabel") ?? "nil") frame=\(frame)"
@@ -272,8 +277,10 @@ private final class StartupErrors: @unchecked Sendable {
             try require(store.workspaces!.view["id"].string == workspaceID && store.workspaces!.view["owner"].string == workspaceOwner,
                 "Workspace Retry must preserve this window's existing workspace and owner")
             let original = store.recovery.restoreError
+            try await wait("Native recovery Retry enabled once the checkpoint saves", failure: { store.recovery.restoring ? "Native recovery Retry must not start restoring" : nil }) {
+                !store.recovery.saving && element(host, "recovery-retry").map(enabled) == true
+            }
             let retry = element(host, "recovery-retry")!
-            try require(enabled(retry), "Native recovery Retry must be enabled")
             try await reveal(retry, in: host)
             try require(press(retry) && store.recovery.restoring,
                 "Native recovery Retry must start one restoration")
@@ -288,12 +295,12 @@ private final class StartupErrors: @unchecked Sendable {
                 "Later must dismiss the warning while retaining the failed recovery copy")
             store.recovery.retry()
             try await wait("Retry after Later", seconds: 60) { !store.recovery.restoring && store.recovery.visibleError != nil }
-            let sessions = try FileManager.default.contentsOfDirectory(at: store.native!.sessions!, includingPropertiesForKeys: nil)
+            let sessions = try FileManager.default.contentsOfDirectory(at: store.native!.sessions!.appendingPathComponent("packed"), includingPropertiesForKeys: nil)
             let retained = sessions.map { $0.appendingPathComponent("drawing/head.json") }
                 .first { FileManager.default.fileExists(atPath: $0.path) }
             try require(try retained.map { try Data(contentsOf: $0) } == bytes, "Retry and Later must preserve unreadable artwork bytes")
             note("PASS \(theme): native warning Retry, Later dismissal and retry after dismissal preserve the failed copy")
-            let orphan = store.native!.sessions!.appendingPathComponent(store.sessionIdentity).appendingPathComponent("unreferenced-copy")
+            let orphan = store.native!.sessions!.appendingPathComponent("packed").appendingPathComponent(store.sessionIdentity).appendingPathComponent("unreferenced-copy")
             try FileManager.default.createDirectory(at: orphan.appendingPathComponent("resources"), withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: orphan.appendingPathComponent("generations"), withIntermediateDirectories: true)
             try Data().write(to: orphan.appendingPathComponent(".lock"))
@@ -301,12 +308,13 @@ private final class StartupErrors: @unchecked Sendable {
             try marker.write(to: markerFile)
             try await store.apply(["type": "invoke", "command": "add_layer"])
             let saved = await withCheckedContinuation { done in store.recovery.flush { done.resume(returning: $0) } }
-            try require(saved && store.recovery.error?.contains("Invalid drawing retirement intent") == true,
-                "A committed checkpoint must retain its cleanup warning without reporting save failure: saved=\(saved), error=\(store.recovery.error ?? "nil")")
+            try require(saved && store.recovery.error == nil,
+                "A committed checkpoint must retire a torn orphan without a warning: saved=\(saved), error=\(store.recovery.error ?? "nil")")
             try await store.apply(["type": "invoke", "command": "add_layer"])
-            try await wait("Autosave after cleanup warning", seconds: 20) { store.recovery.hasCurrentCopy }
-            try require(try Data(contentsOf: markerFile) == marker, "A malformed orphan must remain intact after repeated checkpoints")
-            note("PASS \(theme): committed cleanup warning does not block the next edited artwork autosave")
+            try await wait("Autosave after cleanup", seconds: 20) { store.recovery.hasCurrentCopy }
+            try require(FileManager.default.fileExists(atPath: orphan.appendingPathComponent(".retired").path) && !FileManager.default.fileExists(atPath: markerFile.path),
+                "Cleanup must retire an unreferenced store whose close was interrupted")
+            note("PASS \(theme): cleanup retires a torn orphan without a warning or blocking autosave")
             try await prepare(store.native!, "Capture before blocked checkpoint")
             let blocked = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
             NativeProjectTask.io.async {
@@ -328,12 +336,17 @@ private final class StartupErrors: @unchecked Sendable {
             try await wait("Newest edit checkpoint acknowledgement", seconds: 15) { flushed != nil }
             try require(flushed == true && store.recovery.hasCurrentCopy,
                 "A committed cleanup warning must not acknowledge a stale checkpoint after a newer edit")
-            let scene = store.native!.sessions!.appendingPathComponent(store.sessionIdentity)
+            let scene = store.native!.sessions!.appendingPathComponent("packed").appendingPathComponent(store.sessionIdentity)
             let manifest = try JSON.decode(String(decoding: Data(contentsOf: scene.appendingPathComponent("window.json")), as: UTF8.self))
             let key = manifest["drawings"].array.first { $0["id"].uint == manifest["active"].uint }!["key"].string
             let savedDrawing = scene.appendingPathComponent(key)
-            let checkpointHead = try JSON.decode(String(decoding: Data(contentsOf: savedDrawing.appendingPathComponent("head.json")), as: UTF8.self))
-            let metadata = try JSON.decode(String(decoding: Data(contentsOf: savedDrawing.appendingPathComponent("generations/" + checkpointHead["current"]["id"].string + ".json")), as: UTF8.self))
+            let slots = ["head.0", "head.1"].compactMap { try? Data(contentsOf: savedDrawing.appendingPathComponent($0)) }.filter { $0.count == 2048 }
+            guard let slot = slots.max(by: { $0[8..<16].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) } < $1[8..<16].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) } }) else {
+                throw HostFailure(message: "The checkpoint must publish a drawing head slot")
+            }
+            let length = Int(slot[16..<20].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+            let checkpointHead = try JSON.decode(String(decoding: slot[24..<24 + length], as: UTF8.self))
+            let metadata = try JSON.decode(String(decoding: Data(contentsOf: savedDrawing.appendingPathComponent("generations/" + checkpointHead["current"]["id"].string + ".json")), as: UTF8.self))["session"]
             let objects = metadata["objects"].array
             let persisted = metadata["current"]["objects"].array.filter { objects[Int($0.uint)]["record"]["type"].string == "capy.occurrence/3" }.count
             try require(persisted == newest, "Successful flush must persist the newest layer state: saved=\(persisted), expected=\(newest)")
@@ -355,10 +368,124 @@ private final class StartupErrors: @unchecked Sendable {
         }
     }
 
+    @MainActor static func interruptedWorkspaceRecovery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("capy-interrupted-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for theme in [ColorScheme.light, .dark] {
+            let storage = EditorPersistence(root: directory.appendingPathComponent("\(theme)"))
+            let store = EditorStore(platform: 1, scene: UUID().uuidString, persistence: storage, managedWorkspaces: true)
+            let workspaces = store.workspaces!
+            try await workspaces.started("Recovering window")
+            let peerStore = EditorStore(platform: 1, scene: UUID().uuidString, persistence: storage, managedWorkspaces: true)
+            let peer = peerStore.workspaces!
+            try await peer.started("Interrupted window")
+            let database = try TestWorkspaceDatabase(directory: storage.locations!.workspaces)
+            try database.execute("CREATE TRIGGER interrupt_publication BEFORE INSERT ON items WHEN NEW.name='Interrupted' BEGIN SELECT RAISE(ABORT,'interrupted publication'); END")
+            try await peer.perform(["type": "form", "action": ["type": "new"]])
+            peer.formName = "Interrupted"; peer.submit()
+            try await wait("Interrupted publication") { peer.error != nil }
+            try database.execute("DROP TRIGGER interrupt_publication")
+            await peer.detached()
+            let window = NSWindow(contentRect: CGRect(x: 80, y: 80, width: 640, height: 220),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: WorkspaceStartupNotice(workspaces: workspaces)
+                .environment(\.editorPopupStore, store).environment(\.capyCommonCopy, store.bootstrap["common"])
+                .environment(\.capyNativeCopy, store.catalog["native_copy"]).environment(\.colorScheme, theme)
+                .frame(width: 640, height: 220))
+            window.contentView = host
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            defer { window.contentView = nil; window.close() }
+            try await wait("Interrupted change recovery offered", seconds: 60, failure: { workspaces.error }) {
+                workspaces.view["status"]["action"]["action"]["type"].string == "recover_interrupted"
+                    && element(host, "workspace-status-action") != nil
+            }
+            let status = workspaces.view["status"]
+            try require(button(host, label: status["action"]["label"].string) != nil
+                && button(host, label: store.catalog["native_copy"]["header"]["retry"].string) == nil,
+                "The notice offers only the shared status recovery: \(status.stableKey)")
+            try capture(host, "interrupted-workspace-\(theme)")
+            try require(press(element(host, "workspace-status-action")!), "The status recovery rejected input")
+            try await wait("Interrupted recovery prompt") { workspaces.view["prompt_action"]["type"].string == "recover_interrupted" }
+            let choices = workspaces.view["prompt"]["choices"].array
+            try require(choices.count == 1 && choices[0]["label"].string.contains("Interrupted"),
+                "The other window's interrupted change is offered: \(choices.map(\.stableKey))")
+            workspaces.formChoice = choices[0]["id"].string; workspaces.submit()
+            try await workspaces.settle("Interrupted change recovery")
+            try await wait("Recovered change leaves the status", seconds: 60) {
+                workspaces.view["interrupted"].uint == 0 && workspaces.view["status"].isNull && element(host, "workspace-status-action") == nil
+            }
+            try require(try await workspaces.workspaceRows().contains { $0["title"].string.contains("Interrupted") },
+                "Recovery publishes the interrupted workspace")
+            note("PASS \(theme): the notice offers the shared interrupted-change recovery and recovers the change")
+            try await workspaces.closed()
+        }
+    }
+
+    @MainActor static func holdingOwner(_ store: EditorStore, _ work: @MainActor () async throws -> Void) async throws {
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        store.native!.submit(2, JSON(["type": "bootstrap"])) { _ in
+            entered.signal()
+            precondition(release.wait(timeout: .now() + 20) == .success, "The test must release its held owner")
+        }
+        defer { release.signal() }
+        let held = await Task.detached { entered.wait(timeout: .now() + 10) == .success }.value
+        try require(held, "The owner must be held right after its launch")
+        try await work()
+    }
+
+    @MainActor static func launchCoverChecks() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("capy-launch-cover-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for (theme, saved) in [("light", #"{"theme":"light","zen_icon":"sleeping"}"#), ("dark", #"{"theme":"dark","zen_icon":"sleeping"}"#), ("unreadable", "{")] {
+            let root = directory.appendingPathComponent(theme)
+            let settings = StorageLocations.within(root)!.settings
+            try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(saved.utf8).write(to: settings)
+            let store = EditorStore(platform: 1, persistence: EditorPersistence(root: root), managedWorkspaces: true)
+            let window = NSWindow(contentRect: CGRect(x: 80, y: 80, width: 1000, height: 750),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: EditorView(store: store) { MacMetalCanvas(store: store) })
+            window.contentView = host
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            defer { window.contentView = nil; window.close() }
+            try await holdingOwner(store) {
+                try await wait("Covered startup with its background paper reload", seconds: 10, failure: { store.failure }) {
+                    !store.bootstrap.isNull && !store.state.isNull && store.papers.busy && (theme != "unreadable" || store.storageFailure != nil)
+                }
+                try await drain(0.2)
+                try capture(host, "launch-cover-\(theme)")
+                try require(store.launchVisible && !store.workspaces!.ready, "The held owner must keep the cover over an unopened workspace")
+                let icon = theme == "unreadable" ? "zen-looking-up" : "zen-sleeping"
+                try require(store.bootstrap["launch_mark"]["icon"].string == icon,
+                    "The cover must draw the saved capy: \(store.bootstrap["launch_mark"].stableKey)")
+                try require(element(host, "paper-library-progress") == nil, "The startup paper reload must not draw a progress bar")
+                try require(!shows(host, text: store.bootstrap["recovery"]["opening_workspace"].string),
+                    "The cover must not show workspace startup progress")
+            }
+            if theme == "unreadable" {
+                try await wait("Storage alert lifts the cover", failure: { store.failure }) { !store.launchVisible }
+                try require(store.storageFailure != nil && !store.snapshot["launch"]["finished"].bool,
+                    "A host alert must lift the unfinished cover instead of sitting on it")
+                store.storageFailure = nil
+                try await wait("Dismissed storage alert returns the cover", failure: { store.failure }) {
+                    store.launchVisible || store.snapshot["launch"]["finished"].bool
+                }
+                note("PASS: a host storage alert lifts the unfinished launch cover until it closes")
+            } else {
+                try await wait("Revealed editor", seconds: 120, failure: { store.failure }) {
+                    store.snapshot["launch"]["finished"].bool && !store.launchVisible
+                }
+                note("PASS \(theme): the cover draws only the saved capy until the editor is revealed")
+            }
+        }
+    }
+
     @MainActor static func main() {
         _ = NSApplication.shared; NSApp.setActivationPolicy(.accessory)
         Task { @MainActor in
-            do { try await ownerChecks(); try await viewChecks(); exit(0) }
+            do { try await ownerChecks(); try await interruptedWorkspaceRecovery(); try await viewChecks(); try await launchCoverChecks(); exit(0) }
             catch { note("FAIL: \(error.localizedDescription)"); exit(1) }
         }
         NSApp.run()

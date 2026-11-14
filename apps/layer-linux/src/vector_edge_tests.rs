@@ -31,7 +31,7 @@ fn draw(d: &mut Driver, device: &str, points: &[[f32; 2]]) {
     d.input.perform(contact_script(device, &points));
 }
 fn darkest(d: &Driver, at: [f32; 2], radius: i32) -> [u8; 4] {
-    let capture = ui_session(&d.w).engine().backend().capture_in(d.w.view_color()).unwrap();
+    let capture = d.w.capture_canvas(d.w.view_color()).unwrap();
     let m = state(&d.w).camera.document_to_surface();
     let cx = (m[0] * at[0] + m[2] * at[1] + m[4]).round() as i32;
     let cy = (m[1] * at[0] + m[3] * at[1] + m[5]).round() as i32;

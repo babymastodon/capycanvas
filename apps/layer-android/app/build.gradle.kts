@@ -10,6 +10,8 @@ val capyRustProfile = providers.gradleProperty("capyRustProfile")
     .orElse(providers.environmentVariable("CAPY_RUST_PROFILE"))
 val capyApplicationId = providers.gradleProperty("capyApplicationId")
 val capyDevelopmentSuffix = ".dev".takeUnless { capyApplicationId.isPresent }
+val capySourceRevision = providers.exec { commandLine("sh", rootDir.resolve("../../tools/build/source-revision.sh").path) }
+    .standardOutput.asText.map(String::trim)
 val capyVersion = Regex("^version = \"(\\d+)\\.(\\d+)\\.(\\d+)\"$", RegexOption.MULTILINE)
     .find(providers.fileContents(rootProject.layout.projectDirectory.file("../../Cargo.toml")).asText.get())!!
     .groupValues.drop(1).map(String::toInt)
@@ -76,7 +78,7 @@ android {
     sourceSets["main"].assets.srcDirs("../../layer-web/icons", "../../layer-web/brush-previews", "../../layer-web/filter-previews")
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/capy/assets").get().asFile)
     sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/capy/res").get().asFile)
-    sourceSets["androidTest"].assets.srcDir("../../../crates/layer-workspace/tests/compat/1.0.15")
+    sourceSets["androidTest"].assets.srcDirs("../../../crates/layer-workspace/tests/compat/1.0.15", "../../../crates/layer-workspace/tests/fixtures")
     sourceSets["benchmark"].kotlin.directories.add("src/workspaceBenchmark/java")
     sourceSets.maybeCreate("androidTestDebug").kotlin.directories.add("src/workspaceBenchmark/java")
     testOptions { animationsDisabled = true }
@@ -88,6 +90,7 @@ androidComponents.onVariants { variant ->
         jniDirectory.set(layout.buildDirectory.dir("rustJniLibs/${variant.name}"))
         workingDir = rootDir.resolve("../..")
         environment("ANDROID_NDK_HOME", "${System.getenv("ANDROID_HOME") ?: System.getProperty("user.home") + "/Android/Sdk"}/ndk/29.0.14206865")
+        environment("CAPY_SOURCE_REVISION", capySourceRevision.get())
         commandLine(listOf("cargo", "ndk") + capyAbis.flatMap { listOf("-t", it) } +
             listOf("--platform", "29", "-o", jniDirectory.get().asFile.absolutePath,
                 "build", "--locked", "--profile", profile, "-p", "layer-android-link"))
@@ -99,6 +102,8 @@ androidComponents.onVariants { variant ->
         inputs.files(rootDir.resolve("../../Cargo.lock"), rootDir.resolve("../../Cargo.toml"), rootDir.resolve("../../.cargo/config.toml"))
         inputs.property("abi", capyAbis)
         inputs.property("profile", profile)
+        inputs.property("sourceRevision", capySourceRevision)
+        inputs.property("publicRelease", providers.environmentVariable("CAPY_PUBLIC_RELEASE").orElse(""))
         inputs.property("rustVersion", providers.exec { commandLine("rustc", "--version") }.standardOutput.asText)
     }
     variant.sources.jniLibs?.addGeneratedSourceDirectory(rustBuild) { it.jniDirectory }
@@ -116,24 +121,39 @@ val generateAppNames by tasks.registering(Exec::class) {
 android.sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/capy/appNames").get().asFile)
 tasks.named("preBuild") { dependsOn(generateAppNames) }
 
-// Adapt the existing brand path to Android's maskable launcher format. No second
-// artwork source or checked-in raster exports.
+val launchMarksFile = layout.buildDirectory.file("generated/capy/launchMarks.txt").get().asFile
+val launchMarks by tasks.registering(Exec::class) {
+    workingDir = rootDir.resolve("../..")
+    inputs.files(fileTree(rootDir.resolve("../../crates/layer-ui")) { include("**/*.rs", "Cargo.toml") })
+    inputs.files(rootDir.resolve("../../Cargo.lock"))
+    outputs.file(launchMarksFile)
+    commandLine("sh", "-c", "cargo run --locked --quiet -p layer-ui --example launch_marks > \"\$1\"", "sh", launchMarksFile.absolutePath)
+}
+
+// Adapt the existing brand paths to Android's maskable launcher and splash
+// formats. No second artwork source or checked-in raster exports.
 val generateBrand by tasks.registering {
-    val source = rootDir.resolve("../layer-web/icons/layer-zen-looking-up-symbolic.svg")
+    val icons = rootDir.resolve("../layer-web/icons")
     val output = layout.buildDirectory.dir("generated/capy/res").get().asFile
-    inputs.file(source)
+    inputs.files(launchMarks)
+    inputs.files(fileTree(icons) { include("layer-zen-*-symbolic.svg") })
     outputs.dir(output)
     doLast {
-        val svg = source.readText()
-        val path = Regex("""<path[^>]*\sd="([^"]+)"""").find(svg)?.groupValues?.get(1)
-            ?: error("Missing shared brand path")
-        val viewBox = Regex("""viewBox="([^"]+)"""").find(svg)!!.groupValues[1].split(" ").map(String::toFloat)
+        fun artwork(icon: String): Pair<String, List<Float>> {
+            val svg = icons.resolve("layer-$icon-symbolic.svg").readText()
+            val path = Regex("""<path[^>]*\sd="([^"]+)"""").find(svg)?.groupValues?.get(1)
+                ?: error("Missing shared $icon path")
+            return path to Regex("""viewBox="([^"]+)"""").find(svg)!!.groupValues[1].split(" ").map(String::toFloat)
+        }
+        output.deleteRecursively()
+        output.resolve("drawable").mkdirs()
+        output.resolve("values").mkdirs()
+        val (path, viewBox) = artwork("zen-looking-up")
         // The launcher displays the center 72dp of the 108dp adaptive layer.
         // Match the favicon's 440/512 artwork within that visible square.
         val scale = (216f * 440f / 512f) / maxOf(viewBox[2], viewBox[3])
         val x = (324 - viewBox[2] * scale) / 2 - viewBox[0] * scale
         val y = (324 - viewBox[3] * scale) / 2 - viewBox[1] * scale
-        output.resolve("drawable").mkdirs()
         output.resolve("drawable/capy_mark.xml").writeText("""
             <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="324" android:viewportHeight="324">
               <group android:translateX="$x" android:translateY="$y" android:scaleX="$scale" android:scaleY="$scale">
@@ -141,13 +161,36 @@ val generateBrand by tasks.registering {
               </group>
             </vector>
         """.trimIndent())
-        output.resolve("drawable/capy_splash_mark.xml").writeText("""
-            <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="96dp" android:height="96dp" android:viewportWidth="${viewBox[2]}" android:viewportHeight="${viewBox[3]}">
-              <group android:translateX="${-viewBox[0]}" android:translateY="${-viewBox[1]}">
-                <path android:fillColor="@color/capy_splash_foreground" android:fillType="evenOdd" android:pathData="$path" />
-              </group>
-            </vector>
-        """.trimIndent())
+        val poses = launchMarksFile.readLines().filter(String::isNotBlank).map { it.split(" ") }
+        for ((icon, centerX, centerY, radius) in poses) {
+            val name = icon.replace('-', '_')
+            val (pose, box) = artwork(icon)
+            output.resolve("drawable/capy_launch_mark_$name.xml").writeText("""
+                <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="96dp" android:height="96dp" android:viewportWidth="${box[2]}" android:viewportHeight="${box[3]}">
+                  <group android:translateX="${-box[0]}" android:translateY="${-box[1]}">
+                    <path android:fillColor="@color/capy_splash_foreground" android:fillType="evenOdd" android:pathData="$pose" />
+                  </group>
+                </vector>
+            """.trimIndent())
+            val splashScale = 95f / radius.toFloat()
+            output.resolve("drawable/capy_splash_mark_$name.xml").writeText("""
+                <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="288dp" android:height="288dp" android:viewportWidth="288" android:viewportHeight="288">
+                  <group android:translateX="${144f - centerX.toFloat() * splashScale}" android:translateY="${144f - centerY.toFloat() * splashScale}" android:scaleX="$splashScale" android:scaleY="$splashScale">
+                    <path android:fillColor="@color/capy_splash_foreground" android:fillType="evenOdd" android:pathData="$pose" />
+                  </group>
+                </vector>
+            """.trimIndent())
+        }
+        val names = poses.map { it[0].replace('-', '_') }
+        output.resolve("values/launch_marks.xml").writeText(buildString {
+            appendLine("""<?xml version="1.0" encoding="utf-8"?>""")
+            appendLine("""<resources xmlns:tools="http://schemas.android.com/tools">""")
+            for (name in names) appendLine("""    <style name="Theme.CapyCanvas.$name" parent="Theme.CapyCanvas"><item name="android:windowSplashScreenAnimatedIcon" tools:targetApi="31">@drawable/capy_splash_mark_$name</item></style>""")
+            appendLine("""    <string-array name="capy_launch_icons" translatable="false">${poses.joinToString("") { "<item>${it[0]}</item>" }}</string-array>""")
+            appendLine("""    <array name="capy_launch_marks">${names.joinToString("") { "<item>@drawable/capy_launch_mark_$it</item>" }}</array>""")
+            appendLine("""    <array name="capy_launch_splash_themes">${names.joinToString("") { "<item>@style/Theme.CapyCanvas.$it</item>" }}</array>""")
+            appendLine("</resources>")
+        })
     }
 }
 tasks.named("preBuild") { dependsOn(generateBrand) }

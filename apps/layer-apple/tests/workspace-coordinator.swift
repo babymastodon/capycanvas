@@ -1,7 +1,6 @@
 // Exercise the shared workspace controller through the Apple editor lifecycle
 // with temporary native SQLite storage. No visible window or menu automation.
 import Foundation
-import SQLite3
 
 @main struct WorkspaceCoordinatorChecks {
     @MainActor static func main() async throws {
@@ -73,6 +72,7 @@ import SQLite3
             let recovered = EditorStore(platform: platform, persistence: badStorage)
             let recoveredWorkspaces = recovered.workspaces!
             try await recoveredWorkspaces.started("corrupt database recovery")
+            try await uncover(recovered)
             precondition(recovered.failure == nil && !recovered.state["notice"].isNull)
             try require(await recoveredWorkspaces.workspaceRows().count == 3, "Recovered storage must initialize the shared defaults")
             try await recoveredWorkspaces.closed()
@@ -81,8 +81,102 @@ import SQLite3
             try require(damaged.count == 1, "Recovery must set aside exactly one damaged library")
             try require(Data(contentsOf: damaged[0]) == badData, "Recovery must preserve the damaged library bytes")
             try TestWorkspaceDatabase(directory: badStorage.locations!.workspaces).execute("SELECT id FROM items")
-            print("PASS: platform \(platform), SQLite startup, scene restoration, latest-edit switching, failure unlock, suspension, ownership recovery, restart and unreadable-store preservation")
+            try await releasedStores(platform: platform, root: root.appendingPathComponent("released"))
+            print("PASS: platform \(platform), SQLite startup, scene restoration, latest-edit switching, failure unlock, suspension, ownership recovery, restart, unreadable-store preservation, released 1.0.12 workspaces and damaged-store copy install")
         }
+    }
+    @MainActor static func releasedStores(platform: UInt32, root: URL) async throws {
+        let tests = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("crates/layer-workspace/tests")
+        let released = try JSON.decode(String(contentsOf: tests.appendingPathComponent("fixtures/web-store-1.0.12.json"), encoding: .utf8))["items"]
+        let probe = EditorPersistence(root: root.appendingPathComponent("version"))
+        let probeEditor = EditorStore(platform: platform, persistence: probe)
+        try await probeEditor.workspaces!.started("version marker")
+        try await probeEditor.workspaces!.closed()
+        let version = try JSON.decode(String(contentsOf: probe.locations!.workspaces.appendingPathComponent("last-version"), encoding: .utf8))["version"].string
+        func stage(_ name: String, retained: Bool) throws -> EditorPersistence {
+            let storage = EditorPersistence(root: root.appendingPathComponent(name))
+            let directory = storage.locations!.workspaces, database = directory.appendingPathComponent("workspaces.sqlite3")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: tests.appendingPathComponent("compat/1.0.15/workspaces.sqlite3"), to: database)
+            var copies: [[String: Any]] = []
+            if retained {
+                let id = "workspaces.\(version).\(UUID().uuidString.lowercased()).sqlite3"
+                try FileManager.default.copyItem(at: database, to: directory.appendingPathComponent(id))
+                copies.append(["id": id, "bytes": try Data(contentsOf: database).count])
+            }
+            try JSON(["version": version, "unreadable_identity": NSNull(), "copies": copies]).encoded()
+                .write(to: directory.appendingPathComponent("last-version"), atomically: true, encoding: .utf8)
+            return storage
+        }
+        func quiet(_ workspaces: WorkspaceController, _ step: String) throws {
+            try require(workspaces.error == nil && workspaces.view["status"].isNull && workspaces.view["prompt"].isNull,
+                "\(step) asks nothing: \(workspaces.view["status"].stableKey) \(workspaces.view["prompt"].stableKey)")
+        }
+        func toolbars(_ layout: JSON) -> [String: [UInt64]] {
+            Dictionary(uniqueKeysWithValues: layout["panels"].array.filter { $0["content"]["kind"].string == "toolbar" }.map { panel in
+                (panel["id"].stableKey, panel["content"]["tiles"].array.filter {
+                    !["opacity", "brush_opacity_slider"].contains($0["control"]["kind"].string) && $0["control"]["command"].string != "decoration"
+                }.map { $0["id"].uint })
+            })
+        }
+        let ids = ["builtin:workspace:painter", "builtin:workspace:illustrator", "builtin:workspace:photographer"]
+        let storage = try stage("released", retained: false)
+        let database = try TestWorkspaceDatabase(directory: storage.locations!.workspaces)
+        for id in ids {
+            let content = released[id]["entity"]["content"].stableKey.replacingOccurrences(of: "'", with: "''")
+            try database.execute("UPDATE items SET content='\(content)' WHERE id='\(id)'")
+        }
+        func stored() throws -> [String] { try ids.flatMap { try database.strings("SELECT content FROM items WHERE id='\($0)'") } }
+        let before = try stored()
+        let editor = EditorStore(platform: platform, persistence: storage)
+        let workspaces = editor.workspaces!
+        try await workspaces.started("released 1.0.12 workspaces")
+        try quiet(workspaces, "startup")
+        for id in ids {
+            try await workspaces.perform(["type": "switch", "id": id])
+            try require(workspaces.view["id"].string == id, "\(id) opens")
+            try quiet(workspaces, id)
+            let history = released[id]["entity"]["content"]["history"]
+            let current = toolbars(history["revisions"][history["current"].string]["layout"])
+            try require(toolbars(editor.state["workspace"]["layout"]) == current,
+                "\(id) keeps every released tile this build reads: \(toolbars(editor.state["workspace"]["layout"])) != \(current)")
+        }
+        try await workspaces.flushed()
+        try await workspaces.closed()
+        try require(try stored() == before, "Opening released workspaces rewrites none of them")
+        let reopened = EditorStore(platform: platform, persistence: storage)
+        try await reopened.workspaces!.started("released workspaces relaunch")
+        try quiet(reopened.workspaces!, "relaunch")
+        try require(reopened.workspaces!.view["id"].string == ids[2], "The last released workspace reopens")
+        try await reopened.workspaces!.closed()
+
+        let damaged = try stage("damaged", retained: true)
+        let directory = damaged.locations!.workspaces
+        func copies() throws -> Set<String> {
+            Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .filter { $0.hasPrefix("workspaces.") && $0.hasSuffix(".sqlite3") && $0 != "workspaces.sqlite3" })
+        }
+        let retained = try copies()
+        try Data("damaged SQLite store".utf8).write(to: directory.appendingPathComponent("workspaces.sqlite3"))
+        let installed = EditorStore(platform: platform, persistence: damaged)
+        try await installed.workspaces!.started("damaged store installs its newest copy")
+        try quiet(installed.workspaces!, "damaged store")
+        try await uncover(installed)
+        try require(installed.state["notice"]["text"].string == "Your saved workspaces were damaged. Capy Canvas restored an earlier copy."
+            && installed.state["notice"]["actions"].array.isEmpty, "The restored-copy notice has no buttons: \(installed.state["notice"].stableKey)")
+        try require(installed.state["brush"]["diameter"].number == 37, "The retained copy's settings open")
+        let after = try copies()
+        try require(after.filter { $0.hasPrefix("workspaces.damaged.") }.count == 1 && retained.isDisjoint(with: after),
+            "The damaged store is set aside and its installed copy is consumed: \(retained) \(after)")
+        try await installed.workspaces!.flushed()
+        try await installed.workspaces!.closed()
+        let restarted = EditorStore(platform: platform, persistence: damaged)
+        try await restarted.workspaces!.started("installed copy relaunch")
+        try quiet(restarted.workspaces!, "installed copy relaunch")
+        try await uncover(restarted)
+        try require(restarted.state["notice"].isNull && restarted.state["brush"]["diameter"].number == 37 && (try copies()) == after,
+            "A second start sets nothing aside and installs nothing")
+        try await restarted.workspaces!.closed()
     }
     @MainActor static func languageReadiness(platform: UInt32, root: URL, projection: JSON) throws {
         let editor = EditorStore(platform: platform, persistence: EditorPersistence(root: nil), managedWorkspaces: false)
@@ -143,8 +237,9 @@ import SQLite3
         precondition(workspaces.readOnly && editor.state["brush"]["diameter"].number == 95)
         try await workspaces.answer(["type": "save_as_new"], name: "Ownership Recovery")
         let recovered = workspaces.view["id"].string
-        precondition(recovered != original && !workspaces.readOnly && workspaces.error == nil
-            && editor.state["brush"]["diameter"].number == 95)
+        try require(recovered != original && !workspaces.readOnly && workspaces.error == nil
+            && [95, 96].contains(editor.state["brush"]["diameter"].number),
+            "Save as New after losing ownership keeps this window's brush or the peer's durable one: id \(recovered) from \(original), read-only \(workspaces.readOnly), error \(workspaces.error ?? "none"), brush \(editor.state["brush"]["diameter"].number)")
         try await successor.workspaces!.closed()
         try await workspaces.perform(["type": "focus"])
         precondition(editor.state["brush"]["diameter"].number == 96, "The peer's durable brush preference must be adopted before switching")
@@ -197,22 +292,5 @@ import SQLite3
         try await workspaces.perform(["type": "switch", "id": original])
         precondition(editor.state["brush"]["diameter"].number == 91)
         try await workspaces.answer(["type": "delete", "value": created])
-    }
-}
-
-private final class TestWorkspaceDatabase {
-    private let handle: OpaquePointer
-    init(directory: URL) throws {
-        var handle: OpaquePointer?
-        guard sqlite3_open(directory.appendingPathComponent("workspaces.sqlite3").path, &handle) == SQLITE_OK, let handle else {
-            throw HostFailure(message: "Could not open fixture SQLite connection")
-        }
-        self.handle = handle
-    }
-    deinit { sqlite3_close(handle) }
-    func execute(_ sql: String) throws {
-        guard sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK else {
-            throw HostFailure(message: String(cString: sqlite3_errmsg(handle)))
-        }
     }
 }

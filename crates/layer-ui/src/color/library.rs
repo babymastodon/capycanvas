@@ -17,13 +17,16 @@ pub struct SavedColor {
 pub struct ColorPalette {
     pub id: u64,
     pub name: String,
+    #[serde(deserialize_with = "crate::lenient::vec")]
     pub swatches: Vec<SavedColor>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ColorLibrary {
+    #[serde(deserialize_with = "crate::lenient::vec")]
     pub palettes: Vec<ColorPalette>,
     pub active: u64,
     pub selected: Option<u64>,
+    #[serde(deserialize_with = "crate::lenient::vec")]
     pub history: Vec<RgbColor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_name: Option<(RgbColor, String)>,
@@ -276,9 +279,6 @@ impl ColorLibrary {
                 }
                 ColorState::validate_definition(swatch.color)?;
             }
-        }
-        if self.selected.is_some_and(|id| self.swatch(id).is_none()) {
-            return Err("Swatch no longer exists".into());
         }
         Ok(())
     }

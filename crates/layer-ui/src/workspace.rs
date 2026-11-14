@@ -72,6 +72,7 @@ pub struct LayoutRevision {
     /// Scoped to this workspace's history; packages remap references on import.
     pub id: String,
     pub layout: DockLayout,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub description: LayoutChange,
     #[serde(with = "counter")]
     pub timestamp_ms: u64,
@@ -79,13 +80,35 @@ pub struct LayoutRevision {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayoutHistory {
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub version: u32,
     #[serde(with = "counter")]
     pub generation: u64,
     pub current: String,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub undo: Vec<String>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub redo: Vec<String>,
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub revisions: std::collections::BTreeMap<String, LayoutRevision>,
+}
+impl LayoutRevision {
+    fn validate(&self, id: &str) -> Result<(), String> {
+        if id.is_empty()
+            || id.len() > 128
+            || id != self.id
+            || !self.layout.measurements.is_empty()
+            || !self.layout.column_scroll.is_empty()
+            || self.layout.layout_grid != 0.
+            || self.layout.titlebar_insets != [0.0; 3]
+            || self.layout.bottom_inset != 0.0
+            || self.layout.header_presentation != Default::default()
+        {
+            return Err("Invalid layout history revision".into());
+        }
+        self.description.validate()?;
+        self.layout.validate()
+    }
 }
 impl LayoutHistory {
     pub fn new(layout: &DockLayout) -> Self {
@@ -124,22 +147,22 @@ impl LayoutHistory {
             }
         }
         for (id, revision) in &self.revisions {
-            if id.is_empty()
-                || id.len() > 128
-                || id != &revision.id
-                || !revision.layout.measurements.is_empty()
-                || !revision.layout.column_scroll.is_empty()
-                || revision.layout.layout_grid != 0.
-                || revision.layout.titlebar_insets != [0.0; 3]
-                || revision.layout.bottom_inset != 0.0
-                || revision.layout.header_presentation != Default::default()
-            {
-                return Err("Invalid layout history revision".into());
-            }
-            revision.description.validate()?;
-            revision.layout.validate()?;
+            revision.validate(id)?;
         }
         Ok(())
+    }
+    pub fn retain_admitted(&mut self) {
+        let current = self.current.clone();
+        self.revisions.retain(|id, revision| {
+            revision.layout.retain_admitted();
+            if revision.description.validate().is_err() {
+                revision.description = LayoutChange::default();
+            }
+            id == &current || revision.validate(id).is_ok()
+        });
+        let revisions = &self.revisions;
+        self.undo.retain(|id| revisions.contains_key(id));
+        self.redo.retain(|id| revisions.contains_key(id));
     }
     fn advance(&mut self) {
         self.generation = self
@@ -320,6 +343,7 @@ pub struct EditingState {
     pub color_library: crate::ColorLibrary,
     pub canvas_tool: crate::LayerCanvasTool,
     pub selection: crate::SelectionOptions,
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub region_values: std::collections::BTreeMap<String, f32>,
     pub region_sources: [crate::RegionSource; 3],
     #[serde(default = "default_enabled")]
@@ -350,7 +374,7 @@ impl Default for WorkspaceWorkingState {
 }
 impl WorkspaceWorkingState {
     pub fn restore(value: serde_json::Value) -> Self {
-        let (mut restored, _) = crate::saved_state::restore_fields(value, Self::default, |_| true);
+        let mut restored = crate::saved_state::restore_fields(value, Self::default, |_| true);
         restored.version = 1;
         restored
     }

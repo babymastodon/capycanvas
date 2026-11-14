@@ -347,8 +347,7 @@ impl DocumentService {
             self.recovery.as_mut().unwrap().complete_drawing(attempt, restored)?;
             host.invalidate_snapshot();
         }
-        if let Some(error) = self.recovery.as_mut().and_then(|r| r.take_errors()) {
-            host.error = Some(layer_ui::document_recovery_unavailable(host.session.localization(), &error));
+        if self.recovery.as_mut().is_some_and(|r| r.publish_errors(host)) {
             host.invalidate_snapshot();
         }
         if self.close_next && !self.window.documents.trim_in_flight() && self.idle() && host.session.can_park_document() {

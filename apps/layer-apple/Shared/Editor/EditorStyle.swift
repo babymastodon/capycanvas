@@ -391,11 +391,13 @@ struct EditorTextField: View {
         if let focus {
             #if os(iOS)
             let size: CGFloat = 17
+            let submit: (Bool) -> Bool = { done in if done { focus.value.wrappedValue = false }; return true }
             #else
             let size: CGFloat = 14
+            let submit: (Bool) -> Bool = { _ in true }
             #endif
             NumericTextField(label: label, text: binding, focused: focus.value, fontSize: size, color: .primary,
-                identifier: focus.identifier, submit: { _ in true }, cancel: { focus.value.wrappedValue = false },
+                identifier: focus.identifier, submit: submit, cancel: { focus.value.wrappedValue = false },
                 alignment: .natural, selectsOnFocus: false, monospaced: false, rounded: true)
                 .frame(height: size + 10)
         } else { TextField(label, text: binding) }

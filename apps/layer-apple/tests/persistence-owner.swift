@@ -30,9 +30,9 @@ private final class State: @unchecked Sendable {
     static func main() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("capy-owner-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
-        func send(_ owner: NativeOwner, _ action: [String: Any]) {
+        func send(_ owner: NativeOwner, _ action: [String: Any], moving: Bool = false) {
             let result = Reply<Bool>()
-            owner.submit(0, JSON(action)) { result.set($0 != nil) }
+            owner.submit(0, JSON(action), moving: moving) { result.set($0 != nil) }
             precondition(result.get(), "Shared action must succeed")
         }
         func flush(_ owner: NativeOwner) -> Bool {
@@ -76,7 +76,7 @@ private final class State: @unchecked Sendable {
             func action(_ phase: String, _ fraction: Double) {
                 let angle = (arc["start"].number + arc["sweep"].number * fraction) * .pi / 180
                 send(owner, ["type": "bubble", "action": ["type": "ring", "id": id, "phase": phase,
-                    "position": [cos(angle) * arc["radius"].number, sin(angle) * arc["radius"].number]]])
+                    "position": [cos(angle) * arc["radius"].number, sin(angle) * arc["radius"].number]]], moving: phase == "move")
             }
             let before = state.read().0["state"]["tool_settings"].stableKey
             func history() -> [JSON] { state.read().0["state"]["commands"].array.filter { ["undo", "redo"].contains($0["id"].string) } }

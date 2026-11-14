@@ -20,7 +20,7 @@ static SAVE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 enum Field {
     Choice(adw::ComboRow),
     ImageChoice(gtk::ListBoxRow, crate::image_selector::ImageSelector),
-    Circles(adw::ActionRow, crate::transparency_choice::TransparencyChoice),
+    Circles(gtk::ListBoxRow, crate::transparency_choice::TransparencyChoice),
     Swatches(gtk::ListBoxRow, Rc<crate::swatch_selector::SwatchSelector>),
     Spin(adw::SpinRow),
     Number(gtk::ListBoxRow, crate::number_control::NumberControl),
@@ -48,7 +48,8 @@ impl Field {
             if let Some(action) = self.widget().downcast_ref::<adw::ActionRow>() {
                 action.set_subtitle(&row.description);
             }
-        } else if let Some(body) = self.widget().first_child().and_downcast::<gtk::Box>()
+        } else if let Some(body) = self.widget().first_child().and_then(|child|
+            child.clone().downcast::<gtk::Box>().ok().or_else(|| child.first_child().and_downcast::<gtk::Box>()))
             && let Some(text) = body.first_child().and_downcast::<gtk::Box>() {
                 if let Some(title) = text.first_child().and_downcast::<gtk::Label>() {
                     title.set_text(&row.title);
@@ -180,7 +181,7 @@ fn titled_row(row: &PreferenceRow) -> (gtk::ListBoxRow, gtk::Box) {
     native_row.add_css_class("image-preference");
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
-    let title = gtk::Label::builder().label(&row.title).xalign(0.0).build();
+    let title = gtk::Label::builder().label(&row.title).xalign(0.0).wrap(true).build();
     text.append(&title);
     if !row.description.is_empty() {
         let description = gtk::Label::builder()
@@ -195,6 +196,25 @@ fn titled_row(row: &PreferenceRow) -> (gtk::ListBoxRow, gtk::Box) {
     body.append(&text);
     native_row.set_child(Some(&body));
     (native_row, body)
+}
+
+fn flexible_row(row: &PreferenceRow, suffix: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
+    let (native, body) = titled_row(row);
+    let text = body.first_child().unwrap();
+    body.remove(&text);
+    let content = crate::dialog_content::new(gtk::Orientation::Horizontal, 12);
+    text.set_hexpand(true);
+    content.append(&text);
+    content.append(suffix);
+    let suffix = suffix.clone().upcast::<gtk::Widget>();
+    crate::dialog_content::on_resize(&content, glib::clone!(#[weak] content, move |width| {
+        let fits = text.measure(gtk::Orientation::Horizontal, -1).1
+            + suffix.measure(gtk::Orientation::Horizontal, -1).1 + 12 <= width;
+        content.set_orientation(if fits { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical });
+        suffix.set_halign(if fits { gtk::Align::End } else { gtk::Align::Start });
+    }));
+    native.set_child(Some(&content));
+    native
 }
 
 fn install_reset_menu(w: &Rc<Workspace>, widget: &gtk::Widget, id: PreferenceId) {
@@ -658,7 +678,6 @@ impl Preferences {
                             presentation: ChoicePresentation::Circles { .. },
                             ..
                         } => {
-                            let native_row = text_row(&row.title, &row.description);
                             let choice = crate::transparency_choice::TransparencyChoice::new(
                                 id.key(),
                                 options,
@@ -674,7 +693,7 @@ impl Preferences {
                                     )
                                 ),
                             );
-                            native_row.add_suffix(&choice.widget);
+                            let native_row = flexible_row(row, &choice.widget);
                             Field::Circles(native_row, choice)
                         }
                         PreferenceKind::Swatches {
@@ -725,9 +744,7 @@ impl Preferences {
                                 }
                             ));
                             let native_row = if *inline {
-                                let native_row = text_row(&row.title, &row.description);
-                                native_row.add_suffix(&selector.widget);
-                                native_row.upcast()
+                                flexible_row(row, &selector.widget)
                             } else {
                                 let (native_row, body) = titled_row(row);
                                 body.append(&selector.widget);
@@ -784,7 +801,7 @@ impl Preferences {
                                 let factory = gtk::SignalListItemFactory::new();
                                 factory.connect_setup(|_, item| {
                                     let label = gtk::Label::builder().wrap(false)
-                                        .ellipsize(gtk::pango::EllipsizeMode::End).width_chars(14).xalign(1.).build();
+                                        .ellipsize(gtk::pango::EllipsizeMode::End).width_chars(1).xalign(1.).build();
                                     label.set_widget_name("preference-choice-value");
                                     item.downcast_ref::<gtk::ListItem>().unwrap().set_child(Some(&label));
                                 });
@@ -1205,13 +1222,10 @@ pub(crate) async fn persist(w: &Workspace, settings: Box<Settings>) -> Result<()
 fn path() -> Option<std::path::PathBuf> {
     crate::storage::roots().map(layer_host::StorageRoots::settings)
 }
-pub fn load_language_preference() -> Result<layer_ui::LanguagePreference, String> {
-    Ok(load_saved()?.as_deref().map(Settings::language_preference).unwrap_or_default())
-}
 pub fn load() -> Result<Option<Settings>, String> {
     Ok(load_saved()?.as_deref().map(Settings::restore))
 }
-fn load_saved() -> Result<Option<String>, String> {
+pub(crate) fn load_saved() -> Result<Option<String>, String> {
     let Some(path) = path() else {
         return Ok(None);
     };

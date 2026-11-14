@@ -154,6 +154,7 @@ pub struct CapyHost {
     live_contacts: std::collections::BTreeMap<u64, CapyPointer>,
     edge_touches: std::collections::BTreeMap<u64, bool>,
     scopes: crate::scopes::Scopes,
+    navigators: crate::navigator_surface::NavigatorSurfaces,
 }
 fn touch_policy(scale: f32) -> layer_ui::TouchPolicy {
     use windows::Win32::UI::{HiDpi::GetSystemMetricsForDpi, WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG}};
@@ -297,6 +298,7 @@ impl CapyHost {
         // GPU allocation and shader work happen after ownership moves to the
         // render worker. No swap chain is attached during CPU/UI initialization.
         Ok(Self {
+            navigators: Default::default(),
             gpu: Default::default(),
             gpu_generation: 0,
             gpu_luid: None,
@@ -424,6 +426,9 @@ impl CapyHost {
             }
             service.poll(&mut self.native, crate::workspace_service::now_ms());Ok(())
         })?;}
+        let dialog = self.documents.as_ref().is_some_and(crate::documents::DocumentService::host_dialog_open)
+            || self.services.as_ref().is_some_and(|service| service.close_status().error.is_some());
+        self.native.set_launch_interaction(dialog);
         Ok(())
     }
 
@@ -458,7 +463,7 @@ impl CapyHost {
             layer_host::gpu::AdapterChoice::Require(&same_gpu)
         } else { layer_host::gpu::AdapterChoice::Prefer(&drives_display) };
         let gpu = pollster::block_on(layer_host::gpu::process_gpu(
-            &self.instance, &self.surface, self.native.session.localization(), choice,
+            &self.instance, &self.surface, self.native.session.localization(), choice, &|_| None,
         ))?;
         let adapter = gpu.factory.adapter();
         let adapter_luid = crate::display::adapter_luid(adapter);
@@ -482,6 +487,7 @@ impl CapyHost {
         presenter.adopt_held(self.held_canvas.take());
         self.presenter_key = Some((renderer.document_color(), encoding));
         presenter.pipelines_ready(&renderer);
+        self.navigators.prepare(&renderer, config.format, encoding)?;
         gpu_state.check()?;
         let retired = self.native.replace_renderer(layer_host::Renderer(Some(renderer)))?;
         if let Some(service) = self.documents.as_mut().and_then(|d| d.recovery.as_mut()) { service.retire_renderer(retired); } else { drop(retired); }
@@ -510,7 +516,15 @@ impl CapyHost {
         changed||finished
     }
 
-    fn frame(&mut self, now: u64, presentation: u64) -> Result<i32, String> {
+    fn poll_surface(&mut self)->Result<(),String> {
+        if self.surface_ready.pending()&&let Some(gpu)=self.native.session.engine().backend().0.as_ref(){
+            gpu.device().poll(wgpu::PollType::Poll).map_err(err)?;
+        }
+        if self.observe_surface(){self.native.invalidate_snapshot();}
+        Ok(())
+    }
+
+    fn frame(&mut self, now: u64, presentation: u64, draw: bool) -> Result<i32, String> {
         self.gpu.check()?;
         // A tab command can arrive after DXGI acquisition. Retire that image
         // before touching the newly selected editor, including failed activation.
@@ -522,8 +536,7 @@ impl CapyHost {
         }
         if self.target.is_none() { return Ok(1); }
         let prediction_before = self.prediction_frames.map(|_| self.native.session.engine().metrics());
-        self.native
-            .prepare_canvas_frame(now, presentation, self.blank_presented)?;
+        if draw { self.native.prepare_canvas_frame(now, presentation, self.blank_presented)?; }
         if let Some(timing) = &mut self.frame_timing { timing.prepared_ns = crate::frame_timing::now(); }
         if let (Some(total), Some(before)) = (&mut self.prediction_frames, prediction_before) {
             let after = self.native.session.engine().metrics();
@@ -573,7 +586,7 @@ impl CapyHost {
         let composition = self.native.compose_scene(
             presenter,
             &mut self.cursor,
-            &self.chrome.navigators,
+            &Default::default(),
             self.chrome.glass.regions(self.scale),
             tone,
             display,
@@ -614,7 +627,7 @@ impl CapyHost {
         if let Some(timing) = &mut self.frame_timing { timing.submitted_ns = crate::frame_timing::now(); }
         gpu.queue().present(target);
         if let Some(timing) = &mut self.frame_timing { timing.presented_ns = crate::frame_timing::now(); }
-        self.native.canvas_frame_rate.submitted();
+        if draw { self.native.canvas_frame_rate.submitted(); }
         self.pacing.submitted(gpu, self.native.wake_callback());
         let document=self.native.session.engine().document().composition().size;
         let ready=composition.staged&&presenter.chrome_ready();
@@ -643,6 +656,10 @@ pub unsafe extern "C" fn capy_launch(tags: *const c_char, screen: *const c_char)
         Ok(Err(error)) => { fail(error); 0 },
         Err(_) => { fail("Windows launch panic"); 0 },
     }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn capy_launch_mark_size(width:f32,height:f32)->f32 {
+    layer_ui::launch_mark_size([width,height])
 }
 /// # Safety
 /// The launch remains alive and exclusively owned until this call returns.
@@ -802,7 +819,23 @@ pub unsafe extern "C" fn capy_poll_services(host: u64) -> i32 {
         if let Some(presenter)=host.presenter.as_mut() {
             host.native.poll_canvas_presentation(presenter)?;
         }
-        if host.observe_surface(){host.native.invalidate_snapshot();}
+        host.poll_surface()?;
+        Ok(i32::from(host.native.frame_demand() != layer_render::FrameDemand::Wait))
+    })
+}
+/// # Safety
+/// Exclusive render-owner access to a live host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_surface_pending(host: u64) -> i32 {
+    guard(host, |host| Ok(i32::from(host.surface_ready.pending())))
+}
+/// # Safety
+/// Exclusive render-owner access to a live host; `pending` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_poll_surface(host: u64, pending: *mut bool) -> i32 {
+    guard(host, |host| {
+        host.poll_surface()?;
+        if let Some(pending)=unsafe { pending.as_mut() } { *pending=host.surface_ready.pending(); }
         Ok(i32::from(host.native.frame_demand() != layer_render::FrameDemand::Wait))
     })
 }
@@ -1199,11 +1232,12 @@ pub unsafe extern "C" fn capy_acquire(host: u64) -> i32 {
             let gpu = host.native.session.engine().backend().0.as_ref().unwrap();
             let wanted = host.display.surface_config(host.surface.get_default_config(gpu.adapter(), config.width, config.height)
                 .ok_or("D3D12 surface unsupported")?, &host.surface.get_capabilities(gpu.adapter()));
-            if wanted.format != config.format {
+            if wanted.format != config.format || wanted.color_space != config.color_space {
                 config.format = wanted.format;
                 config.color_space = wanted.color_space;
                 config.view_formats = wanted.view_formats;
                 configure_surface(&host.surface, gpu.device(), config);
+                host.native.invalidate_snapshot();
                 set_composition_viewport(&host.surface, host.native.session.state().camera.viewport, host.scale)?;
             }
         }
@@ -1242,14 +1276,23 @@ pub unsafe extern "C" fn capy_localization_input(host: u64, busy: bool) -> i32 {
         Ok(0)
     })
 }
+fn present(host: u64, now: u64, presentation: u64, draw: bool) -> i32 {
+    guard(host, |host| {
+        if let Some(timing) = &mut host.frame_timing { timing.prepared_ns=0;timing.composed_ns=0;timing.submitted_ns=0;timing.presented_ns=0; }
+        host.frame(now, presentation, draw)
+    })
+}
 /// # Safety
 /// `host` must be null or a live host exclusively accessed by this caller.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn capy_frame(host: u64, now: u64, presentation: u64) -> i32 {
-    guard(host, |host| {
-        if let Some(timing) = &mut host.frame_timing { timing.prepared_ns=0;timing.composed_ns=0;timing.submitted_ns=0;timing.presented_ns=0; }
-        host.frame(now, presentation)
-    })
+    present(host, now, presentation, true)
+}
+/// # Safety
+/// `host` must be null or a live host exclusively accessed by this caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_present_held(host: u64) -> i32 {
+    present(host, 0, 0, false)
 }
 
 /// # Safety
@@ -1283,24 +1326,37 @@ pub struct CapySnapshotInfo {
     glass: CapySnapshotRange,
 }
 impl CapySnapshotInfo {
+    #[cfg(test)]
     fn read(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        let fields = layer_host::SnapshotFields::parse(bytes)?;
-        let full = fields.contains("state");
+        Self::from_parts(&[(&layer_host::SnapshotFields::parse(bytes)?, 0)])
+    }
+    fn from_parts(parts: &[(&layer_host::SnapshotFields<'_>, usize)]) -> Result<Self, serde_json::Error> {
+        let part = |key: &str| parts.iter().rev().find(|(fields, _)| fields.contains(key));
+        let range = |key: &str| part(key).and_then(|(fields, offset)| fields.range(key).map(|range| range.start + offset..range.end + offset));
+        let full = part("state").is_some();
+        let localization = match part("localization") {
+            Some((fields, offset)) => fields.nonempty_object_range("localization")?.map(|range| range.start + offset..range.end + offset),
+            None => None,
+        };
         Ok(Self {
             full: u32::from(full),
-            workspace: u32::from(fields.contains("workspace_update")),
-            search: u32::from(fields.contains("command_search")),
-            layout: u32::from(!full && fields.contains("layout")),
-            camera: (!full).then(|| fields.range("camera")).flatten().into(),
-            localization: fields.nonempty_object_range("localization")?.into(),
-            navigation_cursor: fields.range("navigation_cursor").into(),
-            brush_ready: fields.range("brush_ready").into(),
-            glass: fields.range("windows_glass").into(),
+            workspace: u32::from(part("workspace_update").is_some()),
+            search: u32::from(part("command_search").is_some()),
+            layout: u32::from(!full && part("layout").is_some()),
+            camera: (!full).then(|| range("camera")).flatten().into(),
+            localization: localization.into(),
+            navigation_cursor: range("navigation_cursor").into(),
+            brush_ready: range("brush_ready").into(),
+            glass: range("windows_glass").into(),
         })
     }
 }
-fn snapshot_layout_input<'a>(bytes:&[u8],host:&'a NativeHost)->Result<Option<layer_ui::LayoutResolveInput<'a>>,String> {
-    Ok(layer_host::SnapshotFields::parse(bytes).map_err(err)?.contains("layout").then(||host.session.layout_resolve_input()))
+fn snapshot_layout_input<'a>(fields:&layer_host::SnapshotFields<'_>,host:&'a NativeHost)->Option<layer_ui::LayoutResolveInput<'a>> {
+    fields.contains("layout").then(||host.session.layout_resolve_input())
+}
+fn glass_status(host:&CapyHost)->serde_json::Value {
+    serde_json::json!({"regions":host.chrome.glass.count(),"chrome_revision":host.chrome.presented_revision,
+        "document":host.chrome.presented_document,"frames":host.presenter.as_ref().map_or([0;2],|p|p.backdrop_frames())})
 }
 #[derive(serde::Serialize)]
 struct WindowsMetadata<'a> {
@@ -1342,73 +1398,77 @@ pub unsafe extern "C" fn capy_snapshot(host: u64, info: *mut CapySnapshotInfo) -
     guard(host, |host| {
         if host.observe_surface() { host.native.invalidate_snapshot(); }
         let generation = host.native.localization_generation();
-        let localization = if host.localization_generation != Some(generation) {
-            Some(crate::settings::localization_presentation(&mut host.native)?)
-        } else { None };
-        let mut metadata = WindowsMetadata {
-            localization,
-            layout_input: None,
-            windows_gpu_generation: host.gpu_generation,
-            windows_active_tag: host.native.session.localization().language().tag(),
-            windows_display: serde_json::json!({"output": host.display, "format": host.config.as_ref().map(|c| format!("{:?}", c.format)), "headroom": host.config.as_ref().map_or(1., |c| host.display.available_headroom(c.format)), "analysis": host.documents.as_ref().map(|s| s.tone.status())}),
-            windows_rendering_suspended: host.native.session.rendering_suspended(),
-            windows_surface_ready: host.surface_ready.ready(),
-            windows_recovery: host.documents.as_ref().and_then(|service|service.recovery_status(&host.native)),
-            windows_tabs: host.documents.as_ref().map(|d| d.tabs_view(&host.native)),
-            windows_palettes: host.documents.as_ref().map(|d| d.palettes.status()),
-            windows_papers: host.documents.as_ref().map(|d| d.papers.status()),
-            windows_glass: serde_json::json!({
-                "regions": host.chrome.glass.count(),
-                "chrome_revision": host.chrome.presented_revision,
-                "document": host.chrome.presented_document,
-                "frames": host.presenter.as_ref().map_or([0; 2], |p| p.backdrop_frames()),
-            }),
-            windows_document: host.documents.as_ref().and_then(|service| service.status()),
-            windows_proof_form: host.documents.as_ref().map(|service|service.proof.form(&host.native)).unwrap_or_else(||serde_json::json!(layer_ui::proof_workflow::proof_copy(&host.native.session))),
-            windows_proof: host
-                .documents
-                .is_some()
-                .then(|| host.native.proof.observe(&host.native.session)),
-            windows_workspace: host.workspaces.as_ref().map(|owner|owner.with(|service|serde_json::to_value(service.status(&host.native)).map_err(err))).transpose()?,
-            windows_settings_close: host.services.as_ref().map(|s| s.close_status().clone()),
-            windows_scopes: host.scopes.revision(host.native.session.state()),
-            windows_request_copy: {
-                let localization = host.native.session.localization();
-                host.native.session.state().requests.iter().filter_map(|request| match &request.kind {
-                    layer_ui::HostRequestKind::Document { request: document } => Some((request.id.to_string(), serde_json::json!({
-                        "title": document.title(localization), "accept_label": document.accept_label(localization), "filter": document.filter(localization),
-                    }))),
-                    _ => None,
-                }).collect()
-            },
-            windows_filter_load: host.filters.as_ref().map(|s| s.status().clone()),
-            windows_isolated_settings: crate::storage::isolated(),
-            windows_adapter: host.native.session.engine().backend().0.as_ref().map(|gpu| {
-                let info = gpu.adapter().get_info();
-                format!("{} ({:?})", info.name, info.device_type)
-            }),
-        };
         let glass_changed=host.published_chrome_revision!=host.chrome.presented_revision||host.published_glass_count!=host.chrome.glass.count();
         let update=host.native.take_layout_update_bytes().map_err(err)?;
         let bytes=match update {
             Some(bytes)=>{
-                metadata.layout_input=snapshot_layout_input(&bytes,&host.native)?;
-                let extension=serde_json::to_vec(&metadata).map_err(err)?;
-                Some(layer_host::extend_update(bytes,&extension))
+                let localization = if host.localization_generation != Some(generation) {
+                    Some(crate::settings::localization_presentation(&mut host.native)?)
+                } else { None };
+                let base=layer_host::SnapshotFields::parse(&bytes).map_err(err)?;
+                let extension=if ["state","workspace_update","layout","command_search"].into_iter().any(|key|base.contains(key)) {
+                    let mut metadata = WindowsMetadata {
+                        localization,
+                        layout_input: None,
+                        windows_gpu_generation: host.gpu_generation,
+                        windows_active_tag: host.native.session.localization().language().tag(),
+                        windows_display: serde_json::json!({"output": host.display, "format": host.config.as_ref().map(|c| format!("{:?}", c.format)), "headroom": host.config.as_ref().map_or(1., |c| host.display.available_headroom(c.format)), "analysis": host.documents.as_ref().map(|s| s.tone.status())}),
+                        windows_rendering_suspended: host.native.session.rendering_suspended(),
+                        windows_surface_ready: host.surface_ready.ready(),
+                        windows_recovery: host.documents.as_ref().and_then(|service|service.recovery_status(&host.native)),
+                        windows_tabs: host.documents.as_ref().map(|d| d.tabs_view(&host.native)),
+                        windows_palettes: host.documents.as_ref().map(|d| d.palettes.status()),
+                        windows_papers: host.documents.as_ref().map(|d| d.papers.status()),
+                        windows_glass: glass_status(host),
+                        windows_document: host.documents.as_ref().and_then(|service| service.status()),
+                        windows_proof_form: host.documents.as_ref().map(|service|service.proof.form(&host.native)).unwrap_or_else(||serde_json::json!(layer_ui::proof_workflow::proof_copy(&host.native.session))),
+                        windows_proof: host
+                            .documents
+                            .is_some()
+                            .then(|| host.native.proof.observe(&host.native.session)),
+                        windows_workspace: host.workspaces.as_ref().map(|owner|owner.with(|service|serde_json::to_value(service.status(&host.native)).map_err(err))).transpose()?,
+                        windows_settings_close: host.services.as_ref().map(|s| s.close_status().clone()),
+                        windows_scopes: host.scopes.revision(host.native.session.state()),
+                        windows_request_copy: {
+                            let localization = host.native.session.localization();
+                            host.native.session.state().requests.iter().filter_map(|request| match &request.kind {
+                                layer_ui::HostRequestKind::Document { request: document } => Some((request.id.to_string(), serde_json::json!({
+                                    "title": document.title(localization), "accept_label": document.accept_label(localization), "filter": document.filter(localization),
+                                }))),
+                                _ => None,
+                            }).collect()
+                        },
+                        windows_filter_load: host.filters.as_ref().map(|s| s.status().clone()),
+                        windows_isolated_settings: crate::storage::isolated(),
+                        windows_adapter: host.native.session.engine().backend().0.as_ref().map(|gpu| {
+                            let info = gpu.adapter().get_info();
+                            format!("{} ({:?})", info.name, info.device_type)
+                        }),
+                    };
+                    metadata.layout_input=snapshot_layout_input(&base,&host.native);
+                    serde_json::to_vec(&metadata).map_err(err)?
+                } else {
+                    let mut presentation=serde_json::json!({"windows_glass":glass_status(host)});
+                    if let Some(value)=localization {presentation["localization"]=value;}
+                    serde_json::to_vec(&presentation).map_err(err)?
+                };
+                let routing=CapySnapshotInfo::from_parts(&[(&base,0),(&layer_host::SnapshotFields::parse(&extension).map_err(err)?,bytes.len()-1)]).map_err(err)?;
+                drop(base);
+                Some((layer_host::extend_update(bytes,&extension),routing))
             },
-            None if glass_changed=>Some(serde_json::to_vec(&serde_json::json!({
-                "windows_glass":{"regions":host.chrome.glass.count(),"frames":host.presenter.as_ref().map_or([0;2],|p|p.backdrop_frames()),
-                    "chrome_revision":host.chrome.presented_revision,"document":host.chrome.presented_document},
-            })).map_err(err)?),
+            None if glass_changed=>{
+                let bytes=serde_json::to_vec(&serde_json::json!({"windows_glass":glass_status(host)})).map_err(err)?;
+                let routing=CapySnapshotInfo::from_parts(&[(&layer_host::SnapshotFields::parse(&bytes).map_err(err)?,0)]).map_err(err)?;
+                Some((bytes,routing))
+            },
             None=>None,
         };
-        if let Some(bytes) = bytes {
+        if let Some((bytes,routing)) = bytes {
             host.localization_generation = Some(generation);
             host.published_chrome_revision=host.chrome.presented_revision;
             host.published_glass_count=host.chrome.glass.count();
-            let routing = if info.is_null() { None } else { Some(CapySnapshotInfo::read(&bytes).map_err(err)?) };
             let snapshot = CString::new(bytes).map_err(err)?;
-            if let Some(routing) = routing { unsafe { *info = routing; } }
+            if let Some(info) = unsafe { info.as_mut() } { *info = routing; }
             result = text(snapshot);
         }
         Ok(0)
@@ -1524,11 +1584,19 @@ pub unsafe extern "C" fn capy_suspend(host: u64) -> i32 {
         Ok(0)
     })
 }
+#[repr(C)]
+pub struct CapyView { revision: u64, document_to_surface: [f32; 6], document: [f32; 2] }
 /// # Safety
-/// `host` must be null or a valid host with no concurrent mutation or destruction.
+/// `host` must be null or a valid host with no concurrent mutation or destruction;
+/// `output` must be null or writable for one `CapyView`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn capy_view_revision(host: u64) -> u64 {
-    borrow::<CapyHost>(host).map_or(0, |h| h.native.session.state().camera.revision)
+pub unsafe extern "C" fn capy_view(host: u64, output: *mut CapyView) -> bool {
+    let Ok(host) = borrow::<CapyHost>(host) else { return false; };
+    if output.is_null() { return false; }
+    let session = &host.native.session;let camera = &session.state().camera;
+    unsafe { *output = CapyView { revision: camera.revision, document_to_surface: camera.document_to_surface(),
+        document: session.engine().document().composition().size.map(|side| side as f32) }; }
+    true
 }
 
 // The backbuffer is sized in physical pixels. SwapChainPanel otherwise scales
@@ -1571,6 +1639,35 @@ pub unsafe extern "C" fn capy_device_lost(host: u64) -> bool {
 }
 
 /// # Safety
+/// Exclusive render-owner access. A non-null viewport must be readable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_navigator_surface_update(host: u64, id: u64, viewport: *const crate::navigator_surface::CapyNavigatorViewport) -> i32 {
+    guard(host, |host| {
+        let viewport = if viewport.is_null() { None } else { Some(unsafe { *viewport }) };
+        host.navigators.update(id, viewport)?;
+        Ok(0)
+    })
+}
+/// # Safety
+/// Exclusive render-owner access. Output must point to writable storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_navigator_surface_info(host: u64, id: u64, output: *mut crate::navigator_surface::CapyNavigatorSurfaceInfo) -> bool {
+    if output.is_null() { return false; }
+    let Ok(host) = borrow::<CapyHost>(host) else { return false; };
+    unsafe { *output = host.navigators.info(id); }
+    true
+}
+/// # Safety
+/// Exclusive render-owner access after ordinary canvas preparation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_present_navigators(host: u64) -> i32 {
+    guard(host, |host| {
+        let (Some(presenter), Some(config)) = (host.presenter.as_ref(), host.config.as_ref()) else { return Ok(0); };
+        host.navigators.present(&host.native, &host.instance, presenter, config, &host.display).map(i32::from)
+    })
+}
+
+/// # Safety
 /// Exclusive render-owner access, with no acquired image.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn capy_reset_surface(host: u64) -> i32 {
@@ -1579,6 +1676,7 @@ pub unsafe extern "C" fn capy_reset_surface(host: u64) -> i32 {
             return Err("Surface replacement requires no acquired image".into());
         }
         let (surface, handle) = CapyHost::composition_surface(&host.instance)?;
+        host.navigators.reset()?;
         host.surface = surface;
         host.surface_handle = handle;
         host.surface_ready=Default::default();
@@ -1746,15 +1844,15 @@ pub unsafe extern "C" fn capy_write_file(path: *const c_char, bytes: *const u8, 
     }
 }
 
-/// Join retired shader workers after every host is destroyed, before process
-/// runtime teardown. Ordinary surface/document replacement stays asynchronous.
+/// Call after every host is destroyed. Stops shader compilation without
+/// waiting for a running compile and returns once accepted session-store
+/// writes have landed; the caller then terminates the process.
 #[unsafe(no_mangle)]
 pub extern "C" fn capy_finish_process() -> i32 {
-    match catch_unwind(layer_host::gpu::finish_process_gpu) {
-        Ok(Ok(())) => 0,
-        Ok(Err(error)) => { fail(&error); -1 }
+    match catch_unwind(layer_host::finish_native_process) {
+        Ok(()) => 0,
         Err(_) => {
-            fail("Shader compiler shutdown panic");
+            fail("Process finish panic");
             -1
         }
     }
@@ -1897,7 +1995,7 @@ mod display_adapter_tests {
             .any(|adapter| drives_display(&adapter) && adapter.is_surface_supported(&surface)
                 && layer_host::gpu::unsupported_adapter(&adapter, &layer_render_wgpu::rendering_limits(adapter.limits())).is_none());
         let select = |preferred: &dyn Fn(&wgpu::Adapter) -> bool| {
-            pollster::block_on(layer_host::gpu::surface_adapter(&instance, &surface, layer_host::gpu::AdapterChoice::Prefer(preferred)))
+            pollster::block_on(layer_host::gpu::surface_adapter(&instance, &surface, layer_host::gpu::AdapterChoice::Prefer(preferred), &|_| None))
                 .map(|adapter| (drives_display(&adapter), adapter.get_info()))
         };
         let selected = select(&drives_display);
@@ -2066,11 +2164,29 @@ mod snapshot_routing_tests {
     fn snapshot_layout_input_is_windows_geometry_only() {
         let host=NativeHost::new(layer_ui::Platform::Windows).unwrap();
         for bytes in [br#"{"state":{},"layout":{}}"#.as_slice(),br#"{"workspace_update":{},"layout":{}}"#] {
-            let input=snapshot_layout_input(bytes,&host).unwrap().unwrap();
+            let input=snapshot_layout_input(&layer_host::SnapshotFields::parse(bytes).unwrap(),&host).unwrap();
             assert_eq!(serde_json::json!(input.resolve([1400.,900.])),serde_json::json!(host.session.layout([1400.,900.])));
         }
         for bytes in [br#"{"workspace_update":{}}"#.as_slice(),br#"{"camera":{}}"#,br#"{"command_search":null}"#,br#"{"windows_glass":{}}"#] {
-            assert!(snapshot_layout_input(bytes,&host).unwrap().is_none());
+            assert!(snapshot_layout_input(&layer_host::SnapshotFields::parse(bytes).unwrap(),&host).is_none());
+        }
+    }
+    #[test]
+    fn routing_from_parts_matches_the_extended_packet() {
+        for (base,extension) in [
+            (br#"{"camera":{"zoom":2},"brush_ready":true,"localization":{}}"#.as_slice(),br#"{"localization":{"text":"x"},"windows_glass":{"chrome_revision":3}}"#.as_slice()),
+            (br#"{"state":{},"layout":{},"navigation_cursor":"pan"}"#,br#"{"windows_glass":{"regions":1},"layout_input":{}}"#),
+            (br#"{"workspace_update":{},"layout":{},"camera":{"zoom":1}}"#,br#"{"windows_glass":{}}"#),
+        ] {
+            let parts=CapySnapshotInfo::from_parts(&[(&layer_host::SnapshotFields::parse(base).unwrap(),0),
+                (&layer_host::SnapshotFields::parse(extension).unwrap(),base.len()-1)]).unwrap();
+            let extended=layer_host::extend_update(base.to_vec(),extension);
+            let whole=CapySnapshotInfo::read(&extended).unwrap();
+            assert_eq!((parts.full,parts.workspace,parts.search,parts.layout),(whole.full,whole.workspace,whole.search,whole.layout));
+            for (a,b) in [(parts.camera,whole.camera),(parts.localization,whole.localization),(parts.navigation_cursor,whole.navigation_cursor),
+                (parts.brush_ready,whole.brush_ready),(parts.glass,whole.glass)] {
+                assert_eq!((a.offset,a.length),(b.offset,b.length));
+            }
         }
     }
     #[test]
@@ -2166,6 +2282,80 @@ mod handle_tests {
         }
     }
     impl Drop for Owner { fn drop(&mut self) { unsafe {capy_destroy(self.0);} } }
+
+    fn isolated_process(test: &str) -> bool {
+        const CHILD: &str = "CAPY_HANDLE_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() { return true; }
+        let directory = std::env::temp_dir().join(format!("capy-handle-test-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("host::handle_tests::{test}"), "--test-threads=1", "--nocapture"])
+            .env(CHILD, "1").env("CAPY_STORAGE_DIR", &directory).output();
+        let _ = std::fs::remove_dir_all(directory);
+        let output = output.unwrap();
+        assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        false
+    }
+
+    #[test]
+    fn gpu_recovery_releases_prepared_navigator_presenters() {
+        if !isolated_process("gpu_recovery_releases_prepared_navigator_presenters") { return; }
+        let owner = Owner::new(320, 240);
+        {
+            let mut host = borrow::<CapyHost>(owner.0).unwrap();
+            host.prepare_gpu().unwrap();
+            crate::gpu_recovery_tests::remove_device(host.native.session.engine().backend(), &host.gpu);
+        }
+        assert_eq!(unsafe { capy_reset_surface(owner.0) }, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while let Err(error) = borrow::<CapyHost>(owner.0).unwrap().prepare_gpu() {
+            assert!(std::time::Instant::now() < deadline, "GPU recovery did not create a new device: {error}");
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
+    #[test]
+    fn navigator_startup_does_not_pin_a_document_allocation_block() {
+        if !isolated_process("navigator_startup_does_not_pin_a_document_allocation_block") { return; }
+        let owner = Owner::new(320, 240);
+        let mut host = borrow::<CapyHost>(owner.0).unwrap();
+        host.prepare_gpu().unwrap();
+        let host = &mut *host;
+        let gpu = host.native.session.engine().backend().0.as_ref().unwrap();
+        let device = gpu.device().clone();
+        let queue = gpu.queue().clone();
+        let settle = || {
+            queue.submit([]);
+            device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(30)) }).unwrap();
+        };
+        settle();
+        let before = device.generate_allocator_report().unwrap();
+        let churn = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Navigator document allocation churn"), size: 96 << 20,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        });
+        let during = device.generate_allocator_report().unwrap();
+        let block = during.blocks.iter().find(|block| during.allocations[block.allocations.clone()]
+            .iter().any(|allocation| allocation.name == "Navigator document allocation churn")).unwrap();
+        assert_eq!(block.size, 128 << 20);
+        assert_eq!(block.allocations.len(), 1, "churn must own its new allocation block");
+        assert_eq!(during.total_reserved_bytes, before.total_reserved_bytes + (128 << 20));
+        let gpu = host.native.session.engine().backend().0.as_deref().unwrap();
+        let config = host.config.as_ref().unwrap();
+        let mut presenter = host.navigators.presenters.take(gpu, config.format, host.display.encoding(config.format)).unwrap();
+        presenter.set_overviews(gpu, &[layer_render_wgpu::OverviewPlacement {
+            bounds: [0., 0., 200., 150.], clip: None, work_area: [[0.; 2]; 4],
+            outline_linear: [1.; 3], scale: 1., opacity: 1.,
+        }]);
+        drop(churn);
+        settle();
+        let after = device.generate_allocator_report().unwrap();
+        assert!(after.total_allocated_bytes <= before.total_allocated_bytes + (4 << 20));
+        assert!(after.total_reserved_bytes <= before.total_reserved_bytes + (4 << 20),
+            "Navigator pinned document allocation block: before={before:?}, after={after:?}");
+    }
 
     #[test]
     fn guarded_mutations_cancel_launch_receipts_before_the_next_snapshot() {
@@ -2467,7 +2657,7 @@ mod chrome_completion_tests {
     fn completed_chrome_preserves_retained_ui_models() {
         let mut native=NativeHost::new(layer_ui::Platform::Windows).unwrap();
         let mut chrome=crate::chrome::Chrome::default();
-        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[192,192],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap();
+        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[192,192],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap();
         let mut readiness=SurfaceReadiness::default();readiness.ready.store(true,std::sync::atomic::Ordering::Release);
         if readiness.changed(&mut chrome){native.invalidate_snapshot();}
         assert!(native.take_layout_update_bytes().unwrap().is_some());
@@ -2526,7 +2716,7 @@ mod chrome_completion_tests {
         readiness.retire_chrome();
         ready.store(true,std::sync::atomic::Ordering::Release);completed.fetch_max(7,std::sync::atomic::Ordering::Release);
         let mut chrome=crate::chrome::Chrome::default();
-        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[128,64],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap();
+        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[128,64],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap();
         assert!(readiness.changed(&mut chrome));assert!(readiness.ready());assert_eq!(chrome.presented_revision,None);
         readiness.documents.push_back((7,[128,64]));
         readiness.completed_chrome.fetch_max(7,std::sync::atomic::Ordering::Release);
@@ -2553,11 +2743,11 @@ mod chrome_completion_tests {
             view:&view,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color::WHITE),store:wgpu::StoreOp::Store},
         })],..Default::default()});}
         let mut chrome=crate::chrome::Chrome::default();
-        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[192,192],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap();
+        chrome.set(serde_json::from_value(serde_json::json!({"revision":7,"document":[192,192],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap();
         let mut readiness=SurfaceReadiness::default();
         let submitted=gpu.queue().submit([encoder.finish()]);readiness.submitted(&gpu,&chrome,Some([192;2]),Some(11));
         let launch_completed=readiness.launch.as_ref().unwrap().1.clone();
-        chrome.set(serde_json::from_value(serde_json::json!({"revision":8,"document":[128,64],"glass":{"regions":[],"connections":[]},"overviews":[]})).unwrap()).unwrap();
+        chrome.set(serde_json::from_value(serde_json::json!({"revision":8,"document":[128,64],"glass":{"regions":[],"connections":[]}})).unwrap()).unwrap();
         readiness.submitted(&gpu,&chrome,Some([192;2]),None);assert_eq!(readiness.queued_chrome,7);
         gpu.device().poll(wgpu::PollType::Poll).unwrap();readiness.changed(&mut chrome);
         assert_eq!(chrome.presented_revision,None,"queued chrome must remain covered until its submission completes");

@@ -781,10 +781,12 @@ fn apple_invalid_window_membership_preserves_all_files_and_allows_new_checkpoint
                 _ => {},
             }
             let bytes = if corruption == "truncated" { b"{\"generation\":".to_vec() } else { serde_json::to_vec(&manifest).unwrap() };
-            std::fs::write(&index, bytes).unwrap();
-            let preserved = stored_files(&path);
+            std::fs::write(&index, &bytes).unwrap();
+            let mut preserved = stored_files(&path);
+            preserved.remove(Path::new("window.json"));
             let fresh = launch_observed(platform, &path, None, true);
             assert_stored_files_preserved(&sessions, &preserved);
+            assert!(std::fs::read_dir(&path).unwrap().map(|entry| entry.unwrap().path()).any(|list| list.file_name().unwrap().to_string_lossy().starts_with("preserved-") && std::fs::read(list).unwrap() == bytes));
             assert!(!fresh.borrow().host.session.engine().can_undo());
             fresh.stroke(); fresh.draw_until_idle();
             let pixels = fresh.pixels();
@@ -880,22 +882,18 @@ fn apple_unrelated_cleanup_failure_does_not_block_restoration_or_new_checkpoints
         std::fs::create_dir_all(orphan.join("generations")).unwrap();
         std::fs::write(orphan.join(".lock"), b"").unwrap();
         std::fs::write(orphan.join(".retiring"), b"invalid").unwrap();
-        let preserved = stored_files(&orphan);
         let (app, warning) = launch_report(platform, &path, None, false);
         assert_eq!(warning, None);
         assert_eq!(app.pixels(), pixels);
         for _ in 0..2 {
             app.invoke("add_layer"); app.draw_until_idle();
-            let task = checkpoint(&app, 0, true);
-            let warning = task.error();
-            assert!(warning.as_ref().is_some_and(|warning| warning.contains("Invalid drawing retirement marker")), "{warning:?}");
-            assert_stored_files_preserved(&path, &preserved);
+            assert_eq!(checkpoint(&app, 0, true).error(), None);
+            assert!(orphan.join(".retired").is_file());
         }
         let document = app.document().with_memory(Default::default());
         drop(app);
         let app = launch(platform, &path);
         assert_saved_document(&app.document(), &document);
-        assert_stored_files_preserved(&path, &preserved);
         drop(app);
         std::fs::remove_dir_all(path).unwrap();
     }

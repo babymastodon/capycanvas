@@ -372,6 +372,7 @@ impl ToolVariant {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolSlotMemory {
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub choices: BTreeMap<ToolSlotId, ToolVariant>,
 }
 impl ToolSlotMemory {

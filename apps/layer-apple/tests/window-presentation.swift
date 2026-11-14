@@ -74,6 +74,7 @@ private struct LifetimeEditor: View {
         let ipad = EditorStore(platform: 0, persistence: persistence)
         for store in [mac, otherMac, ipad] {
             try await wait("Initial editor state") { !store.state.isNull }
+            try await uncover(store)
         }
         if CommandLine.arguments.contains("--ownership-only") {
             try await delegateOwnership(mac, other: otherMac); return

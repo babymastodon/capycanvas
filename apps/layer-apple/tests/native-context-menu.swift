@@ -43,6 +43,7 @@ import AppKit
         for platform: UInt32 in [0, 1] {
             let store = EditorStore(platform: platform, persistence: EditorPersistence(root: nil))
             try await wait("editor startup") { !store.state["layers"].array.isEmpty }
+            try await uncover(store)
             let original = store.state["layers"].array.map { $0["id"].uint }
             let layer = original[0]
             let model = await query(store, ["type": "layer_menu", "id": layer, "mask": false])

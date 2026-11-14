@@ -577,7 +577,7 @@ try{
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/expansion-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned expansion review $($review.Id)"
     $owned=@{drawing=$null}
-    Wait-Until {$owned.drawing=Owned-DrawingWindow $review;$owned.drawing -and (Model).brush_ready -and (Model).state.workspace_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy -and (Model).state.theme -eq $Theme} 'Expansion drawing did not become ready' 45
+    Wait-Until {$owned.drawing=Owned-DrawingWindow $review;$owned.drawing -and (Review-Ready) -and (Model).state.workspace_ready -and !(Model).windows_workspace.busy -and (Model).state.theme -eq $Theme} 'Expansion drawing did not become ready' 45
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     $root=$owned.drawing.Root;$drawingWindow=$owned.drawing.Handle
     [CapyRowPointer]::SetForegroundWindow($drawingWindow)|Out-Null;[CapyRowPointer]::Initialize([uint32]$review.Id)
@@ -662,10 +662,9 @@ try{
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Resize -Width 1500 -Height 1000
     $configuration=Configure 'navigator'
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Resize -Width 1800 -Height 1100
-    Wait-OverviewProjection
+    $null=Control 'navigator-overview' -Within $configuration -Arranged
     & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Resize -Width 1100 -Height 1000
-    Wait-OverviewProjection
-    $null=Control 'navigator-overview' -Within $configuration
+    $null=Control 'navigator-overview' -Within $configuration -Arranged
     Invoke 'Test stroke' -Name
     Wait-Until {(Model).state.document_file.modified} 'Controlled stroke did not dirty the review'
     $zoom=(Control 'canvas-camera').Current.Name

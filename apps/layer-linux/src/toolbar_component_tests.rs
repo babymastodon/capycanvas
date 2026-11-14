@@ -1436,7 +1436,7 @@ fn native_toolbar_variations_input() {
                 secondary_group_click(&mut d, &header);
                 assert!(variant_context(&d).is_visible());
                 choose_variant(&mut d, anchor, 2);
-                let view = ui_session(&d.w).header_view_with(false);
+                let view = ui_session(&d.w).header_view_with(None);
                 let item = view.items.iter().find(|item| item.id == id).unwrap();
                 assert!(item.selected && item.has_variants);
                 let icon = descendant::<gtk::Image>(&header).unwrap();

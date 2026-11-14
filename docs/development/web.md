@@ -37,7 +37,8 @@ Chromium.
 Open `http://127.0.0.1:4173`. The launcher runs
 [`build.sh`](../../apps/layer-web/build.sh), which compiles the Wasm module with
 the `dev-perf` profile, generates the browser bindings in `apps/layer-web/pkg/`
-and the icon sprite, then serves `apps/layer-web` with Python.
+and the icon sprite and shared launch CSS (`layer-ui`'s `launch_style` example),
+then serves `apps/layer-web` with Python.
 `LAYER_WEB_PORT` changes the port, `LAYER_WASM_BINDGEN` selects the CLI and
 `CAPY_RUST_PROFILE` the profile. Rebuild with `bash apps/layer-web/build.sh`
 after Rust changes; the browser tests do not build.
@@ -121,6 +122,8 @@ node --test apps/layer-web/{run,package,frame,phone-audit,bubbles,glass,pointer,
 node --test apps/layer-web/{numeric,histogram,gpu-diagnostics,raster-worker-client,store-worker-client,store-sources,file-handles,pipeline-wait,panel-vector-paths,panel-vector-queue,editor-panels,workspace-manager-copy,toolbar-components-copy,color-controls-copy,document-color-copy,document-recovery,image-import,workflow-stack,color-button-lifecycle}.test.mjs
 ```
 
+`node apps/layer-web/test.mjs --headless --diagnostics` checks Diagnostics layout, memory meters and six tooltips in both themes.
+
 Run both Node batches for every Web gate. Dialog fakes must include the shared
 `dialog` intent and projection APIs. Present modal fixtures through
 `createDialogHost` so input admission sees their declared modality.
@@ -160,7 +163,7 @@ node --test tools/cdp.test.mjs
 
 ### Browser journeys
 
-`--saved-data-ux` checks startup/package messages and both restore choices in both themes, capturing them under `artifacts/saved-data-compat/ux-shots/`; `--workspace-windows` checks palette refresh on focus followed by painting and restart on a headed private display.
+`--saved-data-ux` checks startup/package messages, the released 1.0.12 workspaces and the automatic damaged-store install in both themes, capturing them under `artifacts/saved-data-compat/ux-shots/`; `--workspace-windows` checks palette refresh on focus followed by painting and restart on a headed private display.
 
 The other `*.test.mjs` files are Chrome journeys that
 [`test.mjs`](../../apps/layer-web/test.mjs) imports; do not run them with

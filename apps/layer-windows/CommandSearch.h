@@ -149,7 +149,7 @@ struct CommandSearchPopup : std::enable_shared_from_this<CommandSearchPopup> {
         }
     }
     void Apply(J const& state){
-        auto value=state.GetNamedValue(L"command_search",JsonValue::CreateNullValue());
+        auto value=named(state,L"command_search");
         updating=true;
         if(value.ValueType()!=JsonValueType::Object){
             view=J{};

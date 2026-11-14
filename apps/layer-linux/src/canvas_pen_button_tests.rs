@@ -234,7 +234,6 @@ fn native_canvas_quick_pinch_and_held_history() {
         d.input.perform(serde_json::json!([
             {"touch":"down","slot":0,"point":[center[0] - from, center[1]]},
             {"touch":"down","slot":1,"point":[center[0] + from, center[1]]},
-            {"wait_ms":60},
             {"touch":"move","slot":0,"point":[center[0] - to, center[1]]},
             {"touch":"move","slot":1,"point":[center[0] + to, center[1]]},
             {"touch":"up","slot":0}, {"touch":"up","slot":1}
@@ -283,11 +282,13 @@ fn native_canvas_quick_pinch_and_held_history() {
         preferences(&mut d, true, true);
         d.w.dispatch(UiAction::SetZoom { zoom: 2. });
         d.w.dispatch(UiAction::SetRotation { rotation: 0.7 });
+        if !state(&d.w).camera.flipped[0] { d.w.dispatch(UiAction::Invoke { command: CommandId::FlipHorizontal }); }
         pump(150);
         let before = state(&d.w).camera.view();
         let revision = ui_session(&d.w).engine().document().revision;
         pinch(&mut d, false);
         let mut fitted = state(&d.w).camera;
+        assert_eq!(fitted.flipped, [true, false], "{theme:?}: quick pinch keeps reflection");
         assert_eq!(fitted.rotation, 0., "{theme:?}: quick pinch straightens; camera={fitted:?}, settings=({}, {})", state(&d.w).settings.quick_pinch_fit, state(&d.w).settings.quick_pinch_restore);
         fitted.fit(ui_session(&d.w).engine().document().composition().size);
         assert_eq!(state(&d.w).camera.view(), fitted.view(), "{theme:?}: quick pinch fits");
@@ -328,7 +329,7 @@ fn native_three_finger_scrub() {
         let engine = g.session.engine();
         engine.backend().paint_ready(engine.document(), engine.brush(), false)
     }), "active brush startup");
-    let pixels = |w: &Workspace| ui_session(w).engine().backend().document_pixels(9100).unwrap().bytes;
+    let pixels = |w: &Workspace| w.document_pixels(9100).unwrap().bytes;
     let area = d.w.resolved().work_area;
     let p = [area.x + area.width * 0.45, area.y + area.height * 0.5];
     let blank = pixels(&d.w);

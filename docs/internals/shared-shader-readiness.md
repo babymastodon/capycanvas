@@ -60,13 +60,20 @@ size, opacity, selection or alpha lock prepares again before the next contact,
 never during one, and debug builds assert that once a brush is ready, every
 kernel its strokes select was prepared. Kernels without fine-tip filtering omit
 its shader code. Once the brush is ready and speculative work is admitted, every
-host prepares the other tip size in the background so a later size change is
-usually ready; selecting another brush discards that queued work. This
-background work does not hold startup completion. A brush with another blend
+host prepares the other tip size, visible toolbar brushes, Transform, selection
+paint, fill draws and region kernels in that Background order. Context and startup
+key changes replace queued warming; renderer replacement resends the context.
+Warming does not hold startup completion. Context-warming errors surface when
+the same recipe is required by a tool. A brush with another blend
 mode prepares one commit and one prediction kernel for its contact family and
 blend, with no tip-size or single-pigment variants. Web's
 `--tip-resize-readiness` checks that a Pencil resized from 4 to 300 px after an
 idle pause needs no compilation.
+
+Choosing a fill, selection-paint, Gradient or Figure tool declares its next-use
+family at Anticipated. A selection anticipates Transform and fill draws;
+selection tools also anticipate brush and eraser kernels for the result.
+`preparation_context_follows_tool_and_selection` checks these facts on every platform.
 
 One evaluator per variant serves every destination, so a brush compiles one
 heavy kernel per variant. Where read-write storage exists, the evaluator reads
@@ -82,6 +89,8 @@ never take, costs Adreno and Mali tablets up to a third of their painting rate.
 
 The native compiler workers and browser task runner share the registry and
 admission policy in `compile/`. Renderer scopes cancel their queued demand when dropped.
+Only real dependency requests hold readiness and wake their owner on completion;
+warming keeps its scheduling class without requesting another frame.
 Native hosts run three eighths of `available_parallelism()`, rounded up and
 clamped to one through six, required jobs at once, plus one thread for an
 optional pipeline compile. Only independent required pipeline recipes compile
@@ -92,7 +101,8 @@ never waits for an in-flight optional pipeline compile: native hosts start it on
 another thread, and browsers start its batch while the optional promise resolves.
 Required canvas/brush dependencies and explicit package validation retain
 priority and progress while input arrives. Visible optional previews wait for
-200 ms without input and no continuous canvas work. Host reports, such as layout
+200 ms without input; Anticipated and Background wait one second and also require
+no continuous canvas work. Host reports, such as layout
 measurements and system theme changes, are not input; a panel that remeasures
 while it updates must not postpone optional preparation. Required compilation renews the
 quiet interval on completion. Strokes, held gestures, queued input, pending
@@ -141,9 +151,15 @@ published drawing, its canvas/brush dependencies and chrome are ready. Its frame
 ticket identifies the current document, renderer and layout. Hosts acknowledge
 that ready frame through `launch_presented` using their surface-owned completion;
 an earlier or invalidated frame cannot reveal the workspace. Errors and required
-dialogs bypass the cover without completing launch. Hosts supply external
-workspace error and form facts through launch readiness. A finished window never
-restarts its launch cover for a drawing switch or renderer recovery.
+dialogs bypass the cover without completing launch. The workspace controller
+reports its errors, prompts and recovery action to the session; hosts report only
+their own modal surfaces through launch readiness. Notices raised under the cover
+wait for its reveal. A finished window never restarts its launch cover for a
+drawing switch or renderer recovery.
+
+The cover shows only the painter's chosen Zen capy and, after the delay, its
+caption. `BootstrapView.launch_mark` names the capy and its ink placement; hosts
+draw no capy until it is known.
 
 Caption timing uses `layer_ui::LAUNCH_CAPTION_DELAY_MS`, exported as
 `BootstrapView.launch_caption_delay_ms`; hosts own their clocks and fades.
@@ -175,7 +191,7 @@ image keeps shared frame demand active until the choice is applied or rejected.
 Waiting for disk I/O and suspended painting do not request polling. Once Paper
 applies, its relief preview finishes before frame demand returns to idle.
 Paper shading is part of the presenter's own pipeline. The slope pipelines
-that turn a bake into its slope tile compile as optional work for a lit paper
+that turn a bake into its slope tile compile at Required for a drawing's lit paper
 and at preview priority, with the relief's own bake, while the Scale preview is
 shown. Paper bakes advance one at a time,
 most urgent first, one step per completed GPU submission, and a newer request

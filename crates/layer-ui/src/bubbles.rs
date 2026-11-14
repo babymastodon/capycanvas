@@ -134,14 +134,16 @@ impl BubbleOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Corner {
-    #[default]
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Corner {
+        #[default]
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight,
+    }
 }
 impl Corner {
     fn point(self, viewport: [f32; 2]) -> [f32; 2] {
@@ -158,9 +160,10 @@ impl Corner {
 pub struct ToolBubble {
     pub id: u32,
     pub source: BubbleSource,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub corner: Corner,
     pub offset: [f32; 2],
-    #[serde(default, skip_serializing_if = "BubbleOptions::is_default")]
+    #[serde(default, skip_serializing_if = "BubbleOptions::is_default", deserialize_with = "crate::lenient::fields")]
     pub options: BubbleOptions,
 }
 
@@ -211,12 +214,14 @@ impl ToolBubble {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RingSettings {
     pub brush: u32,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub settings: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KeptOptions {
     pub source: BubbleSource,
+    #[serde(default, deserialize_with = "crate::lenient::fields")]
     pub options: BubbleOptions,
 }
 
@@ -224,8 +229,11 @@ pub struct KeptOptions {
 #[serde(default)]
 pub struct BubbleLayout {
     pub show_sliders: bool,
+    #[serde(deserialize_with = "crate::lenient::vec")]
     pub bubbles: Vec<ToolBubble>,
+    #[serde(deserialize_with = "crate::lenient::vec")]
     pub rings: Vec<RingSettings>,
+    #[serde(deserialize_with = "crate::lenient::vec")]
     pub kept: Vec<KeptOptions>,
 }
 impl Default for BubbleLayout {
@@ -265,6 +273,15 @@ impl BubbleLayout {
     pub(crate) fn set_ring(&mut self, brush: u32, settings: Vec<String>) {
         self.rings.retain(|r| r.brush != brush);
         self.rings.push(RingSettings { brush, settings });
+    }
+    pub(crate) fn retain_admitted(&mut self) {
+        let sized = |options: &BubbleOptions| (COLOR_RING_RANGE[0]..=COLOR_RING_RANGE[1]).contains(&options.size);
+        self.bubbles.retain(|bubble| bubble.source.validate().is_ok() && bubble.offset.into_iter().all(f32::is_finite) && sized(&bubble.options));
+        self.kept.retain(|kept| kept.source.validate().is_ok() && sized(&kept.options));
+        self.rings.retain(|ring| preset(ring.brush).is_ok());
+        for ring in &mut self.rings {
+            ring.settings.retain(|setting| tool_settings::defined(setting));
+        }
     }
     pub(crate) fn validate(&self, ids: &mut std::collections::BTreeSet<u32>) -> Result<(), String> {
         let mut sources = Vec::new();

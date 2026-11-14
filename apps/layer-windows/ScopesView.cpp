@@ -27,8 +27,8 @@ struct ScopeFeed : std::enable_shared_from_this<ScopeFeed> {
     }
     hstring context()const{
         auto data=owner.lock();if(!data)return L"";A value;
-        value.Append(object(data->state,L"document_file").GetNamedValue(L"epoch",JsonValue::CreateNullValue()));
-        value.Append(data->state.GetNamedValue(L"palette",JsonValue::CreateNullValue()));
+        value.Append(named(branch(data->state,L"document_file"),L"epoch"));
+        value.Append(object(data->state,L"palette"));
         for(auto kind:{L"histogram",L"waveform",L"tonal_histogram"}){
             auto scope=object(data->state,kind);A options;
             for(auto field:{L"source",L"channel",L"logarithmic",L"captured_source"})options.Append(scope.GetNamedValue(field,JsonValue::CreateNullValue()));
@@ -137,7 +137,7 @@ struct WaveformView : std::enable_shared_from_this<WaveformView> {
     void install(){
         auto current=source->context();
         if(context!=current){
-            context=current;auto data=source->owner.lock();auto next=data?object(data->state,L"document_file").GetNamedValue(L"epoch",JsonValue::CreateNullValue()).Stringify():hstring{};
+            context=current;auto data=source->owner.lock();auto next=data?named(branch(data->state,L"document_file"),L"epoch").Stringify():hstring{};
             if(document!=next){document=next;upload->Clear();image.Source(nullptr);}
             installed=uint64_t(-1);
         }

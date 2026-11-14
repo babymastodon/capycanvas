@@ -12,7 +12,10 @@ enum Child { Chip(usize), Title, NativeGroup(usize), NativeButton(usize), Tool(u
 
 pub(super) struct Phone {
     pub root: drawers::Columns,
-    contact: Rc<RefCell<Option<(PhoneBarContact, gdk::Event)>>>,
+    contact: RefCell<Option<(PhoneBarContact, gdk::Event)>>,
+    held_menu: Cell<bool>,
+    last_point: Cell<Option<[f32; 2]>>,
+    origin_point: Cell<Option<[f32; 2]>>,
     tools: RefCell<Vec<(ToolbarTile, toolbar_components::TileWidget, ToolbarControl)>>,
     sliders: RefCell<Vec<Rc<toolbar_components::Component>>>,
     settings: RefCell<Option<toolbar_components::TileWidget>>,
@@ -33,7 +36,7 @@ impl Phone {
         root.add_css_class("header-medium");
         let title = gtk::WindowHandle::new();
         title.set_widget_name("phone-title-band");
-        Self { root, contact: Rc::default(), tools: RefCell::default(), sliders: RefCell::default(), settings: RefCell::default(), title,
+        Self { root, contact: RefCell::default(), held_menu: Cell::default(), last_point: Cell::default(), origin_point: Cell::default(), tools: RefCell::default(), sliders: RefCell::default(), settings: RefCell::default(), title,
             children: RefCell::default(),
             native: [gtk::WindowControls::new(gtk::PackType::Start), gtk::WindowControls::new(gtk::PackType::End)],
             buttons: RefCell::default(), decoration: RefCell::default(), reported: Cell::new(None),
@@ -51,6 +54,7 @@ impl Phone {
         hold.connect_pressed(glib::clone!(#[weak] w, #[strong] held, #[strong] suppress, move |gesture, _, _| {
             if w.gpu.borrow().as_ref().is_some_and(|g| g.session.phone_layout().is_some()) {
                 held.set(true);
+                if let Some((active, _)) = w.phone.contact.borrow_mut().as_mut() { active.hold(); }
                 suppress.set(true);
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 w.dispatch(UiAction::Phone { action: PhoneAction::CapyHold });
@@ -64,9 +68,11 @@ impl Phone {
             }));
         let release = gtk::EventControllerLegacy::new();
         release.set_propagation_phase(gtk::PropagationPhase::Capture);
-        release.connect_event(glib::clone!(#[weak] w, #[strong] held, #[upgrade_or] glib::Propagation::Proceed, move |_, event| {
+        release.connect_event(glib::clone!(#[weak] w, #[strong] held, #[strong] hold, #[strong] click, #[upgrade_or] glib::Propagation::Proceed, move |_, event| {
             if matches!(event.event_type(), gdk::EventType::ButtonRelease | gdk::EventType::TouchEnd | gdk::EventType::TouchCancel)
                 && held.replace(false) {
+                hold.reset();
+                click.reset();
                 let position = event.position().filter(|_| event.event_type() != gdk::EventType::TouchCancel)
                     .and_then(|(x, y)| w.window.compute_point(&w.surface, &gtk::graphene::Point::new(x as f32, y as f32)))
                     .map_or([-1.; 2], |p| [p.x(), p.y()]);
@@ -76,91 +82,204 @@ impl Phone {
         }));
         w.window.add_controller(release);
     }
+    fn cancel_contact(&self, w: &Workspace) {
+        if let Some((mut active, _)) = self.contact.take() { active.cancel(); }
+        self.last_point.set(None);
+        self.origin_point.set(None);
+        if self.held_menu.replace(false) { w.dismiss_context(); }
+        w.surface.queue_allocate();
+    }
+
     fn bind_window_move(&self, w: &Rc<Workspace>) {
-        let contact = self.contact.clone();
+        fn point(w: &Workspace, event: &gdk::Event) -> Option<[f32; 2]> {
+            let (x,y) = event.position()?;
+            let native = gtk::Native::for_surface(&event.surface()?)?;
+            let (dx,dy) = native.surface_transform();
+            let widget = native.dynamic_cast::<gtk::Widget>().ok()?;
+            let point = widget.compute_point(&w.surface, &gtk::graphene::Point::new((x-dx) as f32,(y-dy) as f32))?;
+            Some([point.x(),point.y()])
+        }
+        fn same_contact(press: &gdk::Event, event: &gdk::Event) -> bool {
+            if press.event_type() == gdk::EventType::TouchBegin {
+                matches!(event.event_type(), gdk::EventType::TouchUpdate | gdk::EventType::TouchEnd | gdk::EventType::TouchCancel)
+                    && press.event_sequence() == event.event_sequence()
+            } else {
+                press.device() == event.device() && press.device_tool() == event.device_tool()
+            }
+        }
+
         w.install_menu(&self.root, ContextTarget::PhoneToolbar);
-        let drag = gtk::GestureDrag::new();
-        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
-        drag.connect_drag_begin(glib::clone!(#[weak] w, #[strong] contact, move |gesture, x, y| {
-            if w.visible_dialog().is_some() { gesture.set_state(gtk::EventSequenceState::Denied); return; }
-            let point = w.window.compute_point(&w.surface, &gtk::graphene::Point::new(x as f32, y as f32));
-            let start = point.and_then(|p| {
-                let picked = w.surface.pick(p.x() as f64, p.y() as f64, gtk::PickFlags::DEFAULT)?;
-                let capy = w.zen_capy.parent()?;
-                if ![w.phone.root.upcast_ref::<gtk::Widget>(), &capy].iter().any(|root| picked == **root || picked.is_ancestor(*root)) { return None; }
-                let gpu = w.gpu.borrow();
-                let gpu = gpu.as_ref()?;
-                let layout = gpu.session.phone_layout()?;
-                let title = layout.title.width > 0. && layout.title.contains(p.x(), p.y());
-                if title && picked != w.phone.title && !picked.is_ancestor(&w.phone.title) { return None; }
-                let native = std::iter::successors(Some(picked), |widget| widget.parent()).any(|widget|
-                    widget.is::<gtk::Button>() && widget.ancestor(gtk::WindowControls::static_type()).is_some());
-                PhoneBarContact::begin(&layout, [p.x(), p.y()], native).map(|mut contact| { contact.set_tools(gpu.session.state().workspace.layout.phone.as_deref().unwrap_or(&[])); contact })
-            });
-            contact.replace(start.zip(gesture.current_event()));
-            if contact.borrow().is_none() { gesture.set_state(gtk::EventSequenceState::Denied); }
-        }));
-        drag.connect_drag_update(glib::clone!(#[weak] w, #[strong] contact, move |gesture, dx, dy| {
-            let past_slop = w.window.drag_check_threshold(0, 0, dx as i32, dy as i32);
-            let outcome = {
-                let mut active = contact.borrow_mut();
-                let Some((active, press)) = active.as_mut() else { return; };
-                let gpu = w.gpu.borrow();
-                let Some(gpu) = gpu.as_ref() else { return; };
-                let Some(layout) = gpu.session.phone_layout() else { return; };
-                let Some((x,y)) = press.position() else { return; };
-                active.motion(&layout, gpu.session.state().workspace.layout.phone.as_deref().unwrap_or(&[]), [(x+dx) as f32,(y+dy) as f32], past_slop)
-            };
-            if matches!(outcome, PhoneBarOutcome::Held | PhoneBarOutcome::Dragging) { gesture.set_state(gtk::EventSequenceState::Claimed); w.surface.queue_allocate(); return; }
-            if outcome == PhoneBarOutcome::Cancel { contact.take(); gesture.set_state(gtk::EventSequenceState::Claimed); return; }
-            if outcome != PhoneBarOutcome::WindowMove { return; }
-            let (_, press) = contact.take().unwrap();
-            if let (Some(surface), Some(device), Some((x, y))) =
-                (w.window.surface().and_downcast::<gdk::Toplevel>(), press.device(), press.position()) {
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-                w.chrome_contacts.borrow_mut().retain(|_, event| event.as_ptr() != press.as_ptr());
-                w.update_zen();
-                surface.begin_move(&device, 1, x, y, press.time());
-            }
-        }));
-        drag.connect_drag_end(glib::clone!(#[weak] w, #[strong] contact, move |gesture, dx, dy| {
-            let Some((mut active, press)) = contact.take() else { return; };
-            let outcome = w.gpu.borrow().as_ref().and_then(|g| g.session.phone_layout().map(|layout| {
-                let (x,y) = press.position().unwrap_or_default();
-                active.finish(&layout, g.session.state().workspace.layout.phone.as_deref().unwrap_or(&[]), [(x+dx) as f32,(y+dy) as f32])
-            })).unwrap_or(PhoneBarOutcome::Cancel);
-            match outcome {
-                PhoneBarOutcome::Move { tile, before } => w.dispatch(UiAction::Phone { action: PhoneAction::MoveTool { tile, before } }),
-                PhoneBarOutcome::Menu(tile) => {
-                    gesture.set_state(gtk::EventSequenceState::Claimed);
-                    let (x,y) = press.position().unwrap_or_default();
-                    w.show_context(w.surface.upcast_ref(), tile.map_or(ContextTarget::PhoneToolbar, |tile| ContextTarget::PhoneTile { tile }), x, y);
-                }
-                PhoneBarOutcome::Cancel => { gesture.set_state(gtk::EventSequenceState::Claimed); }
-                _ => ()
-            }
-            w.surface.queue_allocate();
-        }));
-        drag.connect_cancel(glib::clone!(#[weak] w, #[strong] contact, move |_, _| { contact.take(); w.surface.queue_allocate(); }));
-        w.window.add_controller(drag.clone());
         let hold = gtk::GestureLongPress::new();
         hold.set_touch_only(false);
         hold.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let pointer = gtk::EventControllerLegacy::new();
+        pointer.set_propagation_phase(gtk::PropagationPhase::Capture);
+        pointer.connect_event(glib::clone!(#[weak] w, #[strong] hold, #[upgrade_or] glib::Propagation::Proceed, move |_, event| {
+            let kind = event.event_type();
+            let down = match kind {
+                gdk::EventType::ButtonPress => event.downcast_ref::<gdk::ButtonEvent>().is_some_and(|button| button.button() == 1),
+                gdk::EventType::TouchBegin => true,
+                _ => false,
+            };
+            if down {
+                let pending = { w.phone.contact.borrow().is_some() };
+                if pending {
+                    w.phone.cancel_contact(&w);
+                    return glib::Propagation::Proceed;
+                }
+                if w.visible_dialog().is_some() { return glib::Propagation::Proceed; }
+                let Some(point) = point(&w,event) else { return glib::Propagation::Proceed; };
+                let start = (|| {
+                    let picked = w.surface.pick(point[0] as f64, point[1] as f64, gtk::PickFlags::DEFAULT)?;
+                    let capy = w.zen_capy.parent()?;
+                    if ![w.phone.root.upcast_ref::<gtk::Widget>(), &capy].iter()
+                        .any(|root| picked == **root || picked.is_ancestor(*root)) { return None; }
+                    let gpu = w.gpu.borrow();
+                    let gpu = gpu.as_ref()?;
+                    let layout = gpu.session.phone_layout()?;
+                    let title = layout.title.width > 0. && layout.title.contains(point[0], point[1]);
+                    if title && picked != w.phone.title && !picked.is_ancestor(&w.phone.title) { return None; }
+                    let native = std::iter::successors(Some(picked), |widget| widget.parent()).any(|widget|
+                        widget.is::<gtk::Button>() && widget.ancestor(gtk::WindowControls::static_type()).is_some());
+                    PhoneBarContact::begin(&layout, point, native).map(|mut active| {
+                        active.set_tools(gpu.session.state().workspace.layout.phone.as_deref().unwrap_or(&[]));
+                        active
+                    })
+                })();
+                if let Some(active) = start {
+                    w.phone.contact.replace(Some((active, event.clone())));
+                    w.phone.last_point.set(Some(point));
+                    w.phone.origin_point.set(Some(point));
+                }
+                return glib::Propagation::Proceed;
+            }
+
+            let phase = match kind {
+                gdk::EventType::MotionNotify => {
+                    if !event.modifier_state().contains(gdk::ModifierType::BUTTON1_MASK)
+                        && crate::input::pointer_kind(event) != PointerKind::Pen { return glib::Propagation::Proceed; }
+                    ContactPhase::Move
+                }
+                gdk::EventType::TouchUpdate => ContactPhase::Move,
+                gdk::EventType::ButtonRelease if event.downcast_ref::<gdk::ButtonEvent>().is_some_and(|button| button.button() == 1) => ContactPhase::Up,
+                gdk::EventType::TouchEnd => ContactPhase::Up,
+                gdk::EventType::TouchCancel => ContactPhase::Cancel,
+                gdk::EventType::ProximityOut if event.device_tool().is_some() => ContactPhase::Cancel,
+                _ => return glib::Propagation::Proceed,
+            };
+            if !w.phone.contact.borrow().as_ref().is_some_and(|(_, press)| same_contact(press, event)) {
+                return glib::Propagation::Proceed;
+            }
+            if phase == ContactPhase::Cancel {
+                hold.reset();
+                w.phone.cancel_contact(&w);
+                return glib::Propagation::Stop;
+            }
+            let point = point(&w,event).or(w.phone.last_point.get());
+            let Some(point) = point else {
+                w.phone.cancel_contact(&w);
+                return glib::Propagation::Stop;
+            };
+            w.phone.last_point.set(Some(point));
+            if phase == ContactPhase::Move {
+                let outcome = {
+                    let mut pending = w.phone.contact.borrow_mut();
+                    let (active, _) = pending.as_mut().unwrap();
+                    let gpu = w.gpu.borrow();
+                    gpu.as_ref().and_then(|gpu| gpu.session.phone_layout().map(|layout| {
+                        let origin = w.phone.origin_point.get().unwrap_or(point);
+                        let past_slop = w.window.drag_check_threshold(origin[0] as i32, origin[1] as i32, point[0] as i32, point[1] as i32);
+                        active.motion(&layout, gpu.session.state().workspace.layout.phone.as_deref().unwrap_or(&[]), point, past_slop)
+                    })).unwrap_or(PhoneBarOutcome::Cancel)
+                };
+                match outcome {
+                    PhoneBarOutcome::Held => { w.surface.queue_allocate(); return glib::Propagation::Stop; }
+                    PhoneBarOutcome::Dragging => {
+                        if w.phone.held_menu.replace(false) { w.dismiss_context(); }
+                        w.surface.queue_allocate();
+                        return glib::Propagation::Stop;
+                    }
+                    PhoneBarOutcome::Cancel => {
+                        w.phone.cancel_contact(&w);
+                        return glib::Propagation::Stop;
+                    }
+                    PhoneBarOutcome::WindowMove => {
+                        let (_, press) = w.phone.contact.take().unwrap();
+                        w.phone.last_point.set(None);
+                        w.phone.origin_point.set(None);
+                        if let (Some(surface), Some(device), Some((x, y))) =
+                            (w.window.surface().and_downcast::<gdk::Toplevel>(), press.device(), press.position()) {
+                            w.chrome_contacts.borrow_mut().retain(|_, event| event.as_ptr() != press.as_ptr());
+                            w.update_zen();
+                            surface.begin_move(&device, 1, x, y, press.time());
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    _ => return glib::Propagation::Proceed,
+                }
+            }
+            let (mut active, _) = w.phone.contact.take().unwrap();
+            w.phone.last_point.set(None);
+            w.phone.origin_point.set(None);
+            let was_held = active.lifted().is_some() || w.phone.held_menu.get();
+            let outcome = w.gpu.borrow().as_ref().and_then(|gpu| gpu.session.phone_layout().map(|layout|
+                active.finish(&layout, gpu.session.state().workspace.layout.phone.as_deref().unwrap_or(&[]), point)
+            )).unwrap_or(PhoneBarOutcome::Cancel);
+            match outcome {
+                PhoneBarOutcome::Move { tile, before } => {
+                    if w.phone.held_menu.replace(false) { w.dismiss_context(); }
+                    w.dispatch(UiAction::Phone { action: PhoneAction::MoveTool { tile, before } });
+                }
+                PhoneBarOutcome::Pending if w.phone.held_menu.replace(false) => w.finish_context_hold(),
+                PhoneBarOutcome::Cancel => {
+                    if w.phone.held_menu.replace(false) { w.dismiss_context(); }
+                }
+                _ => {}
+            }
+            w.surface.queue_allocate();
+            if was_held || matches!(outcome, PhoneBarOutcome::Move { .. } | PhoneBarOutcome::Cancel) {
+                hold.reset();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        }));
+        w.window.add_controller(pointer);
+
         hold.connect_pressed(glib::clone!(#[weak] w, move |gesture, _, _| {
-            if let Some((active, _)) = contact.borrow_mut().as_mut() && active.arm() == PhoneBarOutcome::Held { gesture.set_state(gtk::EventSequenceState::Claimed); }
+            let armed = w.phone.contact.borrow_mut().as_mut().map(|(active, press)| (active.arm(), press.clone()));
+            if let Some((PhoneBarOutcome::Menu(tile), press)) = armed {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                if matches!(crate::input::pointer_kind(&press), PointerKind::Touch | PointerKind::Pen)
+                    && let Some([x,y]) = w.phone.origin_point.get() {
+                    w.show_held_context(w.surface.upcast_ref(),
+                        tile.map_or(ContextTarget::PhoneToolbar, |tile| ContextTarget::PhoneTile { tile }), x as f64, y as f64);
+                    w.phone.held_menu.set(true);
+                }
+            }
             w.surface.queue_allocate();
         }));
-        w.window.add_controller(hold.clone());
-        hold.group_with(&drag);
+        self.root.add_controller(hold);
+
         let key = gtk::EventControllerKey::new();
         key.set_propagation_phase(gtk::PropagationPhase::Capture);
         key.connect_key_pressed(glib::clone!(#[weak] w, #[upgrade_or] glib::Propagation::Proceed, move |_, key, _, _| {
-            if key == gdk::Key::Escape && let Some((mut contact, _)) = w.phone.contact.take() {
-                contact.cancel(); w.surface.queue_allocate(); return glib::Propagation::Stop;
+            let pending = { w.phone.contact.borrow().is_some() };
+            if key == gdk::Key::Escape && pending {
+                w.phone.cancel_contact(&w);
+                return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
         }));
         w.window.add_controller(key);
+        w.window.connect_is_active_notify(glib::clone!(#[weak] w, move |window| {
+            let pending = { w.phone.contact.borrow().is_some() };
+            if !window.is_active() && pending { w.phone.cancel_contact(&w); }
+        }));
+        w.window.connect_unmap(glib::clone!(#[weak] w, move |_| {
+            let pending = { w.phone.contact.borrow().is_some() };
+            if pending { w.phone.cancel_contact(&w); }
+        }));
     }
 
     fn add(&self, child: &impl IsA<gtk::Widget>, role: Child) {
@@ -221,7 +340,8 @@ impl Phone {
     pub fn refresh(&self, w: &Rc<Workspace>, state: &UiState, structural: bool) {
         let viewport = [w.surface.width() as f32, w.surface.height() as f32];
         let Some(_) = state.phone_presentation(viewport) else {
-            self.contact.take();
+            let pending = { self.contact.borrow().is_some() };
+            if pending || self.held_menu.get() { self.cancel_contact(w); }
             self.root.imp().lifted.borrow_mut().take();
             if w.zen_capy.has_css_class("phone-capy") {
                 self.restore_loans();
@@ -281,7 +401,7 @@ impl Phone {
             let movable = !w.window.is_fullscreen();
             if (native, native_counts, movable) != (state.phone.native, state.phone.native_counts, state.phone.movable)
                 && self.reported.replace(Some((native, native_counts, movable))) != Some((native, native_counts, movable)) {
-                glib::idle_add_local_once(glib::clone!(#[weak] w, move || w.dispatch(UiAction::Phone { action: PhoneAction::Metrics { corners: [0.; 4], native, native_counts, insets: [0.; 4], movable } })));
+                glib::idle_add_local_once(glib::clone!(#[weak] w, move || w.dispatch(UiAction::Phone { action: PhoneAction::Metrics { keyboard: 0., corners: [0.; 4], native, native_counts, insets: [0.; 4], movable } })));
             }
         }
         let tiles = state.workspace.layout.phone.as_deref().unwrap_or(&[]);
@@ -359,9 +479,10 @@ impl Phone {
         button.set_margin_bottom(((hit.y + hit.height).round() - (visual.y + visual.height).round()) as i32);
     }
     pub fn allocate(&self, w: &Workspace, p: &PhoneLayout) {
+        let invalid = self.contact.borrow().as_ref().is_some_and(|(contact, _)| !contact.valid(p, self.tools.borrow().iter().map(|(tile, _, _)| tile)));
+        if invalid { self.cancel_contact(w); }
         let tool_bounds = {
-            let mut active = self.contact.borrow_mut();
-            if active.as_ref().is_some_and(|(contact, _)| !contact.valid(p, self.tools.borrow().iter().map(|(tile, _, _)| tile))) { active.take(); }
+            let active = self.contact.borrow();
             let lifted = active.as_ref().and_then(|(contact, _)| contact.lifted());
             let color = w.palette.get().map_or([48,48,48], |palette| palette.panel.0);
             self.root.imp().lifted.replace(lifted.map(|i| (self.tools.borrow()[i].1.root(),

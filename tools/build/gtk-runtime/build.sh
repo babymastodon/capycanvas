@@ -54,7 +54,12 @@ PY
 gtk_wrap_mode=nofallback
 if [[ ${CARGO_NET_OFFLINE:-false} == true ]]; then gtk_wrap_mode=nodownload; fi
 gtk_c_args="${CFLAGS:+$CFLAGS }-fPIC $(printf '%q' "-ffile-prefix-map=$gtk_build=/capycanvas-gtk")"
-if [[ ! -d "$gtk_build/glib-2.90.1" ]]; then tar -xf "$gtk_build/$glib_archive" -C "$gtk_build"; fi
+glib_patch_hash=$(cat "$gtk_build/$glib_archive" "$gtk_recipe/glib-launch-helper.patch" | sha256sum | cut -d ' ' -f 1)
+if [[ ! -f "$gtk_build/glib-patched.sha256" ]] || [[ $(cat "$gtk_build/glib-patched.sha256") != "$glib_patch_hash" ]]; then
+    tar -xf "$gtk_build/$glib_archive" -C "$gtk_build"
+    patch -d "$gtk_build/glib-2.90.1" -p1 < "$gtk_recipe/glib-launch-helper.patch"
+    echo "$glib_patch_hash" > "$gtk_build/glib-patched.sha256"
+fi
 python3 "$gtk_recipe/configure.py" "$gtk_build/glib-build" "$gtk_build/glib-2.90.1" \
     --prefix=/usr --libdir=lib --libexecdir=lib --buildtype=release --default-library=shared \
     "-Dc_args=$gtk_c_args" "-Dc_link_args=${LDFLAGS:-}" --wrap-mode="$gtk_wrap_mode" \
@@ -84,7 +89,7 @@ python3 "$gtk_recipe/configure.py" "$gtk_build/build" "$gtk_build/gtk-4.24.1" \
     -Dlibjpeg-turbo:jpeg-turbo=disabled -Dlibjpeg-turbo:tests=disabled \
     -Dbuild-demos=false -Dbuild-tests=false \
     -Dbuild-testsuite=false -Dbuild-examples=false -Dintrospection=disabled \
-    -Dmedia-gstreamer=disabled -Ddocumentation=false -Dman-pages=false -Dx11-backend=false
+    -Dmedia-gstreamer=disabled -Ddocumentation=false -Dman-pages=false -Dx11-backend=true
 ninja -C "$gtk_build/build" -j "${CAPY_BUILD_JOBS:-8}" gtk/libgtk-4.so.1.2400.1
 for gtk_family in glib gobject gio gmodule gthread; do
     gtk_library="lib$gtk_family-2.0.so.0"
@@ -92,6 +97,8 @@ for gtk_family in glib gobject gio gmodule gthread; do
     patchelf --set-rpath '$ORIGIN' "$gtk_prefix/lib/$gtk_library.new"
     mv -f "$gtk_prefix/lib/$gtk_library.new" "$gtk_prefix/lib/$gtk_library"
 done
+cp "$gtk_build/glib-build/gio/gio-launch-desktop" "$gtk_prefix/lib/gio-launch-desktop.new"
+mv -f "$gtk_prefix/lib/gio-launch-desktop.new" "$gtk_prefix/lib/gio-launch-desktop"
 for gtk_family in pango pangocairo pangoft2; do
     gtk_library="lib$gtk_family-1.0.so.0"
     cp "$gtk_build/pango-build/pango/$gtk_library" "$gtk_prefix/lib/$gtk_library.new"
@@ -109,7 +116,7 @@ cp "$gtk_build/glib-2.90.1/COPYING" "$gtk_docs/glib/"
 cp "$gtk_build/$pango_archive" "$gtk_docs/sources/"
 mkdir -p "$gtk_docs/pango"
 cp "$gtk_build/pango-1.58.2/COPYING" "$gtk_docs/pango/"
-cp "$gtk_recipe/pad-event-surface.patch" "$gtk_recipe/tablet-proximity-cursor.patch" "$gtk_recipe/vulkan-memory-pool.patch" "$gtk_recipe/build.sh" "$gtk_recipe/configure.py" "$gtk_recipe/check-env.py" "$gtk_docs/"
+cp "$gtk_recipe/pad-event-surface.patch" "$gtk_recipe/tablet-proximity-cursor.patch" "$gtk_recipe/vulkan-memory-pool.patch" "$gtk_recipe/glib-launch-helper.patch" "$gtk_recipe/build.sh" "$gtk_recipe/configure.py" "$gtk_recipe/check-env.py" "$gtk_docs/"
 python3 - "$gtk_prefix" "$gtk_build/gtk-4.24.1/subprojects" <<'PY'
 import configparser, hashlib, json, pathlib, shutil, sys
 p = pathlib.Path(sys.argv[1])
@@ -119,7 +126,8 @@ files = ['lib/libgtk-4.so.1', 'share/doc/capycanvas-gtk/COPYING',
          'share/doc/capycanvas-gtk/sources/gtk-4.24.1.tar.xz',
          'share/doc/capycanvas-gtk/pad-event-surface.patch',
          'share/doc/capycanvas-gtk/tablet-proximity-cursor.patch',
-         'share/doc/capycanvas-gtk/vulkan-memory-pool.patch', 'share/doc/capycanvas-gtk/build.sh',
+         'share/doc/capycanvas-gtk/vulkan-memory-pool.patch', 'share/doc/capycanvas-gtk/glib-launch-helper.patch',
+         'share/doc/capycanvas-gtk/build.sh', 'lib/gio-launch-desktop',
          'share/doc/capycanvas-gtk/configure.py', 'share/doc/capycanvas-gtk/check-env.py',
          'share/doc/capycanvas-gtk/sources/glib-2.90.1.tar.xz',
          'share/doc/capycanvas-gtk/glib/COPYING',

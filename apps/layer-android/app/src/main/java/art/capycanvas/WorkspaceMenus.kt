@@ -328,7 +328,7 @@ internal fun Modifier.opensWindowlessMenu(button: WindowlessMenuButton, label: S
                 }
                 if (!view.isNull("name")) CoreTextField(view.getString("name"), {
                     host.customize(obj("type" to "toolbar_name", "name" to it))
-                }, Modifier.testTag("toolbar-name"), label = { Text(view.getString("name_label")) }, background = LocalPalette.current.dialogField)
+                }, Modifier.testTag("toolbar-name"), label = { Text(view.getString("name_label")) }, background = LocalPalette.current.dialogField,focusRequest=1)
                 view.optString("error").takeIf { it.isNotEmpty() && it != "null" }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         })

@@ -48,6 +48,9 @@ tables and hardware specifications.
   device, compare its memory bandwidth and GPU throughput with the
   [tier hardware](performance/hardware.md).
 
+Phones use the same hardware rule. The Galaxy Note 10 (SM-N970U1, Adreno 640)
+is the low-tier phone reference at 60 fps, including phone chrome motion.
+
 ## How to test
 
 ### Engineering budgets
@@ -152,6 +155,32 @@ measured on low and mid tiers:
   seven modes do not. See the [Low](performance/low-tier.md#retained-map-liquify),
   [Mid](performance/mid-tier.md#retained-map-liquify) and
   [Top](performance/top-tier.md#retained-map-liquify) profiles.
+- Galaxy Note 10 phone chrome (2026-11-11, minified `.fix` APKs, 12 MP at Fit
+  plus Paint, inherited font scale 1.1, thermal status 0): frozen APKs
+  `f97e1ad6` → `f6cfbfff` improve median action → first moving SF present
+  from 228 → 174 ms Tool, 264 → 209 ms Color and 279 → 146 ms Navigator
+  (three warm opens per family/build); all miss 100 ms. Clean 12-case ABBA,
+  admitted at AP 34.9–35.2°C with CPU residency/frequency recorded, passes
+  57 fps and 33.3 ms p99 in 20/24 → 20/24 cases: Tool and Color each
+  10/12 → 10/12. All 48 cases have complete unique SF joins. Dedicated warm
+  Tool/Color runs still miss cadence (8/8 → 6/8 each), including 55 Hz openings.
+  The first Tool close and first Color open after launch miss on every build
+  measured: RenderThread compiles HWUI shaders on first use. Size and Strength
+  slider drags (APKs `67419936` → `9666d20d`, 120 Hz input, three warm
+  contacts each) miss 155/157 → 0/0 of about 833 frames that carry a new Size
+  value (Activity/popup). The present-gap p99 is 33.4 → 33.3 ms, and the value
+  settles 67–102 → 45–62 ms after the last input. Strength misses 0 → 0 and
+  settles 8–23 → 0 ms. Expected frames come from replaying the injected input
+  offline. Drawer faces (2026-11-12, APKs `01c40bcd` → `7dae63b9`, three warm
+  Tool/Color cycles each, AP 42.0 → 39.8°C) pass cadence in 8/12 → 11/12
+  transitions: Tool 3/6 → 5/6 and Color 5/6 → 6/6, with complete SF joins. The remaining
+  55 fps Tool close shares the parent's cadence miss.
+  Bridge outline, pixel-grid and drawer layering fixes (2026-11-12, APKs
+  `96901c5c` → `80913cd8`, three warm Tool/Color cycles, AP 39.1 → 37.9°C)
+  pass 11/12 → 12/12 transitions: Tool 5/6 → 6/6, Color 6/6 → 6/6;
+  worst present-gap p99 is 33.31 → 16.97 ms, with complete SF joins.
+  These inherited settings and short transitions remain diagnostic
+  qualification.
 
 The tier tables identify the exact frozen builds and measurement conditions.
 Exact GPU bounds queries on the top-tier 61 MP canvas take 95–135 ms for a

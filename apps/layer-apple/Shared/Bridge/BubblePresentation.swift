@@ -192,27 +192,25 @@ enum BubbleUI {
         guard !view["stamp"].isNull, !stampPending, stampDirty || stampWaiting else { return }
         stampPending = true; stampDirty = false
         let source = source, drawing = store.drawingIdentity, generation = stampGeneration
-        var query: [String: Any] = ["type": "bubble_stamp"]
-        if let stampRequest { query["known_request"] = stampRequest }
-        store.query(query) { [weak self, weak store] reply in
+        store.toolbarStamp(knownRequest: stampRequest) { [weak self, weak store] reply in
             guard let self, self.stampGeneration == generation else { return }
             guard let store, self.source == source, drawing == store.drawingIdentity, !self.view["stamp"].isNull else {
                 self.stampPending = false; return
             }
-            self.stampWaiting = reply.isNull || reply["pending"].bool
-            guard !reply["alpha"][0].isNull else {
+            self.stampWaiting = reply == nil || reply?.metadata["pending"].bool == true
+            guard let reply, reply.count > 0 else {
                 self.stampPending = false
                 if self.stampWaiting { store.wake?() }
                 return
             }
             Task { @MainActor [weak self, weak store] in
-                let bitmap = await Task.detached(priority: .utility) { SliderStampImage(image: SliderPreviewSession.image(reply)) }.value
+                let bitmap = await Task.detached(priority: .utility) { SliderStampImage(image: reply.image()) }.value
                 guard let self, self.stampGeneration == generation else { return }
                 self.stampPending = false
                 guard let store, self.source == source, drawing == store.drawingIdentity,
                     !self.view["stamp"].isNull else { return }
                 if let image = bitmap.image {
-                    self.stampExtent = reply["extent"].number; self.stampRequest = reply["request_id"].uint
+                    self.stampExtent = reply.metadata["extent"].number; self.stampRequest = reply.metadata["request_id"].uint
                     self.stamp = image
                 } else { self.stampWaiting = true }
                 store.wake?()
@@ -282,7 +280,7 @@ enum BubbleUI {
             if self.needsFrame { store.wake?() }
         }
     }
-    func action(_ action: [String: Any]) { store?.dispatch(["type": "bubble", "action": action]) }
+    func action(_ action: [String: Any]) { store?.dispatch(["type": "bubble", "action": action], moving: action["phase"] as? String == "move") }
     func take(_ grab: JSON, at point: CGPoint, valid: @escaping () -> Bool, completion: @escaping (TakeResult) -> Void) {
         guard let store else { completion(.retired); return }
         let drawing = drawing, token = request

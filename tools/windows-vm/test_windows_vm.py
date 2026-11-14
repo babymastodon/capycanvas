@@ -131,7 +131,9 @@ class CheckTests(unittest.TestCase):
             progress = [{"state": "Ready", "task_result": 0, "started": True, "result": {"exit_code": 0}}]
         progress = list(progress)
         clock = [0.0]
-        stdout, stderr = Mock(buffer=io.BytesIO()), Mock(buffer=io.BytesIO())
+        stdout, stderr = [io.TextIOWrapper(io.BytesIO(), encoding="utf-8") for _ in range(2)]
+        self.addCleanup(stdout.close)
+        self.addCleanup(stderr.close)
         output_bytes = "native input passed\n日本語\n".encode()
         error_bytes = b"\x1b[31mcomplete native stderr\x1b[0m\n"
         polls, events = [], []
@@ -195,9 +197,13 @@ class CheckTests(unittest.TestCase):
                     vm.main()
                 except SystemExit as failure:
                     error = failure.code
+            stdout.flush()
+            stderr.flush()
             self.assertEqual(stdout.buffer.getvalue(), b"" if fetch_error else output_bytes)
-            self.assertEqual(stderr.buffer.getvalue(), b"" if fetch_error else error_bytes)
-            self.diagnostics = "".join(call.args[0] for call in stderr.write.call_args_list)
+            forwarded_error = b"" if fetch_error else error_bytes
+            captured_error = stderr.buffer.getvalue()
+            self.assertEqual(captured_error[:len(forwarded_error)], forwarded_error)
+            self.diagnostics = captured_error[len(forwarded_error):].decode("utf-8")
             fetch.assert_called_once()
             self.assertEqual(events, ["retrieve", "cleanup"])
             self.assertFalse(held[0])
@@ -305,6 +311,14 @@ class CheckTests(unittest.TestCase):
 
 
 class GuestConnectionTests(unittest.TestCase):
+    def test_powershell_install_is_pinned_and_verified(self):
+        for path in vm.GUEST_FILES.iterdir():
+            if path.is_file():
+                self.assertNotIn(b"releases/" + b"latest", path.read_bytes(), path.name)
+        prepare = (vm.GUEST_FILES / "prepare.ps1").read_text()
+        self.assertLess(prepare.index("Get-FileHash"), prepare.index("msiexec.exe"))
+        self.assertNotIn("msiexec", (vm.GUEST_FILES / "provision-server.ps1").read_text())
+
     def test_unreadable_boot_time_does_not_restart_or_mark_prepared(self):
         with TemporaryDirectory() as directory:
             machine = vm.Machine("owned", Path(directory))
@@ -1060,64 +1074,133 @@ class FixtureRunnerTests(unittest.TestCase):
     def test_monitor_reads_powershell_raw_log_and_requires_completion(self):
         plan = {"runs": ["layers", "header:pen"], "timeout_minutes": 20}
         rows = [{"name": name, "exit": 0, "seconds": 1} for name in plan["runs"]]
-        progress = {"plan": plan, "log": "\r\n".join(map(json.dumps, rows)), "complete": True}
+        progress = {"plan": plan, "log": "\r\n".join(map(json.dumps, rows)), "complete": True, "runner": False}
         output = subprocess.CompletedProcess([], 0, json.dumps(progress))
-        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", return_value=output), \
-                patch.object(vm, "desktop_running", return_value=False):
+        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", return_value=output):
             results, actual_plan, failure = vm.wait_for_fixtures(None, "review")
         self.assertEqual(results, rows)
         self.assertEqual(actual_plan, plan)
         self.assertIsNone(failure)
         progress["complete"] = False
         output.stdout = json.dumps(progress)
-        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", return_value=output), \
-                patch.object(vm, "desktop_running", return_value=False):
+        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", return_value=output):
             _, _, failure = vm.wait_for_fixtures(None, "review")
         self.assertIn("stopped before completing", failure)
 
     def test_runner_error_is_reported_without_hiding_the_failure(self):
-        progress = {"plan": None, "log": None, "complete": False, "error": "Unknown fixture: absent"}
+        progress = {"plan": None, "log": None, "complete": False, "error": "Unknown fixture: absent", "runner": False}
         with patch.object(vm.time, "sleep"), \
-                patch.object(vm, "guest", return_value=subprocess.CompletedProcess([], 0, json.dumps(progress))), \
-                patch.object(vm, "desktop_running", return_value=False):
+                patch.object(vm, "guest", return_value=subprocess.CompletedProcess([], 0, json.dumps(progress))):
             results, _, failure = vm.wait_for_fixtures(None, "review")
         self.assertEqual(results, [])
         self.assertEqual(failure, progress["error"])
 
-    def test_monitor_reads_completion_after_observing_task_stop(self):
-        stopped = []
-        def status(*args, **kwargs):
-            self.assertTrue(stopped)
-            return subprocess.CompletedProcess([], 0, json.dumps({
-                "plan": {"runs": ["layers"], "timeout_minutes": 20},
-                "log": '{"name":"layers","exit":0,"seconds":1}', "complete": True}))
-        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", side_effect=status), \
-                patch.object(vm, "desktop_running", side_effect=lambda _: stopped.append(True) or False):
+    def test_status_observes_the_recorded_runner_before_completion_without_task_scheduler(self):
+        command = vm.fixture_status_command("C:\\run")
+        self.assertNotIn("ScheduledTask", command)
+        self.assertLess(command.index("Get-Process -Id"), command.index("\\complete"))
+        self.assertLess(command.index("\\runner.json"), command.index("\\complete"))
+
+    def test_last_row_written_between_status_reads_is_kept(self):
+        plan = {"runs": ["layers", "palettes"], "timeout_minutes": 20}
+        rows = [{"name": name, "exit": 0, "seconds": 1} for name in plan["runs"]]
+        runner = {"log": rows[:1], "complete": False, "polls": 0}
+        def guest(machine, command, **kwargs):
+            if "results.jsonl" not in command:
+                return subprocess.CompletedProcess([], 0, "", "")
+            runner["polls"] += 1
+            reads = sorted(("complete", "log"), key=lambda key: command.index({"complete": "\\complete'", "log": "\\results.jsonl"}[key]))
+            observed = {"plan": plan, "error": None, "runner": runner["polls"] == 1}
+            for read in reads:
+                observed[read] = runner[read]
+                if runner["polls"] == 1:
+                    runner.update(log=rows, complete=True)
+            observed["log"] = "\n".join(map(json.dumps, observed["log"]))
+            return subprocess.CompletedProcess([], 0, json.dumps(observed), "")
+        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", side_effect=guest):
+            results, _, failure = vm.wait_for_fixtures(None, "review")
+        self.assertIsNone(failure)
+        self.assertEqual(results, rows)
+
+    def test_unrecorded_runner_is_still_starting(self):
+        snapshots = [{"plan": None, "log": None, "complete": False, "runner": None},
+                     {"plan": {"runs": ["layers"], "timeout_minutes": 20}, "log": '{"name":"layers","exit":0,"seconds":1}',
+                      "complete": True, "runner": True}]
+        with patch.object(vm.time, "sleep"), \
+                patch.object(vm, "guest", side_effect=lambda *args, **kwargs: subprocess.CompletedProcess([], 0, json.dumps(snapshots.pop(0)))):
             results, _, failure = vm.wait_for_fixtures(None, "review")
         self.assertIsNone(failure)
         self.assertEqual(len(results), 1)
 
-    def test_task_query_failure_is_not_a_running_task(self):
-        with patch.object(vm, "guest", side_effect=subprocess.CalledProcessError(1, "Get-ScheduledTask")):
-            with self.assertRaises(subprocess.CalledProcessError):
-                vm.desktop_running(None)
-        for state, running in (("Running", True), ("Queued", True), ("Ready", False)):
-            with patch.object(vm, "guest", return_value=subprocess.CompletedProcess([], 0, state)):
-                self.assertEqual(vm.desktop_running(None), running)
+    def slow_status(self, transport):
+        plan = {"runs": ["layers"], "timeout_minutes": 20}
+        statuses = [subprocess.TimeoutExpired("status", 60),
+                    json.dumps({"plan": plan, "log": '{"name":"layers","exit":0,"seconds":1}', "complete": True, "runner": True})]
+        calls = []
+        def guest(machine, command, **kwargs):
+            calls.append(command)
+            if command == "exit 0":
+                if transport is not None:
+                    raise transport
+                return subprocess.CompletedProcess([], 0, "", "")
+            if "taskkill" in command:
+                return subprocess.CompletedProcess([], 0, "", "")
+            status = statuses.pop(0)
+            if isinstance(status, Exception):
+                raise status
+            return subprocess.CompletedProcess([], 0, status, "")
+        with TemporaryDirectory() as directory, patch.object(vm, "ARTIFACTS", Path(directory)), \
+                patch.object(vm.time, "sleep"), patch.object(vm, "guest", side_effect=guest):
+            results, _, failure = vm.wait_for_fixtures(SimpleNamespace(name="owner-r1"),
+                                                       "C:\\capycanvas\\artifacts\\windows\\vm-fixtures\\20261112-164506")
+            record = Path(directory) / "owner-r1" / "20261112-164506" / "slow-status.jsonl"
+            slow = [json.loads(line) for line in record.read_text().splitlines()] if record.exists() else []
+        return results, failure, slow, calls
 
+    def test_slow_status_with_a_live_transport_keeps_the_runner(self):
+        results, failure, slow, calls = self.slow_status(None)
+        self.assertIsNone(failure)
+        self.assertEqual([row["name"] for row in results], ["layers"])
+        self.assertEqual(len(slow), 1)
+        self.assertGreaterEqual(slow[0]["elapsed"], 0)
+        self.assertIn("results.jsonl", slow[0]["command"])
+        self.assertIn("exit 0", calls)
+        self.assertFalse(any("taskkill" in command or "Stop-ScheduledTask" in command for command in calls))
+
+    def test_slow_status_with_a_dead_transport_fails_the_runner(self):
+        results, failure, slow, calls = self.slow_status(subprocess.TimeoutExpired("exit 0", 20))
+        self.assertEqual(results, [])
+        self.assertIn("owner-r1 stopped responding to SSH", failure)
+        self.assertEqual(slow, [])
+        self.assertTrue(any("taskkill" in command for command in calls))
+
+    def test_failed_runner_is_drained_then_stopped_by_its_recorded_process(self):
+        events = []
+        def guest(machine, command, **kwargs):
+            if "taskkill" in command:
+                events.append("stop")
+                self.assertIn("C:\\run\\runner.json", command)
+                self.assertIn("WaitForExit", command)
+                raise subprocess.CalledProcessError(1, "stop", output="", stderr="The fixture runner 412 survived its stop.")
+            raise subprocess.CalledProcessError(1, "progress", output="", stderr="access denied")
+        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", side_effect=guest):
+            _, _, failure = vm.wait_for_fixtures(None, "C:\\run", drain=lambda: events.append("drain"))
+        self.assertEqual(events, ["drain", "stop"])
+        self.assertIn("'access denied'", failure)
+        self.assertIn("survived its stop", failure)
 
     def test_progress_transport_errors_preserve_remote_diagnostics(self):
         for stdout, stderr in (("", "ReadAllText sharing violation"), ("#< CLIXML", "guest error")):
-            with self.subTest(stdout=stdout), patch.object(vm.time, "sleep"), patch.object(vm, "desktop_running", return_value=True), \
+            with self.subTest(stdout=stdout), patch.object(vm.time, "sleep"), \
                     patch.object(vm, "guest", return_value=subprocess.CompletedProcess([], 0, stdout, stderr)):
                 _, _, failure = vm.wait_for_fixtures(None, "review")
             self.assertIn(repr(stdout), failure)
             self.assertIn(repr(stderr), failure)
         def denied(machine, command, **kwargs):
-            if "Stop-ScheduledTask" not in command:
+            if "taskkill" not in command:
                 raise subprocess.CalledProcessError(1, "progress", output="partial stdout", stderr="access denied")
             return subprocess.CompletedProcess([], 0)
-        with patch.object(vm.time, "sleep"), patch.object(vm, "desktop_running", return_value=True), patch.object(vm, "guest", side_effect=denied):
+        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", side_effect=denied):
             _, _, failure = vm.wait_for_fixtures(None, "review")
         self.assertIn("'partial stdout'", failure)
         self.assertIn("'access denied'", failure)
@@ -1125,18 +1208,18 @@ class FixtureRunnerTests(unittest.TestCase):
     def test_partial_jsonl_tail_does_not_stop_a_live_runner(self):
         plan = {"runs": ["layers", "palettes"], "timeout_minutes": 20}
         rows = [{"name": name, "exit": 0, "seconds": 1} for name in plan["runs"]]
-        snapshots = [json.dumps({"plan": plan, "log": json.dumps(rows[0])+"\n"+json.dumps(rows[1])[:9], "complete": False}),
-                     json.dumps({"plan": plan, "log": "\n".join(map(json.dumps, rows)), "complete": True})]
+        snapshots = [json.dumps({"plan": plan, "log": json.dumps(rows[0])+"\n"+json.dumps(rows[1])[:9], "complete": False, "runner": True}),
+                     json.dumps({"plan": plan, "log": "\n".join(map(json.dumps, rows)), "complete": True, "runner": True})]
         calls = []
         def guest(machine, command, **kwargs):
             calls.append(command)
             return subprocess.CompletedProcess([], 0, snapshots.pop(0), "")
-        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", side_effect=guest), patch.object(vm, "desktop_running", return_value=True):
+        with patch.object(vm.time, "sleep"), patch.object(vm, "guest", side_effect=guest):
             results, actual, failure = vm.wait_for_fixtures(None, "review")
         self.assertEqual(results, rows)
         self.assertEqual(actual, plan)
         self.assertIsNone(failure)
-        self.assertFalse(any("Stop-ScheduledTask" in command for command in calls))
+        self.assertFalse(any("taskkill" in command for command in calls))
 
 
 class FixtureDumpsBoundaryTests(unittest.TestCase):

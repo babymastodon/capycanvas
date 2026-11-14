@@ -153,3 +153,171 @@ fn selector_matches_fifo_model_across_promotions_cancellation_and_owner_drop() {
         }
     }
 }
+
+#[test]
+fn warming_at_every_class_completes_without_waking_its_owner() {
+    for class in [
+        Class::Required,
+        Class::Validation,
+        Class::Visible,
+        Class::Anticipated,
+        Class::Background,
+    ] {
+        let mut queue = Queue::<()>::new(2);
+        let owner = queue.owner();
+        queue.owners.get_mut(&owner).unwrap().wake = Some(Arc::new(|| {}));
+        queue.submit(
+            Key::Recipe(1),
+            Demand {
+                owner,
+                generation: Some(0),
+                class,
+            },
+            true,
+            || (),
+        );
+        let job = queue.take(Instant::now(), true).unwrap();
+        assert!(
+            queue
+                .finish(job.key, job.class, job.independent, Ok(()))
+                .is_empty(),
+            "{class:?} warming woke an idle owner"
+        );
+    }
+}
+
+#[test]
+fn real_waiters_at_every_class_wake_their_owner() {
+    for class in [
+        Class::Required,
+        Class::Validation,
+        Class::Visible,
+        Class::Anticipated,
+        Class::Background,
+    ] {
+        let mut queue = Queue::<()>::new(2);
+        let owner = queue.owner();
+        queue.owners.get_mut(&owner).unwrap().wake = Some(Arc::new(|| {}));
+        queue.submit(
+            Key::Recipe(1),
+            Demand {
+                owner,
+                generation: None,
+                class,
+            },
+            true,
+            || (),
+        );
+        let job = queue.take(Instant::now(), true).unwrap();
+        let owners = queue
+            .finish(job.key, job.class, job.independent, Ok(()))
+            .into_iter()
+            .map(|(owner, _)| owner)
+            .collect::<Vec<_>>();
+        assert_eq!(owners, [owner], "{class:?} completion lost a real waiter");
+    }
+}
+
+#[test]
+fn shared_inflight_warming_wakes_only_the_promoted_real_waiter() {
+    let mut queue = Queue::<()>::new(2);
+    let warm = queue.owner();
+    let waiter = queue.owner();
+    for owner in [warm, waiter] {
+        queue.owners.get_mut(&owner).unwrap().wake = Some(Arc::new(|| {}));
+    }
+    queue.submit(
+        Key::Recipe(1),
+        Demand {
+            owner: warm,
+            generation: Some(0),
+            class: Class::Validation,
+        },
+        true,
+        || (),
+    );
+    let job = queue.take(Instant::now(), true).unwrap();
+    queue.submit(
+        Key::Recipe(1),
+        Demand {
+            owner: waiter,
+            generation: None,
+            class: Class::Required,
+        },
+        true,
+        || panic!("shared recipe was recreated"),
+    );
+    queue.owners.get_mut(&waiter).unwrap().generation += 1;
+    assert_eq!(queue.pending(waiter), 1);
+    let owners = queue
+        .finish(job.key, job.class, job.independent, Ok(()))
+        .into_iter()
+        .map(|(owner, _)| owner)
+        .collect::<Vec<_>>();
+    assert_eq!(owners, [waiter]);
+    assert_eq!(queue.pending(waiter), 0);
+}
+
+#[test]
+fn cancelled_warming_generation_does_not_wake_its_owner() {
+    let mut queue = Queue::<()>::new(2);
+    let owner = queue.owner();
+    queue.owners.get_mut(&owner).unwrap().wake = Some(Arc::new(|| {}));
+    queue.submit(
+        Key::Recipe(1),
+        Demand {
+            owner,
+            generation: Some(0),
+            class: Class::Validation,
+        },
+        true,
+        || (),
+    );
+    let job = queue.take(Instant::now(), true).unwrap();
+    queue.owners.get_mut(&owner).unwrap().generation += 1;
+    queue.refresh();
+    assert!(
+        queue
+            .finish(job.key, job.class, job.independent, Ok(()))
+            .is_empty()
+    );
+}
+
+#[test]
+fn validation_warming_does_not_reopen_readiness_but_real_promotion_does() {
+    let mut queue = Queue::<()>::new(2);
+    let owner = queue.owner();
+    queue.submit(
+        Key::Recipe(1),
+        Demand {
+            owner,
+            generation: Some(0),
+            class: Class::Validation,
+        },
+        true,
+        || (),
+    );
+    assert_eq!(
+        queue.pending(owner),
+        0,
+        "speculative validation must not revoke completed startup"
+    );
+    let job = queue.take(Instant::now(), true).unwrap();
+    queue.submit(
+        Key::Recipe(1),
+        Demand {
+            owner,
+            generation: None,
+            class: Class::Validation,
+        },
+        true,
+        || panic!("shared recipe was recreated"),
+    );
+    assert_eq!(
+        queue.pending(owner),
+        1,
+        "a real validation gate must remain pending"
+    );
+    queue.finish(job.key, job.class, job.independent, Ok(()));
+    assert_eq!(queue.pending(owner), 0);
+}

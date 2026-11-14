@@ -92,7 +92,7 @@ const ENTRIES: [&str; 9] = [
     "finish",
     "init_detail",
 ];
-fn pipelines(device: &PipelineDevice) -> &Arc<Pipelines> {
+pub(crate) fn pipelines(device: &PipelineDevice) -> &Arc<Pipelines> {
     device.tone_pipelines.get_or_init(|| Arc::new(Pipelines::new(device, "local tone compute",
         concat!(include_str!("float_number.wgsl"), "\n", include_str!("guide_luminance.wgsl"), "\n", include_str!("local_tone.wgsl")), &ENTRIES)))
 }

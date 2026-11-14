@@ -1377,6 +1377,151 @@ fn w9_failed_drawing_recovery() {
     d.finish();
 }
 
+fn phone_layout_image(d: &mut Driver) {
+    let mut failures = Vec::new();
+    for (command,name) in [(CommandId::ImageSize,"image-size"),(CommandId::CanvasSize,"canvas-size")] {
+        d.w.dispatch(UiAction::Invoke {command});
+        let (dialog,frame)=dialog_frame(d);
+        capture(d,name);
+        let bounds=frame.compute_bounds(&d.w.window).unwrap();
+        if bounds.x()<0. || bounds.x()+bounds.width()>d.w.window.width() as f32 {
+            failures.push(format!("{name} page exceeds viewport: {bounds:?}"));
+        }
+        close(d,&dialog);
+    }
+    assert!(failures.is_empty(),"{}",failures.join("\n"));
+}
+
+fn phone_layout_swatches(d: &mut Driver) {
+    let mut failures = Vec::new();
+    crate::color_editor::show(&d.w,layer_ui::ColorSlot::Foreground);
+    let (dialog,frame)=dialog_frame(d);
+    d.click(named::<gtk::Button>(&frame,"edit-color-swatches").upcast_ref());
+    until(||d.w.color_editors.borrow().last().is_some_and(|editor|editor.slide.is_open()),"All Swatches opens");
+    capture(d,"all-swatches");
+    let sheet=find_named(&frame,"edit-color-sheet").unwrap();
+    let content=sheet.parent().unwrap().parent().unwrap();
+    let last=content.last_child().unwrap().compute_bounds(&frame).unwrap();
+    if last.y()+last.height()<frame.height() as f32-1. {
+        failures.push(format!("All Swatches footer leaves unused page height: {last:?}, page {}",frame.height()));
+    }
+    close(d,&dialog);
+    assert!(failures.is_empty(),"{}",failures.join("\n"));
+}
+
+fn phone_layout_shortcuts(d: &mut Driver) {
+    let mut failures = Vec::new();
+    d.w.dispatch(UiAction::Invoke {command:CommandId::KeyboardShortcuts});
+    let (dialog,_)=dialog_frame(d);
+    capture(d,"shortcuts");
+    d.w.dispatch(UiAction::Preferences {action:PreferenceAction::BeginShortcut {id:CommandId::Hand.shortcut_id()}});
+    let (recording,frame)=dialog_frame(d);
+    for name in ["shortcut-recording","shortcut-conflict"] {
+        if name=="shortcut-conflict" {
+            keys(d,101);
+            until(||ui_session(&d.w).preferences().unwrap().capture.as_ref().is_some_and(|capture|capture.conflict.is_some()),"Eraser chord conflicts with Hand");
+        }
+        capture(d,name);
+        for button_name in ["cancel-shortcut","confirm-shortcut"] {
+            let button=find_named(&frame,button_name).unwrap();
+            if !std::iter::successors(button.parent(),|parent|parent.parent()).any(|parent|parent.widget_name()=="shortcut-recording-footer") {
+                failures.push(format!("{name} {button_name} is outside its fixed footer"));
+            }
+        }
+        let label=descendants::<gtk::Label>(&frame).into_iter().find(|label|label.is_mapped()
+            && label.text()==if name=="shortcut-recording" {"Press a new key combination"} else {"Used by Eraser."}).unwrap();
+        let word = label.text().split_whitespace().map(|word|label.create_pango_layout(Some(word)).pixel_size().0).max().unwrap();
+        if label.width()<word { failures.push(format!("{name} text is crushed to {}px below a word width {word}",label.width())); }
+    }
+    d.w.dispatch(UiAction::Preferences {action:PreferenceAction::CancelShortcut});
+    crate::page_dialog::close_dialog(&recording);
+    until(||d.w.visible_dialog().as_ref()==Some(&dialog),"recording returns to Shortcuts");
+    close(d,&dialog);
+    assert!(failures.is_empty(),"{}",failures.join("\n"));
+}
+
+fn phone_layout_choices(d: &mut Driver) {
+    let mut failures = Vec::new();
+    d.w.dispatch(UiAction::OpenSettings {page:SettingsPage::Appearance});
+    let (dialog,frame)=dialog_frame(d);
+    capture(d,"appearance-choices");
+    for name in ["setting-transparency","setting-dark-base","setting-light-base","setting-language","setting-theme"] {
+        let row=find_named(&frame,name).unwrap();
+        let label=descendants::<gtk::Label>(&row).into_iter().find(|label|label.is_mapped() && !label.text().is_empty()).unwrap();
+        let word = label.text().split_whitespace().map(|word|label.create_pango_layout(Some(word)).pixel_size().0).max().unwrap();
+        if label.width()<word { failures.push(format!("{name} title fragments in {}px below a word width {word}",label.width())); }
+    }
+    close(d,&dialog);
+    assert!(failures.is_empty(),"{}",failures.join("\n"));
+}
+
+#[test]
+#[ignore = "private compositor and storage; phone viewport/theme external"]
+fn native_phone_layout_image() {
+    let mut d = super::phone_motion::setup("art.capycanvas.PhoneLayoutImage");
+    phone_layout_image(&mut d);
+    d.finish();
+}
+
+#[test]
+#[ignore = "private compositor and storage; phone viewport/theme external"]
+fn native_phone_layout_swatches() {
+    let mut d = super::phone_motion::setup("art.capycanvas.PhoneLayoutSwatches");
+    phone_layout_swatches(&mut d);
+    d.finish();
+}
+
+#[test]
+#[ignore = "private compositor and storage; phone viewport/theme external"]
+fn native_phone_layout_shortcuts() {
+    let mut d = super::phone_motion::setup("art.capycanvas.PhoneLayoutShortcuts");
+    phone_layout_shortcuts(&mut d);
+    d.finish();
+}
+
+#[test]
+#[ignore = "private compositor and storage; phone viewport/theme external"]
+fn native_phone_layout_choices() {
+    let mut d = super::phone_motion::setup("art.capycanvas.PhoneLayoutChoices");
+    phone_layout_choices(&mut d);
+    d.finish();
+}
+
+fn phone_layout_sizes(d: &mut Driver) {
+    d.w.dispatch(UiAction::Phone {action:PhoneAction::Panel {panel:Panel::Sizes}});
+    until(||find_named(d.w.window.upcast_ref(),"drawer-panel-Sizes").is_some_and(|panel|panel.is_mapped()) && !d.w.drawer.animation_active(),"phone Sizes opens");
+    let panel=find_named(d.w.window.upcast_ref(),"drawer-panel-Sizes").unwrap();
+    let buttons=descendants::<gtk::Button>(&panel).into_iter().filter(|button|button.has_css_class("size-preset")).collect::<Vec<_>>();
+    assert_eq!(buttons.len(),40);
+    let width=buttons[0].width();
+    for button in &buttons {
+        let label=descendant::<gtk::Label>(button).unwrap();let bounds=label.compute_bounds(button).unwrap();
+        assert!(bounds.y()>=24.,"{}: label starts above24: {bounds:?}",label.text());
+        assert!(bounds.x()>=0. && bounds.x()+bounds.width()<=button.width() as f32 && bounds.y()+bounds.height()<=button.height() as f32);
+        assert_eq!(button.width(),width);
+    }
+    buttons.last().unwrap().grab_focus();
+    capture(d,"brush-sizes");
+    d.w.dispatch(UiAction::Customize {action:CustomizationAction::CloseExpanded});
+    until(||d.w.drawer.is_closed(),"phone Sizes closes");
+}
+
+#[test]
+#[ignore = "private compositor --tablet and storage; phone viewport/theme external"]
+fn native_phone_batch_a_layout() {
+    let mut d=super::phone_motion::setup("art.capycanvas.PhoneBatchALayout");
+    phone_layout_sizes(&mut d);
+    phone_layout_image(&mut d);
+    phone_layout_swatches(&mut d);
+    phone_layout_shortcuts(&mut d);
+    phone_layout_choices(&mut d);
+    for tilt in [false,true] {
+        w7_calibration(&mut d,tilt);
+        if let Some(dialog)=d.w.visible_dialog() { close(&d,&dialog); }
+    }
+    d.finish();
+}
+
 #[test]
 #[ignore = "private compositor: --native-test=native_phone_dialogs --native-storage; LAYER_DIALOG_BATCH=w6a/w6a-capture/w6b/w6c/w6d/w7-photo/w9-storage/w9-workspace-recovery/w9-drawing-recovery/w9-open; drawing recovery also needs --native-recovery, phone viewport/theme external"]
 fn native_phone_dialogs() {

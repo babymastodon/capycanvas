@@ -3,6 +3,7 @@
 #include "LayerThumbnails.h"
 #include "NativeMenus.h"
 #include "LayerRowDrag.h"
+#include "RowSwipePresenter.h"
 #include "TextureDialog.h"
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Animation.h>
@@ -23,7 +24,7 @@ void layerRowThumbnail(ContentControl const&,ImageBrush const&,Grid const&);
 Button layerRowName(std::shared_ptr<WorkspaceData> const&,std::function<void()>,TextBlock&,StackPanel&);
 inline J layerAction(J const& operation){return O({{L"type",S(L"layer")},{L"action",operation}});}
 inline hstring epochOf(std::shared_ptr<WorkspaceData> const& data){
-    return to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")));
+    return to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch")));
 }
 inline J panelRow(J const& state,double id){return findId(array(state,L"layers"),id);}
 struct LayersView;
@@ -42,15 +43,11 @@ struct LayerRow : std::enable_shared_from_this<LayerRow> {
     double id=0;
     hstring epoch;
     Border root;
-    Grid body,swipeFrame;
-    Grid swipeActions;
+    Grid body;
+    CapyUi::RowSwipePresenter swipePresenter;
     std::map<std::wstring,Button> swipeButtons;
     hstring swipeKey;
-    TranslateTransform swipeTransform;
-    double swipeOffset=0;
-    CompositionTarget::Rendering_revoker swipeFrames;
     void swipe(double offset,bool animate=true);
-    void positionSwipe(double offset);
     double revealWidth()const;
     bool canSwipe()const;
     Button eye{nullptr},check{nullptr},content{nullptr},load{nullptr},mask{nullptr},link{nullptr},texture{nullptr},name{nullptr},grip{nullptr};

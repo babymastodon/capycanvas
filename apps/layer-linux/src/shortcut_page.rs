@@ -79,6 +79,12 @@ impl Sheet {
     }
 }
 
+struct Recording {
+    row: adw::ActionRow,
+    actions: gtk::Box,
+    root: crate::dialog_content::DialogContent,
+}
+
 /// A sheet sized to its content: a summary line, groups, and inline recording.
 struct Form {
     sheet: Sheet,
@@ -87,7 +93,8 @@ struct Form {
     body: gtk::Box,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     signature: RefCell<String>,
-    recording: RefCell<Option<adw::ActionRow>>,
+    recording: RefCell<Option<Recording>>,
+    footer: gtk::Box,
 }
 
 impl Form {
@@ -98,6 +105,10 @@ impl Form {
         let error = gtk::Label::builder().wrap(true).justify(gtk::Justification::Center).build();
         error.add_css_class("error");
         error.set_widget_name(&format!("{name}-error"));
+        let footer = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).halign(gtk::Align::End)
+            .margin_start(12).margin_end(12).margin_top(12).margin_bottom(12).visible(false).build();
+        footer.set_widget_name("shortcut-recording-footer");
+        sheet.view.add_bottom_bar(&footer);
         let body = gtk::Box::new(gtk::Orientation::Vertical, 18);
         body.append(&summary);
         body.append(&error);
@@ -119,6 +130,7 @@ impl Form {
             groups: RefCell::default(),
             signature: RefCell::default(),
             recording: RefCell::default(),
+            footer,
         }
     }
 
@@ -138,6 +150,8 @@ impl Form {
         for group in self.groups.borrow_mut().drain(..) {
             self.body.remove(&group);
         }
+        while let Some(child) = self.footer.first_child() { self.footer.remove(&child); }
+        self.footer.set_visible(false);
         self.recording.borrow_mut().take();
         for group in build() {
             self.body.append(&group);
@@ -147,15 +161,24 @@ impl Form {
 
     fn present(&self, dialog: &adw::Dialog, intent: DialogIntent) {
         let opened = self.sheet.show(Some(intent), dialog);
+        let page = crate::page_dialog::parent(&self.sheet.dialog);
+        if let Some(recording) = self.recording.borrow().as_ref() {
+            let paged = page != *self.sheet.dialog.upcast_ref::<gtk::Widget>();
+            let in_footer = recording.actions.parent().as_ref() == Some(self.footer.upcast_ref());
+            if paged != in_footer {
+                if paged { recording.root.remove(&recording.actions); self.footer.append(&recording.actions); }
+                else { self.footer.remove(&recording.actions); recording.root.append(&recording.actions); }
+            }
+            self.footer.set_visible(paged);
+        }
         let (_, natural, _, _) = self.sheet.view.measure(gtk::Orientation::Vertical, self.sheet.dialog.content_width());
         if self.sheet.dialog.content_height() != natural {
             self.sheet.dialog.set_content_height(natural);
         }
-        let page = crate::page_dialog::parent(&self.sheet.dialog);
         let focused = page.root().and_then(|root| root.focus()).is_some_and(|focus| focus.is_ancestor(&page));
-        if let Some(row) = self.recording.borrow().as_ref().filter(|_| opened || !focused) {
-            row.set_focusable(true);
-            row.grab_focus();
+        if let Some(recording) = self.recording.borrow().as_ref().filter(|_| opened || !focused) {
+            recording.row.set_focusable(true);
+            recording.row.grab_focus();
         } else if !focused {
             self.body.child_focus(gtk::DirectionType::TabForward);
         }
@@ -402,7 +425,7 @@ fn button_row(title: &str, icon: &str, name: &str, activate: impl Fn() + 'static
     row
 }
 
-fn recording_row(w: &Rc<Workspace>, capture: &ShortcutCapture) -> adw::ActionRow {
+fn recording_row(w: &Rc<Workspace>, capture: &ShortcutCapture) -> Recording {
     let row = text_row("", "");
     row.set_widget_name("shortcut-recording");
     let icon = gtk::Image::new();
@@ -425,16 +448,31 @@ fn recording_row(w: &Rc<Workspace>, capture: &ShortcutCapture) -> adw::ActionRow
         w,
         move |_| send(&w, PreferenceAction::ConfirmShortcut { replace: current(&w).and_then(|view| view.capture).is_some_and(|capture| capture.conflict.is_some()) })
     ));
-    row.add_suffix(&cancel);
-    row.add_suffix(&confirm);
-    refresh_recording(&row, capture, &w.localization());
-    row
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_valign(gtk::Align::Center);
+    actions.append(&cancel); actions.append(&confirm);
+    let root = crate::dialog_content::new(gtk::Orientation::Horizontal, 8);
+    root.add_css_class("card");
+    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).hexpand(true).build();
+    list.add_css_class("boxed-list");
+    list.append(&row);
+    root.append(&list); root.append(&actions);
+    crate::dialog_content::on_resize(&root, glib::clone!(#[weak] root, #[weak] row, #[weak] actions, move |width| {
+        let beside = actions.is_ancestor(&root) && NoticePlacement {min_text_width:width as f32,..Default::default()}
+            .actions_beside(row.measure(gtk::Orientation::Horizontal,-1).1 as f32,width as f32,
+                actions.measure(gtk::Orientation::Horizontal,-1).1 as f32,8.);
+        root.set_orientation(if beside {gtk::Orientation::Horizontal} else {gtk::Orientation::Vertical});
+    }));
+    let recording = Recording {row,actions,root};
+    refresh_recording(&recording, capture, &w.localization());
+    recording
 }
 
-fn refresh_recording(row: &adw::ActionRow, capture: &ShortcutCapture, localization: &Localizer) {
-    row.set_title(&capture.shortcut);
-    row.set_subtitle(&capture.notice);
-    crate::text_language::visit(row.upcast_ref(), &mut |widget| match widget.widget_name().as_str() {
+fn refresh_recording(recording: &Recording, capture: &ShortcutCapture, localization: &Localizer) {
+    recording.row.set_title(&capture.shortcut);
+    recording.row.set_subtitle(&capture.notice);
+    for root in [recording.row.upcast_ref(),recording.actions.upcast_ref()] {
+    crate::text_language::visit(root, &mut |widget| match widget.widget_name().as_str() {
         "cancel-shortcut" => if let Some(button) = widget.downcast_ref::<gtk::Button>() { button.set_label(&localization.text(MessageId::COMMON_CANCEL)); },
         "confirm-shortcut" => if let Some(button) = widget.downcast_ref::<gtk::Button>() {
             button.set_label(&localization.text(match (capture.existing, capture.conflict.is_some()) {
@@ -455,6 +493,7 @@ fn refresh_recording(row: &adw::ActionRow, capture: &ShortcutCapture, localizati
         },
         _ => {},
     });
+    }
 }
 
 fn relabel_controls(widget: &gtk::Widget, localization: &Localizer) {
@@ -1157,9 +1196,9 @@ impl ShortcutPage {
             }
             match capture {
                 Some(capture) => {
-                    let row = recording_row(w, capture);
-                    keys.add(&row);
-                    *self.editor.recording.borrow_mut() = Some(row);
+                    let recording = recording_row(w, capture);
+                    keys.add(&recording.root);
+                    *self.editor.recording.borrow_mut() = Some(recording);
                 }
                 None if editor.can_add => {
                     let id = editor.id.clone();
@@ -1215,9 +1254,9 @@ impl ShortcutPage {
         let signature = capture.id.clone();
         self.modifier.rebuild(signature, || {
             let group = adw::PreferencesGroup::new();
-            let row = recording_row(w, capture);
-            group.add(&row);
-            *self.modifier.recording.borrow_mut() = Some(row);
+            let recording = recording_row(w, capture);
+            group.add(&recording.root);
+            *self.modifier.recording.borrow_mut() = Some(recording);
             vec![group]
         });
         if let Some(row) = self.modifier.recording.borrow().as_ref() { refresh_recording(row, capture, &localization); }

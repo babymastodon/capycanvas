@@ -106,8 +106,14 @@ function Reveal-Chart([string]$Id){
     $range=$view.Height*(100/$scroll.Current.VerticalViewSize-1)
     if($range -gt 0 -and ($target.IsEmpty -or $target.Bottom -gt $view.Bottom)){
         $offset=if($target.IsEmpty){$range}else{$target.Bottom-$view.Bottom+4}
+        $requested=[Diagnostics.Stopwatch]::GetTimestamp()
         $scroll.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll,[Math]::Min(100,100*$offset/$range))
-        Wait-Until {$box=Native-Bounds $Id $scale;!$box.IsEmpty -and $box.Bottom -le $view.Bottom+1} "$Id did not scroll into view"
+        Wait-Until {
+            $presentation=(Workspace-Root).Current.ItemStatus|ConvertFrom-Json
+            if($presentation.snapshot_qpc -le $requested){return $false}
+            $box=Native-Bounds $Id $scale -Snapshot $presentation
+            !$box.IsEmpty -and $box.Bottom -le $view.Bottom+1
+        } "$Id did not scroll into view"
     }
     $view
 }
@@ -137,17 +143,14 @@ function Shown([string]$Panel){@((Model).layout.groups|Where-Object {$_.panels -
 function Canvas-Hash{
     $away=Center (Control 'panel-tab-properties');[CapyRowPointer]::Hover($away[0],$away[1])
     $from=Canvas-Point .15 .3;$to=Canvas-Point .85 .7
-    $settled=@{hash=$null}
-    Wait-Until {
+    Wait-StablePixels {
         $capture=Window-Capture
         try{
             $area=[Drawing.Rectangle]::FromLTRB($from[0]-$capture.window.left,$from[1]-$capture.window.top,$to[0]-$capture.window.left,$to[1]-$capture.window.top)
             $crop=$capture.bitmap.Clone($area,[Drawing.Imaging.PixelFormat]::Format32bppArgb);$stream=[IO.MemoryStream]::new();$sha=[Security.Cryptography.SHA256]::Create()
-            try{$crop.Save($stream,[Drawing.Imaging.ImageFormat]::Png);$hash=[Convert]::ToBase64String($sha.ComputeHash($stream.ToArray()))}finally{$crop.Dispose();$stream.Dispose();$sha.Dispose()}
+            try{$crop.Save($stream,[Drawing.Imaging.ImageFormat]::Png);[Convert]::ToBase64String($sha.ComputeHash($stream.ToArray()))}finally{$crop.Dispose();$stream.Dispose();$sha.Dispose()}
         }finally{$capture.bitmap.Dispose()}
-        $same=$hash -eq $settled.hash;$settled.hash=$hash;if(!$same){Start-Sleep -Milliseconds 400};$same
-    } 'The canvas did not settle'
-    $settled.hash
+    } -Idle
 }
 function Curve-Json{ConvertTo-Json -InputObject (@((Model).state.layer_properties.controls|Where-Object key -eq 'rgb')[0].value.value) -Compress -Depth 6}
 function Properties-Json{(Model).state.layer_properties.controls|ConvertTo-Json -Depth 12 -Compress}
@@ -245,7 +248,7 @@ try{
     $null=$review.Handle
     Write-Output "Owned scopes review $($review.Id): $run"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Review did not start' 120
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready)} 'Review did not start' 120
     if(!(Model).windows_isolated_settings){throw 'Scopes fixture requires an isolated profile'}
     $root=$native.window.Root;$drawingWindow=$native.window.Handle
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
@@ -271,6 +274,7 @@ try{
         $strip=(Control 'tool-gradient-gradient' -Arranged).Current.BoundingRectangle;$dpi=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.
         $at=@([int]($strip.X+6*$dpi+($strip.Width-12*$dpi)*$stop.position),[int]($strip.Y+39*$dpi))
         [CapyRowPointer]::Down('mouse',$at[0],$at[1]);[CapyRowPointer]::Up()
+        Wait-Until {@((Model).state.tool_extra|Where-Object Gradient)[0].Gradient.gradient.selected -eq $stop.position} "The gradient stop at $($stop.position) was not selected"
         Invoke 'tool-gradient-color';Invoke 'edit-color-hex'
         Edit 'edit-color-hex-entry' $stop.color;[CapyRowPointer]::Key([uint32]$review.Id,0x0D)
         Invoke 'edit-color-apply'
@@ -278,7 +282,9 @@ try{
             $gradient=@((Model).state.tool_extra|Where-Object Gradient)[0].Gradient.value.value
             !(Find 'edit-color-apply') -and [Math]::Abs($gradient.stops[$stop.position].color.rgba[0]-$stop.value) -lt .002
         } 'The limited-range gradient seed did not apply'
-    }}
+        }
+        Invoke 'column-icon-tool_settings';Wait-Until {!((Model).state.customization.column_drawers|Where-Object {$_.tabs.active -eq 'tool_settings'})} 'Tool settings did not close'
+    }
     Drag-Canvas 'mouse' (Canvas-Point .1 .5) (Canvas-Point .9 .5)
     Wait-Until {(Model).state.document_file.modified} 'The gradient did not reach the drawing'
     Wait-Until {$h=View 'histogram';$null -ne $h.data -and $h.status -and (Model).windows_scopes -gt 0} 'Histogram did not publish counts'
@@ -362,7 +368,7 @@ try{
     foreach($device in @('mouse','touch','pen')){
         $revision=(Model).state.document_file.revision
         Tap-Id 'property-action-group-calibration' $device
-        Tap-Id 'property-action-calibrate-white' $device
+        Tap (Control 'property-action-calibrate-white' -Arranged) $device
         Wait-Until {(Model).state.color_picker.calibrating} "$device did not arm the white point"
         if(Find 'picker-setting-source' -Visible){throw 'Sampler Source stayed visible while calibrating'}
         $at=Canvas-Point .3 .5;$script:lastDevice=$device;[CapyRowPointer]::Down($device,$at[0],$at[1]);Start-Sleep -Milliseconds $(if($device -eq 'touch'){1500}else{60});[CapyRowPointer]::Up()
@@ -410,11 +416,11 @@ try{
 
     Window-Panel 'Histogram';Wait-Until {!(Shown 'histogram')} 'Histogram did not restore the Auto pixel projection'
     $autoEpoch=(Model).state.document_file.epoch
-    & (Join-Path $PSScriptRoot 'open-application-menu.ps1') -Root $root -Name 'File';Invoke 'close_document'
-    Invoke 'Discard Changes' -Name
-    Wait-Until {!(Model).state.document_file.busy -and !(Find 'document-dialog')} 'The modified scopes drawing did not close'
     Open-Project $autoFile
     Wait-Until {(Model).state.document_file.epoch -gt $autoEpoch -and (Model).state.document_file.location.uri -eq $autoFile -and !(Model).state.document_file.busy -and !(Model).state.document_file.modified -and (Model).brush_ready} 'Auto Levels did not reopen as a fresh clean drawing' 60
+    $levels=@((Model).state.layers|Where-Object label -eq 'Levels')[0].id
+    Select-Panel 'layers';Invoke ('layer-'+$levels+'-name')
+    Wait-Until {(Model).state.layer_tools.editing_layer.id -eq $levels} 'The reopened Levels layer did not become active'
     Select-Panel 'properties';Fit-Canvas
     Wait-Until {((Model).state.camera|Select-Object viewport,zoom,rotation,translation,work_area|ConvertTo-Json -Depth 8 -Compress) -eq $autoProjection} 'Reopened Auto did not restore the same fitted pixel projection'
     Wait-Until {(Properties-Json) -eq $autoProperties} 'Reopening lost the saved Auto Levels parameters'

@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 extension EditorLaunchTests {
     @MainActor func testPhoneCustomizationLight() throws { try checkPhoneCustomization(theme: "light") }
@@ -71,6 +72,15 @@ extension EditorLaunchTests {
             let selected = phoneObservedTools(in: app)?.filter { $0["selected"] as? Bool == true }.compactMap { $0["id"] as? Int }
             workspacePoint(tile)?.press(forDuration: 1)
             XCTAssertTrue(app.descendants(matching: .any)["workspace-context-menu"].firstMatch.waitForExistence(timeout: 10))
+            let menu = app.descendants(matching: .any)["workspace-context-menu"].firstMatch
+            let rows = menu.buttons.allElementsBoundByIndex.sorted { $0.frame.minY < $1.frame.minY }
+            let title = menu.staticTexts["editor-menu-title"]
+            if let first = rows.first, let last = rows.last {
+                let top = title.exists ? title.frame.minY - (first.frame.minY - title.frame.maxY) : first.frame.minY
+                XCTAssertGreaterThanOrEqual(top - menu.frame.minY, 5)
+                XCTAssertGreaterThanOrEqual(menu.frame.maxY - last.frame.maxY, 5)
+                XCTAssertEqual(top - menu.frame.minY, menu.frame.maxY - last.frame.maxY, accuracy: 1)
+            } else { XCTFail("The held tool menu must expose its action rows") }
             XCTAssertEqual(phoneObservedTools(in: app)?.filter { $0["selected"] as? Bool == true }.compactMap { $0["id"] as? Int }, selected)
         }
         func menu(_ label: String) {
@@ -120,9 +130,48 @@ extension EditorLaunchTests {
         for choice in choices { XCTAssertEqual(choice.isEnabled, choice.identifier == "tool-choice-Divider") }
         phoneCapture(in: app, id: phoneCaptureID("customize", "customize-capacity"), theme: theme, fixture: [])
         let firstChoice = choices[0].identifier, search = app.textFields["tool-picker-search"]
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertFalse(app.textFields.matching(NSPredicate(format: "identifier == %@ AND hasKeyboardFocus == YES", search.identifier)).firstMatch.exists)
         replaceEditorText(search, with: "Divider", in: app)
         let divider = picker.buttons["tool-choice-Divider"]
         XCTAssertTrue(divider.waitForExistence(timeout: 10))
+        let results = app.descendants(matching: .any)["tool-picker-results"].firstMatch
+        let countLine = app.descendants(matching: .any)["tool-picker-count"].firstMatch
+        var measuredCount: CGFloat?
+        func fits() {
+            XCTAssertTrue(divider.isHittable)
+            XCTAssertGreaterThanOrEqual(divider.frame.minY, results.frame.minY - 1)
+            XCTAssertLessThanOrEqual(divider.frame.maxY + 1, results.frame.maxY + 1)
+            XCTAssertLessThanOrEqual(search.frame.maxY, divider.frame.minY + 1)
+            XCTAssertTrue(cancel.isHittable); XCTAssertTrue(confirm.isHittable)
+            if countLine.exists { measuredCount = countLine.frame.height }
+            if let height = measuredCount {
+                let available = results.frame.height + (countLine.exists ? height + 14 : 0)
+                XCTAssertEqual(countLine.exists, available - height - 14 >= divider.frame.height + 1)
+            }
+            if app.keyboards.firstMatch.exists {
+                XCTAssertLessThanOrEqual(results.frame.maxY, app.keyboards.firstMatch.frame.minY + 1)
+                if countLine.exists { XCTAssertLessThanOrEqual(countLine.frame.maxY, app.keyboards.firstMatch.frame.minY + 1) }
+            }
+        }
+        search.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        let originalOrientation = XCUIDevice.shared.orientation
+        for orientation in phoneCaptureOrientations + [originalOrientation] {
+            XCUIDevice.shared.orientation = orientation
+            expectation(for: NSPredicate { _, _ in
+                let bounds = app.windows.firstMatch.frame
+                return orientation.isLandscape ? bounds.width > bounds.height : bounds.height > bounds.width
+            }, evaluatedWith: app)
+            waitForExpectations(timeout: 10)
+            fits()
+            workspaceActivate(search)
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+            fits()
+            search.typeText("\n")
+            XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+            fits()
+        }
         workspaceActivate(divider); XCTAssertTrue(divider.isSelected)
         replaceEditorText(search, with: "", in: app)
         dismissEditorKeyboard(in: app)
@@ -135,12 +184,14 @@ extension EditorLaunchTests {
         let third = app.buttons[sequence[2]], horizontal = app.buttons[sequence[0]].frame.midY == third.frame.midY
         let to = third.coordinate(withNormalizedOffset: CGVector(dx: horizontal ? 0.95 : 0.5, dy: horizontal ? 0.5 : 0.95))
         from.press(forDuration: 1, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertTrue(app.descendants(matching: .any)["workspace-context-menu"].firstMatch.waitForNonExistence(timeout: 10))
         XCTAssertEqual(phoneTools(in: app).map(\.identifier), [sequence[1], sequence[2], sequence[0]] + Array(sequence.dropFirst(3)))
         history("Undo Layout Change", restoring: sequence)
         let picked = app.buttons[sequence[0]].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         picked.press(forDuration: 1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)),
             withVelocity: .slow, thenHoldForDuration: 0.2)
         XCTAssertEqual(phoneTools(in: app).map(\.identifier), sequence)
+        XCTAssertTrue(app.descendants(matching: .any)["workspace-context-menu"].firstMatch.waitForNonExistence(timeout: 10))
         phoneCapture(in: app, id: phoneCaptureID("customize", "customize-offbar-cancelled"), theme: theme, fixture: [])
         for identifier in sequence {
             let count = phoneTools(in: app).count

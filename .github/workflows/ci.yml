@@ -1,7 +1,6 @@
 name: CI
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
   workflow_call:
     inputs:
       rust-version:
@@ -22,8 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - if: github.event_name == 'push'
-        env:
+      - env:
           BEFORE: ${{ github.event.before }}
         run: |
           if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then

@@ -37,8 +37,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceService<S> {
         localization: Arc<layer_ui::Localizer>,
         wake: impl Fn() + Clone + Send + Sync + 'static,
     ) -> Self {
-        let mut controller = WorkspaceController::new_localized(store, Platform::Windows, now_ms(), localization);
-        controller.set_wake(Arc::new(wake.clone()));
+        let controller = WorkspaceController::new_localized(store, Platform::Windows, now_ms(), localization, Arc::new(wake.clone()));
         Self {
             controller,
             directory,

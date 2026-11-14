@@ -75,7 +75,7 @@ export function createDocumentRecovery({app,message,restore,remember=async()=>{}
         if(originKey===own.key)continue;
         const origin=await app.open_session_window(originKey);if(!origin)continue;
         try {
-          let saved=await origin.read();if(!saved)continue;
+          let saved;try{saved=await origin.read();}catch(error){await origin.set_aside();throw error;}if(!saved)continue;
           saved=update(saved,{type:'interrupted'});await origin.publish(saved);
           reserve(saved.drawings.map(drawing=>drawing.id));
           const sourceOrder=[...saved.drawings],restored=new Map();

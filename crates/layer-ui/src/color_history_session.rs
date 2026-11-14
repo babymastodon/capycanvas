@@ -137,7 +137,10 @@ impl<R: CanvasRenderer> UiSession<R> {
         let mut change = UiChange::default();
         if !self.color_history.claimed && self.color_history.touches.repeat_fingers() >= 2 {
             self.color_history.claimed = true;
-            change = self.dispatch(UiAction::ColorContact { phase: ContactPhase::Cancel })?;
+            change = match self.cancel_bubble_wheel()? {
+                Some(change) => change,
+                None => self.dispatch(UiAction::ColorContact { phase: ContactPhase::Cancel })?,
+            };
         }
         if let Some(TouchGesture::Tap(fingers @ 2..=3)) = gesture {
             let redo = match self.state.settings.gesture_binding(if fingers == 2 { "touch.tap.2" } else { "touch.tap.3" }) {

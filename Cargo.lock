@@ -1527,6 +1527,7 @@ dependencies = [
  "layer-core",
  "layer-engine",
  "layer-render",
+ "layer-render-wgpu",
  "pollster",
  "quick-xml",
  "serde",

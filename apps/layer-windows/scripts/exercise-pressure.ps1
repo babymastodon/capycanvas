@@ -85,7 +85,7 @@ try{
     $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle
     $owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Model).brush_ready} 'Pressure review did not start' 45
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Review-Ready)} 'Pressure review did not start' 45
     $root=$owned.window.Root;$drawingWindow=$owned.window.Handle
     Maximize-DrawingWindow
     Use-PaintWorkspace

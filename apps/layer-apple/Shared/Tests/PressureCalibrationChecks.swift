@@ -171,7 +171,7 @@ extension XCTestCase {
         expectation(for: NSPredicate(format: "value == %@", "Canvas ready"), evaluatedWith: canvas); waitForExpectations(timeout: 30)
         #if os(macOS)
         let paintPoint = CGPoint(x: 0.68, y: 0.6)
-        let before = editorPixels(in: app, at: paintPoint)
+        let before = settledEditorPixels(in: app, at: paintPoint)
         let stroke = app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: paintPoint.x, dy: paintPoint.y))
         stroke.press(forDuration: 0.05, thenDragTo: stroke.withOffset(CGVector(dx: 80, dy: 0)), withVelocity: .slow, thenHoldForDuration: 0.05)
         expectation(for: NSPredicate { _, _ in self.editorPixels(in: app, at: paintPoint) != before }, evaluatedWith: canvas)

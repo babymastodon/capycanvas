@@ -20,8 +20,8 @@ fn shader_source(flags:u32) -> Cow<'static,str> {
 impl BrushStamps {
     fn new(r: &WgpuRasterizer) -> Self {
         let entries=[0,1,2,3].map(|binding| bindings::buffer(binding,wgpu::ShaderStages::COMPUTE,
-            if binding<3 {wgpu::BufferBindingType::Uniform}
-            else {wgpu::BufferBindingType::Storage {read_only:false}},false,None));
+            match binding {1=>wgpu::BufferBindingType::Storage {read_only:true},3=>wgpu::BufferBindingType::Storage {read_only:false},
+                _=>wgpu::BufferBindingType::Uniform},false,None));
         let layout=bindings::layout(&r.device,"brush stamp",&entries);
         let pipeline_layout=r.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label:Some("brush stamp"),bind_group_layouts:&[Some(&layout),Some(&r.advanced_texture_layout)],immediate_size:0,
@@ -69,15 +69,16 @@ impl BrushStamps {
             request.bounds.max.x.to_bits(),request.bounds.max.y.to_bits(),request.dabs.len() as u32,
             u32::from(request.shape_strength.is_some()),request.shape_strength.unwrap_or(1.).to_bits(),0];
         let params:Vec<u8>=params.iter().flat_map(|v|v.to_ne_bytes()).collect();
-        let uniforms=[style_bytes(&style),contacts.as_slice(),params.as_slice()].map(|contents|
+        let inputs=[(style_bytes(&style),wgpu::BufferUsages::UNIFORM),(contacts.as_slice(),wgpu::BufferUsages::STORAGE),
+            (params.as_slice(),wgpu::BufferUsages::UNIFORM)].map(|(contents,usage)|
             r.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label:Some("brush stamp input"),contents,usage:wgpu::BufferUsages::UNIFORM,
+                label:Some("brush stamp input"),contents,usage,
             }));
         let size=192*192;
         let output=r.device.create_buffer(&wgpu::BufferDescriptor {
             label:Some("brush stamp output"),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false,
         });
-        let mut entries:Vec<_>=uniforms.iter().enumerate().map(|(i,buffer)|wgpu::BindGroupEntry {
+        let mut entries:Vec<_>=inputs.iter().enumerate().map(|(i,buffer)|wgpu::BindGroupEntry {
             binding:i as u32,resource:buffer.as_entire_binding(),
         }).collect();
         entries.push(wgpu::BindGroupEntry {binding:3,resource:output.as_entire_binding()});

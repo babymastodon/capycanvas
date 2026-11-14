@@ -106,7 +106,7 @@ fn bake_session(linked: bool) -> UiSession<Recorder> {
     let working = doc.working.clone();
     let mut doc = Document::from_artwork(doc.artwork).unwrap();
     doc.working = working;
-    let mut s = UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [800, 600], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [800, 600], Platform::Gtk).unwrap());
     s.frame(1, 1).unwrap();
     s
 }
@@ -163,7 +163,7 @@ fn a_distorted_stroke_commits_though_its_perspective_folds_beyond_the_layer() {
     let mut doc = Document::new(PortableId::random(), 2000, 1500, layer_core::DocumentNames { paint: "Current ink".into(), paper: "Paper".into() });
     let color = doc.composition().color;
     doc.artwork.paint.get_mut(bake_paint_handle(&doc)).unwrap().raster = raw_revision(color, &[RasterPlane::Color], 20);
-    let mut s = UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap());
     s.set_viewport([1600., 1000.], [1600, 1000]).unwrap();
     invoke(&mut s, CommandId::FitCanvas);
     s.frame(1, 1).unwrap();
@@ -188,7 +188,7 @@ fn a_distort_corner_stops_where_its_pixels_would_squeeze_past_one_pass() {
     let mut doc = Document::new(PortableId::random(), 2048, 2048, layer_core::DocumentNames { paint: "Photo".into(), paper: "Paper".into() });
     let color = doc.composition().color;
     doc.artwork.paint.get_mut(bake_paint_handle(&doc)).unwrap().raster = raw_revision(color, &[RasterPlane::Color], 40);
-    let mut s = UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() }, doc, [1600, 1000], Platform::Gtk).unwrap());
     s.set_viewport([1600., 1000.], [1600, 1000]).unwrap();
     invoke(&mut s, CommandId::FitCanvas);
     s.frame(1, 1).unwrap();
@@ -353,8 +353,8 @@ fn source_less_move_rejected_motion_and_release_commit_last_valid_preview_once()
     let coverage = doc.artwork.occurrences.get(owner).unwrap().mask.as_ref().unwrap().source;
     doc.artwork.coverage.get_mut(coverage).unwrap().domain = domain;
     doc.artwork.occurrences.get_mut(owner).unwrap().offset = [0, 0];
-    let mut s = UiSession::new(Recorder { max_dimension: Some(512), ..Default::default() }, doc,
-        [800, 600], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder { max_dimension: Some(512), ..Default::default() }, doc,
+        [800, 600], Platform::Gtk).unwrap());
     s.frame(1, 1).unwrap();
     s.layer_interaction.tool = LayerCanvasTool::Move;
     s.state.layer_tools.tool = LayerCanvasTool::Move;
@@ -407,7 +407,7 @@ fn source_less_move_click_keeps_canvas_domain_and_existing_redo() {
     let h = bake_paint_handle(&doc);
     let color = doc.composition().color;
     doc.artwork.paint.get_mut(h).unwrap().raster = raw_revision(color, &[layer_core::raster::RasterPlane::Color], 30);
-    let mut s = UiSession::new(Recorder::default(), doc, [800, 600], Platform::Gtk).unwrap();
+    let mut s = launched(UiSession::new(Recorder::default(), doc, [800, 600], Platform::Gtk).unwrap());
     s.frame(1, 1).unwrap();
     rename_bake(&mut s);
     s.engine.undo().unwrap();

@@ -6,7 +6,7 @@ pub(crate) struct Pipelines {
     dummy: wgpu::Buffer,
     texture: wgpu::TextureView,
     layout: wgpu::BindGroupLayout,
-    pipelines: Vec<Deferred<wgpu::ComputePipeline>>,
+    pub(crate) pipelines: Vec<Deferred<wgpu::ComputePipeline>>,
 
 }
 impl Pipelines {

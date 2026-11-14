@@ -42,12 +42,12 @@ export async function checkFrameRate({evaluate,settle}) {
       await settle();
       const idle=await inPage(waitMainQuiet,1300);
       assert.equal(idle.label,'Submitted FPS');
-      assert.match(idle.description,/submi/i);
-      assert.match(idle.description,/presentation|display/i);
+      assert.equal(idle.description,idle.tip.text);
+      assert.ok(idle.description.length>0);
       assert.equal(idle.value,'0',`${theme}: submitted frames expire at idle`);
-      await wait(`[...document.querySelectorAll('.renderer-stats .property-row')].some(row=>row.firstChild.textContent==='Submitted FPS'&&row.lastChild.textContent==='0')`);
+      await wait(`[...document.querySelectorAll('.renderer-stats > .meter-row')].some(row=>row.querySelector('.meter-label').textContent==='Submitted FPS'&&row.querySelector('.numeric').textContent==='0')`);
       await inPage(()=>{
-        fpsTest.row=[...document.querySelectorAll('.renderer-stats .property-row')].find(row=>row.firstChild.textContent.includes('FPS'));
+        fpsTest.row=[...document.querySelectorAll('.renderer-stats > .meter-row')].find(row=>row.querySelector('.meter-label').textContent.includes('FPS'));
         fpsTest.mutations=0;
         fpsTest.observer=new MutationObserver(records=>fpsTest.mutations+=records.length);
         fpsTest.observer.observe(fpsTest.row,{subtree:true,childList:true,attributes:true,characterData:true});
@@ -79,11 +79,11 @@ export async function checkFrameRate({evaluate,settle}) {
       await inPage(()=>{fpsTest.retiredRow=fpsTest.row;layerApp.app.suspend_gpu()});
       assert.equal(await inPage(()=>layerApp.app.gpu_ready()),false);
       assert.equal((await row()).value,'—','A retired surface does not retain its FPS observation');
-      await wait(`fpsTest.row.lastChild.textContent==='—'`);
+      await wait(`fpsTest.row.querySelector('.numeric').textContent==='—'`);
       const retired=await row();
       assert(await inPage(()=>fpsTest.row===fpsTest.retiredRow&&fpsTest.row.isConnected),'FPS source changes retain the existing row');
-      assert.equal(await inPage(()=>fpsTest.row.firstChild.textContent),retired.label,'The DOM label follows the current FPS source');
-      assert.equal(await inPage(()=>fpsTest.row.title),retired.description,'The DOM description follows the current FPS source');
+      assert.equal(await inPage(()=>fpsTest.row.querySelector('.meter-label').textContent),retired.label,'The DOM label follows the current FPS source');
+      assert.equal(await inPage(()=>fpsTest.row.getAttribute('aria-description')),retired.description,'The DOM description follows the current FPS source');
       console.log('Submitted FPS:',JSON.stringify({theme,idle,callbacks,moving}));
       if(theme==='light'){
         await inPage(()=>{fpsTest.context.getCurrentTexture=fpsTest.original;fpsTest.app.frame=fpsTest.originalFrame});

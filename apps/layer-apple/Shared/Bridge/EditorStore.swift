@@ -15,6 +15,16 @@ import UIKit
     @Published var displayDetails = DisplayDetails()
     @Published var displayHeadroom: Double = 1
     @Published var keyboardInset: CGFloat = 0
+    @Published var navigationInset: CGFloat = 0
+    var obscuredBottom: CGFloat { max(keyboardInset, navigationInset) }
+    var phoneVisibleArea: CGRect? {
+        let layout = snapshot["layout"], insets = state["phone"]["insets"], viewport = layout["viewport"]
+        guard !layout["phone"].isNull else { return nil }
+        return CGRect(x: insets[0].number, y: insets[1].number,
+            width: max(0, viewport[0].number - insets[0].number - insets[2].number),
+            height: max(0, viewport[1].number - insets[1].number - insets[3].number))
+            .intersection(CGRect(x: 0, y: 0, width: viewport[0].number, height: max(0, viewport[1].number - Double(obscuredBottom))))
+    }
     @Published var catalog = JSON()
     @Published private(set) var bootstrap = JSON()
     @Published private(set) var interfaceLanguage = ""
@@ -50,6 +60,12 @@ import UIKit
     @Published var storageFailure: String?
     @Published var storagePending = true
     @Published var canRetryStorage = false
+    private var hostSurfaces = Set<UUID>()
+    func hostSurface(_ id: UUID, shown: Bool) {
+        let wasOpen = !hostSurfaces.isEmpty
+        if shown { hostSurfaces.insert(id) } else { hostSurfaces.remove(id) }
+        if wasOpen != !hostSurfaces.isEmpty { native?.launchInteraction(!hostSurfaces.isEmpty) }
+    }
     private static let instances = NSHashTable<EditorStore>.weakObjects()
     func paperLibraryChanged() {
         guard let paperDirectory else { return }
@@ -356,10 +372,13 @@ import UIKit
         workspaces?.keepOpen()
         completion()
     }
-    func dispatch(_ action: JSON) {
-        guard !launchVisible || action["type"].string != "invoke" else { return }
+    func dispatch(_ action: JSON, moving: Bool = false, completion: (@MainActor (JSON?) -> Void)? = nil) {
+        guard !launchVisible || action["type"].string != "invoke", let native else { completion?(nil); return }
         if action["type"].string == "invoke" && action["command"].string == "search_commands" { reportCommandFocus() }
-        native?.submit(0, action); wake?()
+        let reply: (@Sendable (JSON?) -> Void)? = completion.map { completion in
+            { result in DispatchQueue.main.async { completion(result) } }
+        }
+        native.submit(0, action, moving: moving, completion: reply); wake?()
     }
     func commandFocus() -> String {
         #if os(macOS)
@@ -372,10 +391,12 @@ import UIKit
     private func reportCommandFocus() {
         native?.submit(0, JSON(["type": "command_search", "action": ["type": "focus", "focus": commandFocus()]]))
     }
-    func dispatch(_ value: [String: Any]) { dispatch(JSON(value)) }
-    func edit(_ value: [String: Any], completion: @escaping @MainActor (String?) -> Void) {
+    func dispatch(_ value: [String: Any], moving: Bool = false, completion: (@MainActor (JSON?) -> Void)? = nil) {
+        dispatch(JSON(value), moving: moving, completion: completion)
+    }
+    func edit(_ value: [String: Any], moving: Bool = false, completion: @escaping @MainActor (String?) -> Void) {
         guard let native else { completion("The canvas session is unavailable"); return }
-        native.edit(JSON(value)) { error in DispatchQueue.main.async { completion(error) } }
+        native.edit(JSON(value), moving: moving) { error in DispatchQueue.main.async { completion(error) } }
         wake?()
     }
     func invoke(_ command: String) { dispatch(["type": "invoke", "command": command]) }
@@ -424,6 +445,10 @@ import UIKit
     func query(_ value: [String: Any], completion: @escaping @MainActor (JSON) -> Void) {
         guard let native else { completion(JSON()); return }
         native.submit(2, JSON(value)) { result in DispatchQueue.main.async { completion(result ?? JSON()) } }
+    }
+    func toolbarStamp(_ context: JSON = JSON(), knownRequest: UInt64?, completion: @escaping @MainActor (NativeBrushStamp?) -> Void) {
+        guard let native else { completion(nil); return }
+        native.toolbarStamp(context, knownRequest: knownRequest) { result in DispatchQueue.main.async { completion(result) } }
     }
     func headerAction(_ value: [String: Any], completion: @escaping @MainActor () -> Void) {
         guard let native else { completion(); return }

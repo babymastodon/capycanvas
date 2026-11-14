@@ -169,8 +169,11 @@ struct SizeDialog::Impl:std::enable_shared_from_this<Impl>{
             AutomationProperties::SetName(box,str(choices.GetObjectAt(i),L"label"));
         }
     }
+    CanvasModelInputs inputs;bool wasBlocked=false;
     void apply(J const& snapshot,bool blocked){
-        data->adoptLocalization(snapshot);data->model=snapshot;data->state=object(snapshot,L"state");data->refreshPalette();
+        data->adoptLocalization(snapshot);data->model=snapshot;data->state=branch(snapshot,L"state");
+        bool blockedChanged=std::exchange(wasBlocked,blocked)!=blocked;auto presentation=data->presentation(inputs,blockedChanged);if(!presentation)return;
+        data->refreshPalette();
         auto size=view();
         if(!size.Size()){hide();return;}
         if(!showing&&blocked)return;

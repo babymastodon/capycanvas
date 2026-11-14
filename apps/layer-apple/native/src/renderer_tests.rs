@@ -240,3 +240,17 @@ fn launch_requires_a_submitted_ready_drawable_on_both_apple_hosts() {
         assert_eq!(app.request(7, Value::Null).unwrap()["launch"]["finished"], false);
     }
 }
+
+#[test]
+fn host_owned_surfaces_lift_the_launch_cover_until_they_close() {
+    for platform in [0, 1] {
+        let app = App::new(platform);
+        assert_eq!(app.full_snapshot()["launch"]["visible"], true);
+        assert!(app.try_request(2, &json!({"type": "launch_interaction"})).is_err());
+        for active in [true, false] {
+            assert_eq!(app.request(2, json!({"type": "launch_interaction", "active": active})), Some(Value::Null));
+            let launch = app.request(7, Value::Null).unwrap()["launch"].clone();
+            assert_eq!(launch, json!({"visible": !active, "finished": false, "frame": null}));
+        }
+    }
+}

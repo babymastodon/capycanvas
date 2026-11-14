@@ -573,19 +573,64 @@ test('physical browser device facts classify primary pointer and screen independ
   }
 });
 
-test('phone tile mouse hold arms dragging without opening the touch or pen menu',()=>{
+test('phone holds keep capture, open only touch or pen menus and consume release clicks',()=>{
   const phone=readFileSync(new URL('phone.js',import.meta.url),'utf8');
-  for(const pointerType of ['mouse','touch','pen']){
-    const listeners=new Map(),physical=new Set(),inputs=[],menus=[],actions=[];let timer,freed=0;
-    const target={},bar={free(){freed++;}},root={dataset:{},contains:node=>node===target,addEventListener(){},hasPointerCapture:id=>physical.has(id),setPointerCapture:id=>physical.add(id),releasePointerCapture:id=>physical.delete(id)};
-    const context={active:true,contact:null,suppressClick:false,preview:undefined,lifted:undefined,geometry:null,root,workspace:{getBoundingClientRect:()=>({x:0,y:0})},capyTarget:{contains:()=>false},parts:{'bar-tools':target},tools:new Map([[3,{root:target}]]),browserDragThreshold,
-      window:{addEventListener:(type,listener)=>listeners.set(type,listener)},setTimeout:callback=>{timer=callback;return 1;},clearTimeout(){},placePreview(){},send:action=>actions.push(action),customization:{showContext:(...args)=>menus.push(args)},
-      app:{touch_hold_ms:()=>500,phone_bar_contact:()=>bar,phone_bar_input:(_bar,input)=>{inputs.push(input);return {outcome:input.kind==='arm'?{kind:'held'}:{kind:'menu',value:3}};}}};
+  for(const pointerType of ['mouse','touch','pen'])for(const tile of [3,null])for(const ending of ['release','drag','cancel','escape','blur','capture']){
+    if(tile==null&&ending==='drag')continue;
+    const listeners=new Map(),rootListeners=new Map(),physical=new Set(),inputs=[],menus=[],dismissed=[],actions=[];
+    let timer,freed=0,dragging=false,menuOwner=null,previewCalls=0;
+    const target={},bar={free(){freed++;}},root={dataset:{},contains:node=>node===target,
+      addEventListener:(type,listener)=>rootListeners.set(type,listener),hasPointerCapture:id=>physical.has(id),
+      setPointerCapture:id=>physical.add(id),releasePointerCapture:id=>physical.delete(id)};
+    const context={active:true,contact:null,suppressClick:false,preview:undefined,lifted:undefined,geometry:null,root,
+      workspace:{getBoundingClientRect:()=>({x:0,y:0})},capyTarget:{contains:()=>false},parts:{'bar-tools':target},tools:new Map([[3,{root:target}]]),browserDragThreshold,
+      window:{addEventListener:(type,listener)=>listeners.set(type,listener)},setTimeout:callback=>{timer=callback;return 1;},clearTimeout(){},
+      placePreview(){previewCalls++;},send:action=>actions.push(action),customization:{
+        showContext(...args){assert.equal(physical.has(7),true);assert.equal(freed,0);menus.push(args);menuOwner=args[0];},
+        dismissContext(owner){dismissed.push(owner);assert.equal(owner,menuOwner);menuOwner=null;}
+      },app:{touch_hold_ms:()=>500,phone_bar_contact:()=>bar,phone_bar_input:(_bar,input)=>{
+        inputs.push(input);
+        if(input.kind==='arm')return {outcome:{kind:'menu',value:tile}};
+        if(input.kind==='motion'){dragging||=tile!=null&&input.past_slop;return {outcome:{kind:dragging?'dragging':tile!=null?'held':'pending'}};}
+        return {outcome:dragging?{kind:'move',value:{tile:3,before:9}}:{kind:'pending'}};
+      }}};
     runInNewContext(phone.slice(phone.indexOf('  function cancelContact()'),phone.indexOf('  function report()')),context);
-    const event={target,button:0,isPrimary:true,pointerId:7,pointerType,clientX:20,clientY:30};
+    const event={target,button:0,isPrimary:true,pointerId:7,pointerType,clientX:20,clientY:30,preventDefault(){},stopPropagation(){}};
+    const menuExpected=pointerType!=='mouse',label=`${pointerType}/${tile}/${ending}`;
     listeners.get('pointerdown')(event);timer();
-    assert.equal(inputs.at(-1).kind,'arm',`${pointerType} retains shared hold arming`);assert.equal(root.dataset.contact,'held');assert.equal(physical.has(7),true);assert.equal(menus.length,0);
+    assert.equal(inputs.at(-1).kind,'arm',label);assert.equal(root.dataset.contact,'held',label);
+    assert.equal(physical.has(7),true,label);assert.equal(freed,0,label);assert.equal(previewCalls,1,label);
+    assert.equal(menus.length,menuExpected?1:0,label);assert.equal(menuOwner,menuExpected?target:null,label);
+    if(menuExpected){assert.equal(menus[0][0],target);assert.equal(menus[0][2],target);assert.equal(menus[0][4],event);}
+    rootListeners.get('lostpointercapture')({...event,target:{}});
+    assert.equal(physical.has(7),true,'Transferring implicit child capture to the stable phone root keeps the contact');
+    listeners.get('pointermove')({...event,clientX:21});assert.equal(root.dataset.contact,'held',label);
+    if(ending==='drag'){
+      listeners.get('pointermove')({...event,clientX:80});
+      assert.equal(root.dataset.contact,'dragging',label);assert.equal(menuOwner,null,label);assert.equal(physical.has(7),true,label);assert.equal(freed,0,label);
+      listeners.get('pointermove')({...event,clientX:90});assert.equal(dismissed.length,menuExpected?1:0,'Only the first drag dismisses its held menu');
+    }else if(ending==='cancel')listeners.get('pointercancel')(event);
+    else if(ending==='escape')listeners.get('keydown')({...event,key:'Escape'});
+    else if(ending==='blur')listeners.get('blur')();
+    else if(ending==='capture'){physical.delete(7);rootListeners.get('lostpointercapture')({...event,target:root});}
     listeners.get('pointerup')(event);
-    assert.equal(menus.length,pointerType==='mouse'?0:1,`${pointerType} release menu admission`);assert.equal(freed,1);assert.equal(physical.size,0);assert.equal(root.dataset.contact,undefined);assert.deepEqual(actions,[]);
+    assert.equal(menus.length,menuExpected?1:0,'Release cannot open a second menu');
+    assert.equal(menuOwner,ending==='release'&&menuExpected?target:null,label);
+    assert.equal(freed,1,label);assert.equal(physical.size,0,label);assert.equal(root.dataset.contact,undefined,label);
+    assert.equal(actions.length,ending==='drag'?1:0,label);
+    if(ending==='drag')assert.equal(actions[0].kind,'move_tool',label);
+    let prevented=false,stopped=false;
+    rootListeners.get('click')({detail:1,preventDefault(){prevented=true;},stopImmediatePropagation(){stopped=true;}});
+    assert.equal(prevented,true,'The captured hold cannot synthesize a tile or menu-row activation');assert.equal(stopped,true);
   }
+});
+
+test('owned context dismissal leaves a replacement menu open',()=>{
+  const source=readFileSync(new URL('customization.js',import.meta.url),'utf8'),owner={},replacement={};
+  let cancelled=0,closed=0;
+  const context={context:{menuOwner:replacement},cancelHold(){cancelled++;},closeContext(){closed++;}};
+  runInNewContext(source.slice(source.indexOf('  function dismissContext('),source.indexOf('  workspace.addEventListener("pointerdown", (e) => {')),context);
+  context.dismissContext(owner);assert.equal(cancelled,0);assert.equal(closed,0);
+  context.context.menuOwner=owner;context.dismissContext(owner);assert.equal(cancelled,1);assert.equal(closed,1);
+  context.context.menuOwner=replacement;context.dismissContext();assert.equal(cancelled,2);assert.equal(closed,2);
 });

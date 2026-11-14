@@ -101,8 +101,11 @@ Write-Output 'Application menu popup provider failure: passed'
 $tokens=$null;$errors=$null
 $capy=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/CapyUia.ps1'),[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Shared snapshot helper did not parse'}
-$read=$capy.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Read-Snapshot'},$true)
-.([scriptblock]::Create($read.Extent.Text))
+foreach($name in 'Read-CapyFixtureContext','Read-Snapshot'){
+    $read=$capy.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+    if(!$read){throw "Missing actual snapshot helper: $name"}
+    .([scriptblock]::Create($read.Extent.Text))
+}
 $owned=Join-Path ([IO.Path]::GetTempPath()) ('capy-menu-'+[guid]::NewGuid().ToString('N'))
 $oldContext=$env:CAPY_FIXTURE_CONTEXT
 try{

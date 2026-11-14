@@ -6,6 +6,7 @@ use layer_render::{BackendError, FilterPreviewImage, FilterPreviewRequest, Frame
 thread_local! {
     pub(super) static LAYOUT_RESOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static COMMAND_REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static FILTER_DOCUMENT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Protocol recorder only: no canvas storage or software rasterization.
@@ -22,7 +23,7 @@ pub(crate) struct Recorder {
     pub(crate) refining: bool,
     pub(crate) shader_inputs: usize,
     pub(crate) shader_idle: (bool, bool),
-    pub(crate) selection_brush_preparations: usize,
+    pub(crate) contexts: Vec<layer_render::PreparationContext>,
     pub(crate) color: layer_core::color::DocumentColor,
     pub(crate) prepared_color: Option<layer_core::color::DocumentColor>,
     pub(crate) tiled_sources: bool,
@@ -110,7 +111,10 @@ impl CanvasRenderer for Recorder {
     fn next_frame(&self) -> layer_render::FrameDemand { if self.refining || self.settling { layer_render::FrameDemand::Work } else { layer_render::FrameDemand::Wait } }
     fn shader_input(&mut self) { self.shader_inputs += 1; }
     fn shader_idle(&mut self, idle: bool, speculative_idle: bool) { self.shader_idle = (idle, speculative_idle); }
-    fn prepare_context(&mut self, _document: &Document, _brush: &layer_core::BrushSnapshot, context: layer_render::PreparationContext) { self.selection_brush_preparations += usize::from(context.selection); }
+    fn preparation_key(&self, document: &Document) -> Option<std::sync::Arc<dyn layer_render::PreparationKey>> {
+        Some(std::sync::Arc::new(layer_render_wgpu::ShaderDocument::new(document)))
+    }
+    fn prepare_context(&mut self, _document: &Document, _brush: &layer_core::BrushSnapshot, context: layer_render::PreparationContext) { self.contexts.push(context); }
     fn can_submit(&self) -> bool { !self.settling }
     fn raster_dependencies_ready(&mut self, _packet: FramePacket<'_>, _preview: Option<&layer_render::TransformPreview>) -> bool {
         !self.raster_dependencies_blocked
@@ -328,8 +332,18 @@ pub(crate) fn session(platform: Platform) -> UiSession<Recorder> {
     )
     .unwrap();
     session.state.workspace = WorkspaceState::default();
+    session = launched(session);
     session.refresh_panel_copy(false);
     session.dispatch(UiAction::SelectBrush { id: DefaultBrushPreset::GPen as u32 }).unwrap();
+    session
+}
+pub(crate) fn launched<R: CanvasRenderer>(mut session: UiSession<R>) -> UiSession<R> {
+    session.launch_finished = true;
+    session
+}
+pub(crate) fn launching_session(platform: Platform) -> UiSession<Recorder> {
+    let mut session = session(platform);
+    session.launch_finished = false;
     session
 }
 #[derive(Clone, Copy)]

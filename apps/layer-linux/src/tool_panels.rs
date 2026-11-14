@@ -652,6 +652,7 @@ pub fn size_grid(workspace: &Rc<Workspace>) -> (adw::WrapBox, Vec<(f32, gtk::But
         .child_spacing(style.gap() as i32)
         .line_spacing(style.gap() as i32)
         .build();
+    let widths = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
     let buttons = layer_ui::brush_size_presets().map(|preset| {
         let button = workspace.action_button("", UiAction::SetBrushSize { value: preset.value });
         button.add_css_class("flat");
@@ -668,16 +669,21 @@ pub fn size_grid(workspace: &Rc<Workspace>) -> (adw::WrapBox, Vec<(f32, gtk::But
                 fade.add_color_stop_rgba(position, color.red() as f64, color.green() as f64, color.blue() as f64, color.alpha() as f64 * alpha);
             }
             let _ = cr.set_source(&fade);
-            cr.arc(width as f64 * 0.5, width as f64 * 0.5, preset.preview_diameter as f64 * 0.5, 0., std::f64::consts::TAU);
+            cr.arc(width as f64 * 0.5, layer_ui::BRUSH_SIZE_TILE[0] as f64 * 0.5, preset.preview_diameter as f64 * 0.5, 0., std::f64::consts::TAU);
             let _ = cr.fill();
         });
         preview.set_child(Some(&dot));
         let label = gtk::Label::new(Some(&preset.label));
         label.add_css_class("size-label");
         label.set_valign(gtk::Align::End);
-        label.set_margin_bottom(2);
+        label.set_margin_start(layer_ui::BRUSH_SIZE_LABEL_INSET as i32);
+        label.set_margin_end(layer_ui::BRUSH_SIZE_LABEL_INSET as i32);
+        label.set_margin_top(layer_ui::BRUSH_SIZE_LABEL_TOP as i32);
+        label.set_margin_bottom(layer_ui::BRUSH_SIZE_LABEL_INSET as i32);
         label.set_can_target(false);
         preview.add_overlay(&label);
+        preview.set_measure_overlay(&label, true);
+        widths.add_widget(&preview);
         button.set_child(Some(&preview));
         grid.append(&button);
         (preset.value, button)

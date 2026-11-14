@@ -531,6 +531,7 @@ impl<R:CanvasRenderer> UiSession<R> {
     }
     pub(in crate::session) fn advance_fill_gesture(&mut self,now_ns:u64)->Result<u32,String> {
         self.region_tools.now_ns=now_ns;
+        let mut changed=0;
         self.restore_fill_cancel();
         if self.region_tools.reveal.is_none(){self.engine.set_fill_reveal(None);}
         if self.region_tools.gesture.is_none() && self.region_tools.preview_active {
@@ -552,11 +553,11 @@ impl<R:CanvasRenderer> UiSession<R> {
             let progress=if prepared || reveal.started.is_some() {
                 let started=*reveal.started.get_or_insert(now_ns);(now_ns.saturating_sub(started) as f64/reveal.duration as f64).min(1.) as f32
             }else{0.};
-            if progress==1. {self.finish_fill_reveal();}else{
+            if progress==1. {self.finish_fill_reveal();changed|=regions::COMMANDS;}else{
                 self.engine.set_fill_reveal(Some(layer_render::FillReveal {transaction:reveal.transaction,center:reveal.center,radius:reveal.radius*(1.-(1.-progress).powi(3))}));
             }
         }
-        self.publish_fill_gesture()
+        Ok(changed|self.publish_fill_gesture()?)
     }
 }
 fn seal_segments(seal:&layer_render::RegionSeal)->impl Iterator<Item=[[f32;2];2]> {

@@ -17,6 +17,8 @@ mod imp {
         pub(super) textures: RefCell<CornerTextures>,
         pub dragged: Cell<Option<graphene::Rect>>,
         pub(super) hover_path: RefCell<Option<([u32; 6], gsk::Path)>>,
+        pub(super) phase: Cell<Option<[u32; 4]>>,
+        pub(super) layout: RefCell<Option<(gdk::FrameClock, glib::SignalHandlerId)>>,
     }
     #[glib::object_subclass]
     impl ObjectSubclass for Strip {
@@ -35,6 +37,25 @@ mod imp {
         }
     }
     impl WidgetImpl for Strip {
+        fn realize(&self) {
+            self.parent_realize();
+            let obj = self.obj();
+            if let Some(clock) = obj.frame_clock() {
+                let strip = obj.downgrade();
+                let id = clock.connect_local("layout", true, move |_| {
+                    if let Some(strip) = strip.upgrade() && strip.imp().phase.get()
+                        .is_some_and(|phase| phase != crate::squircle::PixelGrid::for_widget(strip.upcast_ref()).key()) {
+                        strip.queue_draw();
+                    }
+                    None
+                });
+                self.layout.replace(Some((clock, id)));
+            }
+        }
+        fn unrealize(&self) {
+            if let Some((clock, id)) = self.layout.take() { clock.disconnect(id); }
+            self.parent_unrealize();
+        }
         fn measure(&self, axis: gtk::Orientation, size: i32) -> (i32, i32, i32, i32) {
             let mut min = 0;
             let mut natural = 0;
@@ -75,6 +96,7 @@ mod imp {
             let buttons = self.buttons.borrow();
             let bounds = gtk::graphene::Rect::new(0., 0., obj.width() as f32, obj.height() as f32);
             let grid = crate::squircle::PixelGrid::for_widget(obj.upcast_ref());
+            self.phase.set(Some(grid.key()));
             let Some([strip, foot]) = self.tints.borrow().clone() else { return };
             let selected = selected_visible(&buttons);
             let active = obj.active_bounds();

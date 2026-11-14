@@ -129,13 +129,13 @@ pub(crate) fn depth_label(depth: SampleDepth, localization: &Localizer) -> Arc<s
 pub struct NewDocumentSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paper: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::lenient::vec")]
     pub setups: Vec<crate::SavedSetup>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::lenient::vec")]
     pub recent: Vec<crate::PresetKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<crate::DrawingSetup>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::lenient::optional_vec")]
     pub paper_colors: Option<Vec<layer_core::color::RgbColor>>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

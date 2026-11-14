@@ -15,7 +15,7 @@ rm -rf "$output"
 mkdir -p "$output"
 touch "$output/.capy-flatpak-package"
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
-url=${CAPY_FLATPAK_REPO_URL:-https://capyatelier.github.io/capycanvas/flatpak}
+url=${CAPY_FLATPAK_REPO_URL:-https://flatpak.capycanvas.art}
 key="$state/release-key.gpg"
 gpg --batch --yes --dearmor --output "$key" packaging/flatpak/release-key.asc
 sign=()
@@ -41,15 +41,6 @@ flatpak build-update-repo "${sign[@]}" --title='Capy Canvas' --default-branch=st
 flatpak build-bundle "${origin[@]}" --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
     "$state/repository" "$output/capycanvas-$version-linux-x86_64.flatpak" art.capycanvas.CapyCanvas stable
 if [[ ${SIGNED:-false} == true ]]; then
-    python3 - "$key" "$url" "$output/capycanvas.flatpakref" <<'PY'
-import base64, pathlib, sys
-key, url, output = sys.argv[1:]
-pathlib.Path(output).write_text('\n'.join([
-    '[Flatpak Ref]', 'Name=art.capycanvas.CapyCanvas', 'Branch=stable',
-    'Title=Capy Canvas', 'IsRuntime=false', 'SuggestRemoteName=capycanvas',
-    'Url=' + url, 'RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo',
-    'GPGKey=' + base64.b64encode(pathlib.Path(key).read_bytes()).decode(), '',
-]))
-PY
+    python3 packaging/flatpak/flatpakref.py "$key" "$url" "$output/capycanvas.flatpakref"
     tar --zstd -cf "$output/capycanvas-$version-flatpak-repository.tar.zst" -C "$state" repository
 fi

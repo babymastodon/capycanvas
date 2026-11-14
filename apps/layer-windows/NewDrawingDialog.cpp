@@ -181,7 +181,7 @@ struct NewDrawingDialog::Impl:std::enable_shared_from_this<Impl>{
 
     void open(J const& envelope){
         request=num(envelope,L"id");
-        auto file=object(object(data->model,L"state"),L"document_file");
+        auto file=object(branch(data->model,L"state"),L"document_file");
         epoch=num(file,L"epoch");revision=num(file,L"revision");
         HWND handle=nullptr;check_hresult(window.as<IWindowNative>()->get_WindowHandle(&handle));
         if(IsIconic(handle))ShowWindow(handle,SW_RESTORE);
@@ -192,8 +192,8 @@ struct NewDrawingDialog::Impl:std::enable_shared_from_this<Impl>{
     }
     void apply(){
         if(!waiting)return;
-        auto state=object(data->model,L"state");
-        auto view=state.GetNamedValue(L"new_drawing",JsonValue::CreateNullValue());
+        auto state=branch(data->model,L"state");
+        auto view=named(state,L"new_drawing");
         bool pending=false;for(auto value:array(state,L"requests"))pending|=num(value.GetObject(),L"id")==request;
         if(view.ValueType()==JsonValueType::Object){
             seen=true;
@@ -306,7 +306,7 @@ struct NewDrawingDialog::Impl:std::enable_shared_from_this<Impl>{
             self->arrange(size.Width>0&&size.Width<NarrowWidth);
         }});
         resized=xaml.Changed(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock())fitPicker(self->root);});
-        dialog.Opened([weak](auto&&,auto&&){if(auto self=weak.lock()){fitPicker(self->root);self->name.Focus(FocusState::Programmatic);}});
+        dialog.Opened([weak](auto&&,auto&&){if(auto self=weak.lock())fitPicker(self->root);});
         dialog.Closing([weak](auto&&,ContentDialogClosingEventArgs const& e){if(auto self=weak.lock()){
             if(self->programmatic||self->stopping)return;
             e.Cancel(true);
@@ -330,7 +330,7 @@ struct NewDrawingDialog::Impl:std::enable_shared_from_this<Impl>{
 
         nameLabel=caption();
         input(name);name.HorizontalAlignment(HorizontalAlignment::Stretch);name.MaxLength(256);name.Padding({10,0,10,0});entryBaseline(name);
-        AutomationProperties::SetAutomationId(name,L"new-drawing-name");inheritLanguage(name,data);
+        AutomationProperties::SetAutomationId(name,L"new-drawing-name");inheritLanguage(name,data);name.TabIndex(0);
         name.TextChanging([weak](auto&&,auto&&){if(auto self=weak.lock();self&&!self->data->updating&&self->name.Text()!=str(self->shown,L"name"))self->send(O({{L"op",S(L"name")},{L"text",S(self->name.Text())}}));});
         name.KeyDown([weak](auto&&,KeyRoutedEventArgs const& e){if(auto self=weak.lock();self&&!composingKey(e)&&e.Key()==winrt::Windows::System::VirtualKey::Enter){e.Handled(true);self->createDrawing();}});
         Grid nameRow;nameRow.ColumnSpacing(RowGap);columns(nameRow,{autoWidth(),star()});column(nameRow,nameLabel,0);column(nameRow,name,1);
@@ -793,7 +793,7 @@ Grid searchField;search.Padding({34,0,10,0});entryBaseline(search);searchField.C
         auto height=root.ActualHeight();
         if(target.motion){target.motion.Stop();target.motion=nullptr;}
         if(visible){target.root.Visibility(Visibility::Visible);if(height>0)target.shift.Y(height);}
-        if(!winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()||height<=0){settle(target);return;}
+        if(!SystemUiSettings().AnimationsEnabled()||height<=0){settle(target);return;}
         Animation::DoubleAnimation motion;motion.From(target.shift.Y());motion.To(visible?0:height);motion.Duration(DurationHelper::FromTimeSpan(std::chrono::milliseconds(250)));
         Animation::CubicEase ease;ease.EasingMode(Animation::EasingMode::EaseOut);motion.EasingFunction(ease);
         target.motion=Animation::Storyboard();Animation::Storyboard::SetTarget(motion,target.shift);Animation::Storyboard::SetTargetProperty(motion,L"Y");target.motion.Children().Append(motion);

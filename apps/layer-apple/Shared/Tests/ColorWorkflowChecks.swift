@@ -37,10 +37,13 @@ extension XCTestCase {
         app.cells.matching(NSPredicate(format: "identifier == %@ OR identifier == %@",
             provider + ", Container", provider + ", Folder")).firstMatch
     }
-    @MainActor func fileProviderFile(_ name: String, in app: XCUIApplication) -> XCUIElement {
+    @MainActor func revealFileProviderFile(_ name: String, in app: XCUIApplication) -> XCUIElement {
         let file = URL(fileURLWithPath: name)
-        return app.cells.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@",
+        let cell = app.cells.matching(NSPredicate(format: "identifier == %@ OR identifier BEGINSWITH %@",
             file.deletingPathExtension().lastPathComponent + ", " + file.pathExtension, name + ",")).firstMatch
+        XCTAssertTrue(cell.waitForExistence(timeout: 15))
+        revealEditorControl(cell, in: app.collectionViews["File View"].firstMatch)
+        return cell.images.firstMatch
     }
     @MainActor func submitFileProviderSelection(in app: XCUIApplication) {
         let picker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
@@ -78,11 +81,7 @@ extension XCTestCase {
         let hide = keyboard.buttons["Hide keyboard"]
         let numberPad = app.popovers.containing(.key, identifier: "0").firstMatch
         func keyboardShown() -> Bool { keyboard.exists && keyboard.frame.intersects(window.frame) }
-        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            keyboardShown() || numberPad.exists
-        }, object: app)
-        let ready = XCTWaiter.wait(for: [visible], timeout: 5)
-        guard ready == .completed else { return }
+        guard keyboardShown() || numberPad.exists else { return }
         let pads: [Pad]
         do { pads = numberPad.exists ? numberPads(try app.snapshot()) : [] }
         catch { XCTFail("Cannot inspect the editor keyboard: \(error)"); return }
@@ -120,7 +119,7 @@ extension XCTestCase {
             let result = XCTWaiter.wait(for: [absent], timeout: 5)
             guard result == .completed else { fail("The number pad must close while its editor fields remain visible"); return }
         }
-        if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in keyboardShown() }, object: app)], timeout: 5) == .completed {
+        if keyboardShown() {
             let hasHide = UIDevice.current.userInterfaceIdiom == .phone ? hide.exists : hide.waitForExistence(timeout: 15)
             if hasHide && hide.isHittable { hide.clickOrTap() }
             else {
@@ -148,8 +147,8 @@ extension XCTestCase {
         }
     }
     @MainActor func editorTextMatches(_ field: XCUIElement, _ expected: String) -> Bool {
-        guard let actual = field.value as? String else { return false }
-        return actual == expected || (expected.isEmpty && actual == field.placeholderValue)
+        let actual = field.value as? String
+        return actual == expected || (expected.isEmpty && (actual == nil || actual == field.placeholderValue))
     }
     #endif
     @MainActor func replaceEditorText(_ field: XCUIElement, with value: String, in app: XCUIApplication) {
@@ -210,9 +209,6 @@ extension XCTestCase {
         XCTAssertTrue(select.waitForNonExistence(timeout: 10))
         attachEditor(in: app, name: "sdr-new-options")
         workspaceActivate(create)
-        #if os(iOS)
-        if !create.waitForNonExistence(timeout: 2) { workspaceActivate(create) }
-        #endif
         XCTAssertTrue(create.waitForNonExistence(timeout: 30))
         let title = editorDocumentTitle(in: app)
         expectation(for: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "79 × 53", "79 × 53"), evaluatedWith: title)

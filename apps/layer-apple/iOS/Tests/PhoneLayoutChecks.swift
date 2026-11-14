@@ -3,12 +3,51 @@ import UIKit
 
 @MainActor var phoneDrawingFixtures: [String: [String: Any]] = [:]
 
+private enum PhoneMenuGroup {
+    case fileToLayer, selectToWorkspaces, search
+    var menus: [String] {
+        switch self {
+        case .fileToLayer: ["file", "edit", "image", "layer"]
+        case .selectToWorkspaces: ["select", "filter", "view", "window"]
+        case .search: []
+        }
+    }
+}
+
 extension EditorLaunchTests {
     @MainActor func testPhoneLayoutLight() throws { try checkPhoneLayout(theme: "light") }
     @MainActor func testPhoneLayoutDark() throws { try checkPhoneLayout(theme: "dark") }
 
-    @MainActor func testPhoneMenusLight() throws { try checkPhoneMenus(theme: "light") }
-    @MainActor func testPhoneMenusDark() throws { try checkPhoneMenus(theme: "dark") }
+    @MainActor func testPhoneMenusLight() throws { try checkPhoneMenus(theme: "light", orientation: .portrait, swapped: false, group: .fileToLayer) }
+    @MainActor func testPhoneMenusDark() throws { try checkPhoneMenus(theme: "dark", orientation: .portrait, swapped: false, group: .fileToLayer) }
+    @MainActor func testPhoneMenusSwappedLight() throws { try checkPhoneMenus(theme: "light", orientation: .portrait, swapped: true, group: .fileToLayer) }
+    @MainActor func testPhoneMenusSwappedDark() throws { try checkPhoneMenus(theme: "dark", orientation: .portrait, swapped: true, group: .fileToLayer) }
+    @MainActor func testPhoneMenusSelectionLight() throws { try checkPhoneMenus(theme: "light", orientation: .portrait, swapped: false, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusSelectionDark() throws { try checkPhoneMenus(theme: "dark", orientation: .portrait, swapped: false, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusSelectionSwappedLight() throws { try checkPhoneMenus(theme: "light", orientation: .portrait, swapped: true, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusSelectionSwappedDark() throws { try checkPhoneMenus(theme: "dark", orientation: .portrait, swapped: true, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusSearchLight() throws { try checkPhoneMenus(theme: "light", orientation: .portrait, swapped: false, group: .search) }
+    @MainActor func testPhoneMenusSearchDark() throws { try checkPhoneMenus(theme: "dark", orientation: .portrait, swapped: false, group: .search) }
+    @MainActor func testPhoneMenusLandscapeLeftLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeLeft, swapped: false, group: .fileToLayer) }
+    @MainActor func testPhoneMenusLandscapeLeftDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeLeft, swapped: false, group: .fileToLayer) }
+    @MainActor func testPhoneMenusLandscapeLeftSwappedLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeLeft, swapped: true, group: .fileToLayer) }
+    @MainActor func testPhoneMenusLandscapeLeftSwappedDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeLeft, swapped: true, group: .fileToLayer) }
+    @MainActor func testPhoneMenusLandscapeLeftSelectionLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeLeft, swapped: false, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusLandscapeLeftSelectionDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeLeft, swapped: false, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusLandscapeLeftSelectionSwappedLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeLeft, swapped: true, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusLandscapeLeftSelectionSwappedDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeLeft, swapped: true, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusLandscapeLeftSearchLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeLeft, swapped: false, group: .search) }
+    @MainActor func testPhoneMenusLandscapeLeftSearchDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeLeft, swapped: false, group: .search) }
+    @MainActor func testPhoneMenusLandscapeRightLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeRight, swapped: false, group: .fileToLayer) }
+    @MainActor func testPhoneMenusLandscapeRightDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeRight, swapped: false, group: .fileToLayer) }
+    @MainActor func testPhoneMenusLandscapeRightSwappedLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeRight, swapped: true, group: .fileToLayer) }
+    @MainActor func testPhoneMenusLandscapeRightSwappedDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeRight, swapped: true, group: .fileToLayer) }
+    @MainActor func testPhoneMenusLandscapeRightSelectionLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeRight, swapped: false, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusLandscapeRightSelectionDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeRight, swapped: false, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusLandscapeRightSelectionSwappedLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeRight, swapped: true, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusLandscapeRightSelectionSwappedDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeRight, swapped: true, group: .selectToWorkspaces) }
+    @MainActor func testPhoneMenusLandscapeRightSearchLight() throws { try checkPhoneMenus(theme: "light", orientation: .landscapeRight, swapped: false, group: .search) }
+    @MainActor func testPhoneMenusLandscapeRightSearchDark() throws { try checkPhoneMenus(theme: "dark", orientation: .landscapeRight, swapped: false, group: .search) }
 
     @MainActor func testPhoneFrameLight() throws { try checkPhoneFrame(theme: "light") }
     @MainActor func testPhoneFrameDark() throws { try checkPhoneFrame(theme: "dark") }
@@ -73,6 +112,7 @@ extension EditorLaunchTests {
             canvas.pinch(withScale: 1.6, velocity: 1)
             expectation(for: NSPredicate { _, _ in self.editorPaper(in: app).frame != paper }, evaluatedWith: app)
             waitForExpectations(timeout: 15)
+            phoneAlertCommand("View", label: "Reset rotation", in: app)
             phoneAlertCommand("View", label: "Fit canvas", in: app)
             expectation(for: NSPredicate { _, _ in self.editorPaper(in: app).frame == paper }, evaluatedWith: app)
             waitForExpectations(timeout: 15)
@@ -184,7 +224,7 @@ extension EditorLaunchTests {
     }
 
     @MainActor var phoneCaptureOrientations: [UIDeviceOrientation] {
-        requestedPhoneOrientation.map { [$0] } ?? [.portrait, .landscapeLeft]
+        requestedPhoneOrientation.map { [$0] } ?? [.portrait, .landscapeLeft, .landscapeRight]
     }
 
     @MainActor private func checkPhoneFrame(theme: String) throws {
@@ -226,15 +266,13 @@ extension EditorLaunchTests {
         }
     }
 
-    @MainActor private func checkPhoneMenus(theme: String) throws {
-        for orientation in phoneCaptureOrientations {
-            requestedPhoneOrientation = orientation
-            let actions: [[String: Any]] = [["type": "set_theme", "theme": theme],
-                ["type": "workspace_manager", "command": ["type": "switch", "id": "builtin:workspace:painter"]]]
-            let app = try phoneFrameApplication(theme: theme)
-            try visitPhoneMenu(in: app, theme: theme, fixture: actions)
-            app.terminate()
-        }
+    @MainActor private func checkPhoneMenus(theme: String, orientation: UIDeviceOrientation, swapped: Bool, group: PhoneMenuGroup) throws {
+        requestedPhoneOrientation = requestedPhoneOrientation ?? orientation
+        let actions: [[String: Any]] = [["type": "set_theme", "theme": theme],
+            ["type": "workspace_manager", "command": ["type": "switch", "id": "builtin:workspace:painter"]]]
+        let app = try phoneFrameApplication(theme: theme)
+        defer { app.terminate() }
+        try visitPhoneMenu(in: app, theme: theme, fixture: actions, swapped: swapped, group: group)
     }
 
     @MainActor func phoneSetSwapped(_ swapped: Bool, in app: XCUIApplication) {
@@ -272,7 +310,7 @@ extension EditorLaunchTests {
         }
     }
 
-    @MainActor private func visitPhoneMenu(in app: XCUIApplication, theme: String, fixture: [[String: Any]]) throws {
+    @MainActor private func visitPhoneMenu(in app: XCUIApplication, theme: String, fixture: [[String: Any]], swapped: Bool, group: PhoneMenuGroup) throws {
         let menu = app.descendants(matching: .any)["phone-menu"].firstMatch
         let scroll = app.descendants(matching: .any)["phone-menu-scroll"].firstMatch
         func open() {
@@ -289,10 +327,10 @@ extension EditorLaunchTests {
         if finger.isSelected { workspaceActivate(finger) }
         expectation(for: NSPredicate(format: "selected == NO"), evaluatedWith: finger); waitForExpectations(timeout: 10)
         workspaceActivate(app.buttons["phone-capy"])
-        var visited = Set<String>()
-        for swapped in [false, true] {
+        if group != .search {
+            var visited = Set<String>()
+            if swapped { phoneSetSwapped(true, in: app) }
             open()
-            if swapped { workspaceActivate(app.buttons["phone-swap"]) }
             let bounds = menu.frame
             func visit(_ id: PhoneCaptureID, labels: [String]) throws {
                 guard let title = id.menu?["title"] as? String else { return XCTFail("A menu route needs its published title") }
@@ -302,12 +340,25 @@ extension EditorLaunchTests {
                 XCTAssertEqual(menu.frame.width, bounds.width, accuracy: 1)
                 XCTAssertEqual(menu.frame.height, bounds.height, accuracy: 1)
                 visited.insert(id.state)
-                phoneCapture(in: app, id: id, theme: theme, fixture: fixture, extra: ["route_labels": labels, "swapped": swapped])
+                if !labels.isEmpty || group == .fileToLayer {
+                    phoneCapture(in: app, id: id, theme: theme, fixture: fixture, extra: ["route_labels": labels, "swapped": swapped])
+                }
                 let children = menu.descendants(matching: .any).matching(identifier: "phone-menu-submenu").allElementsBoundByIndex
                     .map { $0.buttons.firstMatch }.filter { $0.exists && $0.isEnabled }.map { ($0.identifier, $0.label) }
                 for (identifier, label) in children {
                     let row = app.buttons[identifier].firstMatch
                     guard let next = phoneMenuChildID(parent: id, row: row, swapped: swapped) else { return }
+                    if labels.isEmpty {
+                        guard let route = next.menu?["route"] as? [String: Any], let page = route["page"] as? [String: Any],
+                            let kind = page["kind"] as? String else { return XCTFail("A root menu needs its published page") }
+                        let included: Bool
+                        switch kind {
+                        case "application": included = group.menus.contains(page["menu"] as? String ?? "")
+                        case "drawings", "workspaces": included = group == .selectToWorkspaces
+                        default: return XCTFail("The menu groups must cover root page \(kind)")
+                        }
+                        if !included { continue }
+                    }
                     reveal(row); workspaceActivate(row)
                     try visit(next, labels: labels + [label])
                     let back = app.buttons["phone-menu-back"]
@@ -317,7 +368,7 @@ extension EditorLaunchTests {
             }
             guard let root = phoneMenuID(route: ["path": [[Int]]()], swapped: swapped) else { return }
             try visit(root, labels: [])
-            if !swapped {
+            if !swapped && group == .selectToWorkspaces {
                 let view = phoneMenuRow("View", in: app)
                 guard let viewTitle = phoneMenuTitle(for: view) else { return }
                 reveal(view); workspaceActivate(view)
@@ -325,7 +376,8 @@ extension EditorLaunchTests {
                 let back = app.buttons["phone-menu-back"], title = back.label
                 let first = menu.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "phone-menu-row-")).firstMatch
                 let before = first.frame
-                scroll.swipeUp(velocity: .slow)
+                let start = try XCTUnwrap(workspacePoint(scroll))
+                start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -scroll.frame.height / 3)), withVelocity: .slow, thenHoldForDuration: 0.1)
                 XCTAssertTrue(menu.exists)
                 XCTAssertEqual(back.label, title)
                 XCTAssertTrue(!first.isHittable || first.frame.minY < before.minY)
@@ -353,36 +405,53 @@ extension EditorLaunchTests {
             XCTAssertGreaterThan(bridge.frame.width, 0)
             XCTAssertGreaterThan(bridge.frame.height, 0)
             workspacePoint(bridge)?.tap()
-            let finger = app.buttons["phone-finger"], original = finger.isSelected
+            let original = finger.isSelected
             for selected in [!original, original] {
                 workspaceActivate(finger)
                 expectation(for: NSPredicate(format: "selected == %@", NSNumber(value: selected)), evaluatedWith: finger)
                 waitForExpectations(timeout: 10)
                 XCTAssertTrue(menu.exists)
             }
-            phoneCapture(in: app, id: phoneCaptureID("menu", "menu-strip-toggles" + (swapped ? "-swapped" : "")), theme: theme, fixture: fixture, extra: ["swapped": swapped])
+            if group == .fileToLayer {
+                phoneCapture(in: app, id: phoneCaptureID("menu", "menu-strip-toggles" + (swapped ? "-swapped" : "")), theme: theme, fixture: fixture, extra: ["swapped": swapped])
+            }
             workspaceActivate(app.buttons["phone-capy"])
             XCTAssertTrue(menu.waitForNonExistence(timeout: 10))
+            if group == .selectToWorkspaces {
+                for kind in ["drawings", "workspaces"] {
+                    XCTAssertTrue(visited.contains(phoneMenuID(route: ["path": [[Int]](), "page": ["kind": kind]], swapped: swapped)?.state ?? ""))
+                }
+            }
+            for name in group.menus {
+                XCTAssertTrue(visited.contains(phoneMenuID(route: ["path": [[Int]](), "page": ["kind": "application", "menu": name]], swapped: swapped)?.state ?? ""), "The shared menu must expose \(name)")
+            }
+            return
         }
-        XCTAssertTrue(visited.contains(phoneMenuID(route: ["path": [[Int]](), "page": ["kind": "drawings"]], swapped: false)?.state ?? ""))
-        for name in ["file", "edit", "image", "layer", "select", "filter", "view", "window"] {
-            XCTAssertTrue(visited.contains(phoneMenuID(route: ["path": [[Int]](), "page": ["kind": "application", "menu": name]], swapped: false)?.state ?? ""), "The shared menu must expose \(name)")
-        }
-        open()
-        workspaceActivate(app.buttons["phone-swap"])
-        workspaceActivate(app.buttons["phone-capy"])
         phoneAlertCommand("Layer", label: "New layer", in: app)
         open()
         workspaceActivate(app.buttons["phone-search"])
         XCTAssertTrue(menu.waitForNonExistence(timeout: 10))
         let search = app.textFields["command-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "hasKeyboardFocus == YES"), evaluatedWith: search)
+        waitForExpectations(timeout: 10)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["command-result-0"].label.hasPrefix("Undo"))
         phoneCapture(in: app, id: phoneCaptureID("pages", "command-search"), theme: theme, fixture: fixture)
+        search.typeText("lay\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10), "Keyboard Search hides the keyboard")
+        XCTAssertEqual(search.value as? String, "lay", "Keyboard Search keeps the query instead of running a command")
+        XCTAssertTrue(app.buttons["command-result-0"].exists)
         workspaceActivate(app.buttons["command-search-close"])
         open(); workspaceActivate(app.buttons["phone-preferences"])
         XCTAssertTrue(menu.waitForNonExistence(timeout: 10))
         XCTAssertTrue(app.buttons["settings-done"].waitForExistence(timeout: 10))
+        let settingsSearch = app.textFields["settings-search"]
+        replaceEditorText(settingsSearch, with: "brush", in: app)
+        settingsSearch.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        XCTAssertEqual(settingsSearch.value as? String, "brush")
+        XCTAssertTrue(app.buttons["settings-done"].isHittable)
         workspaceActivate(app.buttons["settings-done"])
         open(); workspaceActivate(app.buttons["phone-zen"])
         XCTAssertTrue(menu.waitForNonExistence(timeout: 10))
@@ -394,21 +463,104 @@ extension EditorLaunchTests {
     }
 
     @MainActor private func visitPhonePages(in app: XCUIApplication, theme: String, fixture: [[String: Any]]) throws {
+        let bars = ["phone-bar-0", "phone-bar-1"].map { app.descendants(matching: .any)[$0].firstMatch.frame }
+        let viewport = app.windows.firstMatch.frame
+        let orientation = XCUIDevice.shared.orientation
+        for bar in bars {
+            XCTAssertTrue(viewport.contains(bar))
+            if orientation == .portrait {
+                XCTAssertEqual(bar.minX - viewport.minX, 8, accuracy: 1)
+                XCTAssertEqual(viewport.maxX - bar.maxX, 8, accuracy: 1)
+            } else {
+                XCTAssertEqual(bar.minY - viewport.minY, 8, accuracy: 1)
+                XCTAssertEqual(viewport.maxY - bar.maxY, 8, accuracy: 1)
+            }
+        }
+        if orientation == .portrait {
+            XCTAssertEqual(viewport.maxY - bars.map(\.maxY).max()!, 8, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(bars.map(\.minY).min()! - viewport.minY, 8)
+        } else if orientation == .landscapeLeft {
+            XCTAssertEqual(viewport.maxX - bars.map(\.maxX).max()!, 8, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(bars.map(\.minX).min()! - viewport.minX, 8)
+        } else {
+            XCTAssertEqual(bars.map(\.minX).min()! - viewport.minX, 8, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(viewport.maxX - bars.map(\.maxX).max()!, 8)
+        }
+        func unchangedBars() {
+            for (index, before) in bars.enumerated() {
+                let bar = app.descendants(matching: .any)["phone-bar-" + String(index)].firstMatch
+                XCTAssertTrue(bar.exists)
+                XCTAssertEqual(bar.frame, before)
+            }
+        }
+        _ = phoneMenuRoot(in: app); unchangedBars()
+        workspaceActivate(app.buttons["phone-capy"])
+        XCTAssertTrue(app.descendants(matching: .any)["phone-menu"].firstMatch.waitForNonExistence(timeout: 10))
+        unchangedBars()
+        workspaceActivate(app.buttons["phone-tool-settings"])
+        let value = app.buttons["number-value-tool-size"]
+        XCTAssertTrue(value.waitForExistence(timeout: 10))
+        let valueScroll = app.scrollViews.containing(.button, identifier: "number-value-tool-size").allElementsBoundByIndex.last
+        if let valueScroll { revealEditorControl(value, in: valueScroll) }
+        workspaceActivate(value)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        unchangedBars()
+        app.textFields["number-entry-tool-size"].typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        unchangedBars()
+        let color = try XCTUnwrap(phoneObservedTools(in: app)?.first(where: { ($0["control"] as? [String: Any])?["kind"] as? String == "color" })?["id"] as? Int)
+        workspaceActivate(app.buttons["phone-tool-\(color)"])
+        for id in ["drawer-panel-color", "drawer-panel-palettes"] {
+            XCTAssertTrue(app.descendants(matching: .any)[id].firstMatch.waitForExistence(timeout: 10), "Tool Settings retargets to Color with \(id)")
+        }
+        workspaceActivate(app.buttons["phone-tool-settings"])
+        XCTAssertTrue(app.descendants(matching: .any)["drawer-panel-tool_settings"].firstMatch.waitForExistence(timeout: 10))
+        workspaceActivate(app.buttons["phone-tool-settings"])
+        XCTAssertTrue(app.descendants(matching: .any)["tool-drawer"].firstMatch.waitForNonExistence(timeout: 10))
         phoneAlertCommand("File", label: "New…", in: app)
         XCTAssertTrue(app.buttons["new-drawing-create"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["new-drawing-cancel"].isHittable)
+        for action in ["new-drawing-cancel", "new-drawing-create"].map({ app.buttons[$0] }) {
+            XCTAssertTrue(action.isHittable); XCTAssertTrue(viewport.contains(action.frame), "\(action.identifier) \(action.frame) in \(viewport)")
+        }
         XCTAssertTrue(app.staticTexts["new-drawing-title"].exists)
         phoneCapture(in: app, id: phoneCaptureID("pages", "new-drawing"), theme: theme, fixture: fixture)
+        revealNewDrawingControl("new-drawing-name", in: app)
+        let name = app.textFields["new-drawing-name"]
+        replaceEditorText(name, with: "Phone Return", in: app); name.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        XCTAssertEqual(name.value as? String, "Phone Return")
+        XCTAssertTrue(app.buttons["new-drawing-create"].exists)
+        revealNewDrawingControl("number-entry-new-drawing-resolution", in: app)
+        let resolution = newDrawingNumber("resolution", in: app)
+        replaceEditorText(resolution, with: "1 / 0", in: app); resolution.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(app.buttons["new-drawing-create"].exists)
+        XCTAssertEqual(resolution.value as? String, "1 / 0")
+        expectation(for: NSPredicate(format: "hasKeyboardFocus == YES"), evaluatedWith: resolution)
+        waitForExpectations(timeout: 10)
+        replaceEditorText(resolution, with: "300", in: app); resolution.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        XCTAssertEqual(resolution.value as? String, "300")
+        XCTAssertTrue(app.buttons["new-drawing-create"].exists)
+        revealNewDrawingControl("new-drawing-presets-button", in: app)
         workspaceActivate(app.buttons["new-drawing-presets-button"])
         XCTAssertTrue(app.buttons["new-drawing-browser-back"].waitForExistence(timeout: 10))
         let search = app.textFields["new-drawing-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertFalse(app.textFields.matching(NSPredicate(format: "identifier == %@ AND hasKeyboardFocus == YES", search.identifier)).firstMatch.exists)
         workspaceActivate(search); search.typeText("Phone audit")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["new-drawing-browser-back"].isHittable)
+        XCTAssertLessThanOrEqual(app.buttons["new-drawing-browser-back"].frame.maxY, app.keyboards.firstMatch.frame.minY + 1)
+        search.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
         expectation(for: NSPredicate(format: "value == %@", "Phone audit"), evaluatedWith: search)
         waitForExpectations(timeout: 10)
         XCTAssertTrue(app.buttons["new-drawing-browser-back"].exists)
-        dismissEditorKeyboard(in: app)
+        XCTAssertTrue(app.buttons["new-drawing-create"].exists)
         workspaceActivate(app.buttons["new-drawing-browser-back"])
-        expectation(for: NSPredicate(format: "value == %@", ""), evaluatedWith: search)
+        expectation(for: NSPredicate { _, _ in self.editorTextMatches(search, "") }, evaluatedWith: search)
         waitForExpectations(timeout: 10)
         XCTAssertTrue(app.buttons["new-drawing-browser-back"].exists)
         workspaceActivate(app.buttons["new-drawing-browser-back"])
@@ -417,6 +569,7 @@ extension EditorLaunchTests {
         XCTAssertTrue(app.buttons["new-drawing-create"].waitForExistence(timeout: 10))
         workspaceActivate(app.buttons["new-drawing-cancel"])
         XCTAssertTrue(app.buttons["new-drawing-create"].waitForNonExistence(timeout: 10))
+        unchangedBars()
         for kind in ["canvas", "image"] {
             phoneAlertCommand("Image", label: kind == "canvas" ? "Canvas Size…" : "Image Size…", in: app)
             XCTAssertTrue(app.buttons[kind + "-size-apply"].waitForExistence(timeout: 10))
@@ -426,6 +579,7 @@ extension EditorLaunchTests {
             phoneCapture(in: app, id: phoneCaptureID("pages", kind + "-size"), theme: theme, fixture: fixture)
             workspaceActivate(app.buttons[kind + "-size-cancel"])
             XCTAssertTrue(app.buttons[kind + "-size-apply"].waitForNonExistence(timeout: 10))
+            unchangedBars()
         }
     }
 }
@@ -560,7 +714,7 @@ extension EditorLaunchTests {
             "actual_canvas_size": actualSize, "selected_drawing": title, "document_count": 1,
             "future_new_drawing_defaults": "UI-created canonical recipe"]
         phoneDrawingFixtures[storage] = proof
-        addTeardownBlock { await MainActor.run { _ = phoneDrawingFixtures.removeValue(forKey: storage) } }
+        addTeardownBlock { MainActor.assumeIsolated { _ = phoneDrawingFixtures.removeValue(forKey: storage) } }
         let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: proof, options: [.sortedKeys]), uniformTypeIdentifier: "public.json")
         attachment.name = "phone-canonical-drawing-fixture"; attachment.lifetime = .keepAlways; add(attachment)
     }

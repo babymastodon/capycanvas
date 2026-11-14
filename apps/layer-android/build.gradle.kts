@@ -1,6 +1,6 @@
 buildscript {
     repositories { google() }
-    dependencies { classpath("com.android.tools:r8:9.6.0-alpha09") }
+    dependencies { classpath("com.android.tools:r8:9.6.0-alpha12") }
 }
 
 plugins {

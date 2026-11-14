@@ -86,7 +86,7 @@ const gtkPhoneAudit={matrix:phoneAuditMatrix,defaultCases:phoneAuditMatrix.filte
 export const auditModes={
   audit:gtkPhoneAudit,frame:gtkPhoneAudit,drawers:gtkPhoneAudit,
   menus:gtkPhoneAudit,input:{...gtkPhoneAudit,mobile:true},customize:gtkPhoneAudit,
-  'dialogs-phone':{matrix:phoneAuditMatrix,dialogMode:'phone',defaultCases:['412x891-light','891x412-dark']},
+  'dialogs-phone':{matrix:[...phoneAuditMatrix,...['light','dark'].map(theme=>({viewport:[280,280],text_pt:11,text_scale:1,dpr:1,theme}))],dialogMode:'phone',defaultCases:['412x891-light','891x412-dark']},
   'dialogs-desktop':{matrix:dialogAuditMatrix,dialogMode:'desktop'},
 };
 
@@ -894,7 +894,6 @@ export const dialogAuditRows=[
   {batch:'w6c',id:'stroke-recording-failure',rootselector:'dialog.document-dialog[open]',openaction:auditRecordingFailureOpen,closeaction:auditRecordingFailureClose,finalize:auditRecordingFailureRestore},
   {batch:'w6c',id:'recover-interrupted-workspaces',rootselector:'.workspace-form[open]',openaction:auditInterruptedWorkspaceOpen,closeaction:auditInterruptedWorkspaceClose,finalize:auditBoundaryRestore},
   ...[
-    ['restore-workspaces','Requires the existing released-storage/restart setup in saved-data-ux.'],
     ['workspace-not-saved','Web uses the browser-owned beforeunload prompt; no application close-recovery consumer exists. W7 storage-alert is this same native state, not another Web route.'],
     ['preserved-package-preview','Requires the existing package fixture preparation in package-view.'],
   ].map(([id,blocked])=>({batch:'w6c',id,blocked})),
@@ -952,6 +951,15 @@ export function dialogAuditSpecifications(rootselector,root=document){
   return specs;
 }
 
+async function assertAlertResponses(evaluate,state){
+  if(state!=='unsaved-changes')return;
+  const actual=await evaluate(`(()=>{const root=document.querySelector('dialog.document-dialog[open]'),footer=root.querySelector('footer'),buttons=[...footer.querySelectorAll('button')],box=node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom};},bounds=box(footer),natural=Math.max(...buttons.map(button=>{const range=document.createRange();range.selectNodeContents(button);const style=getComputedStyle(button);return Math.max(parseFloat(style.minWidth)||0,range.getBoundingClientRect().width+parseFloat(style.paddingLeft)+parseFloat(style.paddingRight));}))*buttons.length+(buttons.length-1)*parseFloat(getComputedStyle(footer).gap),viewport=root.querySelector('.preference-viewport'),overflow=viewport.scrollHeight>viewport.clientHeight+1,before=box(footer);viewport.scrollTop=viewport.scrollHeight;const after=box(footer);viewport.scrollTop=0;return{stacked:footer.classList.contains('alert-responses-stacked'),fits:natural<=bounds.right-bounds.left+.5,width:innerWidth,height:innerHeight,buttons:buttons.map(box),overflow,before,after,scrollable:/auto|scroll/.test(getComputedStyle(viewport).overflowY)};})()`);
+  assert.ok(actual.buttons.every(button=>button.left>=-.5&&button.right<=actual.width+.5&&button.top>=-.5&&button.bottom<=actual.height+.5),`Unsaved Changes responses fit the viewport: ${JSON.stringify(actual)}`);
+  assert.equal(actual.stacked,!actual.fits,`Unsaved Changes responses stack only when their row does not fit, including short viewports: ${JSON.stringify(actual)}`);
+  assert.deepEqual(actual.after,actual.before,'Scrolling the alert message keeps responses fixed');
+  if(actual.overflow)assert.ok(actual.scrollable,'A message that does not fit scrolls independently of its responses');
+}
+
 async function assertSettingsPresentation(evaluate,state){
   if(!state.startsWith('preferences-')&&!['shortcut-editor','shortcut-recording','shortcut-conflict','modifier-key','keymap-details'].includes(state))return;
   const actual=await evaluate(`(()=>{
@@ -980,6 +988,12 @@ async function assertSettingsPresentation(evaluate,state){
   if(state==='preferences-color')assert.ok(actual.library,'Color Profile Library uses a card row');
   assert.ok(actual.actions.every(fill=>fill!=='rgba(0, 0, 0, 0)'&&fill!=='transparent'),'Settings action buttons retain their native fill');
   for(const shape of actual.swatches)assert.match(shape.corner??'',/squircle|superellipse/,`Settings swatch uses native square contour: ${JSON.stringify(shape)}`);
+  if(['shortcut-recording','shortcut-conflict','modifier-key'].includes(state)){
+    const recording=await evaluate(`(()=>{const row=document.querySelector('#shortcut-recording'),root=row.closest('dialog'),footer=root.querySelector('footer'),actions=document.querySelector('#confirm-shortcut').parentElement,text=row.querySelector('.preference-text'),box=node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom};},viewport=root.querySelector('.preference-viewport'),scroll=viewport.scrollTop,before=box(actions);viewport.scrollTop=viewport.scrollHeight;const after=box(actions);viewport.scrollTop=scroll;return{page:root.classList.contains('dialog-page'),inFooter:!!footer?.contains(actions),stacked:row.classList.contains('recording-stacked'),text:box(text),actions:box(actions),before,after,width:innerWidth,height:innerHeight};})()`);
+    if(recording.page){assert.ok(recording.inFooter,`${state}: recording actions use the fixed page footer`);assert.deepEqual(recording.before,recording.after,`${state}: recording actions stay fixed while content scrolls`);}
+    assert.ok(recording.actions.left>=-.5&&recording.actions.right<=recording.width+.5&&recording.actions.bottom<=recording.height+.5,`${state}: recording actions remain visible: ${JSON.stringify(recording)}`);
+    if(!recording.page&&recording.width<=280)assert.ok(recording.stacked&&recording.actions.top>=recording.text.bottom-.5,`${state}: narrow conflict actions follow the text: ${JSON.stringify(recording)}`);
+  }
   if(state==='shortcut-conflict')assert.match(actual.warning??'',/warning/,'Shortcut conflict uses a warning triangle');
   if(state==='modifier-key')assert.equal(actual.title,actual.capture,'Modifier title follows shared recording label');
   if(state==='keymap-details')assert.ok(actual.keymap.length&&actual.keymap.every(bounds=>bounds.width>0&&Math.abs(bounds.bottom-bounds.bodyBottom)<=1),'Keymap card fills the remaining body height');
@@ -1238,21 +1252,20 @@ export async function checkPhoneAudit({call,evaluate,reload,settle,canvasPixels,
       const hold=async position=>{
         const start=await evaluate('performance.now()');await touch('touchStart',position);
         await wait(`performance.now()-${start}>=900&&document.querySelector("#phone-frame").dataset.contact==="held"`);
-        assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),false,'Holding lifts without opening a menu before release');
+        assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),true,'A touch hold opens its menu while the contact remains down');
       };
       const release=async()=>{await touch('touchEnd');await settle();};
       const menu=async(tile)=>{
         const position=await point(`#phone-tool-${tile}`);await hold(position);await release();
-        await wait('document.querySelector(".panel-context-menu")?.matches(":popover-open")');
+        assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),true,'Releasing the held contact keeps its menu open');
       };
       const heldPointer=async(position,pointerType)=>{
         const start=await evaluate('performance.now()');
         await call('Input.dispatchMouseEvent',{type:'mousePressed',...position,button:'left',buttons:1,clickCount:1,pointerType});
         await wait(`performance.now()-${start}>=900&&document.querySelector("#phone-frame").dataset.contact==="held"`);
-        assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),false,`${pointerType} hold arms before release`);
+        assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),pointerType==='pen',`${pointerType} hold menu admission before release`);
         await call('Input.dispatchMouseEvent',{type:'mouseReleased',...position,button:'left',buttons:0,clickCount:1,pointerType});await settle();
-        if(pointerType==='pen')await wait('!!document.querySelector(".panel-context-menu:popover-open")');
-        assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),pointerType==='pen',`${pointerType} release menu`);
+        assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),pointerType==='pen',`${pointerType} release preserves held-menu admission`);
       };
       const menuAction=async label=>{
         await wait(`!![...document.querySelectorAll('.panel-context-menu:popover-open button')].find(n=>n.menuItem?.label===${JSON.stringify(label)})`);
@@ -1319,6 +1332,7 @@ export async function checkPhoneAudit({call,evaluate,reload,settle,canvasPixels,
       to[await evaluate('layerApp.app.layout(innerWidth,innerHeight).phone.edge==="top"?"x":"y"')]+=1;
       const moveHistory=await history();await hold(from);await touch('touchMove',to);
       await wait('document.querySelector("#phone-frame").dataset.contact==="dragging"');
+      assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),false,'The same held contact dismisses its menu when dragging starts');
       const paint=await evaluate(`(()=>{const n=document.querySelector('#phone-tool-${sequence[0].id}').parentElement,s=getComputedStyle(n);return{lifted:n.classList.contains('header-drag-preview'),shadow:s.boxShadow,background:s.backgroundColor};})()`);
       assert.equal(paint.lifted,true,JSON.stringify(paint));assert.ok(paint.shadow.includes('inset')&&paint.shadow.includes('2px'),JSON.stringify(paint));assert.notEqual(paint.background,'rgba(0, 0, 0, 0)');
       assert.deepEqual(await history(),moveHistory,'Reorder preview never enters shared history');
@@ -1330,9 +1344,11 @@ export async function checkPhoneAudit({call,evaluate,reload,settle,canvasPixels,
       await hold(from);await touch('touchMove',outside);await release();assert.deepEqual(await history(),cancelled);
       await captureCustom('customize-offbar-cancelled');
       await hold(from);await escape();await release();assert.deepEqual(await history(),cancelled,'Escape cancels a held contact');
+      assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),false,'Escape closes the held menu');
       const empty=await durable();empty.layout.phone=[];await send({type:'restore_workspace',workspace:empty});
       const blank=await evaluate(`(()=>{const p=layerApp.app.layout(innerWidth,innerHeight).phone,occupied=[...p.tool_hits,...p.tools,...p.controls,p.capy_hit,p.settings_hit,p.size,p.strength];for(const bar of p.bars)for(let y=Math.ceil(bar.y);y<Math.floor(bar.y+bar.height);y++)for(let x=Math.ceil(bar.x);x<Math.floor(bar.x+bar.width);x++){const point={x:x+.5,y:y+.5};if(!occupied.some(b=>b.width>0&&b.height>0&&point.x>=b.x&&point.x<b.x+b.width&&point.y>=b.y&&point.y<b.y+b.height))return point;}throw Error('The shared phone bars have no free background contact');})()`);
-      await hold(blank);await release();await wait('document.querySelector(".panel-context-menu")?.matches(":popover-open")');
+      await hold(blank);await release();
+      assert.equal(await evaluate('!!document.querySelector(".panel-context-menu:popover-open")'),true,'The empty-toolbar hold keeps Add Tools open on release');
       assert.deepEqual(await evaluate('[...document.querySelectorAll(".panel-context-menu:popover-open button")].map(n=>n.menuItem.label)'),['Add Tools…']);
       await captureCustom('customize-empty-toolbar');await menuAction('Add Tools…');await escape();
       assert.deepEqual((await durable()).layout.phone,[],'Cancelling Add Tools preserves an explicit empty toolbar');
@@ -1520,6 +1536,11 @@ export async function checkPhoneAudit({call,evaluate,reload,settle,canvasPixels,
         }
         await settle();
         await auditLayerPreviews({evaluate,wait});
+        if(name==='inventory-window-sizes'){
+          const labels=await evaluate("[...document.querySelectorAll('.content-drawer .sizes-panel .size-button')].map(node=>{const tile=node.getBoundingClientRect(),label=node.querySelector('.size-label').getBoundingClientRect();return{value:node.dataset.size,top:label.top-tile.top,height:tile.height};})");
+          assert.equal(labels.length,40,'The Sizes drawer shows every preset');
+          for(const label of labels){assert.ok(label.top>=24,`${name} ${label.value}: label starts below the dot row`);if(test.text_pt===11)assert.equal(label.height,44);}
+        }
         const actual=await evaluate(`(${phoneAuditDrawerSpecifications.toString()})()`);
         const record=await capture(test,name,[...phoneAuditFrameSpecifications(await evaluate('layerApp.state().workspace.layout.phone??[]')),...actual],'existing shared drawer owner');
         assert.equal(record.status,'captured');assert.deepEqual(record.missing,[]);
@@ -1817,7 +1838,7 @@ export async function checkPhoneAudit({call,evaluate,reload,settle,canvasPixels,
         await send(shortcuts);await settle();
       }
       if(row.requestedpage)assert.equal(await evaluate('layerApp.app.preferences().page'),row.requestedpage,'Requested Settings page');
-      const shot=async route=>{await assertSettingsPresentation(evaluate,route.id);if(route.drawingstate)await drawingState(evaluate,route.drawingstate);if(route.id==='new-drawing-footer-paper-color'){const {assertColorEditorCells}=await import('./color-editor.test.mjs');await assertColorEditorCells(evaluate,'#new-drawing-color-drawer');}const parts=await evaluate(row.collector==='menu'?JSON.stringify([{id:'page',role:'page',selector:row.rootselector}]):row.collector==='drawer'?`(${phoneAuditDrawerSpecifications.toString()})()`:`(${dialogAuditSpecifications.toString()})(${JSON.stringify(row.rootselector)})`);const specifications=dialogPhoneSpecifications(frame,parts,active);return capture(test,route.id,specifications,dialogs?'existing dialog presentation':'existing Web editor; phone page/header parity not established',null,route.document?.count==='photo'?await evaluate('phoneAuditPhotoCount'):route.document?.count??1,route.document?.color??{space:'Srgb',depth:'U8'},route.document?.extent,route.document?.draft);};
+      const shot=async route=>{if(['shortcut-recording','shortcut-conflict','modifier-key'].includes(route.id)){await evaluate("document.querySelector('#shortcut-recording').scrollIntoView({block:'nearest'})");await settle();}if(route.id==='all-swatches'){const fill=await evaluate(`(()=>{const sheet=document.querySelector('.color-sheet.open'),body=sheet.querySelector('.color-sheet-body'),s=sheet.getBoundingClientRect(),b=body.getBoundingClientRect();return{sheetBottom:s.bottom,bodyBottom:b.bottom,height:b.height};})()`);assert.ok(fill.height>0&&Math.abs(fill.sheetBottom-fill.bodyBottom)<=1,'All Swatches fills the available page height');}await assertAlertResponses(evaluate,route.id);await assertSettingsPresentation(evaluate,route.id);if(route.drawingstate)await drawingState(evaluate,route.drawingstate);if(route.id==='new-drawing-footer-paper-color'){const {assertColorEditorCells}=await import('./color-editor.test.mjs');await assertColorEditorCells(evaluate,'#new-drawing-color-drawer');}const parts=await evaluate(row.collector==='menu'?JSON.stringify([{id:'page',role:'page',selector:row.rootselector}]):row.collector==='drawer'?`(${phoneAuditDrawerSpecifications.toString()})()`:`(${dialogAuditSpecifications.toString()})(${JSON.stringify(row.rootselector)})`);const specifications=dialogPhoneSpecifications(frame,parts,active);return capture(test,route.id,specifications,dialogs?'existing dialog presentation':'existing Web editor; phone page/header parity not established',null,route.document?.count==='photo'?await evaluate('phoneAuditPhotoCount'):route.document?.count??1,route.document?.color??{space:'Srgb',depth:'U8'},route.document?.extent,route.document?.draft);};
       if(row.id==='color'){
         const {assertColorEditorCells}=await import('./color-editor.test.mjs');
         await assertColorEditorCells(evaluate);

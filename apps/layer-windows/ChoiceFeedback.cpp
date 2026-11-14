@@ -105,8 +105,8 @@ SolidColorBrush CapyUi::fieldBackground(std::shared_ptr<WorkspaceData> const& da
 }
 ResourceDictionary CapyUi::paletteResources(){static thread_local ResourceDictionary resources;return resources;}
 void CapyUi::refreshControlPalette(WorkspaceData& data){
-    static thread_local hstring previous;auto palette=object(data.state,L"palette");if(!palette.Size())return;
-    auto key=palette.Stringify();if(key==previous)return;
+    static thread_local hstring previous;static thread_local J source{nullptr};auto palette=object(data.state,L"palette");if(!palette.Size()||palette==source)return;
+    source=palette;auto key=palette.Stringify();if(key==previous)return;
     auto resources=data.controlResources;static thread_local std::map<std::wstring,SolidColorBrush> ownedBrushes;
     auto put=[&](wchar_t const* name,auto const& value){
         auto key=box_value(hstring(name));

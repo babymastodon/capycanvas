@@ -135,7 +135,7 @@ namespace {
 constexpr double TileFrame=102,TilePreview=96,TileColumnGap=12,TileRowGap=14,TextureDialogHeight=600;
 struct TexturePicker {J paper;uint32_t selected=0;hstring key;bool enabled=false;};
 std::optional<TexturePicker> texturePicker(J const& state,double layer,double epoch){
-    if(num(object(state,L"document_file"),L"epoch")!=epoch)return std::nullopt;
+    if(num(branch(state,L"document_file"),L"epoch")!=epoch)return std::nullopt;
     auto view=object(state,L"layer_properties");auto shown=view.GetNamedValue(L"layer",JsonValue::CreateNullValue());
     if(shown.ValueType()!=JsonValueType::Number||shown.GetNumber()!=layer)return std::nullopt;
     for(auto value:array(view,L"controls")){
@@ -240,7 +240,7 @@ struct TextureDialog : std::enable_shared_from_this<TextureDialog> {
     hstring shown,pending;
     std::optional<J> renaming,importing;
     uint64_t listener=0;
-    bool chosen=false,accepting=false,finished=false,focusPending=false;
+    bool chosen=false,accepting=false,finished=false,focusPending=false,opened=false;
     XamlRoot::Changed_revoker resized;
 
     void init(XamlRoot const& xaml){
@@ -262,8 +262,9 @@ struct TextureDialog : std::enable_shared_from_this<TextureDialog> {
         root.Height(TextureDialogHeight);
         root.KeyDown([weak](auto&&,KeyRoutedEventArgs const& e){if(auto self=weak.lock();self&&e.Key()==Windows::System::VirtualKey::Enter){e.Handled(true);self->close(true);}});
         resized=xaml.Changed(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock())fitPicker(self->root);});
-        dialog.Opened([weak](auto&&,auto&&){if(auto self=weak.lock()){fitPicker(self->root);self->focusPending=true;self->focus();}});
+        dialog.Opened([weak](auto&&,auto&&){if(auto self=weak.lock()){fitPicker(self->root);self->opened=true;self->focusPending=true;self->focus();}});
         dialog.Closed([weak](auto&&,auto&&){if(auto self=weak.lock()){
+            self->opened=false;if(self->data->colorsPresented)self->data->colorsPresented();
             self->data->popup(false);
             if(auto action=std::exchange(self->renaming,std::nullopt))self->rename(*action);else self->finish();
         }});
@@ -271,7 +272,7 @@ struct TextureDialog : std::enable_shared_from_this<TextureDialog> {
         data->copyView([weak]{if(auto self=weak.lock();self&&!self->finished){self->relabel();return true;}return false;});
         relabel();fitPicker(root);update();
     }
-    bool current()const{return num(object(data->state,L"document_file"),L"epoch")==epoch;}
+    bool current()const{return num(branch(data->state,L"document_file"),L"epoch")==epoch;}
     void relabel(){
         auto text=data->caption(L"paper",L"choose");
         title.Text(text);AutomationProperties::SetName(dialog,text);AutomationProperties::SetName(root,text);AutomationProperties::SetName(tiles->grid,text);
@@ -293,7 +294,7 @@ struct TextureDialog : std::enable_shared_from_this<TextureDialog> {
         tiles->mark(pending);focus();
     }
     void focus(){
-        if(focusPending&&tiles->focus(pending))focusPending=false;
+        if(focusPending&&tiles->focus(pending)){focusPending=false;if(opened&&data->colorsPresented)data->colorsPresented();}
     }
     void act(J action){
         if(finished||!current())return;
@@ -320,7 +321,7 @@ struct TextureDialog : std::enable_shared_from_this<TextureDialog> {
     }
     void present(){
         if(finished)return;
-        data->popup(true);focusPending=true;
+        opened=false;data->popup(true);focusPending=true;
         try{dialog.ShowAsync();}catch(hresult_error const&){data->popup(false);finish();}
     }
     void close(bool accept){accepting=accept;dialog.Hide();}
@@ -350,14 +351,14 @@ struct TextureDialog : std::enable_shared_from_this<TextureDialog> {
 
 J TextureDialogState(std::shared_ptr<WorkspaceData> const& owner){
     for(auto const& picker:openDialogs())if(picker->data==owner)return O({
-        {L"id",S(to_hstring(reinterpret_cast<uintptr_t>(get_abi(picker->dialog))))},{L"epoch",N(picker->epoch)},{L"layer",N(picker->layer)}});
+        {L"id",S(to_hstring(reinterpret_cast<uintptr_t>(get_abi(picker->dialog))))},{L"epoch",N(picker->epoch)},{L"layer",N(picker->layer)},{L"ready",B(picker->opened&&!picker->focusPending)}});
     return {};
 }
 
 void ChooseTexture(std::shared_ptr<WorkspaceData> const& data,UIElement const& owner,double layer){
     auto xaml=owner.XamlRoot();if(!xaml||!openDialogs().empty())return;
     auto dialog=std::make_shared<TextureDialog>();dialog->data=data;dialog->layer=layer;
-    dialog->epoch=num(object(data->state,L"document_file"),L"epoch");
+    dialog->epoch=num(branch(data->state,L"document_file"),L"epoch");
     dialog->init(xaml);openDialogs().push_back(dialog);
     if(data->colorsPresented)data->colorsPresented();
     dialog->present();

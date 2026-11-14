@@ -138,8 +138,8 @@ test('Unmeasured and retired Navigator controls cannot publish stale extents',()
 
 function shortcutDom(t) {
   const dom=colorDialogDom(t),kit=createPageKit(dom),actions=[];
-  const sheet=()=>{const content=kit.body();t.after(()=>content.dispose());return {title:dom.element('h2'),body:content.content,content};};
-  const context={...dom,bindCopy,kit,group:kit.group,editor:sheet(),modifierSheet:sheet(),details:sheet(),
+  const sheet=()=>{const content=kit.body(),node=dom.element('dialog'),footer=kit.footer();node.append(content.root,footer);t.after(()=>content.dispose());return {node,footer,title:dom.element('h2'),body:content.content,content};};
+  const context={...dom,bindCopy,kit,ResizeObserver:class {observe(){}disconnect(){}},group:kit.group,editor:sheet(),modifierSheet:sheet(),details:sheet(),
     common:{cancel:'Cancel'},copy:{add:'Add',reassign:'Reassign',open:'Open',press_hold_key:'Hold a key',no_differences:'No differences',defaults_help:'Defaults'},
     app:{native_caption:()=>''},send:action=>actions.push(action),present(){},focusRecording(){},
     keymapChoice:{update(){}},keymapOutdated:{},importTitle:dom.element('h2'),importBody:dom.element('div'),importSignature:'',importHost:{present(){},hide(){}}};
@@ -176,7 +176,7 @@ test('Shortcut capture warning and modifier heading consume their projected icon
   const row=h.modifierSheet.body.children[1].children[0].children[0],glyph=row.children[0];
   assert.equal(glyph.dataset.asset,'warning');assert.equal(glyph.classList.contains('warning'),true);
   assert.equal(row.children[1].children[1].textContent,'Already assigned');
-  row.children[3].click();assert.deepEqual(JSON.parse(JSON.stringify(h.actions)),[{type:'confirm_shortcut',replace:true}]);
+  row.children[2].children[1].click();assert.deepEqual(JSON.parse(JSON.stringify(h.actions)),[{type:'confirm_shortcut',replace:true}]);
   capture.label='Record Shift';capture.shortcut='Shift';
   h.context.refreshModifierSheet({capture,capture_icon:'keyboard',dialog:{}});
   assert.equal(h.modifierSheet.title.textContent,'Record Shift');

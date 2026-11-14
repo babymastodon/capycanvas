@@ -9,6 +9,9 @@ pub struct CurveEditorView {
     pub marker: Option<[f32; 2]>,
     pub modified: bool,
 }
+impl CurveEditorView {
+    pub const MINIMUM: [f32; 2] = [64., 200.];
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

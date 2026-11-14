@@ -37,7 +37,7 @@ extension XCTestCase {
 
         for _ in 0..<3 {
             editorTool("Pen", in: app); selected("Pen")
-            open(); field.typeText("eraser\n"); closed(); selected("Eraser")
+            open(); runCommandSearch("eraser", field: field, in: app); closed(); selected("Eraser")
         }
         app.typeKey("h", modifierFlags: []); selected("Hand")
 
@@ -61,7 +61,7 @@ extension XCTestCase {
         waitForExpectations(timeout: 5)
 
         editorToolAfterSearch("Pen", field: field, in: app)
-        open(); field.typeText("brush size\n")
+        open(); runCommandSearch("brush size", field: field, in: app)
         expectation(for: NSPredicate(format: "label BEGINSWITH %@", "Brush size"), evaluatedWith: field)
         waitForExpectations(timeout: 5)
         let range = detailText()
@@ -77,6 +77,9 @@ extension XCTestCase {
         field.typeText("\n")
         expectation(for: NSPredicate(format: "label BEGINSWITH %@", "Brush size"), evaluatedWith: field)
         waitForExpectations(timeout: 5)
+        #else
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5), "Keyboard Search hides the keyboard")
+        workspaceActivate(field)
         #endif
         replace("24\n"); closed()
         let size = app.buttons["number-value-tool-size"]
@@ -93,7 +96,7 @@ extension XCTestCase {
         let card = app.descendants(matching: .any)["command-bar"].firstMatch.frame, area = canvas.frame
         let outside = CGPoint(x: (card.minX - 24 - area.minX) / area.width, y: (card.midY - area.minY) / area.height)
         dismissCommandSearch(field, in: app)
-        let before = editorPixels(in: app, at: outside, size: 16)
+        let before = settledEditorPixels(in: app, at: outside, size: 16)
         open()
         #if os(macOS)
         canvas.coordinate(withNormalizedOffset: CGVector(dx: outside.x, dy: outside.y)).click()
@@ -120,6 +123,13 @@ extension XCTestCase {
         workspaceActivate(app.buttons["command-search-close"])
         #endif
         XCTAssertTrue(field.waitForNonExistence(timeout: 5), "The command bar must close")
+    }
+    @MainActor func runCommandSearch(_ query: String, field: XCUIElement, in app: XCUIApplication) {
+        #if os(macOS)
+        field.typeText(query + "\n")
+        #else
+        field.typeText(query); workspaceActivate(app.buttons["command-result-0"])
+        #endif
     }
     @MainActor private func editorToolAfterSearch(_ label: String, field: XCUIElement, in app: XCUIApplication) {
         if field.exists { dismissCommandSearch(field, in: app) }

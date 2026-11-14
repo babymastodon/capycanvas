@@ -36,6 +36,7 @@ pub(crate) struct Presentation {
     pub(crate) device: Arc<Device>,
     pub(crate) config: wgt::SurfaceConfiguration<Vec<wgt::TextureFormat>>,
     pub(crate) acquired_texture: Option<Arc<resource::Texture>>,
+    pub(crate) prepared: bool,
 }
 
 #[derive(Clone, Debug, Error)]
@@ -256,6 +257,7 @@ impl Surface {
                     .insert_single(&texture, wgt::TextureUses::UNINITIALIZED);
 
                 present.acquired_texture = Some(texture.clone());
+                present.prepared = false;
 
                 let status = if ast.suboptimal {
                     Status::Suboptimal
@@ -347,10 +349,23 @@ impl Queue {
             })?;
             if !ready { return Ok(None); }
         }
-        self.prepare_surface_texture_for_present(&texture).map_err(|error| {
-            surface.release_current(&texture);
-            error
-        })?;
+        let nonblocking = defer && self.raw().supports_nonblocking_present(surface.raw(device.backend()).unwrap());
+        let prepared = nonblocking && surface.presentation.lock().as_ref().is_some_and(|present|
+            present.prepared && present.acquired_texture.as_ref().is_some_and(|current| Arc::ptr_eq(current, &texture)));
+        if !prepared {
+            self.prepare_surface_texture_for_present(&texture).map_err(|error| {
+                surface.release_current(&texture);
+                error
+            })?;
+            if nonblocking {
+                let mut presentation = surface.presentation.lock();
+                let present = presentation.as_mut().ok_or(SurfaceError::NotConfigured)?;
+                if present.acquired_texture.as_ref().is_none_or(|current| !Arc::ptr_eq(current, &texture)) {
+                    return Err(SurfaceError::NothingToPresent);
+                }
+                present.prepared = true;
+            }
+        }
         let result = {
             let mut presentation = surface.presentation.lock();
             let present = presentation.as_mut().ok_or(SurfaceError::NotConfigured)?;
@@ -358,6 +373,36 @@ impl Queue {
                 || present.acquired_texture.as_ref().is_none_or(|current| !Arc::ptr_eq(current, &texture)) {
                 return Err(SurfaceError::NothingToPresent);
             }
+            let attempt = if nonblocking {
+                let snatch = device.snatchable_lock.read();
+                let indices = device.command_indices.write();
+                match self.presentation_ready(&indices) {
+                    Ok(false) => return Ok(None),
+                    Err(error) => Err(hal::SurfaceError::Device(error)),
+                    Ok(true) => match texture.inner.get(&snatch).maybe_valid() {
+                        Some(resource::TextureInner::Surface { raw }) => unsafe {
+                            self.raw().try_present(surface.raw(device.backend()).unwrap(), raw.as_ref())
+                        },
+                        _ => return Err(SurfaceError::TextureDestroyed),
+                    },
+                }
+            } else { Ok(hal::PresentAttempt::Unsupported) };
+            if matches!(attempt, Ok(hal::PresentAttempt::Pending)) { return Ok(None); }
+            if !matches!(attempt, Ok(hal::PresentAttempt::Unsupported)) {
+                let mut snatch = device.snatchable_lock.write();
+                present.acquired_texture.take();
+                let raw = texture.inner.snatch(&mut snatch).maybe_valid();
+                match attempt {
+                    Ok(hal::PresentAttempt::Presented) => Ok(()),
+                    Err(error) => {
+                        if let Some(resource::TextureInner::Surface { raw }) = raw {
+                            unsafe { surface.raw(device.backend()).unwrap().discard_texture(raw); }
+                        }
+                        Err(error)
+                    },
+                    _ => unreachable!(),
+                }
+            } else {
             let mut snatch = device.snatchable_lock.write();
             let indices = device.command_indices.write();
             let ready = if defer {
@@ -381,6 +426,7 @@ impl Queue {
                         _ => unreachable!(),
                     }
                 }
+            }
             }
         };
         match result {

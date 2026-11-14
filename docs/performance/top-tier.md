@@ -5,6 +5,33 @@
 Reference: Wacom MovinkPad Pro 14 (DTHA140) with a 1800 × 2880, 120 Hz OLED. The
 canvas is 9504 × 6336. Every row targets **120 fps** unless marked soft.
 
+## Settled Fit half-float presentation
+
+Measured 2026-11-11: `3a98291d7` → `440f2dbff`, release Rust/unminified
+benchmark APKs that differ only in `liblayer_android.so`, B/C/C/B order run
+three times. Each build has eighteen six-second contacts per row on the 61 MP
+JPEG at factory density 280/font scale 1, 120 Hz and thermal status 0. "After
+Fit" zooms in one step and fits before each 2048 px stroke. Brushes count
+fresh input-attributed updates; navigation counts actual canvas presents.
+Rates are medians of contact summaries; gaps are the worst contact p99.
+
+| Row | Hz, base → candidate | Gap p99 ms, base → candidate |
+| --- | ---: | ---: |
+| G-Pen after Fit | 90.973 → 90.697 | 25.684 → 25.031 |
+| Pencil after Fit | 123.100 → 121.484 | 16.767 → 19.452 |
+| Smooth Zoom, left/right | 116.289 → 116.548 | 16.668 → 16.668 |
+| Smooth Zoom, up/down | 116.548 → 116.381 | 16.667 → 16.668 |
+
+Smooth Zoom meets the tier in both builds, with no rate difference (rank-test
+p 0.30 and 0.94) and unchanged viewport GPU time (p50 7.2 ms, p95 10.2 ms).
+G-Pen and Pencil after Fit miss in both builds without a significant
+difference (p 0.52 and 0.30); the first order includes the tablet's warm-up
+drift. Pen-down to first submitted update after Fit is 65.5 and 44.7 ms
+against 69.9 and 50.1 ms, above the 17 ms limit in both. Median Smooth Zoom
+onset after Fit is 66.1 ms against 67.0–68.1 ms. The tablet drops every
+injected finger contact ("all windows would just receive ACTION_OUTSIDE"),
+so pan, pinch and rotate remain unmeasured.
+
 ## Stored image-source format comparison
 
 Measured 2026-11-06–07: frozen `01fe577d9` → format commit 1 candidate APK
@@ -262,14 +289,14 @@ optimized APK SHA-256 `e74cd6b9b8f0dc15e1beb2f5e6ff6348bae20025ebc6e1f6adbd9dca7
 | Attached filter drag inside a clipping run | 120 | **Not met.** 93.24–102.71 native UI fps; moving-frame gap p99 25.00–33.33 ms | [Filter attachment feedback](#filter-attachment-feedback), 2026-10-04 |
 | Navigation with 32 visible paint layers | 120 | | |
 | Drawing with 32 visible paint layers, G-Pen 1024 px | 120 | | |
-| Panel, tab, column or toolbar drag and docking | 120 | **Not met on reference hardware.** Toolbar or component drag 103–119 fps. Android tab review remains unqualified (debug build); median native-update p95 is about halved. Latest GTK desktop tab-hover comparison: control brackets 119.219–120.012 → 119.222–120.012 presents/s; gap p99 8.776 → 8.747 ms. Paint CPU varies across control brackets. Desktop tear-off retains a shared floor miss (105.113–115.012 → 112.783–116.836 presents/s). Web review Chrome-surface panel median 94.54 Hz lies between control brackets 95.00/94.52 Hz; drawing median 100.97 Hz has overlapping controls. Fresh geometry presentation remains unqualified. Web Navigator placement gate: 137 canvas frame calls / 411 GPU submissions → 0 / 0 in both themes; desktop functional counts, cadence unqualified. Windows software-adapter checks provide no frame timing | `dc27e04d`, 2026-09-23; [GTK exact tab surfaces](#gtk-exact-panel-tab-surfaces), 2026-10-28; [GTK overlay measurements](../../artifacts/gtk-overlays-b.local/summary.json), 2026-10-30; [GTK pointer-hover measurements](../../artifacts/gtk-pen-hover.local/summary.json), 2026-10-30; [GTK tab drops](#gtk-tab-drops), [Android tab drops](#android-tab-drops), [Windows tab drops](#windows-tab-drops), [Web tab drops](#web-tab-drops), 2026-10-27; [GTK column bridge diagnostic](#gtk-column-bridge-diagnostic), 2026-10-25 |
+| Panel, tab, column or toolbar drag and docking | 120 | **Not met on reference hardware.** Toolbar or component drag 103–119 fps. Android tab review remains unqualified (debug build); median native-update p95 is about halved. Latest GTK desktop tab-hover comparison: control brackets 119.219–120.012 → 119.222–120.012 presents/s; gap p99 8.776 → 8.747 ms. Paint CPU varies across control brackets. Desktop tear-off retains a shared floor miss (105.113–115.012 → 112.783–116.836 presents/s). Fractional chrome seams at 2×: panel group drag light **112.34 → 116.53**, dark **108.49 → 112.06** moving Hz. Web review Chrome-surface panel median 94.54 Hz lies between control brackets 95.00/94.52 Hz; drawing median 100.97 Hz has overlapping controls. Fresh geometry presentation remains unqualified. Web Navigator placement gate: 137 canvas frame calls / 411 GPU submissions → 0 / 0 in both themes; desktop functional counts, cadence unqualified. Windows software-adapter checks provide no frame timing | `dc27e04d`, 2026-09-23; [GTK fractional chrome seams](#gtk-fractional-chrome-seams), 2026-11-12; [GTK exact tab surfaces](#gtk-exact-panel-tab-surfaces), 2026-10-28; [GTK overlay measurements](../../artifacts/gtk-overlays-b.local/summary.json), 2026-10-30; [GTK pointer-hover measurements](../../artifacts/gtk-pen-hover.local/summary.json), 2026-10-30; [GTK tab drops](#gtk-tab-drops), [Android tab drops](#android-tab-drops), [Windows tab drops](#windows-tab-drops), [Web tab drops](#web-tab-drops), 2026-10-27; [GTK column bridge diagnostic](#gtk-column-bridge-diagnostic), 2026-10-25 |
 | Android palette pill opening at the work-area edge | 120 | **FPS unqualified.** Instant clamp; two actual presents per opening, all neighbors stationary in the diagnostic | [Native palette opening](#native-palette-opening), 2026-10-23 |
 | Android tool bubble drag through four neighbours | 120 | **Unqualified after the bubble release fixes.** Previous parity build: 115.00–116.55 actual app-window presents/s; p99 ≤16.667447 ms, default glass, 61 MP photo at Fit | [Native tool bubbles](#native-tool-bubbles), 2026-10-24 |
 | Web tool bubble drag through four neighbours | 120 | Unmeasured after the bubble release fixes; desktop browser journeys do not qualify the reference tablet | [Web checks](../development/web.md#tests), 2026-10-24 |
 | GTK Tool Set hover and press animation | 120 | Desktop diagnostic: **117.76 changing-color presents/s**, 116.67–118.08 per case; pooled gap p99 16.646 ms. Reference hardware unmeasured | [GTK tool caption hover](#gtk-tool-caption-hover), 2026-10-26 |
-| Panel or column resize | 120 | The 2026-10-31 allocation-report regression is reverted to the measured GTK parent path. The [footer/utility comparison](#gtk-footer-and-utility-placement) isolates no repeatable added paint CPU cost; shared pacing misses remain. Android shared vectors and Web SVG projection are unmeasured on this reference tier. **Desktop GTK pacing target still missed.** Bundled Vulkan memory reuse improves column drags **106.23–106.42 → 117.06–117.24** changing-geometry presents/s at 1× and **61.30 → 110.27** at 2×; worst candidate p99 **25.014 / 28.416 ms**. Panel drags stay near 118 presents/s. Reference-tier qualification remains unset. Web Navigator: 30.00–30.64 Chrome surface presents/s; p99 50.00–58.34 ms. Windows glass VM diagnostic (main → candidate): stack 42.26 → 44.07 observed bounds changes/s, 21.40 → 20.14 ms UI CPU/change; column width 12.57 → 13.32/s, 66.32 → 68.69 ms. Displayed FPS remains unqualified. Windows chrome rail scrolling and edge arbitration are unmeasured on reference hardware (2026-10-28). | `artifacts/glass-motion/phase-3/`, 2026-10-30; [GTK exact tab surfaces](#gtk-exact-panel-tab-surfaces), [GTK Vulkan memory reuse](#gtk-vulkan-memory-reuse), 2026-10-28; [Web Navigator layout](#web-navigator-layout), 2026-10-19; [GTK Color resize](#gtk-color-panel-resize), 2026-10-10; [GTK column bridge diagnostic](#gtk-column-bridge-diagnostic), 2026-10-25; [GTK Tool Set density](#gtk-tool-set-density), 2026-10-26; [GTK toolbar dividers](#gtk-toolbar-divider-resize), 2026-10-26; [Windows GPU VM column resize](#windows-gpu-vm-column-resize), 2026-10-26 |
+| Panel or column resize | 120 | The 2026-10-31 allocation-report regression is reverted to the measured GTK parent path. The [footer/utility comparison](#gtk-footer-and-utility-placement) isolates no repeatable added paint CPU cost; shared pacing misses remain. Android shared vectors and Web SVG projection are unmeasured on this reference tier. **Desktop GTK pacing target still missed.** Bundled Vulkan memory reuse improves column drags **106.23–106.42 → 117.06–117.24** changing-geometry presents/s at 1× and **61.30 → 110.27** at 2×; worst candidate p99 **25.014 / 28.416 ms**. Panel drags stay near 118 presents/s. Fractional chrome seams at 2×: column resize light **56.65 → 60.47**, dark **56.39 → 60.55** moving Hz. Reference-tier qualification remains unset. Web Navigator: 30.00–30.64 Chrome surface presents/s; p99 50.00–58.34 ms. Windows glass VM diagnostic (main → candidate): stack 42.26 → 44.07 observed bounds changes/s, 21.40 → 20.14 ms UI CPU/change; column width 12.57 → 13.32/s, 66.32 → 68.69 ms. Displayed FPS remains unqualified. Windows chrome rail scrolling and edge arbitration are unmeasured on reference hardware (2026-10-28). | [GTK fractional chrome seams](#gtk-fractional-chrome-seams), 2026-11-12; `artifacts/glass-motion/phase-3/`, 2026-10-30; [GTK exact tab surfaces](#gtk-exact-panel-tab-surfaces), [GTK Vulkan memory reuse](#gtk-vulkan-memory-reuse), 2026-10-28; [Web Navigator layout](#web-navigator-layout), 2026-10-19; [GTK Color resize](#gtk-color-panel-resize), 2026-10-10; [GTK column bridge diagnostic](#gtk-column-bridge-diagnostic), 2026-10-25; [GTK Tool Set density](#gtk-tool-set-density), 2026-10-26; [GTK toolbar dividers](#gtk-toolbar-divider-resize), 2026-10-26; [Windows GPU VM column resize](#windows-gpu-vm-column-resize), 2026-10-26 |
 | Windows window resize | 120 | Unqualified; Windows glass VM diagnostic (main → candidate): 31.42 → 33.08 observed native changes/s and 27.47 → 28.49 ms UI CPU/change. Pooled candidate medians stay within main contact spread; displayed FPS and reference hardware remain unmeasured | `artifacts/glass-motion/phase-3/`, 2026-10-30; [Windows window resize](#windows-window-resize) |
-| GTK window resize | 120 | [C-a after the measurement revert](#gtk-footer-and-utility-placement): paint CPU p95 medians light **9.498 → 9.599 ms**, dark **11.333 → 11.914 ms**, with overlapping contact ranges. **Desktop SDR pacing target still missed.** Bundled Vulkan memory reuse improves light 1× **91.73 → 117.79**, dark 1× **77.77 → 116.84** and dark 2× **44.74 → 109.99** changing-window presents/s. Worst candidate p99 is **16.650 / 16.712 / 17.146 ms**. Reference-tier qualification remains open | [GTK exact tab surfaces](#gtk-exact-panel-tab-surfaces), [GTK Vulkan memory reuse](#gtk-vulkan-memory-reuse), 2026-10-28 |
+| GTK window resize | 120 | [C-a after the measurement revert](#gtk-footer-and-utility-placement): paint CPU p95 medians light **9.498 → 9.599 ms**, dark **11.333 → 11.914 ms**, with overlapping contact ranges. **Desktop SDR pacing target still missed.** Bundled Vulkan memory reuse improves light 1× **91.73 → 117.79**, dark 1× **77.77 → 116.84** and dark 2× **44.74 → 109.99** changing-window presents/s. Worst candidate p99 is **16.650 / 16.712 / 17.146 ms**. Fractional chrome seams at 2×: moving Hz light **42.72 → 46.18**, dark **40.84 → 39.00**, with overlapping runs. Reference-tier qualification remains open | [GTK fractional chrome seams](#gtk-fractional-chrome-seams), 2026-11-12; [GTK exact tab surfaces](#gtk-exact-panel-tab-surfaces), [GTK Vulkan memory reuse](#gtk-vulkan-memory-reuse), 2026-10-28 |
 | Pen pressure utility and curve drag | 120 | **Unqualified.** Current GTK desktop panel 119.20–119.40 presents/s, p99 up to 9.207 ms; curve 120.00, p99 up to 8.470 ms; reference tablet unmeasured | [GTK pen pressure utility](#gtk-pen-pressure-utility), 2026-10-10 UTC |
 | Windows tool bubble drag through four neighbours | 120 | Unmeasured on reference hardware; Surface Pro / Adreno X1-85 functional checks do not qualify timing (PresentMon ETW access denied) | [Windows tool bubbles](../development/windows.md#tool-bubbles) |
 | Windows HDR color bubble drag and intensity scrub | 120 | Unmeasured on reference hardware; native input and pixel checks do not qualify presentation timing (PresentMon ETW access denied) | [Windows tool bubbles](../development/windows.md#tool-bubbles) |
@@ -7312,3 +7339,37 @@ Undo/Redo pass on both builds. The sampled candidate compressed hot set is
 telemetry is unavailable.
 Raw runs and counts: `/mnt/localssd/capycanvas7-issue24-impl/m31/results.json`
 and its sibling `runs/` directory.
+
+## GTK fractional chrome seams
+
+Measured 2026-11-12 UTC against `c100a3dbc`, with the chrome-seam working tree:
+default glass and 2667 × 2000 drawing, private Mutter at scale 2, GTK
+4.22.5/libadwaita 1.9.4 Vulkan on NVIDIA RTX PRO 6000 Blackwell Max-Q. Window
+resize ran A B B A A B B A per theme with three six-second contacts after a
+primer; divider (left and right column, mouse and touch) and floating panel
+group drag ran A B B A. The table gives control → candidate medians of run
+medians, with the control run range in parentheses.
+
+| Case | Theme | Moving Hz | Paint CPU p95, ms | Gap p99, ms |
+| --- | --- | --- | --- | --- |
+| window | light | 42.72 (41.74–44.55) → 46.18 | 17.86 → 17.18 | 36.45 → 30.76 |
+| window | dark | 40.84 (39.39–46.19) → 39.00 | 19.90 → 21.18 | 44.31 → 51.59 |
+| divider | light | 56.65 (56.26–57.04) → 60.47 | 12.83 → 13.44 | 29.41 → 31.41 |
+| divider | dark | 56.39 (53.00–59.77) → 60.55 | 13.78 → 12.68 | 31.33 → 29.19 |
+| panel | light | 112.34 (112.31–112.38) → 116.53 | 4.10 → 3.60 | 16.81 → 14.71 |
+| panel | dark | 108.49 (106.08–110.89) → 112.06 | 4.80 → 4.04 | 16.83 → 13.88 |
+
+Candidate and control run ranges overlap in every slower cell. The slower
+cells were not repeatable. In a compiler-free confirmation pair, dark window
+resize ran 43.14 → 42.46 Hz with CPU p95 20.33 → 19.36 ms. Light left-mouse
+divider ran 46.86 → 46.15 Hz. Dark right-touch divider ran 58.72 → 56.83 Hz.
+Light window resize, running the same converter work, is faster.
+
+Thread-CPU spans put `Converter::frame_in_window` at 0.128–0.257 → 0.149–0.298
+ms per paint. It runs about 7% more conversions: the outline markers plus
+nodes beside a moving outline edge. Whole-paint mean CPU fell in all three
+profiled pairs. No added cost beyond those 0.02–0.04 ms is isolated. Both
+builds miss the desktop pacing target. This comparison does not qualify a
+reference tablet or tier canvas.
+[Gate data, confirmations and profiles](../../artifacts/fractional-seams/round-2/performance/results.md)
+keep every run.

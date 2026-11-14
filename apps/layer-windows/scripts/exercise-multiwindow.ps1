@@ -53,7 +53,7 @@ function Use-Window($Window){
     $script:root=$owned.Root
 }
 function Ready($Window){
-    Wait-Until {(Model $Window).brush_ready -and (Model $Window).windows_workspace.ready -and (Owned-DrawingWindow $review -WindowHandle $Window.hwnd -TraceDirectory $directory)} "Window $($Window.id) did not become ready" 45
+    Wait-Until {(Review-Ready (Model $Window) $Window.hwnd) -and (Owned-DrawingWindow $review -WindowHandle $Window.hwnd -TraceDirectory $directory)} "Window $($Window.id) did not become ready" 45
 }
 function Preferences {Find 'Preferences' -Name -Type ([System.Windows.Automation.ControlType]::Window)}
 function Invoke-Edit([string]$Name) {
@@ -272,7 +272,7 @@ try {
     $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle
     Wait-Until {@(Windows).Count -eq 2} 'Restart did not reopen both windows with unsaved drawings' 60
-    foreach($window in @(Windows)){Wait-Until {$m=Model $window;$m.brush_ready -and !$m.windows_recovery.busy -and !$m.windows_recovery.restoring} "Window $($window.id) did not finish reopening" 60}
+    foreach($window in @(Windows)){Wait-Until {$m=Model $window;(Review-Ready $m $window.hwnd) -and !$m.windows_recovery.busy -and !$m.windows_recovery.restoring} "Window $($window.id) did not finish reopening" 60}
     if(@(Windows|Where-Object {(Model $_).state.document_file.modified}).Count -ne 2){throw 'Restart did not bring back both unsaved drawings'}
     foreach($window in @(Windows)){[CapyWindowTest]::Close([uint32]$review.Id,[IntPtr]$window.hwnd)}
     if(!$review.WaitForExit(15000)){throw 'Reopened windows did not close'}

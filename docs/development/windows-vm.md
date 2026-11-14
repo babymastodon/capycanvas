@@ -45,9 +45,9 @@ Every other command acts on one VM made from the base image. `--vm NAME` or
 worktree has its own VM and its own `C:\capycanvas`. The first `start` creates the
 VM as a copy-on-write disk over the base image and prepares it with
 [`prepare.ps1`](../../tools/windows-vm/prepare.ps1): PowerShell 7 if the base lacks
-it, Japanese Basic input and the private user's Microsoft Japanese IME profile,
-a 2560 × 1600 display at 150 % scale, the dark theme the fixtures were written
-against, and one restart. This takes a few
+it, Japanese Basic input (the `ime` fixture adds the Microsoft Japanese IME only
+while it runs), a 2560 × 1600 display at 150 % scale, the dark theme the
+fixtures were written against, and one restart. This takes a few
 minutes; later starts take under a minute. Several VMs can run at once, each with
 its own disk, TPM, SSH port and desktop session.
 Startup keeps local test passwords from expiring and repairs an expired autologon
@@ -193,14 +193,20 @@ Slot locks are host-wide, including across VM state directories. QEMU inherits
 each reservation descriptor and holds it until shutdown or a crash, even if the
 launcher disconnects. A full pool supplies fewer runners when possible; zero
 available runners fails clearly. Existing ordinary or foreign VMs are never
-adopted as runners. Concurrent commands cannot use the same runner.
+adopted as runners. Concurrent commands cannot use the same runner. CPU runners
+belong to their creating worktree; run each concurrent round from its own worktree.
 
 The merged output under `<artifacts>/<primary>/shards-<timestamp>` records the
 full plan, each shard's evidence path and provenance, every result and total wall
-time. A missing selector or shard fails the run. Runners stop on success or
+time. A missing selector or shard fails the run. A failed runner is drained from
+the queue, then its recorded runner process is stopped; selectors it never
+claimed go to the other runners. A status probe that times out while SSH still
+answers is logged to the shard's `slow-status.jsonl`, and only the fixture
+deadline fails a slow runner. Runners stop on success or
 failure; `--keep-runners` retains their reservations for another round. Their
 prepared disks persist. Stop retained runners with `--vm <runner> stop`, and use
-`runners --reset` to delete this primary VM's stopped runner disks.
+`runners --reset` from the owning worktree to delete this primary VM's stopped
+runner disks once that worktree no longer runs rounds.
 
 Crash dumps land in each fixture run's `wer/dumps` evidence directory; the runner restores the per-app LocalDumps key's original values and registry types before retrieval.
 
@@ -428,7 +434,8 @@ and executable/DLL hashes before reusing a build. Fixture-only changes can reuse
 or build scripts require rebuilding.
 
 Each run writes its expected variants to `plan.json`. Empty selections, missing
-results, a stopped desktop task and startup or fixture deadlines fail the run.
+results, a stopped runner process (recorded in `runner.json`) and startup or
+fixture deadlines fail the run.
 The shared fixture reader uses bounded retries for brief trace-file I/O locks;
 malformed snapshots still fail immediately.
 Restore changed Windows user settings from the runner, with forced-termination

@@ -154,19 +154,21 @@ fn serialize_prompt<S: serde::Serializer>(prompt: &Option<ManagerPrompt>, serial
     struct View<'a> { dialog: layer_ui::DialogIntent, #[serde(flatten)] prompt: &'a ManagerPrompt }
     prompt.as_ref().map(|prompt| View { dialog:prompt.dialog_intent(),prompt }).serialize(serializer)
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ManagerStatus { pub text: String, pub error: bool, pub retry: bool, pub action: Option<ManagerButton> }
 impl WorkspaceView {
     fn present_status(&mut self, localization: &layer_ui::Localizer) {
         let action=if self.error.is_some() { Some(ManagerAction::SaveAsNew) }
             else if self.interrupted>0 && !self.busy { Some(ManagerAction::RecoverInterrupted) } else { None };
-        self.status=if self.error.is_some() || action.is_some() || !self.ready {
-            let text=self.error.clone().unwrap_or_else(|| action.as_ref().map_or_else(
-                || localization.text(layer_ui::MessageId::NATIVE_DIALOG_LOADING).to_string(),
+        self.status=(self.error.is_some() || action.is_some()).then(|| {
+            let text=self.error.clone().unwrap_or_else(|| action.as_ref().map_or_else(String::new,
                 |action| format!("{} · {}",self.interrupted,action.label(localization))));
-            Some(ManagerStatus {text,error:self.error.is_some(),retry:self.error.is_some(),
-                action:action.map(|action| ManagerButton {label:action.label(localization),action,enabled:true,primary:false})})
-        } else { None };
+            ManagerStatus {text,error:self.error.is_some(),retry:self.error.is_some(),
+                action:action.map(|action| ManagerButton {label:action.label(localization),action,enabled:true,primary:false})}
+        });
+    }
+    pub fn needs_attention(&self) -> bool {
+        self.error.is_some() || self.prompt.is_some() || self.status.as_ref().is_some_and(|status| status.action.is_some())
     }
 }
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -242,7 +244,6 @@ enum Outcome {
     Editing(Option<Box<StoredEntity>>),
     Done,
     Deleted(String),
-    Restart,
     Dismiss,
     Closed,
     Focus(FocusTarget),
@@ -269,15 +270,28 @@ impl Startup {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum StartupNotice { Restored, Damaged, Newer, Unavailable }
+impl StartupNotice {
+    pub(crate) fn message(self) -> layer_ui::MessageId {
+        use layer_ui::MessageId as M;
+        match self {
+            Self::Restored => M::WORKSPACE_STORAGE_RESTORED_NOTICE,
+            Self::Damaged => M::WORKSPACE_STORAGE_DAMAGED_NOTICE,
+            Self::Newer => M::WORKSPACE_STORAGE_NEWER_NOTICE,
+            Self::Unavailable => M::WORKSPACE_STORAGE_UNAVAILABLE_NOTICE,
+        }
+    }
+}
 enum WorkspaceNoticeCopy {
-    Messages(Vec<layer_ui::MessageId>),
+    Startup(StartupNotice),
     SwitcherError(StoreError),
 }
 impl WorkspaceNoticeCopy {
     fn text(&self, localization: &layer_ui::Localizer) -> String {
         match self {
             Self::SwitcherError(error) => error.localized_message(localization),
-            Self::Messages(ids) => ids.iter().map(|id|localization.text(*id).to_string()).collect::<Vec<_>>().join("\n\n"),
+            Self::Startup(notice) => localization.text(notice.message()).to_string(),
         }
     }
 }
@@ -345,8 +359,8 @@ impl<S: WorkspaceStore + 'static> Drop for WorkspaceController<S> {
     fn drop(&mut self) { self.stop(); }
 }
 impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
-    pub fn new_localized(store: S, platform: Platform, now: u64, localization: Arc<layer_ui::Localizer>) -> Self {
-        Self::new_owned_localized(store, platform, Owner::fresh(), now, localization)
+    pub fn new_localized(store: S, platform: Platform, now: u64, localization: Arc<layer_ui::Localizer>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self::new_owned_localized(store, platform, Owner::fresh(), now, localization, wake)
     }
     pub fn localization(&self) -> &Arc<layer_ui::Localizer> {
         &self.localization
@@ -411,7 +425,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             })
         };
     }
-    pub fn new_owned_localized(store: S, platform: Platform, owner: Owner, now: u64, localization: Arc<layer_ui::Localizer>) -> Self {
+    pub fn new_owned_localized(store: S, platform: Platform, owner: Owner, now: u64, localization: Arc<layer_ui::Localizer>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let mut manager = WorkspaceManager::new_localized(store, platform, localization.clone());
         manager.owner = owner;
         manager.clock.set(now);
@@ -420,7 +434,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             localization_generation: 0,
             manager: Rc::new(manager),
             view: Default::default(),
-            wake: Default::default(),
+            wake: Arc::new(Mutex::new(Some(wake))),
             task: None,
             quiet: false,
             preferences: None,
@@ -479,13 +493,6 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
             || (self.manager.platform == Platform::Web && mobile));
         self
     }
-    /// Storage replies call `wake` from any thread; the host then schedules
-    /// `tick` on its editor owner.
-    pub fn set_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
-        if let Ok(mut slot) = self.wake.lock() {
-            *slot = Some(wake);
-        }
-    }
     /// After `stop` returns, no storage reply calls the wake callback.
     pub fn stop(&mut self) {
         if let Ok(mut slot) = self.wake.lock() {
@@ -524,7 +531,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 Startup::SetAside => m.set_aside_storage().await?,
                 Startup::InMemory => m.use_memory(),
             }
-            m.reopen().await?;
+            m.execute(StoreRequest::Reopen).await?;
             m.load_editing().await?;
             m.refresh_switcher().await?;
             let mut bound = Vec::new();
@@ -564,26 +571,18 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         self.start(next, now);
         true
     }
-    fn startup_notice_copy(&self) -> Option<WorkspaceNoticeCopy> {
-        use layer_ui::MessageId as M;
-        let mut ids = Vec::new();
-        match self.startup? {
-            Startup::Stored => {},
-            Startup::SetAside => ids.push(M::WORKSPACE_STORAGE_DAMAGED_NOTICE),
-            Startup::InMemory => ids.push(if self.startup_error.as_ref().is_some_and(|error|error.kind==ErrorKind::UnsupportedSchema
-                && error.known!=Some(WorkspaceRefusal::WorkspaceStorageWasWrittenByAnEarlierVersionOfCapyCanvas)) {
-                M::WORKSPACE_STORAGE_NEWER_NOTICE
-            } else { M::WORKSPACE_STORAGE_UNAVAILABLE_NOTICE }),
-        }
-        if self.manager.startup_created() { ids.push(M::WORKSPACE_CREATED_UNREADABLE_NOTICE); }
-        if self.manager.editing_dropped() { ids.push(M::WORKSPACE_EDITING_UNREADABLE_NOTICE); }
-        (!ids.is_empty()).then_some(WorkspaceNoticeCopy::Messages(ids))
+    fn startup_notice(&self) -> Option<StartupNotice> {
+        Some(match self.startup? {
+            Startup::Stored => return None,
+            Startup::SetAside if self.manager.restored_copy() => StartupNotice::Restored,
+            Startup::SetAside => StartupNotice::Damaged,
+            Startup::InMemory if self.startup_error.as_ref().is_some_and(|error| error.kind == ErrorKind::UnsupportedSchema) => StartupNotice::Newer,
+            Startup::InMemory => StartupNotice::Unavailable,
+        })
     }
     fn notify<R: CanvasRenderer>(&mut self, session: &mut UiSession<R>, copy: WorkspaceNoticeCopy) {
         session.notify_window(copy.text(&self.localization));
-        self.notice = session.state().notice.as_ref().map(|notice| WorkspaceNotice {
-            id: notice.id, generation: self.localization_generation, copy,
-        });
+        self.notice = Some(WorkspaceNotice { id: session.last_notice_id(), generation: self.localization_generation, copy });
     }
     fn refresh_notice<R: CanvasRenderer>(&mut self, session: &mut UiSession<R>) {
         if let Some(notice) = &mut self.notice
@@ -923,6 +922,16 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         input: WorkspaceInput,
         now: u64,
     ) -> Result<UiChange> {
+        let mut change = self.apply_input(session, input, now)?;
+        merge(&mut change, session.set_workspace_attention(self.view.needs_attention()));
+        Ok(change)
+    }
+    fn apply_input<R: CanvasRenderer>(
+        &mut self,
+        session: &mut UiSession<R>,
+        input: WorkspaceInput,
+        now: u64,
+    ) -> Result<UiChange> {
         if self.renaming_workspace() && self.task.is_none()
             && matches!(input, WorkspaceInput::Open { .. } | WorkspaceInput::Form { .. }
                 | WorkspaceInput::Action { .. } | WorkspaceInput::Switch { .. }
@@ -938,7 +947,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 .as_ref()
                 .is_some_and(|action| *action != ManagerAction::SaveAsNew)
         {
-            return self.input(session, WorkspaceInput::Retry, now);
+            return self.apply_input(session, WorkspaceInput::Retry, now);
         }
         if !matches!(
             input,
@@ -1276,10 +1285,6 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 }))
             };
             Ok(match action {
-                ManagerAction::RestoreWorkspaces(id) => {
-                    m.restore_snapshot(id).await?;
-                    Outcome::Restart
-                }
                 ManagerAction::New => Outcome::adopt(m.create_workspace(&name, now).await?),
                 ManagerAction::Rename(id) => {
                     let metadata = m.load(&id).await?.entity.metadata;
@@ -1662,7 +1667,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 self.preferences = self.spawn(async move {
                     manager.refresh().await?;
                     manager.refresh_switcher().await?;
-                    if editing && let StoreResponse::Editing {state,..} = manager.execute(StoreRequest::Editing {language:manager.localization().language()}).await? {
+                    if editing && let StoreResponse::Editing(state) = manager.execute(StoreRequest::Editing {language:manager.localization().language()}).await? {
                         return Ok(Some((state.unwrap_or_else(||Box::new(layer_ui::EditingState::new_localized(&manager.localization()))),baseline)));
                     }
                     Ok(None)
@@ -1676,7 +1681,6 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 Ok(outcome) => {
                     let keep_prompt = matches!(outcome, Outcome::Adopt(_) | Outcome::Editing(Some(_)) | Outcome::Install(_));
                     match outcome {
-                        Outcome::Restart => { self.view.ready = false; self.preferences=None; self.refreshed_editing=None; self.renew=None; self.start(Startup::Stored,now); },
                         Outcome::Adopt(incoming) => {
                             if self
                                 .view
@@ -1837,9 +1841,9 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 .capture()
                 .and_then(|c| PreparedWorkspace::new(c).map_err(StoreError::workspace));
             if prepared.is_ok()
-                && let Some(copy) = self.startup_notice_copy()
+                && let Some(notice) = self.startup_notice()
             {
-                self.notify(session, copy);
+                self.notify(session, WorkspaceNoticeCopy::Startup(notice));
             }
             let editing = self.startup.is_some().then(|| self.manager.editing()).flatten();
             match prepared.and_then(|p| {
@@ -2029,14 +2033,6 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
                 Err(error) => self.set_error(error),
             }
         }
-        if self.view.ready && self.task.is_none() && self.incoming.is_none() && !self.terminating && self.view.prompt.is_none()
-            && let Some(id) = self.manager.take_restore()
-        {
-            match self.form(session,ManagerAction::RestoreWorkspaces(id)) {
-                Ok(c) => {merge(&mut change,c);presentation_changed=true;},
-                Err(error) => self.set_error(error),
-            }
-        }
         if presentation_changed {
             self.present(now);
             if self.view.page.is_some()
@@ -2077,6 +2073,7 @@ impl<S: WorkspaceStore + 'static> WorkspaceController<S> {
         self.view.retry = self.view.error.is_some()
             && (self.manager.has_failed_operation() || self.manager.dirty());
         self.publish_flags();
+        merge(&mut change, session.set_workspace_attention(self.view.needs_attention()));
         change
     }
 }
@@ -2097,10 +2094,10 @@ mod lifetime_tests {
 
     #[test]
     fn dropping_controller_disarms_retained_storage_wakers() {
-        let mut controller=WorkspaceController::new_localized(UnusedStore,Platform::Windows,0,
-            layer_ui::Localizer::shared(layer_ui::UiLanguage::English));
         let calls=Arc::new(AtomicUsize::new(0));let observed=calls.clone();
-        controller.set_wake(Arc::new(move|| {observed.fetch_add(1,Ordering::SeqCst);}));
+        let controller=WorkspaceController::new_localized(UnusedStore,Platform::Windows,0,
+            layer_ui::Localizer::shared(layer_ui::UiLanguage::English),
+            Arc::new(move|| {observed.fetch_add(1,Ordering::SeqCst);}));
         let retained=Waker::from(Arc::new(Signal {ready:AtomicBool::new(false),wake:controller.wake.clone()}));
         retained.wake_by_ref();assert_eq!(calls.load(Ordering::SeqCst),1);
         drop(controller);

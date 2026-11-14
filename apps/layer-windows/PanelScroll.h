@@ -7,7 +7,7 @@ inline void panelScrolling(ScrollView const& scroll,UIElement const& content,std
     auto state=std::make_shared<Contact>();auto context=std::weak_ptr(data);auto weak=make_weak(scroll);auto surface=make_weak(content);
     edgeTag(content.as<FrameworkElement>(),L"edge_contact",S(L"free"));
     auto forget=[context,state]{if(auto data=context.lock();data&&state->pointer)data->pointerCancels.Forget(*state->pointer,state.get());state->pointer.reset();};
-    auto cancel=[state,forget,surface]{state->canceled=true;state->running=false;forget();if(auto content=surface.get())content.ManipulationMode(ManipulationModes::None);if(auto complete=std::exchange(state->complete,{}))complete();};
+    auto cancel=[state,forget]{state->canceled=true;state->running=false;forget();if(auto complete=std::exchange(state->complete,{}))complete();};
     scroll.IgnoredInputKinds(ScrollingInputKinds::Touch|ScrollingInputKinds::Pen);
     scroll.Background(nullptr);scroll.Loaded([weak](auto&&,auto&&){if(auto scroll=weak.get())if(auto presenter=scroll.ScrollPresenter())presenter.Background(nullptr);});
     content.ManipulationMode(ManipulationModes::TranslateRailsY|ManipulationModes::TranslateInertia);
@@ -18,13 +18,13 @@ inline void panelScrolling(ScrollView const& scroll,UIElement const& content,std
         if(state->complete)cancel();
         if(auto content=surface.get())content.ManipulationMode(ManipulationModes::TranslateRailsY|ManipulationModes::TranslateInertia);
         state->pointer=point.PointerId();state->canceled=false;
-        if(auto data=context.lock()){state->epoch=uint64_t(num(object(data->state,L"document_file"),L"epoch"));data->pointerCancels.Observe(*state->pointer,state.get(),cancel);}
+        if(auto data=context.lock()){state->epoch=uint64_t(num(branch(data->state,L"document_file"),L"epoch"));data->pointerCancels.Observe(*state->pointer,state.get(),cancel);}
     })),true);
     content.ManipulationStarting([weak,state](auto&&,ManipulationStartingRoutedEventArgs const& e){if(auto scroll=weak.get())e.Container(scroll);if(state->canceled||!state->pointer)e.Mode(ManipulationModes::None);});
     content.ManipulationStarted([weak,state,cancel](auto&&,ManipulationStartedRoutedEventArgs const& e){state->complete=[e]{e.Complete();};if(auto scroll=weak.get();scroll&&!state->canceled){state->offset=scroll.VerticalOffset();state->running=true;}else cancel();});
     content.ManipulationDelta([weak,context,state,cancel](auto&&,ManipulationDeltaRoutedEventArgs const& e){
         state->complete=[e]{e.Complete();};auto data=context.lock();auto scroll=weak.get();
-        if(!scroll||!data||!state->running||state->canceled||scroll.VerticalScrollMode()==ScrollingScrollMode::Disabled||state->epoch!=uint64_t(num(object(data->state,L"document_file"),L"epoch"))){cancel();return;}
+        if(!scroll||!data||!state->running||state->canceled||scroll.VerticalScrollMode()==ScrollingScrollMode::Disabled||state->epoch!=uint64_t(num(branch(data->state,L"document_file"),L"epoch"))){cancel();return;}
         auto delta=e.Delta().Translation.Y;auto next=std::clamp(state->offset-delta,0.,scroll.ScrollableHeight());
         if(e.IsInertial()&&next==state->offset&&delta!=0){cancel();return;}
         if(next!=state->offset){state->offset=next;scrollVertical(scroll,next);}e.Handled(true);

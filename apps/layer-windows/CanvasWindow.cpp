@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <sstream>
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -36,6 +37,7 @@ using namespace Microsoft::UI::Xaml::Media;
 using Microsoft::UI::Xaml::Automation::AutomationProperties;
 using namespace Microsoft::UI::Windowing;
 using namespace Windows::Foundation;
+static constexpr double LaunchCoverOpacity=254./255.;
 static bool SameRegions(std::vector<Windows::Graphics::RectInt32> const& a,std::vector<Windows::Graphics::RectInt32> const& b){
     return a.size()==b.size()&&std::equal(a.begin(),a.end(),b.begin(),[](auto x,auto y){return x.X==y.X&&x.Y==y.Y&&x.Width==y.Width&&x.Height==y.Height;});
 }
@@ -114,7 +116,10 @@ CanvasWindow::CanvasWindow(std::function<void()> create,std::function<void(uint6
      createWindow(std::move(create)),testDeviceLoss(std::move(deviceLoss)),onClosed(std::move(close)),workspacePreferencesChanged(std::move(preferencesChanged)),screenData(std::make_shared<CapyUi::WorkspaceData>()) {
     // HWND/WindowId can be reused after an earlier window closes. Invalidate
     // its old diagnostic model before publishing the new live-window manifest.
-    if(GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0))for(auto kind:{"ui-state","camera-state","presentation-state"})TraceState(kind,"{}");
+    if(GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0)){
+        for(auto kind:{"ui-state","camera-state","presentation-state"})TraceState(kind,"{}");
+        textInputTrace=std::make_shared<OrderedTraceFile>();TraceTextInput(false);
+    }
 }
 LRESULT CALLBACK CanvasWindow::WindowMessage(HWND window,UINT message,WPARAM wparam,LPARAM lparam,UINT_PTR id,DWORD_PTR data){
     if(message==WM_SYSCOMMAND&&(wparam&0xFFF0)==SC_KEYMENU&&lparam==0)return 0;
@@ -147,17 +152,29 @@ static winrt::fire_and_forget PublishPanelMetrics(std::filesystem::path name,std
 void CanvasWindow::TraceState(char const* kind,std::string const& value)const {
     WriteTraceFile(std::string(kind)+"-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(windowId)+".json",value);
 }
-void CanvasWindow::TracePresentation(bool frame,bool dirty,bool repeat) {
+void CanvasWindow::TraceTextInput(bool pressed) {
+    if(!textInputTrace)return;
+    if(pressed)++textInputPresses;
+    auto process=std::to_string(GetCurrentProcessId()),window=std::to_string(windowId);
+    PublishTraceFile(textInputTrace,"text-input-"+process+"-"+window+".json","{\"process_id\":"+process+",\"window_id\":"+window+
+        ",\"composing\":"+(CapyUi::focusedTextComposing(root.XamlRoot())?"true":"false")+",\"pointer_presses\":"+std::to_string(textInputPresses)+"}");
+}
+bool CanvasWindow::TracePresentation(bool frame,bool dirty,bool repeat) {
     auto& trace=presentationTrace;
-    if(!trace.enabled)return;
+    if(!trace.enabled)return false;
+    bool stalled=!frame&&!dirty&&trace.Stalled(std::chrono::steady_clock::now());
+    auto before=trace.displayed;
+    if(stalled)DwmFlush();
     uint64_t stats[6]{};
     auto shown=capy_presentation_stats(host,stats)==0?std::optional<uint64_t>(stats[1]):std::nullopt;
     trace.Observe(frame,dirty,repeat,stats[0],shown,std::chrono::steady_clock::now());
-    if(frame)return;
+    bool draw=stalled&&trace.Flushed(before);
+    if(frame)return draw;
     auto value="{\"process_id\":"+std::to_string(GetCurrentProcessId())+",\"window_id\":"+std::to_string(windowId)+
         ",\"presentation_epoch\":"+std::to_string(trace.epoch)+",\"required\":"+std::to_string(trace.required)+
         ",\"displayed\":"+(trace.displayed?std::to_string(*trace.displayed):std::string("null"))+"}";
     TraceState("presentation-state",value);
+    return draw;
 }
 std::string CanvasWindow::SystemTheme(){
     using winrt::Windows::UI::ViewManagement::UIColorType;
@@ -177,60 +194,121 @@ CanvasWindow::~CanvasWindow() {
 }
 void CanvasWindow::CreateLaunchCover() {
     launchTiming=CanvasLaunchTiming();
+    launchCover.Opacity(LaunchCoverOpacity);
     auto dark=uiSettings.GetColorValue(Windows::UI::ViewManagement::UIColorType::Foreground).R>128;
     launchCover.Background(SolidColorBrush(CapyUi::color(dark?L"#323232":L"#f4f4f4")));
     Canvas::SetZIndex(launchCover,1200);
     AutomationProperties::SetAutomationId(launchCover,L"launch-splash");
-    launchMark=CapyUi::icon(L"zen-looking-up",dark?L"dark":L"light",72);
-    launchMark.HorizontalAlignment(HorizontalAlignment::Center);launchMark.VerticalAlignment(VerticalAlignment::Center);
-    launchCaption.HorizontalAlignment(HorizontalAlignment::Center);launchCaption.VerticalAlignment(VerticalAlignment::Center);
-    launchCaption.Margin({20,144,20,0});launchCaption.Opacity(0);launchCaption.IsHitTestVisible(false);
+    launchMark.HorizontalAlignment(HorizontalAlignment::Left);launchMark.VerticalAlignment(VerticalAlignment::Top);
+    launchCaption.HorizontalAlignment(HorizontalAlignment::Center);launchCaption.VerticalAlignment(VerticalAlignment::Top);
+    launchCaption.TextWrapping(TextWrapping::Wrap);launchCaption.TextAlignment(TextAlignment::Center);
+    launchCaption.FontFamily(FontFamily(L"Segoe UI"));
+    launchCaption.TextLineBounds(TextLineBounds::Tight);launchCaption.OpticalMarginAlignment(OpticalMarginAlignment::TrimSideBearings);
+    launchCaption.Opacity(0);launchCaption.IsHitTestVisible(false);
     AutomationProperties::SetAutomationId(launchCaption,L"launch-caption");
     launchCover.Children().Append(launchMark);launchCover.Children().Append(launchCaption);root.Children().Append(launchCover);
     launchCaptionTimer=dispatcher.CreateTimer();launchCaptionTimer.IsRepeating(false);
     launchCaptionTimer.Tick([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock();self&&self->launchCover.Visibility()==Visibility::Visible){
-        if(!self->uiSettings.AnimationsEnabled()){self->launchCaption.Opacity(.45);return;}
-        Animation::DoubleAnimation opacity;opacity.From(0.);opacity.To(.45);opacity.Duration(DurationHelper::FromTimeSpan(CanvasLaunchTiming::FadeDuration));
+        self->LayoutLaunchCover();
+        if(!self->uiSettings.AnimationsEnabled()){self->launchCaption.Opacity(1.);return;}
+        Animation::DoubleAnimation opacity;opacity.From(0.);opacity.To(1.);opacity.Duration(DurationHelper::FromTimeSpan(CanvasLaunchTiming::CaptionFadeDuration));
         Animation::Storyboard::SetTarget(opacity,self->launchCaption);Animation::Storyboard::SetTargetProperty(opacity,L"Opacity");
         self->launchCaptionFade=Animation::Storyboard();self->launchCaptionFade.Children().Append(opacity);self->launchCaptionFade.Begin();
     }});
-    launchCover.Loaded([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock()){self->launchLoaded=true;self->launchTiming=CanvasLaunchTiming();self->ArmLaunchCaption();}});
+    launchMark.ImageOpened([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->LayoutLaunchCover();});
+    launchCover.SizeChanged([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->LayoutLaunchCover();});
+    launchCover.Loaded([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock()){self->launchLoaded=true;self->launchTiming=CanvasLaunchTiming();self->LayoutLaunchCover();self->ArmLaunchCaption();self->QueueLaunchReveal();}});
+}
+void CanvasWindow::LayoutLaunchCover() {
+    auto width=launchCover.ActualWidth(),height=launchCover.ActualHeight();
+    auto mark=CapyUi::object(bootstrap,L"launch_mark");
+    if(width<=0||height<=0||!mark.Size())return;
+    CanvasLaunchPlacement placement(width,height,capy_launch_mark_size(float(width),float(height)));
+    auto dark=uiSettings.GetColorValue(Windows::UI::ViewManagement::UIColorType::Foreground).R>128;
+    auto theme=CapyUi::str(CapyUi::object(lastModel,L"state"),L"theme",dark?L"dark":L"light");
+    auto icon=CapyUi::str(mark,L"icon");
+    CapyUi::setIcon(launchMark,icon,theme,placement.size);
+    AutomationProperties::SetAutomationId(launchMark,L"launch-mark-"+icon);
+    launchMark.Margin({placement.left,placement.top,0,0});
+    launchCaption.FontSize(bootstrap.GetNamedNumber(L"launch_caption_size"));
+    auto source=launchMark.Source().try_as<Imaging::SvgImageSource>();
+    auto scale=launchCover.XamlRoot()?launchCover.XamlRoot().RasterizationScale():1.;
+    launchCaption.Margin({20,placement.CaptionTop(bootstrap.GetNamedNumber(L"launch_caption_gap"),
+        CapyUi::num(mark,L"ink_bottom"),source?source.RasterizePixelHeight():0.,scale),20,0});
 }
 void CanvasWindow::ArmLaunchCaption() {
     if(!launchLoaded||!bootstrap.Size()||launchCover.Visibility()!=Visibility::Visible)return;
     auto delay=std::chrono::milliseconds(static_cast<int64_t>(bootstrap.GetNamedNumber(L"launch_caption_delay_ms")));
     auto remaining=launchTiming.CaptionRemaining(CanvasLaunchTiming::Clock::now(),delay);
-    if(remaining.count()==0)launchCaption.Opacity(.45);
+    if(remaining.count()==0)launchCaption.Opacity(1.);
     else{launchCaptionTimer.Interval(remaining);launchCaptionTimer.Start();}
 }
 void CanvasWindow::HideLaunchCover(bool animate) {
+    CancelLaunchReveal();
     if(launchCaptionTimer)launchCaptionTimer.Stop();
     if(launchCaptionFade)launchCaptionFade.Stop();
     if(launchCover.Visibility()!=Visibility::Visible)return;
     if(!animate||!uiSettings.AnimationsEnabled()){if(launchFade)launchFade.Stop();launchCover.Visibility(Visibility::Collapsed);return;}
     if(launchFade)return;
     launchCover.IsHitTestVisible(false);
-    Animation::DoubleAnimation opacity;opacity.From(launchCover.Opacity());opacity.To(0.);opacity.Duration(DurationHelper::FromTimeSpan(CanvasLaunchTiming::FadeDuration));
+    auto duration=std::chrono::milliseconds(static_cast<int64_t>(bootstrap.GetNamedNumber(L"launch_reveal_ms")));
+    Animation::DoubleAnimation opacity;opacity.From(launchCover.Opacity());opacity.To(0.);opacity.Duration(DurationHelper::FromTimeSpan(duration));
     Animation::Storyboard::SetTarget(opacity,launchCover);Animation::Storyboard::SetTargetProperty(opacity,L"Opacity");
     launchFade=Animation::Storyboard();launchFade.Children().Append(opacity);
     launchFade.Completed([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->launchCover.Visibility(Visibility::Collapsed);});launchFade.Begin();
 }
+void CanvasWindow::CancelLaunchReveal() {
+    launchFrame.revoke();launchPaint.Cancel();
+}
+void CanvasWindow::QueueLaunchReveal() {
+    auto launch=CapyUi::object(lastModel,L"launch");
+    if(closing||closed||statusFailed||launchFade||!root.IsLoaded()||IsIconic(Handle())||!surfaceState.Attached()||launchCover.Visibility()!=Visibility::Visible
+        ||!CapyUi::flag(launch,L"finished")||CapyUi::flag(launch,L"visible"))return;
+    auto receipt=launchPaint.Request(surfaceHandle,surfaceState.MinimumGeneration());
+    if(!receipt)return;
+    launchFrame.revoke();
+    launchFrame=Microsoft::UI::Xaml::Media::CompositionTarget::Rendered(auto_revoke,
+        [weak=weak_from_this(),receipt](auto&&,auto&&){if(auto self=weak.lock()){
+            if(self->closing||self->closed||!self->launchPaint.Rendered(receipt))return;
+            self->launchFrame.revoke();
+            AwaitLaunchPresent(weak,self->dispatcher,receipt);
+        }});
+}
+winrt::fire_and_forget CanvasWindow::AwaitLaunchPresent(std::weak_ptr<CanvasWindow> owner,
+    Microsoft::UI::Dispatching::DispatcherQueue queue,CanvasLaunchPaint::Receipt receipt) {
+    HRESULT result=E_FAIL;
+    try{co_await winrt::resume_background();result=DwmFlush();}catch(...){}
+    queue.TryEnqueue([owner,receipt,result]{if(auto self=owner.lock();self&&!self->closing&&!self->closed){
+        auto launch=CapyUi::object(self->lastModel,L"launch");
+        if(self->statusFailed||!self->root.IsLoaded()||IsIconic(self->Handle())||!self->surfaceState.Attached()||self->launchCover.Visibility()!=Visibility::Visible
+            ||!CapyUi::flag(launch,L"finished")||CapyUi::flag(launch,L"visible")){self->CancelLaunchReveal();return;}
+        if(!self->launchPaint.Presented(receipt,self->surfaceHandle,self->surfaceState.MinimumGeneration()))return;
+        if(FAILED(result)){
+            std::ostringstream cause;cause<<"0x"<<std::hex<<uint32_t(result)<<": "<<to_string(hresult_error(result).message());
+            self->statusFailed=true;self->Fail(to_string(CapyUi::str(self->bootstrap,L"canvas_init_failed"))+"\n\n"+cause.str());return;
+        }
+        self->HideLaunchCover(true);
+    }});
+}
 void CanvasWindow::ApplyLaunchCover(Windows::Data::Json::JsonObject const& model) {
     using namespace CapyUi;
-    auto state=object(model,L"state"),launch=object(model,L"launch"),palette=object(state,L"palette");
+    auto state=branch(model,L"state"),launch=object(model,L"launch"),palette=object(state,L"palette");
     if(flag(launch,L"finished")&&launchCover.Visibility()==Visibility::Collapsed)return;
     auto theme=str(state,L"theme",L"dark");launchCover.RequestedTheme(theme==L"dark"?ElementTheme::Dark:ElementTheme::Light);
     launchCover.Background(SolidColorBrush(color(str(palette,L"bg",theme==L"dark"?L"#323232":L"#f4f4f4"))));
-    setIcon(launchMark,L"zen-looking-up",theme,72);launchCaption.Foreground(SolidColorBrush(color(str(palette,L"text",L"#fafafb"))));
-    launchCaption.Text(str(bootstrap,(L"preparing_"+str(launch,L"notice",L"canvas")).c_str()));
+    LayoutLaunchCover();launchCaption.Foreground(SolidColorBrush(color(str(palette,str(bootstrap,L"launch_caption_color_role").c_str()))));
+    launchCaption.Text(str(bootstrap,L"launch_caption"));
     AutomationProperties::SetName(launchCover,launchCaption.Text());
     if(statusFailed||!str(model,L"error").empty()||!str(state,L"host_error").empty()){HideLaunchCover(false);return;}
     if(!launch.Size())return;
-    if(!flag(launch,L"visible")){HideLaunchCover(flag(launch,L"finished"));return;}
+    if(!flag(launch,L"visible")){if(!flag(launch,L"finished"))HideLaunchCover(false);return;}
+    CancelLaunchReveal();
+    if(launchFade){launchFade.Stop();launchFade=nullptr;}
     if(launchCover.Visibility()!=Visibility::Visible){
-        launchCover.Visibility(Visibility::Visible);launchCover.Opacity(1);launchCover.IsHitTestVisible(true);
+        launchCover.Visibility(Visibility::Visible);launchCover.IsHitTestVisible(true);
         ArmLaunchCaption();
     }
+    launchCover.Opacity(LaunchCoverOpacity);
 }
 void CanvasWindow::Open() {
     try {
@@ -247,7 +325,7 @@ void CanvasWindow::Open() {
     titlebar.ButtonBackgroundColor(transparent);
     titlebar.ButtonInactiveBackgroundColor(transparent);
     titlebar.ButtonForegroundColor(Windows::UI::Color{255,225,225,229});
-    titlebar.PreferredHeightOption(TitleBarHeightOption::Tall);
+    titlebar.PreferredHeightOption(TitleBarHeightOption::Standard);
     root.RequestedTheme(ElementTheme::Default);
     auto& pointerMode=CapyUi::MouseScrollbars::current();scrollbarInput=pointerMode.source;pointerMode.observe(root);
     root.PreviewKeyDown([weak=weak_from_this()](auto&&,KeyRoutedEventArgs const& event){if(auto self=weak.lock();self&&event.Key()==Windows::System::VirtualKey::Escape){
@@ -288,7 +366,7 @@ void CanvasWindow::Open() {
         }
         if(auto self=weak.lock();self&&!self->closed)if(auto entry=e.NewFocusedElement().try_as<TextBox>();entry&&entry.XamlRoot()==self->root.XamlRoot()){
             entry.Language(self->root.Language());CapyUi::captureTextComposition(entry,[weak](bool busy){
-                if(auto self=weak.lock();self&&!self->closing)self->Send(busy?"true":"false",CanvasCommandKind::LocalizationInput);
+                if(auto self=weak.lock();self&&!self->closing){self->Send(busy?"true":"false",CanvasCommandKind::LocalizationInput);self->TraceTextInput(false);}
             });
         }
     });
@@ -300,8 +378,9 @@ void CanvasWindow::Open() {
     root.PreviewKeyUp([weak=weak_from_this()](auto&&,KeyRoutedEventArgs const& e){
         if(auto self=weak.lock())if(!self->dialogOpen.load()&&(CapyUi::flag(CapyUi::object(self->lastModel,L"launch"),L"visible",true)||!self->header||!self->header->Key(e,false)))self->Key(e,false);
     });
-    PointerEventHandler contact([](winrt::Windows::Foundation::IInspectable const&,PointerRoutedEventArgs const& e){
+    PointerEventHandler contact([weak=weak_from_this()](winrt::Windows::Foundation::IInspectable const&,PointerRoutedEventArgs const& e){
         CapyUi::setTouchContact(e.Pointer().PointerDeviceType()==Microsoft::UI::Input::PointerDeviceType::Touch);
+        if(auto self=weak.lock())self->TraceTextInput(true);
     });
     root.AddHandler(UIElement::PointerPressedEvent(),box_value(contact),true);
     root.AddHandler(UIElement::PointerMovedEvent(),box_value(PointerEventHandler([weak=weak_from_this()](auto&&,PointerRoutedEventArgs const& e){
@@ -380,7 +459,8 @@ void CanvasWindow::Open() {
                         self->Send(R"({"type":"blur"})",CanvasCommandKind::Input);
                     }
                 }});
-            }else{self->Resize();self->Send(R"({"operation":"input","input":{"type":"focus"}})",CanvasCommandKind::Workspace);}
+            }else{self->Resize();self->Send(R"({"operation":"input","input":{"type":"focus"}})",CanvasCommandKind::Workspace);
+                self->dispatcher.TryEnqueue([weak]{if(auto self=weak.lock())self->QueueLaunchReveal();});}
         }
     });
     window.AppWindow().Closing([weak=weak_from_this()](auto&&,AppWindowClosingEventArgs const& e) {
@@ -444,7 +524,7 @@ void CanvasWindow::Resize() {
         std::vector<Windows::Graphics::RectInt32> regions,inputRegions;
         if(header){
             header->SetFullscreen(!caption);
-            header->SetInsets(float(left)/scale,float(right)/scale);
+            header->SetInsets(float(left)/scale,float(right)/scale,float(height)/scale);
             if(caption){regions=header->DragRegions(scale,next.width);inputRegions=header->InputRegions(scale,next.width);}
         } else if(caption)regions.push_back(Windows::Graphics::RectInt32{
             left,0,std::max(0,int32_t(next.width)-left-right),int32_t(48*scale)});
@@ -497,10 +577,10 @@ void CanvasWindow::CollectGlass(){
             auto source=Microsoft::UI::Input::InputNonClientPointerSource::GetForWindowId(self->window.AppWindow().Id());source.SetRegionRects(Microsoft::UI::Input::NonClientRegionKind::Passthrough,input);
         }
     }
-    Windows::Data::Json::JsonArray connections,arcs,colors,panels,overviews;auto regions=self->workspace->Glass(self->panel,connections,arcs,colors,panels,overviews);
+    Windows::Data::Json::JsonArray connections,arcs,colors,panels;auto regions=self->workspace->Glass(self->panel,connections,arcs,colors,panels);
     if(self->header)self->header->AppendGlass(regions,self->panel);
     Windows::Data::Json::JsonObject request;request.Insert(L"regions",regions);request.Insert(L"connections",connections);request.Insert(L"arcs",arcs);request.Insert(L"color_bubbles",colors);
-    request.Insert(L"panels",panels);Windows::Data::Json::JsonObject packet;packet.Insert(L"glass",request);packet.Insert(L"overviews",overviews);
+    request.Insert(L"panels",panels);Windows::Data::Json::JsonObject packet;packet.Insert(L"glass",request);
     auto source=self->workspace->ChromeDocument();Windows::Data::Json::JsonArray document;
     for(auto field:{L"width",L"height"})document.Append(CapyUi::N(CapyUi::num(source,field)));
     packet.Insert(L"document",document);
@@ -553,7 +633,8 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
     Automation::AutomationProperties::SetName(canvasFocus,CapyUi::str(bootstrap,L"drawing_canvas"));
     Automation::AutomationProperties::SetHelpText(canvasFocus,CapyUi::str(bootstrap,L"drawing_canvas_help"));
     Automation::AutomationProperties::SetName(root,CapyUi::str(bootstrap,L"drawing_workspace"));
-    launchCaption.Text(CapyUi::str(bootstrap,L"preparing_canvas"));
+    launchCaption.Text(CapyUi::str(bootstrap,L"launch_caption"));
+    LayoutLaunchCover();
     ArmLaunchCaption();
     Resize();
     host=capy_create(desired.width,desired.height,desired.scale,prepared);
@@ -576,7 +657,7 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
     window.AppWindow().TitleBar().ButtonForegroundColor(dark?
         Windows::UI::Color{255,225,225,229}:Windows::UI::Color{255,32,32,36});
     auto catalog=capy_query(host,R"({"type":"catalog"})");
-    if(!catalog){OutputDebugStringA(NativeString(capy_error()).get());status.Text(CapyUi::str(bootstrap,L"canvas_init_failed"));return false;}
+    if(!catalog){OutputDebugStringA(NativeString(capy_error()).get());status.Text(CapyUi::str(bootstrap,L"canvas_init_failed"));HideLaunchCover(false);return false;}
     NativeString ownedCatalog(catalog,capy_string_free);
     auto catalogView=Windows::Data::Json::JsonObject::Parse(to_hstring(ownedCatalog.get()));
     catalogView.Insert(L"bootstrap",bootstrap);
@@ -601,6 +682,12 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
             dispatcher.TryEnqueue([reply,bits]{reply(bits);});
         });});
     workspace->SetWindowId(windowId);
+    workspace->SetNavigatorSurfaces([weak=weak_from_this()](uint64_t id,CapyNavigatorViewport const* viewport,std::function<void(NativeSurfaceAttachment)> reply){
+        if(auto self=weak.lock()){
+            {std::lock_guard lock(self->mutex);if(self->closing)return;auto& work=self->navigatorWork[id];work.remove=!viewport;if(viewport)work.viewport=*viewport;work.reply=std::move(reply);}
+            self->wake.notify_one();
+        }
+    });
     workspace->SetFillFeedback([weak=weak_from_this()](WorkspaceView::Json const& view){
         if(auto self=weak.lock();self&&self->inputDispatcher){
             auto resize=CapyUi::flag(view,L"resize_cursor");auto transaction=uint64_t(CapyUi::num(view,L"transaction")),tick=uint64_t(CapyUi::num(view,L"tick"));
@@ -657,13 +744,13 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
     auto dropKind=std::make_shared<CapyUi::DropKind>(CapyUi::DropKind::Images);
     panel.DragEnter([dropKind](auto&&,DragEventArgs const& event){if(CapyUi::fileDrag(event))CapyUi::classifyDrop(event,dropKind);});
     panel.DragOver([weak=weak_from_this(),dropKind](auto&&,DragEventArgs const& event){if(auto self=weak.lock();self&&!self->closing&&CapyUi::fileDrag(event)){
-        auto kind=*dropKind;auto commands=CapyUi::array(CapyUi::object(self->lastModel,L"state"),L"commands");
+        auto kind=*dropKind;auto commands=CapyUi::array(CapyUi::branch(self->lastModel,L"state"),L"commands");
         bool enabled=kind!=CapyUi::DropKind::Mixed&&CapyUi::flag(CapyUi::find(commands,L"id",kind==CapyUi::DropKind::Drawings?L"open_document":L"import_image"),L"enabled");
         using winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation;
         event.AcceptedOperation(enabled?DataPackageOperation::Copy:DataPackageOperation::None);event.DragUIOverride().Caption(CapyUi::dropCaption(self->screenData,kind));event.Handled(true);
     }});
     panel.Drop([weak=weak_from_this()](auto&&,DragEventArgs const& event){if(auto self=weak.lock();self&&!self->closing&&CapyUi::fileDrag(event)){
-        auto action=CapyUi::imageDrop(CapyUi::object(self->lastModel,L"state"));auto point=event.GetPosition(self->panel);auto scale=self->panel.XamlRoot().RasterizationScale();
+        auto action=CapyUi::imageDrop(CapyUi::branch(self->lastModel,L"state"));auto point=event.GetPosition(self->panel);auto scale=self->panel.XamlRoot().RasterizationScale();
         action.Insert(L"screen",CapyUi::O({{L"x",CapyUi::N(point.X*scale)},{L"y",CapyUi::N(point.Y*scale)}}));
         CapyUi::receiveFileDrop(event,action,[weak](std::string json){if(auto self=weak.lock();self&&!self->closing)self->Send(std::move(json),CanvasCommandKind::Document);});
     }});
@@ -689,8 +776,7 @@ bool CanvasWindow::StartPrepared(CapyLaunch  prepared) {
         {std::lock_guard lock(snapshots->mutex);snapshots->pending.Push(std::move(owned.bytes),true,true);}
         QueueSnapshots();
     }
-    {std::lock_guard lock(mutex);revision=capy_view_revision(host);inputScale=desired.scale;}
-    status.Text(CapyUi::str(bootstrap,L"preparing_brush"));
+    {std::lock_guard lock(mutex);capy_view(host,&inputView);inputScale=desired.scale;}
     inputController=Microsoft::UI::Dispatching::DispatcherQueueController::CreateOnDedicatedThread();
     inputDispatcher=inputController.DispatcherQueue();
     return true;
@@ -709,7 +795,7 @@ bool CanvasWindow::RequestPreviews(CanvasQueryKind kind,std::string json,Preview
             auto deliver=[reservation,reply=std::move(reply),packet=std::move(packet)]()mutable{reply(std::move(packet));};
             state->Reply(std::move(deliver));
         };
-        if(!previewWork.Push(CanvasQuery{kind,std::move(json),std::move(ordered)}))return false;
+        if(!previewWork.Push(CanvasQuery{kind,std::move(json),std::move(ordered),work.Pushed()}))return false;
     }
     wake.notify_one();return true;
 }
@@ -748,8 +834,8 @@ void CanvasWindow::Replay(ReplayKind kind) {
         bool pan=kind==ReplayKind::Pan,backlog=kind==ReplayKind::Backlog;
         bool pen=kind==ReplayKind::Pen||kind==ReplayKind::PenBegin||kind==ReplayKind::PenEnd;
         auto self=weak.lock();if(!self)return;
-        Size size;uint64_t view;
-        {std::lock_guard lock(self->mutex);if(self->closing)return;size=self->desired;view=self->revision;}
+        CapyView view;
+        {std::lock_guard lock(self->mutex);if(self->closing)return;view=self->inputView;}
         std::vector<CapyPointer> records;records.reserve(CanvasWorkBuffer::PointerBatch);
         uint32_t count=backlog?32768:pan?3:42;
         if(kind==ReplayKind::PenEnd&&!self->replayTime)return;
@@ -757,14 +843,8 @@ void CanvasWindow::Replay(ReplayKind kind) {
         if(kind==ReplayKind::PenBegin)self->replayTime=start;
         uint32_t first=kind==ReplayKind::PenEnd?21:0,limit=kind==ReplayKind::PenBegin?21:count;
         for(uint32_t i=first;i<limit;i++) {
-            CapyPointer p{};
+            auto p=CanvasReplaySample(view,i,count,pen,pan,backlog);
             p.id=77;p.sequence=++self->sequence;p.timestamp_ns=start+i*1000000ULL;
-            p.view_revision=view;p.tool=pen?0:1;p.button=pan?1:0;p.flags=2;
-            p.pressure=pen?0.2f+0.7f*float(i)/float(count-1):1.0f;
-            if(pen){p.tilt_x=0.4f*std::sin(float(i)/7);p.tilt_y=0.2f*std::cos(float(i)/7);p.twist=float(i)/42;}
-            p.phase=i==0?1:i==count-1?3:2;
-            p.x=size.width*0.4f+(pan?0.0f:float(backlog?i%42:i)*5);
-            p.y=pan?(i==0?size.height*0.5f:28.0f):size.height*0.5f+24.0f*std::sin(float(i)/6);
             records.push_back(p);
             if(records.size()==CanvasWorkBuffer::PointerBatch){
                 if(!self->SendIndependent(std::move(records)))return;
@@ -975,7 +1055,7 @@ std::vector<CapyPointer> CanvasWindow::PointerSamples(Microsoft::UI::Input::Poin
         }
         if(phase==4){std::lock_guard lock(mutex);penSources.Forget(current.PointerId());}
     }
-    uint64_t view;float scale;{std::lock_guard lock(mutex);view=revision;scale=inputScale;}
+    uint64_t view;float scale;{std::lock_guard lock(mutex);view=inputView.revision;scale=inputScale;}
     uint32_t deviceFlags=0;
     if(current.PointerDeviceType()==Microsoft::UI::Input::PointerDeviceType::Pen){
         POINTER_INFO info{};POINTER_DEVICE_INFO device{};
@@ -995,7 +1075,7 @@ std::vector<CapyPointer> CanvasWindow::PointerSamples(Microsoft::UI::Input::Poin
         p.flags=deviceFlags|(predicted?1:0)|(props.IsPrimary()?2:0);
         if(PrepareCanvasPrediction(p))samples.push_back(p);
     };
-    bool newestFirst=count>1&&points.GetAt(0).Timestamp()>points.GetAt(count-1).Timestamp();
+    bool newestFirst=CanvasPointerHistoryNewestFirst(points,count,current);
     if(!count)capture(current,false);
     for(uint32_t i=0;i<count;++i)capture(points.GetAt(newestFirst?count-1-i:i),false);
     if(predict&&pointerPredictor&&phase==2){
@@ -1147,7 +1227,7 @@ bool CanvasWindow::PenButtons(uint32_t id,bool primary){
 bool CanvasWindow::ClaimsDeviceKey(std::wstring const& name)const{
     using namespace CapyUi;
     if(object(object(lastModel,L"preferences"),L"capture").Size())return true;
-    auto stored=object(object(lastModel,L"state"),L"settings");
+    auto stored=object(branch(lastModel,L"state"),L"settings");
     for(auto hold:array(stored,L"hold_keys"))if(str(object(hold.GetObject(),L"key"),L"key")==name)return true;
     for(auto entry:object(stored,L"shortcuts"))
         if(entry.Value().ValueType()==JsonValueType::Array)
@@ -1252,9 +1332,10 @@ void CanvasWindow::Run() {
         bool inputStarted=false;
         bool probeReady=false;
         unsigned recoveryAttempts=0;
-        bool repeat=false;
         std::optional<std::chrono::steady_clock::time_point> lastFrame;
         auto nextServices=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
+        auto navigatorWake=std::chrono::steady_clock::now();
+        CanvasSurfacePoll surfacePoll;
         for(;prepared;) {
             if(capy_device_lost(host)){
                 try {
@@ -1265,35 +1346,48 @@ void CanvasWindow::Run() {
                     SaveAfterGpuFailure(error.what());break;
                 }
             }
-            bool pollServices=false,resized=false;
+            bool pollServices=false,pollSurface=false,resized=false;
             {
                 std::unique_lock lock(mutex);
-                wake.wait_until(lock,nextServices,[&]{return closing||resize||dirty||servicesReady||transportFailed||!work.Empty()||pendingHover.has_value()||!previewWork.Empty();});
+                wake.wait_until(lock,surfacePoll.Wake(navigatorDirty?std::min(nextServices,navigatorWake):nextServices),[&]{return closing||resize||dirty||!navigatorWork.empty()||servicesReady||transportFailed||!work.Empty()||pendingHover.has_value()||!previewWork.Empty();});
                 if(closing) break;
                 if(resize) {
                     auto next=desired;resize=false;probeReady=false;
                     lock.unlock();
                     auto result=capy_resize(host,next.width,next.height,next.scale);
                     if(result<0){if(capy_device_lost(host))continue;throw std::runtime_error(NativeString(capy_error()).get());}
-                    {std::lock_guard geometryLock(mutex);revision=capy_view_revision(host);inputScale=next.scale;}
+                    {std::lock_guard geometryLock(mutex);capy_view(host,&inputView);inputScale=next.scale;}
                     dirty=true;resized=true;lock.lock();
                     if(closing)break;
                 }
                 pollServices=std::exchange(servicesReady,false)||std::chrono::steady_clock::now()>=nextServices;
+                pollSurface=!pollServices&&!dirty&&!transportFailed&&work.Empty()&&!pendingHover.has_value()&&surfacePoll.Due(std::chrono::steady_clock::now());
             }
-            if(pollServices){
-                auto serviceResult=capy_poll_services(host);
-                if(serviceResult<0){if(capy_device_lost(host))continue;Fail(NativeString(capy_error()).get());break;}
-                nextServices=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
-                dirty|=serviceResult!=0;
-                TracePresentation(false,dirty);
-                if(!dirty&&presentationTrace.Withheld(std::chrono::steady_clock::now())){presentationTrace.Repeat();repeat=dirty=true;}
+            if(pollSurface){
+                bool pending=false;auto surfaceResult=capy_poll_surface(host,&pending);
+                if(surfaceResult<0){if(capy_device_lost(host))continue;Fail(NativeString(capy_error()).get());break;}
+                dirty|=surfaceResult!=0;surfacePoll.Schedule(pending,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
                 CapySnapshotInfo routing{};
                 if(auto snapshot=capy_snapshot(host,&routing)){
                     NativeString owned(snapshot,capy_string_free);
                     Publish(std::move(owned.bytes),routing);
                 }
             }
+            if(pollServices){
+                auto serviceResult=capy_poll_services(host);
+                if(serviceResult<0){if(capy_device_lost(host))continue;Fail(NativeString(capy_error()).get());break;}
+                nextServices=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
+                surfacePoll.Schedule(capy_surface_pending(host)>0,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
+                dirty|=serviceResult!=0;
+                dirty|=TracePresentation(false,dirty);
+                if(!dirty&&presentationTrace.Withheld(std::chrono::steady_clock::now())){presentationTrace.Repeat();dirty=true;}
+                CapySnapshotInfo routing{};
+                if(auto snapshot=capy_snapshot(host,&routing)){
+                    NativeString owned(snapshot,capy_string_free);
+                    Publish(std::move(owned.bytes),routing);
+                }
+            }
+            PresentNavigators();navigatorWake=std::chrono::steady_clock::now()+RefreshPeriod(nativeWindow);
             std::optional<CanvasQuery> idleQuery;std::deque<CanvasWork> commands;
             {std::lock_guard lock(mutex);
                 auto step=NextCanvasRenderStep(dirty||transportFailed||pendingHover.has_value()||recoveryAttempts,work,previewWork);
@@ -1345,7 +1439,8 @@ void CanvasWindow::Run() {
             if(overflow){sentModifiers.store(0);if(capy_input(host,R"({"type":"blur"})")<0){Fail(NativeString(capy_error()).get());break;}}
             if(capy_device_lost(host))continue;
             auto now=Now();
-            auto result=capy_frame(host,now,now);
+            auto repetition=presentationTrace.Repeats([&]{return pending.empty()&&!hover&&!overflow&&capy_needs_frame(host)==0;});
+            auto result=repetition==PresentationTrace::Repetition::Held?capy_present_held(host):capy_frame(host,now,now);
             if(latencyTrace.enabled){
                 auto end=Now();uint64_t stats[6]{};auto error=capy_presentation_stats(host,stats);
                 CapyFrameTiming timing{};capy_frame_timing(host,&timing);
@@ -1353,13 +1448,15 @@ void CanvasWindow::Run() {
             }
             if(result<0){if(capy_device_lost(host))continue;Fail(NativeString(capy_error()).get());break;}
             dirty=result!=0;
-            TracePresentation(true,dirty,std::exchange(repeat,false)&&pending.empty()&&!hover);
+            PresentNavigators();navigatorWake=std::chrono::steady_clock::now()+RefreshPeriod(nativeWindow);
+            surfacePoll.Schedule(capy_surface_pending(host)>0,std::chrono::steady_clock::now(),RefreshPeriod(nativeWindow));
+            TracePresentation(true,dirty,repetition!=PresentationTrace::Repetition::None);
             if(!inputStarted){
                 inputStarted=true;inputDispatcher.TryEnqueue([weak=weak_from_this(),zoomIn,zoomOut]{
                     if(auto self=weak.lock()){self->zoomInCursor=zoomIn;self->zoomOutCursor=zoomOut;self->StartInput();}
                 });
             }
-            {std::lock_guard lock(mutex);revision=capy_view_revision(host);}
+            {std::lock_guard lock(mutex);capy_view(host,&inputView);}
             CapySnapshotInfo routing{};
             if(auto snapshot=capy_snapshot(host,&routing)) {
                 NativeString owned(snapshot,capy_string_free);
@@ -1379,7 +1476,7 @@ void CanvasWindow::Run() {
                 probeReady=true;
             }
             std::optional<CanvasQuery> preview;
-            {std::lock_guard lock(mutex);if(CanAnswerCanvasQueryAfterFrame(closing))preview=previewWork.Take();}
+            {std::lock_guard lock(mutex);if(CanAnswerCanvasQueryAfterFrame(closing))preview=previewWork.Take({},work.Taken());}
             if(preview)answer(*preview);
             if(overflow)break;
         }
@@ -1465,7 +1562,7 @@ void CanvasWindow::SaveAfterGpuFailure(std::string const& reason) {
             if(resize){
                 auto next=desired;resize=false;lock.unlock();
                 if(capy_resize(host,next.width,next.height,next.scale)<0)throw std::runtime_error(NativeString(capy_error()).get());
-                lock.lock();revision=capy_view_revision(host);inputScale=next.scale;
+                lock.lock();capy_view(host,&inputView);inputScale=next.scale;
             }
             pending=work.Take();query=previewWork.Take();
         }
@@ -1487,10 +1584,37 @@ void CanvasWindow::SaveAfterGpuFailure(std::string const& reason) {
         }
     }
 }
+void CanvasWindow::PresentNavigators(){
+    std::map<uint64_t,NavigatorWork> requests;
+    {std::lock_guard lock(mutex);requests.swap(navigatorWork);}
+    for(auto& [id,request]:requests){
+        auto result=capy_navigator_surface_update(host,id,request.remove?nullptr:&request.viewport);
+        if(result<0){if(capy_device_lost(host))return;throw std::runtime_error(NativeString(capy_error()).get());}
+        if(request.remove)navigatorWatches.erase(id);
+        else navigatorWatches[id].reply=std::move(request.reply);
+    }
+    auto result=capy_present_navigators(host);
+    if(result<0){if(capy_device_lost(host))return;throw std::runtime_error(NativeString(capy_error()).get());}
+    navigatorDirty=result!=0;
+    for(auto& [id,watch]:navigatorWatches){
+        CapyNavigatorSurfaceInfo next{};if(!capy_navigator_surface_info(host,id,&next))continue;
+        if(next.handle==watch.published.handle&&next.generation==watch.published.generation&&next.ready==watch.published.ready)continue;
+        NativeSurfaceAttachment attachment{next,{}};
+        if(next.ready&&next.handle){
+            HANDLE owned=nullptr;check_bool(DuplicateHandle(GetCurrentProcess(),reinterpret_cast<HANDLE>(next.handle),GetCurrentProcess(),&owned,0,false,DUPLICATE_SAME_ACCESS));
+            attachment.handle=std::shared_ptr<void>(owned,[](void* handle){CloseHandle(handle);});
+        }
+        watch.published=next;
+        dispatcher.TryEnqueue([weak=weak_from_this(),reply=watch.reply,attachment=std::move(attachment)]{if(auto self=weak.lock();self&&!self->closing&&reply)reply(attachment);});
+    }
+}
+
 void CanvasWindow::ResetSurface() {
+    CancelLaunchReveal();
     {std::lock_guard lock(mutex);if(closing)return;}
+    if(workspace)workspace->ResetNavigatorSurfaces();
     auto native=panel.as<ISwapChainPanelNative>();
-    root.Background(SolidColorBrush(CapyUi::color(CapyUi::str(CapyUi::object(CapyUi::object(lastModel,L"state"),L"palette"),L"bg",L"#323232"))));
+    root.Background(SolidColorBrush(CapyUi::color(CapyUi::str(CapyUi::object(CapyUi::branch(lastModel,L"state"),L"palette"),L"bg",L"#323232"))));
     auto detached=native->SetSwapChain(nullptr);
     surfaceState.Reset(capy_surface_generation(host));surfaceHandle=capy_surface_handle(host);
     auto attached=SUCCEEDED(detached)&&surfaceHandle?S_OK:FAILED(detached)?detached:E_FAIL;
@@ -1527,6 +1651,7 @@ void CanvasWindow::Stop() {
     {std::lock_guard lock(mutex);if(closing)return;}
     if(settings)settings->CommitEdits();
     {std::lock_guard lock(mutex);closing=true;}
+    CancelLaunchReveal();
     {std::lock_guard lock(snapshots->mutex);snapshots->Close();}
     CancelCanvasTouch(xamlCanvasTouch);xamlCanvasTouch.recognizer=nullptr;xamlCanvasTouch.contacts.clear();xamlContacts.clear();
     CapyLifecycle("close_authorized");
@@ -1564,6 +1689,7 @@ void CanvasWindow::Finish() {
     if(renderer.joinable()) renderer.join();
     CapyLifecycle("detach_surface");
     panel.as<ISwapChainPanelNative>()->SetSwapChain(nullptr);
+    if(workspace)workspace->ResetNavigatorSurfaces();
     auto retired=host;host=0;
     renderer=std::jthread([lifetime,retired]{
         init_apartment(apartment_type::multi_threaded);
@@ -1575,6 +1701,7 @@ void CanvasWindow::Finish() {
     });
 }
 void CanvasWindow::CloseViews() {
+    CancelLaunchReveal();
     if(renderer.joinable())renderer.join();
     // XAML controls and their retained bindings must be released while this
     // window still owns a live XAML context, not later from App destruction.
@@ -1640,16 +1767,15 @@ void CanvasWindow::Publish(std::string snapshot,CapySnapshotInfo const& info) {
         auto identity="{\"process_id\":"+std::to_string(GetCurrentProcessId())+
             ",\"window_id\":"+std::to_string(windowId)+",\"presented\":"+std::to_string(presentationTrace.required)+
             ",\"presentation_epoch\":"+std::to_string(presentationTrace.epoch);
-        if(full)tracedModel=model;
-        else if(info.layout&&tracedModel.HasKey(L"state"))WorkspaceView::MergeLayout(tracedModel,model);
         bool glassChanged=info.glass.length&&CapyUi::object(tracedModel,L"windows_glass").Stringify()!=CapyUi::object(model,L"windows_glass").Stringify();
-        if(glassChanged)tracedModel.Insert(L"windows_glass",model.GetNamedValue(L"windows_glass"));
-        if(full||info.layout||glassChanged)TraceState("ui-state",identity+",\"model\":"+to_string(tracedModel.Stringify())+"}");
+        if(full)tracedModel=model;
+        else{CanvasModelSource trace;trace.model=tracedModel;trace.Patch(model);tracedModel=trace.model;}
+        if(full||info.layout||glassChanged)TraceState("ui-state",CapyUi::CanonicalJson(identity+",\"model\":"+to_string(tracedModel.Stringify())+"}"));
         if(full||model.HasKey(L"command_search")){
-            auto search=full?CapyUi::object(model,L"state").GetNamedValue(L"command_search",Windows::Data::Json::JsonValue::CreateNullValue()):model.GetNamedValue(L"command_search");
+            auto search=full?CapyUi::branch(model,L"state").GetNamedValue(L"command_search",Windows::Data::Json::JsonValue::CreateNullValue()):model.GetNamedValue(L"command_search");
             TraceState("search-state",identity+",\"search\":"+to_string(search.Stringify())+"}");
         }
-        auto view=CapyUi::CameraTracePayload(model,full,identity);
+        auto view=cameraTrace.Payload(model,full,identity);
         if(!view.empty())TraceState("camera-state",view);
     }
     if(full){
@@ -1697,23 +1823,26 @@ winrt::fire_and_forget CanvasWindow::DecodeSnapshots(std::shared_ptr<SnapshotSta
             auto model=parse(update.bytes);
             if(model.HasKey(L"localization"))state->pendingLocalization=CapyUi::object(model,L"localization");
             state->unappliedSections|=state->models.Read(model);
+            state->unappliedChanges.Merge(state->models.changes);
         }
         if(!raw.full.empty()){
             batch.full=state->models.Model();batch.sections=state->unappliedSections;
+            batch.changes=state->unappliedChanges;
             batch.localization=state->pendingLocalization;
-            if(batch.localization)batch.sections=CanvasAllSections;
+            if(batch.localization){batch.sections=CanvasAllSections;batch.changes.all=true;}
         }
-        auto prepareInput=[&](Windows::Data::Json::JsonObject const& model){
+        auto prepareInput=[&](Windows::Data::Json::JsonObject const& model,bool full){
+            if(full&&state->layoutInputFull&&!state->models.changes.Touches({L"layout_input"}))return state->layoutInput;
             auto bytes=to_string(CapyUi::object(model,L"layout_input").Stringify());
             if(!state->layoutInput||bytes!=state->layoutInputBytes){
                 NativeLayoutInput next(capy_layout_input_prepare(bytes.c_str()),capy_layout_input_free);
                 if(!next)throw std::invalid_argument("Invalid workspace layout input");
-                state->layoutInputBytes=std::move(bytes);state->layoutInput=std::move(next);
-            }
+                state->layoutInputBytes=std::move(bytes);state->layoutInput=std::move(next);state->layoutInputFull=full;
+            }else state->layoutInputFull|=full;
             return state->layoutInput;
         };
-        if(batch.full&&(batch.sections&CanvasWorkspace))batch.fullInput=prepareInput(batch.full);
-        if(batch.layout)batch.reflowInput=prepareInput(batch.layout);
+        if(batch.full)batch.fullInput=prepareInput(batch.full,true);
+        if(batch.layout)batch.reflowInput=prepareInput(batch.layout,false);
     }catch(hresult_error const& error){failure=to_string(error.message());}
      catch(std::exception const& error){failure=error.what();}
     raw={};
@@ -1736,6 +1865,7 @@ winrt::fire_and_forget CanvasWindow::DecodeSnapshots(std::shared_ptr<SnapshotSta
             std::lock_guard lock(state->mutex);
             if(state->pending.Posted(sequence,applied,hasModel,state->unappliedSections)){
                 state->pendingLocalization=nullptr;
+                state->unappliedChanges={};
                 while(!state->replies.empty()&&state->pending.IsPosted(state->replies.front().first)){
                     replies.push_back(std::move(state->replies.front().second));state->replies.pop_front();
                 }
@@ -1760,7 +1890,7 @@ bool CanvasWindow::ApplyPending(PreparedSnapshots batch) {
         workspace->Resize(float(panel.ActualWidth()),float(panel.ActualHeight()));
         if(batch.full){
             if(batch.localization)batch.full.Insert(L"localization",batch.localization);
-            if(!ApplyModel(batch.full,std::move(batch.fullInput),batch.sections))return false;
+            if(!ApplyModel(batch.full,std::move(batch.fullInput),batch.sections,batch.changes))return false;
         }
         if(!closing&&batch.layout)workspace->Apply(batch.layout,std::move(batch.reflowInput));
         for(auto const& patch:{batch.workspace,batch.camera,batch.search,batch.glass})
@@ -1773,7 +1903,7 @@ bool CanvasWindow::ApplyPending(PreparedSnapshots batch) {
     return false;
 }
 
-void CanvasWindow::ApplyDialogs() {
+void CanvasWindow::ApplyDialogs(CanvasModelChanges const* changes) {
     if(closing){
         // Let the coroutine release its final dialog reference before tearing
         // down XAML. Completion callbacks may run before ShowAsync unwinds.
@@ -1781,6 +1911,8 @@ void CanvasWindow::ApplyDialogs() {
         return;
     }
     if(applyingDialogs||!settings||!documents||!workspaceDialogs||!canvasSize||!imageSize||!workspaceStorage||!workspaceManager||!lastModel.Size())return;
+    CanvasModelInputs inputs;CanvasModelChanges native{true};
+    CanvasModelInputs::Capture capture(inputs,{{lastModel,{}},{CapyUi::branch(lastModel,L"state"),{L"state"}}},changes?changes:&native,!changes);
     applyingDialogs=true;
     struct Reset{bool& flag;~Reset(){flag=false;}}reset{applyingDialogs};
     if(settings->IsOpen()||!ModalOpen())settings->Apply(lastModel);
@@ -1878,8 +2010,11 @@ void CanvasWindow::SendLaunchFiles(Windows::Data::Json::JsonObject const& model)
 void CanvasWindow::RefreshWorkspaceSwitcher() {
     if(!closing&&!closed)Send(R"({"operation":"input","input":{"type":"refresh_switcher"}})",CanvasCommandKind::Workspace);
 }
-bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,NativeLayoutInput input,uint32_t sections) {
+bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,NativeLayoutInput input,uint32_t sections,CanvasModelChanges const& changes) {
     using namespace CapyUi;
+    auto launch=object(model,L"launch");
+    if((launch.Size()&&(!flag(launch,L"finished")||flag(launch,L"visible")))
+        ||!str(model,L"error").empty()||!str(object(model,L"state"),L"host_error").empty())CancelLaunchReveal();
     auto presentation=object(model,L"localization");
     if(presentation.Size()){
         bootstrap=object(presentation,L"bootstrap");auto tag=to_string(str(bootstrap,L"active_tag"));
@@ -1891,16 +2026,17 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
     }
     auto focus=settings&&settings->IsOpen()?FocusManager::GetFocusedElement(root.XamlRoot()).try_as<Control>():nullptr;
     if(focus)if(auto owner=ItemsControl::ItemsControlFromItemContainer(focus))focus=owner;
-    if(sections&CanvasWorkspace){if(!workspace->Apply(model,std::move(input)))return false;}
-    else if(!workspace->ApplyFields(model,(sections&CanvasScopes)!=0))return false;
+    if((sections&CanvasWorkspace)||workspace->HasPendingChanges()){if(!workspace->Apply(model,std::move(input),changes))return false;}
+    else if(!workspace->ApplyFields(model,(sections&CanvasScopes)!=0,changes))return false;
     lastModel=model;
     ApplyLaunchCover(model);
     bool retheme=false;
-    auto state=object(model,L"state");auto theme=str(state,L"theme",L"dark");
+    auto state=branch(model,L"state");
+    screenData->adoptLocalization(model);screenData->model=model;screenData->state=state;
     auto workspaceReady=flag(state,L"workspace_ready");
     auto storage=object(model,L"windows_workspace");
     auto preferencesClose=object(model,L"windows_settings_close");
-    if(flag(object(model,L"windows_tabs"),L"window_ready")&&flag(object(state,L"document_file"),L"close_ready")&&(!storage.Size()||flag(storage,L"closed"))
+    if(flag(object(model,L"windows_tabs"),L"window_ready")&&flag(branch(state,L"document_file"),L"close_ready")&&(!storage.Size()||flag(storage,L"closed"))
         &&(!preferencesClose.Size()||flag(preferencesClose,L"ready"))
         &&(!object(model,L"windows_recovery").Size()||flag(object(model,L"windows_recovery"),L"ready"))){Stop();return true;}
     if(!statusFailed){
@@ -1913,13 +2049,16 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
         if(message.empty())message=str(object(model,L"windows_proof"),L"text");
         if(message.empty()){
             auto notice=str(model,L"canvas_notice");
-            if(!notice.empty()&&!flag(object(model,L"launch"),L"visible"))message=str(bootstrap,(L"preparing_"+notice).c_str());
+            if(!notice.empty())message=str(bootstrap,(L"preparing_"+notice).c_str());
         }
+        if(flag(object(model,L"launch"),L"visible"))message=L"";
         status.Text(message);status.Visibility(message.empty()?Visibility::Collapsed:Visibility::Visible);
     }
-    if(sections&CanvasWindowState){
+    if((sections&CanvasWindowState)&&(windowInputs.Changed(changes)||!launchFiles.empty()||!surfaceState.Attached())){
+    CanvasModelInputs::Capture capture(windowInputs,{{model,{}},{state,{L"state"}}},&changes);
+    windowInputs.Add({L"state",L"workspace_ready"});windowInputs.Add({L"windows_workspace"});
     workspace->Root().Visibility(workspaceReady||flag(object(model,L"launch"),L"visible")?Visibility::Visible:Visibility::Collapsed);
-    {std::lock_guard lock(mutex);penSources.Select(to_string(object(model,L"windows_tabs").GetNamedValue(L"selected",JsonValue::CreateNullValue()).Stringify()+L"/"+object(state,L"document_file").GetNamedValue(L"epoch",JsonValue::CreateNullValue()).Stringify()));}
+    {std::lock_guard lock(mutex);penSources.Select(to_string(named(branch(model,L"windows_tabs"),L"selected").Stringify()+L"/"+named(branch(state,L"document_file"),L"epoch").Stringify()));}
     if(surfaceState.CanAttach(uint64_t(num(model,L"windows_gpu_generation")),flag(model,L"windows_surface_ready"))){
         check_hresult(panel.as<ISwapChainPanelNative2>()->SetSwapChainHandle(surfaceHandle));surfaceState.DidAttach();
     }
@@ -1949,7 +2088,8 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
         }
     }
     ApplyScreen(model);
-    auto nextTheme=theme==L"dark"?ElementTheme::Dark:ElementTheme::Light;
+    CanvasModelInputs::Capture::Apply(captionInputs,[&]{
+    auto nextTheme=str(state,L"theme",L"dark")==L"dark"?ElementTheme::Dark:ElementTheme::Light;
     retheme=root.RequestedTheme()!=nextTheme;root.RequestedTheme(nextTheme);
     // Artwork also reaches the caption area; keep the OS buttons readable on it.
     auto captionBackground=color(str(object(state,L"palette"),L"bg",L"#333333"));
@@ -1959,10 +2099,11 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
     window.AppWindow().TitleBar().ButtonForegroundColor(foreground);
     foreground.A=128;window.AppWindow().TitleBar().ButtonInactiveForegroundColor(foreground);
     auto tabs=array(state,L"tabs");
-    if(tabs.Size())window.Title((flag(object(state,L"document_file"),L"modified")?hstring(L"• "):hstring())+str(tabs.GetObjectAt(0),L"title")+L" · "+str(bootstrap,L"app_name"));
+    if(tabs.Size())window.Title((flag(branch(state,L"document_file"),L"modified")?hstring(L"• "):hstring())+str(tabs.GetObjectAt(0),L"title")+L" · "+str(bootstrap,L"app_name"));
+    });
     }
-    if(sections&CanvasHeader)header->Apply(model);
-    if(sections&CanvasDialogs)ApplyDialogs();
+    if(sections&CanvasHeader)header->Apply(model,changes);
+    if(sections&CanvasDialogs)ApplyDialogs(&changes);
     header->Root().Visibility(workspaceReady||flag(object(model,L"launch"),L"visible")?Visibility::Visible:Visibility::Collapsed);
     // Workspace theme replacement must not take focus from retained Preferences.
     if(retheme&&focus)dispatcher.TryEnqueue(Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,
@@ -1971,14 +2112,15 @@ bool CanvasWindow::ApplyModel(Windows::Data::Json::JsonObject const& model,Nativ
                 if(auto control=target.get();control&&control.IsLoaded())control.Focus(FocusState::Programmatic);
         });
     if(workspaceReady&&!discoveryReady){if(CapyUi::WindowDiscoveryEnabled())CapyUi::ReadyRegisteredWindow(nativeWindow,true);discoveryReady=true;}
+    QueueLaunchReveal();
     return true;
 }
 
 void CanvasWindow::ApplyScreen(Windows::Data::Json::JsonObject const& model){
     using namespace CapyUi;
-    screenData->adoptLocalization(model);screenData->state=object(model,L"state");screenData->refreshPalette();
+    screenData->refreshPalette();
     screenChip.Background(headerSurface(screenData));buttonFeedback(screenChip,screenData->brush(L"text"),26,41);
-    auto state=object(model,L"state"),screen=object(state,L"screen"),chip=object(screen,L"chip"),details=object(screen,L"details");
+    auto state=branch(model,L"state"),screen=object(state,L"screen"),chip=object(screen,L"chip"),details=object(screen,L"details");
     auto catalog=object(object(model,L"localization"),L"catalog");auto updated=object(object(catalog,L"native_copy"),L"color");if(updated.Size())screenCopy=updated;if(catalog.Size())screenFontSize=num(catalog,L"text_size_pt",11)*4/3;
     auto key=screen.Stringify()+screenCopy.Stringify()+str(state,L"theme")+to_hstring(screenFontSize);if(screenKey==key)return;screenKey=key;
     auto colorCopy=screenCopy;screenChip.FontSize(screenFontSize);screenClipped.FontSize(screenFontSize);

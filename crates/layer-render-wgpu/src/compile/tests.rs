@@ -22,6 +22,28 @@ pub(crate) fn queued_recipes(scope: &Scope) -> usize {
     })
 }
 
+pub(crate) fn demands(scope: &Scope, class: Class) -> std::collections::HashSet<usize> {
+    scope.with_queue(|queue| {
+        queue.refresh();
+        queue.entries.iter().filter_map(|(key, entry)| match key {
+            Key::Recipe(id) if entry.demands.iter().any(|d| d.owner == scope.0.id && d.class <= class) => Some(*id),
+            _ => None,
+        }).collect()
+    })
+}
+
+pub(crate) fn ordered_demands(scope: &Scope, class: Class) -> Vec<usize> {
+    scope.with_queue(|queue| {
+        queue.refresh();
+        let mut entries: Vec<_> = queue.entries.iter().filter_map(|(key, entry)| match key {
+            Key::Recipe(id) if entry.class == class && entry.demands.iter().any(|d| d.owner == scope.0.id && d.class == class) => Some((entry.sequence, *id)),
+            _ => None,
+        }).collect();
+        entries.sort_unstable();
+        entries.into_iter().map(|(_, id)| id).collect()
+    })
+}
+
 #[test]
 fn startup_declares_stroke_kernels_before_eraser_helpers_and_document_work() {
     let color = Default::default();

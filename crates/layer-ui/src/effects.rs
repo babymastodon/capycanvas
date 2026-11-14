@@ -16,6 +16,11 @@ use layer_core::{Edit, EffectInstance, EffectParameterKind, EffectValue, Resourc
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+enum FilterInsertion {
+    Select(OccurrenceHandle),
+    Edit(Box<Edit>, Vec<(layer_core::authored::SourceTarget, layer_core::RasterOperation)>),
+}
+
 pub(crate) fn blend_label(blend: layer_core::LayerBlend, l: &Localizer) -> Arc<str> {
     l.text(match blend {
         layer_core::LayerBlend::Normal => MessageId::RESOURCES_BLEND_NORMAL,
@@ -815,7 +820,7 @@ pub(super) fn publish_properties(view:&mut LayerPropertiesView,doc:&Document,sta
     let domain=effect.filter(|effect|effect.choice("domain")==Some("log_hdr")).and_then(|effect|match effect.value("hdr_stops"){Some(EffectValue::Number(stops))=>Some(CurveDomain::LogHdr{stops:*stops}),_=>None}).unwrap_or(CurveDomain::Encoded);
     for control in &mut view.controls {
         if matches!(control.value,EffectValue::Gradient(_)) {
-            control.gradient=Some(GradientControls::new(GradientDestination::Effect {layer:view.layer.unwrap(),key:control.key.clone(),epoch:view.epoch},match &control.value {EffectValue::Gradient(value)=>value,_=>unreachable!()},l));
+            control.gradient=Some(GradientControls::new(GradientDestination::Effect {layer:view.layer.unwrap(),key:control.key.clone(),epoch:view.epoch},match &control.value {EffectValue::Gradient(value)=>value,_=>unreachable!()},state.stop(&control.key),l));
         }
         let EffectValue::Curve(points)=&control.value else{continue;};
         let selected=if gesture.is_some_and(|gesture|gesture.key==control.key && gesture.detached_curve_point){None}else{state.selected(&control.key,points)};
@@ -1180,9 +1185,9 @@ impl<R: CanvasRenderer> UiSession<R> {
         self.refresh_document();
         Ok(self.changed(regions::DOCUMENT | regions::SETTINGS | regions::HOST, true))
     }
-    fn insert_effect(&mut self, effect: Arc<str>, destination: Option<(OccurrenceHandle, u64)>) -> Result<(), String> {
+    fn filter_insertion(&self, effect: Arc<str>, destination: Option<(OccurrenceHandle, u64)>) -> Result<Option<FilterInsertion>, String> {
         if let Some((owner, epoch)) = destination {
-            if epoch != self.state.document_file.epoch { return Ok(()); }
+            if epoch != self.state.document_file.epoch { return Ok(None); }
             let doc = self.engine.document();
             if !doc.scene().eligible_target(owner) || doc.is_locked(owner)
                 || self.effect_catalog.get(&effect).is_none_or(|f| f.program.kind != layer_core::EffectKind::Adjustment) {
@@ -1196,14 +1201,14 @@ impl<R: CanvasRenderer> UiSession<R> {
         let doc = self.engine.document();
         let scene = doc.scene();
         if paper && let Some(handle) = doc.bottom_paper() {
-            return self.layer_action(crate::LayerAction::Select { id: occurrence_token(handle), mask: false });
+            return Ok(Some(FilterInsertion::Select(handle)));
         }
         let current = if paper { None } else { destination.map(|(owner, _)| owner).or(doc.working.occurrence) };
         let occurrence = current.and_then(|id| scene.occurrence(id));
         let replacing = choosing && current.and_then(|id| scene.effect(id)).is_some_and(|effect| effect.program.kind == catalog.program.kind);
         let masked = !replacing && !paper && doc.working.selection.is_some();
         if replacing && doc.is_locked(current.unwrap()) { return Err(self.state.localization.text(MessageId::RESOURCES_ERROR_LAYER_LOCKED).to_string()); }
-        if replacing && current.and_then(|id| scene.effect(id)).is_some_and(|effect| effect.program.id == catalog.program.id) { return Ok(()); }
+        if replacing && current.and_then(|id| scene.effect(id)).is_some_and(|effect| effect.program.id == catalog.program.id) { return Ok(None); }
         let attaches=choosing && current.is_some_and(|id| scene.eligible_target(id)) && occurrence.is_some_and(|o| o.attachment==layer_core::Attachment::Clip);
         let top = destination.map(|(owner, _)| scene.attached_effects(owner).last().copied().unwrap_or(owner)).or_else(|| current.map(|id| if choosing && (replacing || generator || attaches) { id } else { doc.clipping_stack_top(id).unwrap_or(id) }));
         let parent = current.and_then(|id| scene.parent(id));
@@ -1256,7 +1261,28 @@ impl<R: CanvasRenderer> UiSession<R> {
         working.layer_selection = [handle].into(); working.layer_anchor = Some(handle);
         if masked { working.selection = None; }
         edits.push(Edit::Working(working));
-        self.layer_edit_with(Edit::Batch(edits), operations)?;
+        Ok(Some(FilterInsertion::Edit(Box::new(Edit::Batch(edits)), operations)))
+    }
+    pub(crate) fn prepare_visible_filter(&self, program: Arc<layer_core::EffectProgram>, key: Option<Arc<dyn layer_render::PreparationKey>>) -> layer_render::FilterPreparation {
+        let document = self.engine.document();
+        let scene = match self.filter_insertion(program.id.clone(), None) {
+            Ok(Some(FilterInsertion::Edit(edit, _))) => {
+                #[cfg(test)]
+                crate::session::test_support::FILTER_DOCUMENT_PREPARATIONS.with(|count| count.set(count.get() + 1));
+                let mut candidate = document.clone();
+                candidate.apply(*edit).ok().and_then(|_| candidate.working.occurrence.map(|handle| (candidate.snapshot(), handle)))
+            }
+            _ => None,
+        };
+        layer_render::FilterPreparation::new(key, program, scene)
+    }
+    fn insert_effect(&mut self, effect: Arc<str>, destination: Option<(OccurrenceHandle, u64)>) -> Result<(), String> {
+        let choosing = destination.is_none() && self.filter_drawer_open();
+        match self.filter_insertion(effect, destination)? {
+            Some(FilterInsertion::Select(handle)) => return self.layer_action(crate::LayerAction::Select { id: occurrence_token(handle), mask: false }),
+            Some(FilterInsertion::Edit(edit, operations)) => self.layer_edit_with(*edit, operations)?,
+            None => return Ok(()),
+        }
         if !choosing {
             self.state.customization.expanded = None;
             if let Some(drawer) = self.state.customization.drawer.as_mut().filter(|d| d.layer_properties.is_some()) {

@@ -135,6 +135,7 @@ pub(super) struct Notices {
     epoch: u64,
     window: bool,
     changed: bool,
+    held: Option<Notice>,
     /// The mask whose editing session already explained dry coverage.
     dry_mask: Option<SourceTarget>,
 }
@@ -182,23 +183,23 @@ pub(super) const NO_REFERENCE_BELOW: MessageId = MessageId::COMMANDS_REFUSAL_NOT
 
 impl<R: CanvasRenderer> UiSession<R> {
     pub(super) fn refresh_notice_localization(&mut self) {
-        if let Some(notice) = &mut self.state.notice {
+        if let Some(notice) = self.state.notice.as_mut().or(self.notices.held.as_mut()) {
             notice.name = self.state.localization.text(MessageId::OBJECTS_NOTICE_NAME).to_string();
             self.notices.changed = true;
         }
-        if let (Some(copy), Some(notice)) = (self.notices.copy.clone(), &mut self.state.notice) {
+        if let (Some(copy), Some(notice)) = (self.notices.copy.clone(), self.state.notice.as_mut().or(self.notices.held.as_mut())) {
             notice.text = copy.text(&self.state.localization);
             for action in &mut notice.actions { action.label = copy.action_label(action.id, &self.state.localization); }
             self.notices.changed = true;
         }
         if let Some(copy @ (NoticeCopy::Object { .. } | NoticeCopy::Vector { .. })) = self.notices.copy.clone() {
             let actions = self.object_refusal_actions(&copy);
-            if let Some(notice) = &mut self.state.notice { notice.actions = shown(actions); }
+            if let Some(notice) = self.state.notice.as_mut().or(self.notices.held.as_mut()) { notice.actions = shown(actions); }
         }
     }
 
     pub fn update_notice_text(&mut self, id: u64, text: String) -> bool {
-        let Some(notice) = self.state.notice.as_mut().filter(|notice| notice.id == id) else { return false; };
+        let Some(notice) = self.state.notice.as_mut().or(self.notices.held.as_mut()).filter(|notice| notice.id == id) else { return false; };
         if notice.text != text {
             notice.text = text;
             self.notices.changed = true;
@@ -221,6 +222,10 @@ impl<R: CanvasRenderer> UiSession<R> {
         self.notices.copy = Some(NoticeCopy::Message(message));
     }
 
+    pub fn last_notice_id(&self) -> u64 {
+        self.notices.last_id
+    }
+
     pub(super) fn raise_notice(&mut self, text: String, actions: Vec<(NoticeAction, NoticeRun)>) {
         let notices = &mut self.notices;
         notices.last_id += 1;
@@ -231,7 +236,15 @@ impl<R: CanvasRenderer> UiSession<R> {
         notices.actions = actions.iter().map(|(action, run)| (action.id, run.clone())).collect();
         notices.copy = None;
         let name = self.state.localization.text(MessageId::OBJECTS_NOTICE_NAME).to_string();
-        self.state.notice = Some(Notice { id: notices.last_id, name, text, actions: shown(actions) });
+        let notice = Some(Notice { id: notices.last_id, name, text, actions: shown(actions) });
+        (self.state.notice, self.notices.held) = if self.launch_covering() { (None, notice) } else { (notice, None) };
+    }
+
+    pub(super) fn release_held_notice(&mut self) {
+        if self.notices.held.is_some() && !self.launch_covering() {
+            self.state.notice = self.notices.held.take();
+            self.notices.changed = true;
+        }
     }
 
     fn notice_choice(&self, copy: &NoticeCopy, id: NoticeActionId, run: NoticeRun, reason: Option<std::sync::Arc<str>>) -> (NoticeAction, NoticeRun) {
@@ -335,7 +348,7 @@ impl<R: CanvasRenderer> UiSession<R> {
     }
 
     pub(super) fn dismiss_notice(&mut self) {
-        if self.state.notice.take().is_some() {
+        if self.state.notice.take().is_some() | self.notices.held.take().is_some() {
             self.notices.window = false;
             self.notices.actions.clear();
             self.notices.copy = None;
@@ -356,6 +369,7 @@ impl<R: CanvasRenderer> UiSession<R> {
     }
 
     pub(super) fn notice_regions(&mut self) -> u32 {
+        self.release_held_notice();
         if !self.notices.window && self.notices.epoch != self.state.document_file.epoch {
             self.dismiss_notice();
             self.notices.epoch = self.state.document_file.epoch;
@@ -368,6 +382,7 @@ impl<R: CanvasRenderer> UiSession<R> {
         self.notices.last_id = self.notices.last_id.max(previous.notices.last_id);
         if previous.notices.window || self.notices.window {
             self.state.notice = previous.notices.window.then(||previous.state.notice.clone()).flatten();
+            self.notices.held = previous.notices.window.then(||previous.notices.held.clone()).flatten();
             self.notices.copy = previous.notices.window.then(||previous.notices.copy.clone()).flatten();
             self.notices.actions.clear();
             self.notices.window = previous.notices.window;

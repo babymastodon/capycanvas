@@ -48,6 +48,24 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
     std::vector<std::shared_ptr<BitmapUpload>> previewUploads;
     void clearPreviews(){for(auto& upload:previewUploads)upload->Close();previewUploads.clear();}
     ~Impl(){clearPreviews();}
+    struct Comparison {
+        Grid root;std::array<TextBlock,3> headings;std::array<Image,3> images;double gap,width;
+        Comparison(J const& layout,std::array<TextBlock,3> titles):headings(std::move(titles)),gap(num(layout,L"gap")),width(num(layout,L"width")){
+            root.ColumnSpacing(gap);
+            for(uint32_t i=0;i<3;++i){
+                Grid column;for(int row=0;row<2;++row){RowDefinition definition;definition.Height({1,GridUnitType::Auto});column.RowDefinitions().Append(definition);}
+                headings[i].TextWrapping(TextWrapping::Wrap);headings[i].TextAlignment(TextAlignment::Center);column.Children().Append(headings[i]);
+                Border slot;slot.Width(width);slot.Height(num(layout,L"height"));Grid::SetRow(slot,1);column.Children().Append(slot);
+                images[i].Stretch(Stretch::Uniform);images[i].HorizontalAlignment(HorizontalAlignment::Center);images[i].VerticalAlignment(VerticalAlignment::Center);Grid::SetRow(images[i],1);column.Children().Append(images[i]);
+                Grid::SetColumn(column,int32_t(i));root.Children().Append(column);
+            }
+        }
+        void show(uint32_t count)const{
+            if(root.ColumnDefinitions().Size()==count)return;root.ColumnDefinitions().Clear();
+            for(uint32_t i=0;i<3;++i){if(i<count){ColumnDefinition column;column.Width({1,GridUnitType::Star});root.ColumnDefinitions().Append(column);}root.Children().GetAt(i).Visibility(i<count?Visibility::Visible:Visibility::Collapsed);}
+            root.MaxWidth(count*width+(count-1)*gap);
+        }
+    };
 
 
     hstring recovery(wchar_t const* key) const {return str(object(object(catalog,L"bootstrap"),L"recovery"),key);}
@@ -107,10 +125,10 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
         }
         if(type==L"new"){
             if(!newDrawing)newDrawing=std::make_unique<NewDrawingDialog>(data,send,window,changed);
-            newDrawing->Open(envelope);co_return;
+            newDrawing->Open(envelope);newDrawing->Apply();co_return;
         }
         auto id=num(envelope,L"id");
-        auto file=object(object(model,L"state"),L"document_file");
+        auto file=object(branch(model,L"state"),L"document_file");
         // Approval applies to the document shown when this dialog opened.
         J response=O({{L"operation",S(L"cancel")},{L"id",N(id)}});A queued;
         if(type==L"confirm_close")response=O({{L"operation",S(L"respond_close")},
@@ -134,7 +152,7 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
                 dialog.DefaultButton(ContentDialogButton::Primary);
                 auto size=window.Content().XamlRoot().Size();
                 StackPanel body;body.Spacing(12);body.Width(std::max(180.,std::min(380.,double(size.Width)-96)));
-                presentationChanged=[this,id]{auto options=object(model,L"document_options");auto current=object(object(findId(array(object(model,L"state"),L"requests"),id),L"kind"),L"request");dialog.Title(box_value(str(current,L"title")));dialog.PrimaryButtonText(str(options,L"save_label"));dialog.SecondaryButtonText(str(options,L"discard_label"));dialog.CloseButtonText(str(options,L"cancel_label"));};
+                presentationChanged=[this,id]{auto options=object(model,L"document_options");auto current=object(object(findId(array(branch(model,L"state"),L"requests"),id),L"kind"),L"request");dialog.Title(box_value(str(current,L"title")));dialog.PrimaryButtonText(str(options,L"save_label"));dialog.SecondaryButtonText(str(options,L"discard_label"));dialog.CloseButtonText(str(options,L"cancel_label"));};
                 dialog.Title(box_value(str(request,L"title")));
                 dialog.PrimaryButtonText(str(options,L"save_label"));
                 dialog.SecondaryButtonText(str(options,L"discard_label"));
@@ -370,10 +388,14 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
             if(kind==L"assign")text(featureText(L"color",L"assign_native_help"));
             if(kind==L"repair"){AutomationProperties::SetAutomationId(text(featureText(L"color",L"current_source")),L"document-source-current-label");AutomationProperties::SetAutomationId(text(documentText(L"source_profile")),L"document-source-profile");}
             if(kind==L"rasterize")text(featureText(L"color",L"source_baked_help"));
-            std::array<Image,3> images;std::array<TextBlock,3> headings;
+            Comparison comparison(object(request,L"comparison"),{});
             std::array<std::shared_ptr<BitmapUpload>,3> uploads;for(uint32_t i=0;i<3;++i){uploads[i]=BitmapUpload::Create();}
-            for(uint32_t i=0;i<3;++i){headings[i].TextWrapping(TextWrapping::Wrap);body.Children().Append(headings[i]);images[i].MaxHeight(210);images[i].Stretch(Stretch::Uniform);images[i].Visibility(Visibility::Collapsed);body.Children().Append(images[i]);}
-            body.Children().Append(status);ScrollViewer scroll;scroll.HorizontalScrollMode(ScrollMode::Disabled);scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);scroll.HorizontalContentAlignment(HorizontalAlignment::Stretch);scroll.Content(body);scroll.MaxHeight(std::max(180.,double(window.Content().XamlRoot().Size().Height)-220));dialog.Content(scroll);
+            auto titles=[comparison](J const& details){
+                auto feature=object(details,L"feature_copy"),copy=object(feature,L"color");auto sdr=flag(details,L"has_sdr_preview");comparison.show(sdr?3u:2u);
+                for(uint32_t i=0;i<(sdr?3u:2u);++i)comparison.headings[i].Text(i==0?str(copy,L"before"):i==2?str(object(feature,L"export"),L"sdr_base"):sdr?str(object(feature,L"export"),L"preview_sdr"):str(copy,L"after"));
+                return sdr?3u:2u;
+            };
+            titles(details);body.Children().Append(comparison.root);body.Children().Append(status);ScrollViewer scroll;scroll.HorizontalScrollMode(ScrollMode::Disabled);scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);scroll.HorizontalContentAlignment(HorizontalAlignment::Stretch);scroll.Content(body);scroll.MaxHeight(std::max(180.,double(window.Content().XamlRoot().Size().Height)-220));dialog.Content(scroll);
             auto pending=std::make_shared<bool>(true);auto seen=std::make_shared<hstring>();auto generation=std::make_shared<uint64_t>(0);
             auto prepare=[this,id,kind,space,depth,intent,copy,dither,spaces,profiles,pending,generation]{
                 if(stopping)return;*pending=true;++*generation;dialog.IsPrimaryButtonEnabled(false);
@@ -385,7 +407,7 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
                 send(to_string(O({{L"operation",S(L"workflow")},{L"id",N(id)},{L"action",O({{L"op",S(L"prepare")},{L"choice",choice},{L"copy",B(kind==L"convert"&&copy.IsChecked().Value())}})}}).Stringify()));
             };
             for(auto control:{space,depth,intent})control.SelectionChanged([prepare](auto&&,auto&&){prepare();});copy.Click([prepare](auto&&,auto&&){prepare();});dither.Click([prepare](auto&&,auto&&){prepare();});
-            workflowChanged=[this,id,kind,pending,seen,generation,images,headings,status,depth,intent,uploads]{
+            workflowChanged=[this,id,kind,pending,seen,generation,comparison,titles,status,depth,intent,uploads]{
                 auto current=object(model,L"windows_document");if(uint32_t(num(current,L"id"))!=id)return;
                 if(str(current,L"type")==L"workflow_busy"){*pending=true;dialog.IsPrimaryButtonEnabled(false);return;}
                 auto serial=to_hstring(uint32_t(num(current,L"serial")))+data->language();if(serial==*seen)return;*seen=serial;
@@ -394,16 +416,14 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
                 dialog.PrimaryButtonText(flag(details,L"copy")?str(copy,L"create_copy"):common(L"apply"));dialog.CloseButtonText(common(L"cancel"));status.Text(str(current,L"error"));
                 if(kind==L"depth"){std::array<hstring,4> labels{str(copy,L"depth_8"),str(copy,L"depth_16"),str(copy,L"depth_float16"),str(copy,L"depth_float32")};for(uint32_t i=0;i<labels.size();++i)comboOptionText(depth,i,labels[i]);}
                 if(kind==L"convert"){auto output=object(feature,L"export");std::array<hstring,4> labels{str(output,L"relative"),str(output,L"perceptual"),str(output,L"saturation"),str(output,L"absolute")};for(uint32_t i=0;i<labels.size();++i)comboOptionText(intent,i,labels[i]);}
+                auto count=titles(details);
                 bool ready=str(current,L"stage")==L"preview"&&status.Text().empty();*pending=!ready;dialog.IsPrimaryButtonEnabled(ready&&!flag(details,L"range_blocked"));
                 if(!ready)return;
                 hstring message=data->copyCaption(O({{L"type",S(L"inspection_clipped")},{L"count",N(num(details,L"clipped_channels"))}}));
                 if(flag(details,L"range_blocked"))message=message+L"\n"+str(object(feature,L"export"),L"outside_range");
                 if(flag(details,L"adds_layer"))message=message+L"\n"+str(copy,L"adds_layer");status.Text(message);
-                auto sdr=flag(details,L"has_sdr_preview");auto token=++*generation;
-                for(uint32_t i=0;i<3;++i){bool visible=i<(sdr?3u:2u);images[i].Visibility(visible?Visibility::Visible:Visibility::Collapsed);headings[i].Visibility(visible?Visibility::Visible:Visibility::Collapsed);if(!visible)continue;
-                    headings[i].Text(i==0?str(copy,L"before"):i==2?str(object(feature,L"export"),L"sdr_base"):sdr?str(object(feature,L"export"),L"preview_sdr"):str(copy,L"after"));
-                    preview(images[i],id,i,[generation,token]{return *generation==token;},uploads[i]);
-                }
+                auto token=++*generation;
+                for(uint32_t i=0;i<count;++i)preview(comparison.images[i],id,i,[generation,token]{return *generation==token;},uploads[i]);
             };
             dialog.PrimaryButtonClick([pending](auto&&,ContentDialogButtonClickEventArgs const& event){if(*pending)event.Cancel(true);});
             auto shown=dialog.ShowAsync();prepare();auto result=co_await shown;++*generation;
@@ -555,7 +575,8 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
             }else if(stage==L"preview"){
                 text(featureText(L"color",flag(details,L"copy")?L"clipped_comparison":L"compare_before_apply"));
                 auto sdr=flag(details,L"has_sdr_preview");
-                for(uint32_t i=0;i<(sdr?3u:2u);++i){text(i==2?featureText(L"export",L"sdr_base"):i?(sdr?featureText(L"export",L"preview_sdr"):featureText(L"color",L"after")):featureText(L"color",L"before"));Image image;image.MaxHeight(210);image.Stretch(Stretch::Uniform);body.Children().Append(image);preview(image,id,i);}
+                Comparison comparison(object(request,L"comparison"),{label(data,featureText(L"color",L"before")),label(data,sdr?featureText(L"export",L"preview_sdr"):featureText(L"color",L"after")),label(data,featureText(L"export",L"sdr_base"))});
+                comparison.show(sdr?3u:2u);body.Children().Append(comparison.root);for(uint32_t i=0;i<(sdr?3u:2u);++i)preview(comparison.images[i],id,i);
                 text(data->copyCaption(O({{L"type",S(L"inspection_clipped")},{L"count",N(num(details,L"clipped_channels"))}})));
                 if(flag(details,L"range_blocked"))text(featureText(L"export",L"outside_range"));
                 if(flag(details,L"adds_layer"))text(featureText(L"color",L"adds_layer"));
@@ -675,13 +696,17 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
         else if(!stopping&&!busyCompleted)send(to_string(O({{L"operation",S(L"workflow")},{L"id",N(num(state,L"id"))},{L"action",O({{L"op",S(L"cancel")}})}}).Stringify()));
         busyDialog=false;showing=false;changed();
     }
+    CanvasModelInputs inputs;bool wasBlocked=false;uint64_t copyGeneration=uint64_t(-1);
     void apply(J const& snapshot,bool blocked) {
         data->model=snapshot;
         bool relocalize=data->adoptLocalization(snapshot);
         if(relocalize){catalog=data->catalog;localization=data->localization;}
-        model=snapshot;data->state=object(snapshot,L"state");data->refreshPalette();
+        model=snapshot;data->state=branch(snapshot,L"state");
+        bool blockedChanged=std::exchange(wasBlocked,blocked)!=blocked;auto presentation=data->presentation(inputs,blockedChanged||relocalize);if(!presentation)return;
+        data->refreshPalette();
         if(dialog)dialogSurface(data,dialog);
         if(newDrawing)newDrawing->Apply();
+        if(object(model,L"windows_document").HasKey(L"details")&&std::exchange(copyGeneration,data->localizationGeneration)!=data->localizationGeneration&&!relocalize)data->refreshCopy();
         if(workflowChanged)workflowChanged();
         if(relocalize&&presentationChanged)presentationChanged();
         if(relocalize&&dialog){
@@ -711,7 +736,7 @@ struct DocumentView::Impl : std::enable_shared_from_this<Impl> {
             if(stamp!=workflowStamp){workflowStamp=stamp;workflow(document);}return;
         }
         if(str(document,L"type")==L"interpret"&&uint32_t(num(document,L"id"))!=interpreted){interpreted=uint32_t(num(document,L"id"));interpret(document);return;}
-        for(auto value:array(object(model,L"state"),L"requests")) {
+        for(auto value:array(branch(model,L"state"),L"requests")) {
             auto envelope=value.GetObject();
             if(str(object(envelope,L"kind"),L"type")==L"soft_proof_setup"){
                 auto id=uint32_t(num(envelope,L"id"));if(id!=handled){handled=id;send(to_string(O({{L"operation",S(L"workflow_begin")},{L"id",N(id)}}).Stringify()));}break;

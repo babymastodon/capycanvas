@@ -146,10 +146,9 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     try {
         winrt::Microsoft::UI::Xaml::Application::Start([](auto&&){winrt::make<App>();});
         CapyLifecycle("application_loop_returned");
-        // All windows have released their hosts. Finish canceled shader work
-        // before the process unloads WinUI and graphics-driver resources.
-        if(capy_finish_process()<0)return 1;
+        if(capy_finish_process()<0)TerminateProcess(GetCurrentProcess(),1);
         CapyLifecycle("application_returned");
+        TerminateProcess(GetCurrentProcess(),0);
         return 0;
     } catch(winrt::hresult_error const& error) {
         MessageBoxW(nullptr,error.message().c_str(),L"Capy Canvas could not start",MB_OK|MB_ICONERROR);

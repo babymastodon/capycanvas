@@ -30,7 +30,7 @@ pub(super) fn facts(device: &wgpu::Device, usage: Option<GpuMemory>) -> layer_co
     #[cfg(target_vendor = "apple")]
     if let Some(metal) = unsafe { device.as_hal::<wgpu::hal::api::Metal>() } {
         use objc2_metal::MTLDevice;
-        facts.unified = metal.raw_device().hasUnifiedMemory();
+        facts.unified = cfg!(target_abi = "sim") || metal.raw_device().hasUnifiedMemory();
     }
     let _ = device;
     facts

@@ -190,7 +190,7 @@ extension EditorLaunchTests {
         let app = editorTestApplication()
         app.launchEnvironment["CAPY_STORAGE_DIR"] = storage
         app.launchEnvironment["CAPY_PERSISTENCE_PROBE"] = "1"
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"}]"#
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}}]"#
         app.launch()
         let retry = app.buttons["recovery-retry"], later = app.buttons["recovery-later"]
         XCTAssertTrue(retry.waitForExistence(timeout: 60)); XCTAssertTrue(later.isHittable)
@@ -617,8 +617,7 @@ extension EditorLaunchTests {
         func openProject(_ name: String, count: Int, pixels: Data) async throws {
             await command("open_document")
             try enterTestFolder()
-            let file = fileProviderFile(name + ".capy", in: app).images.firstMatch
-            XCTAssertTrue(file.waitForExistence(timeout: 10)); workspaceActivate(file)
+            workspaceActivate(revealFileProviderFile(name + ".capy", in: app))
             submitFileProviderSelection(in: app)
             await waitUntil({ rows.count == count })
             expectTitle(name)
@@ -680,8 +679,7 @@ extension EditorLaunchTests {
         await waitUntil({ rows.count == 2 })
         await command("open_document")
         try enterTestFolder()
-        let project = fileProviderFile("RoundTrip.capy", in: app).images.firstMatch
-        XCTAssertTrue(project.waitForExistence(timeout: 10)); workspaceActivate(project)
+        workspaceActivate(revealFileProviderFile("RoundTrip.capy", in: app))
         submitFileProviderSelection(in: app)
         await waitUntil({ rows.count == 3 })
         expectTitle("RoundTrip")

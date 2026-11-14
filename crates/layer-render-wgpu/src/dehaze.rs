@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 const ENTRIES: &[&str] = &["reduce_source", "normalize", "minimum", "rank_histogram", "rank_select", "air_reduce", "air_finish", "moments", "refine"];
 const SOURCE: &str = concat!(include_str!("float_number.wgsl"), "\n", include_str!("guide_luminance.wgsl"), "\n", include_str!("../../../assets/filters/dehaze-math.wgsl"), "\n", include_str!("dehaze.wgsl"));
-fn pipelines(device:&PipelineDevice)->&Arc<Pipelines> {
+pub(crate) fn pipelines(device:&PipelineDevice)->&Arc<Pipelines> {
     device.dehaze_pipelines.get_or_init(||Arc::new(Pipelines::new(device,"Dehaze analysis",SOURCE,ENTRIES)))
 }
 pub(crate) struct Builder {

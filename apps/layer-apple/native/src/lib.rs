@@ -35,6 +35,11 @@ use layer_host::{NativeHost, PointerBatch};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+#[unsafe(no_mangle)]
+pub extern "C" fn capy_apple_launch_mark_size(width: f32, height: f32) -> f32 {
+    layer_ui::launch_mark_size([width, height])
+}
+
 pub struct CapyApple {
     metal: metal::MetalHost,
     host: NativeHost,
@@ -46,7 +51,7 @@ pub struct CapyApple {
     chrome_facts: layer_ui::ChromeFacts,
     dismissed_contacts: std::collections::BTreeSet<u64>,
     workspaces: Option<layer_workspace::WorkspaceController<layer_workspace::StoreWorker>>,
-    workspace_wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    workspace_wake: Option<layer_host::PreparationWake>,
     language: layer_ui::LanguageTransition,
     published_language: Option<u64>,
     scopes: scopes::Cache,
@@ -151,7 +156,7 @@ pub unsafe extern "C" fn capy_apple_launch(platform: u32, prepared: u64, bootstr
     let result = catch_unwind(AssertUnwindSafe(|| {
         let prepared = handles::shared::<CapyAppleLaunch>(prepared).ok_or("Missing launch configuration")?;
         if !bootstrap.is_null() {
-            let view = serde_json::to_string(&layer_ui::bootstrap_view(&prepared.localization)).map_err(|e| e.to_string())?;
+            let view = serde_json::to_string(&layer_ui::launch_bootstrap_view(&prepared.localization, prepared.settings.zen_icon)).map_err(|e| e.to_string())?;
             let view = CString::new(view).map_err(|e| e.to_string())?;
             unsafe { *bootstrap = handles::text(view) };
         }
@@ -292,10 +297,11 @@ pub unsafe extern "C" fn capy_apple_set_workspace_wake(app:u64,context:*mut std:
         let context=context as usize;
         std::sync::Arc::new(move ||wake(context as *mut std::ffi::c_void)) as std::sync::Arc<dyn Fn()+Send+Sync>
     });
-    if let Some(controller)=&mut owner.workspaces {
-        match &wake {Some(wake)=>controller.set_wake(wake.clone()),None=>controller.stop()}
+    if let Some(wake)=wake {
+        owner.workspace_wake.get_or_insert_with(Default::default).set_notify(wake);
+    } else if let Some(registration)=&owner.workspace_wake {
+        registration.close();
     }
-    owner.workspace_wake=wake;
     0
 }
 /// # Safety
@@ -615,6 +621,10 @@ pub unsafe extern "C" fn capy_apple_request(
                     serde_json::Value::Null
                 },
                 Some("bootstrap") => serde_json::to_value(a.host.bootstrap_view()).map_err(|e| e.to_string())?,
+                Some("launch_interaction") => {
+                    a.host.set_launch_interaction(value["active"].as_bool().ok_or("Missing launch interaction")?);
+                    serde_json::Value::Null
+                }
                 Some("document_tabs") => a.tabs_request(value)?,
                 Some("workspace_dialog_layout") => {
                     let page = a.host.session.state().dialog_presentation(layer_ui::DialogRole::Editor, a.host.logical).single_pane();

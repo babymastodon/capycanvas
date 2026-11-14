@@ -80,13 +80,13 @@ function Verify-PendingDropFixture {
     $fixture=(Resolve-Path -LiteralPath $DropFixture).Path
     if($fixture -eq $Executable){throw 'DropFixture must be the separate LayerDrop control executable'}
     $shell=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $parentContext=if($env:CAPY_FIXTURE_CONTEXT -and (Test-Path -LiteralPath $env:CAPY_FIXTURE_CONTEXT)){Get-Content -LiteralPath $env:CAPY_FIXTURE_CONTEXT -Raw|ConvertFrom-Json}
+    $parentContext=if($env:CAPY_FIXTURE_CONTEXT -and (Test-Path -LiteralPath $env:CAPY_FIXTURE_CONTEXT)){Read-CapyFixtureContext}
     try {
         & $shell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Executable $fixture -Device $Device -Theme $Theme -PendingDropOnly -DropRun (Join-Path $run 'pending-drop')
         $childExit=$LASTEXITCODE
     }finally{
         if($parentContext){
-            $childContext=Get-Content -LiteralPath $env:CAPY_FIXTURE_CONTEXT -Raw|ConvertFrom-Json
+            $childContext=Read-CapyFixtureContext
             Update-CapyFixtureContext ({
                 param($context)
                 $context.Clear()
@@ -354,7 +354,7 @@ function Check-KeyboardContext([long]$Layer) {
     Wait-Until {(Gesture).menu_open} 'Keyboard context action did not open the layer menu'
     $beforeMenuRows=Rows;$beforeMenuRevision=(Model).state.document_file.revision
     $source=Control "layer-$Layer-name";$organize=Control 'menu-organize' -Arranged
-    Tap 'menu-organize'
+    if($Device -eq 'mouse'){$at=Point 'menu-organize';[CapyRowPointer]::Hover($at.x,$at.y)}else{Tap 'menu-organize'}
     $duplicate=Control 'layer-menu-duplicate' -Arranged
     $submenu=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($duplicate)
     $menuItems=$submenu.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::MenuItem))
@@ -508,7 +508,7 @@ try {
     @{process_id=$review.Id;run=$run;device=$Device;theme=$Theme}|ConvertTo-Json|Set-Content (Join-Path $repo 'artifacts/windows/layer-pickup-review.json')
     Write-Output "Owned layer pickup review $($review.Id) ($Device)"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Layer review did not start' 45
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready) -and !(Model).windows_workspace.busy} 'Layer review did not start' 45
     $root=$native.window.Root;$drawingWindow=$native.window.Handle
     $null=[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))
     $null=[CapyRowPointer]::SetForegroundWindow($drawingWindow)

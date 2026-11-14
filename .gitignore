@@ -5,6 +5,7 @@ __pycache__/
 /dist/
 /artifacts/
 /apps/layer-web/pkg/
+/apps/layer-web/launch.css
 
 # Android SDK paths, build products and signing material.
 .gradle/
@@ -71,3 +72,4 @@ presentation-probe-*.json
 ui-state-*.json
 camera-state-*.json
 windows-*.json
+.wrangler/

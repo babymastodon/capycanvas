@@ -108,6 +108,7 @@ extension XCTestCase {
         app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"customize","action":{"type":"set_panel_visible","panel":"color","visible":true}},{"type":"customize","action":{"type":"set_panel_visible","panel":"palettes","visible":false}},{"type":"color","action":{"op":"select","slot":"background"}},{"type":"set_color","rgba":[0,0,1,1]},{"type":"color","action":{"op":"select","slot":"foreground"}},{"type":"set_color","rgba":[1,0,0,1]}]"#
         app.launchEnvironment["CAPY_COLOR_PROBE"] = "1"
         app.launch()
+        waitForEditorInteraction(in: app)
         let wheel = app.descendants(matching: .any)["color-wheel"].firstMatch
         let foreground = app.buttons["color-foreground"], background = app.buttons["color-background"]
         let use = app.buttons["color-use"]

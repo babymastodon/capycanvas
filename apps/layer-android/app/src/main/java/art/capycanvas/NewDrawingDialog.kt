@@ -593,7 +593,7 @@ private class DrawerMemory { var shown: JSONObject? = null; var open = false; va
                 CoreTextField(value.getString("name"),{actions.send("preset_name","text" to it)},
                     Modifier.width(150.dp).then(if(canSave)Modifier else Modifier.border(1.5.dp,MaterialTheme.colorScheme.error,ControlShape))
                         .semantics {contentDescription=copy.getString("preset_name")}.testTag("new-drawing-save-name"),
-                    placeholder={Text(copy.getString("preset_name"))},height=34.dp,shape=ControlShape,background=fieldColor())
+                    placeholder={Text(copy.getString("preset_name"))},height=34.dp,shape=ControlShape,background=fieldColor(),focusRequest=1)
                 val groups=value.getJSONArray("groups").objects()
                 Choice(groups.map{it.getString("label")},groups.indexOfFirst{it.getString("value")==value.getString("group")},"new-drawing-save-group",
                     copy.getString("preset_category"),Modifier.width(140.dp)){actions.send("preset_group","group" to groups[it].getString("value"))}

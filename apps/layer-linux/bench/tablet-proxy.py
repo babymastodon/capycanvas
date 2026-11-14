@@ -24,8 +24,10 @@ if not display.startswith("layer-bench-"):
     raise SystemExit("Requires the isolated native-input runner")
 path = runtime / "layer-bench-tablet"
 events = Path(os.environ["LAYER_NATIVE_INPUT_DIR"])
-tablet, pen, eraser = 0xFF000000, 0xFF000001, 0xFF000002
-objects = Objects(3)
+tablet, pen, eraser, rotating = 0xFF000000, 0xFF000001, 0xFF000002, 0xFF000003
+TILT, PRESSURE, ROTATION = 1, 2, 4
+PEN_TYPE, ERASER_TYPE = 0x140, 0x141
+objects = Objects(4)
 target = TabletTarget()
 seat = None
 introduced = False
@@ -52,7 +54,7 @@ def request(message):
     obj, header = struct.unpack_from("=II", message)
     opcode = header & 0xFFFF
     args = message[8:]
-    if obj in (tablet, pen, eraser):
+    if obj in (tablet, pen, eraser, rotating):
         return False  # Gtk's cursor/destroy requests for our synthetic objects.
     kind = objects.kinds.get(obj)
     target.request(kind, obj, opcode, args)
@@ -137,19 +139,20 @@ try:
             event(tablet, 0, string("CapyCanvas test tablet"))
             event(tablet, 1, words(0, 0))
             event(tablet, 3)
-            for tool, kind in ((pen, 0x140), (eraser, 0x141)):  # tablet-v2 pen, eraser
+            for tool, kind, capabilities in ((pen, PEN_TYPE, (PRESSURE, TILT)), (eraser, ERASER_TYPE, (PRESSURE, TILT)),
+                                             (rotating, PEN_TYPE, (PRESSURE, TILT, ROTATION))):
                 event(seat, 1, words(tool))
                 event(tool, 0, words(kind))
                 event(tool, 1, words(0, tool & 0xFF))
-                event(tool, 3, words(2))  # pressure
-                event(tool, 3, words(1))  # tilt
+                for capability in capabilities:
+                    event(tool, 3, words(capability))
                 event(tool, 4)
             introduced = True
         file = events / f"pen-{index}.json"
         if introduced and target.current and file.exists():
             contact = json.loads(file.read_text())
             serial += 1
-            tool = near if contact["pen"] == "leave" and near else eraser if contact.get("tool") == "eraser" else pen
+            tool = near if contact["pen"] == "leave" and near else {"eraser": eraser, "rotating": rotating}.get(contact.get("tool"), pen)
             if near is not None and (near != tool or near_surface != target.current):
                 event(near, 7)
                 event(near, 18, words(int(time.monotonic() * 1000) & 0xFFFFFFFF))
@@ -162,6 +165,8 @@ try:
                 event(tool, 10, struct.pack("=ii", *(int(v * 256) for v in contact["point"])))
             if "tilt" in contact:
                 event(tool, 13, struct.pack("=ii", *(int(v * 256) for v in contact["tilt"])))
+            if "twist" in contact:
+                event(tool, 14, struct.pack("=i", int(contact["twist"] * 256)))
             if contact["pen"] == "down":
                 event(tool, 11, words(32768))
                 event(tool, 8, words(serial))

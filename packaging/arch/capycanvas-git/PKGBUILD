@@ -2,23 +2,24 @@
 
 pkgname=capycanvas-git
 pkgver=r2268.g4d5a4ab2
-pkgrel=4
+pkgrel=5
 pkgdesc='GPU-accelerated drawing and painting application (development version)'
 arch=('x86_64')
-url='https://github.com/capyatelier/capycanvas'
+url='https://github.com/babymastodon/capycanvas'
 license=('MIT OR Apache-2.0' 'LicenseRef-Capy-Canvas-Branding'
          'LGPL-2.1-or-later' 'libtiff' 'IJG' 'BSD-3-Clause')
 depends=('cairo>=1.18.2' 'fontconfig>=2.17.0' 'freetype2' 'fribidi>=1.0.6' 'gdk-pixbuf2>=2.30.0' 'glib2' 'glibc'
          'graphene>=1.10.0' 'harfbuzz>=11.0.0' 'hicolor-icon-theme' 'libadwaita>=1:1.9'
          'libepoxy>=1.4' 'libffi>=3.0.0' 'libgcc' 'libpng' 'libthai>=0.1.9' 'libxkbcommon>=0.2.0' 'pango' 'pcre2>=10.32'
-         'util-linux-libs>=2.23' 'vulkan-icd-loader>=1.3' 'vulkan-driver' 'wayland>=1.24.0' 'zlib')
+         'util-linux-libs>=2.23' 'vulkan-icd-loader>=1.3' 'vulkan-driver' 'wayland>=1.24.0' 'zlib'
+         'libx11' 'libxcursor' 'libxdamage' 'libxext' 'libxfixes' 'libxi' 'libxinerama' 'libxrandr' 'libxrender')
 makedepends=('cargo' 'cargo-about' 'desktop-file-utils' 'git' 'glib2-devel' 'gtk4>=1:4.22' 'libdrm' 'meson>=1.8' 'ninja' 'nodejs' 'patchelf' 'python' 'shaderc' 'vulkan-headers' 'wayland-protocols>=1.48' 'xz')
 optdepends=('python: rebuild the bundled GTK runtime')
 provides=('capycanvas')
 conflicts=('capycanvas')
 # The native packager strips the app; preserve the bundled GTK manifest hashes.
 options=('!debug' '!strip' '!lto')
-source=('capycanvas::git+https://github.com/capyatelier/capycanvas.git'
+source=('capycanvas::git+https://github.com/babymastodon/capycanvas.git'
         'https://download.gnome.org/sources/gtk/4.24/gtk-4.24.1.tar.xz'
         'https://download.gnome.org/sources/glib/2.90/glib-2.90.1.tar.xz'
         'https://download.gnome.org/sources/pango/1.58/pango-1.58.2.tar.xz'

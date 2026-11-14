@@ -3,14 +3,15 @@ import XCTest
 extension XCTestCase {
     @MainActor func checkArtworkRecoveryAfterRestart(in app: XCUIApplication, theme: String = "light") {
         app.launchEnvironment["CAPY_PERSISTENCE_PROBE"] = "1"
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"invoke","command":"add_layer"},{"type":"set_layer_opacity","opacity":0.42},{"type":"set_color","rgba":[0.1,0.3,0.9,1]}]"#
-        app.launch()
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}},{"type":"invoke","command":"add_layer"},{"type":"set_layer_opacity","opacity":0.42},{"type":"set_color","rgba":[0.1,0.3,0.9,1]}]"#
+        app.launch(); waitForEditorInteraction(in: app)
         let canvas = app.descendants(matching: .any)["canvas"].firstMatch
         expectation(for: NSPredicate(format: "value == %@", "Canvas ready"), evaluatedWith: canvas)
         waitForExpectations(timeout: 30)
         let ready = app.staticTexts["recovery-status"]
         expectation(for: NSPredicate(format: "label == %@ OR value == %@", "Recovery ready", "Recovery ready"), evaluatedWith: ready)
         waitForExpectations(timeout: 30)
+        editorMenu(in: app, menu: "View", id: "fit_canvas", label: "Fit canvas")
         // Fill through the enabled native menus after startup, not through
         // initial actions that can run before canvas commands are available.
         editorMenu(in: app, menu: "Select", id: "select_all", label: "Select all pixels")
@@ -19,7 +20,7 @@ extension XCTestCase {
             let pixel = self.editorPixels(in: app); return Int(pixel[2]) > Int(pixel[0]) + 20
         }, evaluatedWith: app)
         waitForExpectations(timeout: 15)
-        let painted = editorPixels(in: app)
+        let painted = settledEditorPixels(in: app)
         let scene = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "editor-scene-")).firstMatch
         let sceneID = scene.identifier

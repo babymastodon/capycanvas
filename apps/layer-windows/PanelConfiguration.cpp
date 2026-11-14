@@ -11,7 +11,7 @@
 using namespace CapyUi;
 namespace {
 J editing(std::shared_ptr<WorkspaceData> const& data){return object(object(data->state,L"layer_tools"),L"editing_layer");}
-hstring epoch(std::shared_ptr<WorkspaceData> const& data){return to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")));}
+hstring epoch(std::shared_ptr<WorkspaceData> const& data){return to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch")));}
 A optionStructure(A const& sections){
     A result;
     for(auto section:sections){A items;for(auto value:section.GetArray()){
@@ -216,9 +216,4 @@ double PanelConfiguration::ContentHeight(double width)const{
 void PanelConfiguration::SetVisible(bool visible){if(impl->navigator)impl->navigator->Apply(visible);}
 FrameworkElement PanelConfiguration::Anchor(std::wstring const& control)const{
     auto found=impl->anchors.find(control);return found==impl->anchors.end()?nullptr:found->second;
-}
-void PanelConfiguration::AppendOverviews(A& slots,UIElement const& reference,Windows::Foundation::Rect clip,int order)const{
-    if(!impl->navigator)return;
-    clip=intersect(clip,visibleBounds(impl->navigator->Root(),reference.as<FrameworkElement>()));
-    auto slot=impl->navigator->Placement(reference,clip,order,true);if(slot.Size())slots.Append(slot);
 }

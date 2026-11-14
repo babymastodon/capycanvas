@@ -307,12 +307,12 @@ Releasing a repeated hold does not also invoke a tap. Other tap bindings do not
 repeat. Indirect trackpad contacts support these holds and quick pinches while
 leaving taps with the operating system.
 
-A quick inward pinch followed by lifting both fingers fits the canvas upright.
-An outward quick pinch from that fitted view restores the preceding view,
-including zoom, rotation and reflection. Other navigation leaves outward pinches
-as ordinary zoom. Both fingers must move, finish the pinch within 300 ms and
-lift within 100 ms of each other; pans, cancellation and extra contacts cannot
-reset the view. Slow pinches retain ordinary navigation.
+A quick inward pinch followed by lifting both fingers fits the canvas upright and
+keeps its reflection. An outward quick pinch from that fitted view restores the
+preceding view, including zoom, rotation and reflection. Other navigation leaves
+outward pinches as ordinary zoom. Both fingers must move, finish the pinch within
+300 ms and lift within 100 ms of each other; pans, cancellation and extra contacts
+cannot reset the view. Slow pinches retain ordinary navigation.
 
 Canvas → Navigation includes separate **Quick pinch to fit** and
 **Reverse pinch to restore view** switches. Both start on and are saved with the
@@ -368,7 +368,11 @@ Saved app-state keys, IDs and enum names keep their stored names and meaning.
 Never reuse or remove a released name; use Serde `rename` when only the Rust
 name changes. Add defaults for new option fields, while keeping identity,
 ownership and structural fields required. App-state objects ignore unknown
-fields and retain their size and validation limits. Preferences, editing state,
+fields and retain their size and validation limits. Workspace and toolbar
+readers also give an option field they can't read its default (the
+`layer_ui::lenient` helpers), drop list elements and map entries they can't
+read, and drop tiles, title-bar tools, panel controls and bubbles this build
+doesn't offer before the usual validation. Preferences, editing state,
 working state and workspace document versions do not require an exact match;
 physical database schemas and file envelopes have their own admission rules.
 
@@ -396,15 +400,18 @@ be reported without blocking pen input.
 Stored data may come from any build, older or newer. Editing state written by
 1.0.15 is converted in memory before validation; loading does not rewrite it.
 Preferences, editing and working state restore each readable top-level field
-and use defaults for fields they cannot read:
+and use defaults for fields they cannot read. Inside a field, a list or map of
+independent entries (palettes and their colors, color history, tool memory and
+overrides, tool-slot choices, region values, shortcuts, gestures, pen buttons,
+hold keys, tilt calibrations, slider bookmarks, saved canvas setups and named
+export presets) drops only the entries it cannot read:
 
 - Preferences: hosts pass the saved text to `UiAction::RestoreSavedSettings`, or
   to `Settings::restore` when they need settings before a session exists. Each
   field this build reads and validates is kept, and every other field keeps its
   default. Loading does not rewrite the saved copy; the next change replaces it.
 - Editing: the existing storage worker restores fields with the window's
-  language and reports discarded fields before workspace adoption. A discarded
-  field raises the shared palettes-and-brush-settings notice once per start. Saves merge
+  language before workspace adoption, without a notice. Saves merge
   changed JSON paths, so painting history does not replace another window's
   palettes and different brushes keep independent overrides. Unchanged unreadable
   fields stay stored. On focus or resume, the worker reloads editing state and
@@ -415,9 +422,16 @@ and use defaults for fields they cannot read:
   survive. The binary envelope, digest and size limits remain strict. The
   hidden-profile list keeps the IDs this build reads. The web color-preference database
   adds missing stores when its version changes and never deletes stored data.
-- Workspaces: unreadable rows are kept. When none can be read, startup creates
-  a new workspace from the included layout and raises the shared update notice.
-  Only SQLite corruption or not-a-database errors set the store aside; see
+- Workspaces: an item whose content can't be read still opens. An included
+  workspace gets its starting layout, a custom workspace its saved starting
+  layout or else the device's first included layout, and a saved toolbar keeps
+  its name with the default tools. Opening writes nothing; the next save
+  replaces the stored content. An item whose name or kind can't be read is left
+  out of the list and kept. When no workspace can be listed, startup creates
+  a new workspace from the included layout, without a notice.
+  Only damaged storage (SQLite corruption, a Web store that can't be decoded,
+  or an older store schema) is set aside, and its newest readable version copy
+  takes its place with a notice and no question; see
   [workspace startup](../internals/workspace-ownership.md#startup-always-adopts-a-workspace).
 - Caches discard data they cannot use.
 - Artwork is never replaced automatically. A recovery copy this build cannot

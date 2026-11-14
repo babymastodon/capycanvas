@@ -135,6 +135,62 @@ fn final_shutdown_joins_pools_created_while_another_pool_is_finishing() {
     assert!(second.with_queue(|queue| queue.stopped));
 }
 
+fn submit_unowned(coordinator: &native::Coordinator, work: impl FnOnce() -> Result<(), String> + Send + 'static) {
+    coordinator.with_queue(|queue| {
+        let id = queue.next();
+        queue.submit(Key::Job(id), Demand { owner: 0, generation: None, class: DOCUMENT }, false, || Box::new(work) as platform::Work);
+    });
+    coordinator.notify();
+}
+
+#[test]
+fn exit_stop_returns_while_a_compile_job_is_blocked_mid_run() {
+    let coordinator = native::Coordinator::with_workers(1, None).unwrap();
+    let (entered, started) = mpsc::channel();
+    let (release, resume) = mpsc::channel::<()>();
+    submit_unowned(&coordinator, move || {
+        entered.send(()).unwrap();
+        resume.recv_timeout(Duration::from_secs(60)).unwrap();
+        Ok(())
+    });
+    started.recv_timeout(Duration::from_secs(60)).unwrap();
+    let (stopped, done) = mpsc::channel();
+    let stopping = std::thread::spawn(move || {
+        stop_shader_compilers();
+        stopped.send(()).unwrap();
+    });
+    let returned = done.recv_timeout(Duration::from_secs(2)).is_ok();
+    release.send(()).unwrap();
+    stopping.join().unwrap();
+    assert!(returned, "exit waited for a running compile");
+    assert!(coordinator.with_queue(|queue| queue.stopped));
+}
+
+#[test]
+fn exit_stop_starts_no_compile_job_after_it_returns() {
+    let coordinator = native::Coordinator::with_workers(1, None).unwrap();
+    let (entered, started) = mpsc::channel();
+    let (release, resume) = mpsc::channel::<()>();
+    submit_unowned(&coordinator, move || {
+        entered.send(()).unwrap();
+        resume.recv_timeout(Duration::from_secs(60)).unwrap();
+        Ok(())
+    });
+    started.recv_timeout(Duration::from_secs(60)).unwrap();
+    stop_shader_compilers();
+    let ran = Arc::new(AtomicUsize::new(0));
+    for _ in 0..3 {
+        let ran = ran.clone();
+        submit_unowned(&coordinator, move || {
+            ran.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+    }
+    release.send(()).unwrap();
+    drop(coordinator);
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "a compile job started after exit stopped compilation");
+}
+
 fn finish_jobs(compiler: &Compiler) {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while compiler.with_queue(|q| {

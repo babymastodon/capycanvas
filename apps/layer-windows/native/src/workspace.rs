@@ -367,7 +367,7 @@ mod tests {
         let rows=packet["result"]["rows"].as_array().unwrap();
         let submitted=rows.iter().find(|row|row["label"]=="Submitted FPS").unwrap();
         assert_eq!(submitted["value"],"1");
-        assert_eq!(rows.iter().find(|row|row["label"]=="Frames").unwrap()["value"],"0");
+        assert_eq!(packet["result"]["frames"],0);
         host.reset_canvas_frame_rate();
         observer.presented(1,1);
         let packet=metadata(super::query(&mut host,r#"{"type":"renderer_stats"}"#).unwrap());

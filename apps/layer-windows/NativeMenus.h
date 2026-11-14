@@ -76,16 +76,24 @@ inline void NativeMenuItems(winrt::Windows::Foundation::Collections::IVector<Men
     }
     while(target.Size()>at)target.RemoveAtEnd();
 }
+inline HWND ForegroundOwner(){return GetAncestor(GetForegroundWindow(),GA_ROOTOWNER);}
+inline HWND OwnerWindow(winrt::Microsoft::UI::Xaml::XamlRoot const& xaml){
+    return xaml?GetAncestor(Microsoft::UI::GetWindowFromWindowId(xaml.ContentIslandEnvironment().AppWindowId()),GA_ROOTOWNER):nullptr;
+}
+inline void ReturnForeground(Primitives::FlyoutBase const& flyout){
+    auto owner=OwnerWindow(flyout.XamlRoot());auto foreground=GetForegroundWindow();
+    if(owner&&foreground!=owner&&!IsWindowVisible(foreground)&&GetWindowThreadProcessId(foreground,nullptr)==GetCurrentThreadId()&&ForegroundOwner()==owner)SetForegroundWindow(owner);
+}
 struct PopupLifetime:std::enable_shared_from_this<PopupLifetime>{
     std::weak_ptr<WorkspaceData> data;
     weak_ref<Primitives::FlyoutBase> popup;
     uint64_t registration=0,generation=0;
     bool open=false,closing=false;
-    event_token opening{},opened{},closingEvent{},closed{};
+    event_token opening{},opened{},closingEvent{},closed{},foreground{};
     virtual ~PopupLifetime()=default;
     void attach(Primitives::FlyoutBase const& flyout,std::shared_ptr<WorkspaceData> const& context){
         popup=make_weak(flyout);data=context;auto self=shared_from_this();
-        opening=flyout.Opening([self](auto&&,auto&&){++self->generation;self->closing=false;self->enroll();});
+        opening=flyout.Opening([self](auto const& sender,auto&&){++self->generation;self->closing=false;self->enroll();self->watchForeground(sender.template as<Primitives::FlyoutBase>());});
         opened=flyout.Opened([self](auto&&,auto&&){self->didOpen();});
         closingEvent=flyout.Closing([self](auto const& sender,auto const& args){
             sender.DispatcherQueue().TryEnqueue([self,args,serial=self->generation]{
@@ -94,6 +102,11 @@ struct PopupLifetime:std::enable_shared_from_this<PopupLifetime>{
             });
         });
         closed=flyout.Closed([self](auto&&,auto&&){self->retire();});
+    }
+    void watchForeground(Primitives::FlyoutBase const& flyout){
+        if(!foreground.value)foreground=flyout.Closed([self=shared_from_this()](auto const& sender,auto&&){
+            auto closedFlyout=sender.template as<Primitives::FlyoutBase>();closedFlyout.Closed(std::exchange(self->foreground,{}));ReturnForeground(closedFlyout);
+        });
     }
     void enroll(){if(!registration)if(auto context=data.lock())registration=context->transient([self=shared_from_this()]{return self->cancel();});}
     virtual void didOpen(){if(!registration||closing){if(auto flyout=popup.get())flyout.Hide();return;}if(!std::exchange(open,true))if(auto context=data.lock())context->popup(true);}
@@ -117,7 +130,7 @@ class OwnedPopup {
             if(!registration||closing)return false;
             auto source=anchor.get(),surface=root.get();auto context=data.lock();
             bool valid=source&&surface&&context&&!context->externalPopup&&source.XamlRoot()&&source.XamlRoot().Content()==surface&&
-                window&&GetAncestor(GetForegroundWindow(),GA_ROOTOWNER)==window&&!IsIconic(window);
+                window&&ForegroundOwner()==window&&!IsIconic(window);
             if(valid){auto bounds=visibleBounds(source,surface);valid=bounds.Width>0&&bounds.Height>0;}
             if(valid)for(DependencyObject node=source;node;node=VisualTreeHelper::GetParent(node)){
                 if(auto element=node.try_as<UIElement>();element&&(!element.IsHitTestVisible()||element.Opacity()<=0))valid=false;
@@ -165,7 +178,7 @@ public:
         next->anchor=make_weak(anchor);
         if(auto xaml=anchor.XamlRoot()){
             next->root=make_weak(xaml.Content().as<FrameworkElement>());
-            next->window=GetAncestor(Microsoft::UI::GetWindowFromWindowId(xaml.ContentIslandEnvironment().AppWindowId()),GA_ROOTOWNER);
+            next->window=OwnerWindow(xaml);
         }
         next->attach(popup,data);next->enroll();auto weak=std::weak_ptr<State>(next);
         next->unloaded=anchor.Unloaded([weak](auto&&,auto&&){if(auto self=weak.lock())self->cancel();});

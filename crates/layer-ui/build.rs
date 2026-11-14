@@ -1,11 +1,36 @@
-use std::{collections::{BTreeMap, BTreeSet}, env, fs, path::PathBuf};
+use std::{collections::{BTreeMap, BTreeSet}, env, fs, path::PathBuf, process::Command};
 use fluent_syntax::{ast::{Entry, PatternElement, Resource}, parser, serializer};
 #[path = "src/localization_inventory.rs"]
 mod localization_inventory;
 #[path = "src/localization_languages.rs"]
 mod localization_languages;
 
+fn source_revision() -> String {
+    println!("cargo:rerun-if-env-changed=CAPY_PUBLIC_RELEASE");
+    println!("cargo:rerun-if-env-changed=CAPY_SOURCE_REVISION");
+    if env::var("CAPY_PUBLIC_RELEASE").is_ok_and(|public| public == "true") { return String::new(); }
+    if let Ok(revision) = env::var("CAPY_SOURCE_REVISION") { return revision; }
+    let run = |directory: &PathBuf, args: &[&str]| Command::new("git").arg("-C").arg(directory).args(args).output().ok()
+        .filter(|output| output.status.success()).map(|output| String::from_utf8(output.stdout).unwrap().trim_end().to_owned());
+    let workspace = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..").canonicalize().unwrap();
+    let Some(top) = run(&workspace, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
+        .filter(|top| top.canonicalize().is_ok_and(|top| top == workspace)) else { return String::new() };
+    let Some(commit) = run(&top, &["rev-parse", "--short=9", "HEAD"]) else { return String::new() };
+    let git = |args: &[&str]| run(&top, args).unwrap();
+    for state in ["HEAD", "logs/HEAD"] {
+        let path = PathBuf::from(git(&["rev-parse", "--path-format=absolute", "--git-path", state]));
+        if path.exists() { println!("cargo:rerun-if-changed={}", path.display()); }
+    }
+    let changed = git(&["diff", "--name-only", "-z", "HEAD"]);
+    let watched = if changed.is_empty() { git(&["ls-files", "-z"]) } else { changed.clone() };
+    for path in watched.split('\0').map(|path| top.join(path)).filter(|path| path.is_file()) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    commit + if changed.is_empty() { "" } else { "*" }
+}
+
 fn main() {
+    println!("cargo:rustc-env=CAPY_BUILD_REVISION={}", source_revision());
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../assets/locales");
     println!("cargo:rerun-if-changed=src/localization_languages.rs");
     let languages: Vec<_> = localization_languages::LANGUAGES.iter().map(|(_, tag, _, _)| *tag).collect();

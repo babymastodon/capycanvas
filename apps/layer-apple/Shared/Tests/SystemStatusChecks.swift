@@ -103,7 +103,7 @@ extension XCTestCase {
         waitForExpectations(timeout: 15)
         attachEditor(in: app, name: "paper-color-property")
         let texture = app.buttons["property-texture"], scale = app.buttons["number-value-property-scale"]
-        let propertyScroll = app.scrollViews.containing(.any, identifier: "layer-properties").firstMatch
+        let propertyScroll = app.scrollViews.containing(.button, identifier: "property-texture").firstMatch
         func expectPaperValue(_ element: XCUIElement, _ text: String) {
             expectation(for: NSPredicate(format: "value == %@", text), evaluatedWith: element)
             waitForExpectations(timeout: 10)
@@ -234,7 +234,7 @@ extension XCTestCase {
                 }) else { lastLayerBounds = []; return false }
             let name = row.staticTexts.firstMatch
             let thumbnail = row.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "layer-thumbnail-")).firstMatch
-            guard name.exists, thumbnail.exists, !(name.value as? String ?? name.label).isEmpty else { lastLayerBounds = []; return false }
+            guard name.exists, thumbnail.exists, !(name.label + (name.value as? String ?? "")).isEmpty else { lastLayerBounds = []; return false }
             let bounds = drawer.frame, frames = (controls + [row, name, thumbnail]).map(\.frame)
             guard !bounds.isEmpty, self.workspaceViewport(in: app).frame.contains(bounds),
                 frames.allSatisfy({ !$0.isEmpty && bounds.contains($0) }),
@@ -276,7 +276,7 @@ extension XCTestCase {
     }
 
     @MainActor func checkTitleBarSystemStatus(in app: XCUIApplication) {
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"light"},{"type":"invoke","command":"customize_workspace_ui"}]"#
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"light"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}},{"type":"invoke","command":"customize_workspace_ui"}]"#
         app.launch()
         func activate(_ element: XCUIElement) {
             XCTAssertTrue(element.waitForExistence(timeout: 15))
@@ -318,12 +318,54 @@ extension XCTestCase {
         #endif
         XCTAssertFalse(app.staticTexts["Canvas error"].exists)
     }
+
+    @MainActor func checkHeaderBarDrawerCorners(in app: XCUIApplication, theme: String) {
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"preferences","action":{"type":"edit","id":"transparency","value":2}},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:painter"}},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"},{"type":"invoke","command":"zoom_in"}]"#
+        app.launch()
+        let canvas = app.descendants(matching: .any)["canvas"].firstMatch
+        expectation(for: NSPredicate(format: "value == %@", "Canvas ready"), evaluatedWith: canvas)
+        waitForExpectations(timeout: 60)
+        waitForEditorInteraction(in: app)
+        let color = app.buttons["Brush color"], layers = app.buttons["Layers panel"]
+        let drawer = app.descendants(matching: .any)["tool-drawer"].firstMatch
+        XCTAssertTrue(color.waitForExistence(timeout: 10) && layers.exists)
+        XCTAssertEqual(color.frame.minY, layers.frame.minY, accuracy: 0.5, "Layers and Color share the Sketch title bar")
+        #if os(macOS)
+        let surface = app.windows.firstMatch.frame
+        #else
+        let surface = canvas.frame
+        #endif
+        func contrast() -> Int {
+            #if os(macOS)
+            workspaceViewport(in: app).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65)).hover()
+            #endif
+            let tile = color.frame
+            let points = [CGPoint(x: tile.maxX - 1.5, y: tile.maxY - 1.5), CGPoint(x: tile.midX, y: tile.maxY - 1.5)].map {
+                CGPoint(x: ($0.x - surface.minX) / surface.width, y: ($0.y - surface.minY) / surface.height)
+            }
+            let samples = settledEditorPixels(capturing: { editorPixelSamples(in: app, at: points, size: 2) })
+            return zip(samples[0], samples[1]).enumerated().filter { $0.offset % 4 != 3 }.map { abs(Int($0.element.0) - Int($0.element.1)) }.max() ?? 0
+        }
+        XCTAssertGreaterThan(contrast(), 12, "The closed bar's end corner is round")
+        attachEditor(in: app, name: "header-bar-closed-" + theme)
+        workspaceActivate(color)
+        XCTAssertTrue(drawer.waitForExistence(timeout: 10))
+        XCTAssertLessThan(contrast(), 5, "The bar squares the corner its end tile's drawer joins")
+        attachEditor(in: app, name: "header-bar-end-drawer-" + theme)
+        workspaceActivate(layers)
+        XCTAssertTrue(drawer.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(contrast(), 12, "A middle tile's drawer leaves the bar's end corner round")
+        attachEditor(in: app, name: "header-bar-middle-drawer-" + theme)
+        workspaceActivate(layers)
+        XCTAssertTrue(drawer.waitForNonExistence(timeout: 10))
+        XCTAssertGreaterThan(contrast(), 12, "Closing the drawer keeps the bar round")
+    }
 }
 
 
 extension XCTestCase {
     @MainActor func checkTitleBarCustomization(in app: XCUIApplication) {
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"light"},{"type":"invoke","command":"customize_workspace_ui"}]"#
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"light"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}},{"type":"invoke","command":"customize_workspace_ui"}]"#
         app.launch()
         func item(_ label: String) -> XCUIElement {
             app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "header-item-", label)).firstMatch
@@ -386,7 +428,7 @@ extension XCTestCase {
         XCTAssertTrue(app.buttons["header-done"].exists, "Dismissing the picker returns to title-bar editing")
         workspaceActivate(app.buttons["header-cancel"])
         #if os(iOS)
-        workspaceActivate(app.buttons.matching(NSPredicate(format: "label == %@", "Main Menu")).firstMatch)
+        workspaceActivate(app.buttons["application-menus"])
         let menu = app.descendants(matching: .any)["application-menu-content"].firstMatch
         XCTAssertTrue(menu.waitForExistence(timeout: 10))
         workspaceActivate(menu.buttons["File"])
@@ -643,8 +685,8 @@ extension XCTestCase {
         try location()
         workspaceActivate(app.cells[folder+", Folder"])
         XCTAssertTrue(app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: "+folder].waitForExistence(timeout:15))
-        let file=fileProviderFile(fileName+".png",in:app).images.firstMatch
-        XCTAssertTrue(file.waitForExistence(timeout:15));captureState("import-file-selected");workspaceActivate(file)
+        let file=revealFileProviderFile(fileName+".png",in:app)
+        captureState("import-file-selected");workspaceActivate(file)
         XCTAssertTrue(file.waitForNonExistence(timeout:20))
         #endif
         properties();expect(texture,value:fileName);noError()

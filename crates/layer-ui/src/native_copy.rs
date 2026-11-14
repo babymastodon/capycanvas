@@ -111,7 +111,6 @@ copy_struct! { PaletteCopy {
 } }
 
 copy_struct! { HeaderCopy {
-    save_as_new_workspace: WORKSPACE_ACTION_SAVE_AS_NEW_WORKSPACE,
     owned_elsewhere: WORKSPACE_REFUSAL_THIS_WORKSPACE_IS_OPEN_IN_ANOTHER_WINDOW,
     owner_lost: WORKSPACE_OWNER_LOST,
     description: COMMON_DESCRIPTION,
@@ -537,7 +536,6 @@ copy_struct! { RecoveryCopy {
     workspace_not_saved_help: NATIVE_DIALOG_WORKSPACE_NOT_SAVED_HELP,
     workspace_not_opened_help: NATIVE_DIALOG_WORKSPACE_NOT_OPENED_HELP,
     preferences_not_saved_help: NATIVE_DIALOG_PREFERENCES_NOT_SAVED_HELP,
-    save_as_new_workspace: WORKSPACE_ACTION_SAVE_AS_NEW_WORKSPACE,
     export_backup: NATIVE_DIALOG_EXPORT_BACKUP,
     workspace_backup: NATIVE_DIALOG_WORKSPACE_BACKUP,
     workspace_database: NATIVE_DIALOG_WORKSPACE_DATABASE,

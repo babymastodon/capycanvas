@@ -7,14 +7,20 @@ common-save = 저장
 
 common-preparing-brush = 브러시 준비 중…
 
+common-compiling-gpu-shaders = GPU 셰이더 컴파일 중…
 common-preparing-canvas = 캔버스 준비 중…
 
 common-canvas-init-failed = 캔버스를 초기화할 수 없습니다
 common-gpu-unsupported = 이 기기의 그래픽 프로세서(GPU)에서는 { common-app-name }를 실행할 수 없습니다. 시스템이나 그래픽 드라이버를 업데이트하면 해결될 수 있습니다.
 
 common-restart-canvas = 캔버스 다시 시작
+common-x11-unsupported-title = { common-app-name }는 아직 X11에서 실행되지 않습니다
+common-x11-unsupported-body = { common-app-name }를 사용하려면 로그아웃한 다음 로그인 화면에서 Wayland 세션을 선택하고 다시 여세요.
+common-learn-more = 자세히 알아보기
+common-quit = 종료
 
 common-action-failed = 이 동작을 완료할 수 없습니다
+common-clipboard-failed = 클립보드를 사용하지 못했습니다. 다시 시도하세요.
 
 common-editor-closed = 편집기가 닫혔습니다
 

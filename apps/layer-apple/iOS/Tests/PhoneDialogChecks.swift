@@ -10,7 +10,8 @@ extension EditorLaunchTests {
     @MainActor func testPhoneCanvasDialogsDark() throws { try checkPhoneCanvasDialogs(theme: "dark") }
 
     @MainActor private func phonePageActivate(_ id: String, in app: XCUIApplication) {
-        let item = app.buttons[id].firstMatch
+        let item = app.buttons[id].firstMatch, list = app.collectionViews.firstMatch
+        if !item.waitForExistence(timeout: 2) && list.exists { revealEditorControl(item, identifier: id, type: .button, in: list) }
         XCTAssertTrue(item.waitForExistence(timeout: 15), id)
         let scrolls = app.scrollViews.containing(.button, identifier: id).allElementsBoundByIndex
             + app.collectionViews.containing(.button, identifier: id).allElementsBoundByIndex
@@ -27,24 +28,43 @@ extension EditorLaunchTests {
         defer { app.terminate() }
         func tap(_ id: String) { phonePageActivate(id, in: app) }
         func shot(_ state: String) throws { try phonePageCapture(state, in: app, theme: theme) }
+        func recordingFooter() {
+            let text = app.staticTexts["shortcut-captured"], cancel = app.buttons["shortcut-cancel"], confirm = app.buttons["shortcut-confirm"]
+            let window = app.windows.firstMatch.frame
+            XCTAssertTrue(cancel.isHittable); XCTAssertTrue(confirm.exists)
+            XCTAssertGreaterThan(cancel.frame.minY, text.frame.maxY)
+            XCTAssertEqual(cancel.frame.midY, confirm.frame.midY, accuracy: 1)
+            let keyboard = app.keyboards.firstMatch
+            XCTAssertLessThanOrEqual(confirm.frame.maxY, keyboard.exists ? min(window.maxY, keyboard.frame.minY) : window.maxY)
+            let scroll = app.collectionViews.containing(.staticText, identifier: "shortcut-captured").firstMatch
+            if scroll.exists {
+                XCTAssertFalse(scroll.buttons["shortcut-cancel"].exists)
+                XCTAssertFalse(scroll.buttons["shortcut-confirm"].exists)
+                let before = [cancel.frame, confirm.frame]
+                scroll.swipeUp()
+                XCTAssertEqual(cancel.frame, before[0]); XCTAssertEqual(confirm.frame, before[1])
+                scroll.swipeDown()
+                XCTAssertEqual(cancel.frame, before[0]); XCTAssertEqual(confirm.frame, before[1])
+            }
+        }
         func settings(_ page: String) {
             _ = phoneMenuRoot(in: app); tap("phone-preferences"); tap("settings-page-" + page)
         }
         settings("shortcuts")
         let search = app.textFields["shortcut-search"]
-        replaceEditorText(search, with: "Redo", in: app)
+        replaceEditorText(search, with: "Redo", in: app); search.typeText(XCUIKeyboardKey.return.rawValue)
         tap("shortcut-command.Redo"); try shot("shortcut-editor"); tap("shortcut-editor-done")
-        replaceEditorText(search, with: "Hand", in: app)
+        replaceEditorText(search, with: "Hand", in: app); search.typeText(XCUIKeyboardKey.return.rawValue)
         tap("shortcut-command.Hand"); tap("shortcut-add")
-        XCTAssertTrue(app.staticTexts["shortcut-captured"].waitForExistence(timeout: 10)); try shot("shortcut-recording")
+        XCTAssertTrue(app.staticTexts["shortcut-captured"].waitForExistence(timeout: 10)); recordingFooter(); try shot("shortcut-recording")
         app.typeKey("e", modifierFlags: [])
         let confirm = app.buttons["shortcut-confirm"]
         expectation(for: NSPredicate(format: "label == %@ OR value == %@", "Reassign", "Reassign"), evaluatedWith: confirm)
-        waitForExpectations(timeout: 10); try shot("shortcut-conflict")
+        waitForExpectations(timeout: 10); recordingFooter(); try shot("shortcut-conflict")
         tap("shortcut-cancel"); tap("shortcut-editor-done")
-        replaceEditorText(search, with: "", in: app)
+        replaceEditorText(search, with: "", in: app); search.typeText(XCUIKeyboardKey.return.rawValue)
         tap("shortcut-category-Modifier keys"); tap("add-modifier-key")
-        XCTAssertTrue(app.staticTexts["shortcut-captured"].waitForExistence(timeout: 10)); try shot("modifier-key"); tap("shortcut-cancel")
+        XCTAssertTrue(app.staticTexts["shortcut-captured"].waitForExistence(timeout: 10)); recordingFooter(); try shot("modifier-key"); tap("shortcut-cancel")
         tap("modifier-Space")
         let same = app.switches["modifier-same"]
         if same.value as? String != "0" { workspaceActivate(same) }
@@ -91,15 +111,37 @@ extension EditorLaunchTests {
             _ = phoneMenuRoot(in: app); tap("phone-preferences"); tap("settings-page-input"); tap("preference-pen_" + kind)
             XCTAssertTrue(app.descendants(matching: .any)["pen-" + kind + "-dialog"].firstMatch.waitForExistence(timeout: 15))
             XCTAssertTrue(app.buttons["settings-done"].waitForNonExistence(timeout: 10))
+            let plot = app.descendants(matching: .any)["effect-curve"].firstMatch
+            XCTAssertTrue(plot.waitForExistence(timeout: 10))
+            XCTAssertGreaterThanOrEqual(plot.frame.width, 200)
+            XCTAssertGreaterThanOrEqual(plot.frame.height, 200)
             try shot(state); tap("pen-" + kind + "-cancel")
         }
         phoneAlertCommand("Select", label: "Select all pixels", in: app)
         phoneAlertCommand("Select", label: "Feather Selection…", in: app)
         XCTAssertTrue(app.buttons["selection-refine-cancel"].waitForExistence(timeout: 15))
+        workspaceActivate(app.buttons["number-value-selection-refine-value"])
+        let refine = app.textFields["number-entry-selection-refine-value"]
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate { _, _ in
+            refine.isHittable && refine.frame.maxY <= app.keyboards.firstMatch.frame.minY + 1
+        }, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+        XCTAssertTrue(app.buttons["selection-refine-cancel"].isHittable)
+        XCTAssertTrue(app.buttons["selection-refine-apply"].isHittable)
         try shot("selection-refine"); tap("selection-refine-cancel")
         phoneAlertCommand("Select", label: "Deselect pixels", in: app)
         phoneAlertCommand("Filter", label: "Frequency Separation…", in: app)
         XCTAssertTrue(app.buttons["frequency-separation-cancel"].waitForExistence(timeout: 15))
+        workspaceActivate(app.buttons["number-value-frequency-separation-value"])
+        let frequency = app.textFields["number-entry-frequency-separation-value"]
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate { _, _ in
+            frequency.isHittable && frequency.frame.maxY <= app.keyboards.firstMatch.frame.minY + 1
+        }, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+        XCTAssertTrue(app.buttons["frequency-separation-cancel"].isHittable)
+        XCTAssertTrue(app.buttons["frequency-separation-apply"].isHittable)
         try shot("frequency-separation"); tap("frequency-separation-cancel")
         func drawer(panel: String?, kind: String? = nil) throws {
             let tool = try XCTUnwrap(phoneObservedTools(in: app)?.first { row in
@@ -112,6 +154,19 @@ extension EditorLaunchTests {
         try drawer(panel: nil, kind: "color"); tap("paint-edit-color")
         XCTAssertTrue(app.buttons["color-cancel"].waitForExistence(timeout: 15)); try shot("color")
         tap("color-swatches"); XCTAssertTrue(app.descendants(matching: .any)["color-sheet"].firstMatch.waitForExistence(timeout: 10))
+        let swatchSearch = app.textFields["color-sheet-search"]
+        XCTAssertTrue(swatchSearch.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertFalse(app.textFields.matching(NSPredicate(format: "identifier == %@ AND hasKeyboardFocus == YES", swatchSearch.identifier)).firstMatch.exists)
+        replaceEditorText(swatchSearch, with: "blue", in: app); swatchSearch.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        XCTAssertEqual(swatchSearch.value as? String, "blue")
+        XCTAssertTrue(app.buttons["color-sheet-close"].isHittable)
+        let swatches = app.descendants(matching: .any)["color-sheet"].firstMatch.frame
+        let footerSwatch = app.descendants(matching: .any)["color-footer-current"].firstMatch
+        XCTAssertTrue(footerSwatch.exists)
+        XCTAssertEqual(swatches.maxY, footerSwatch.frame.minY - 8 - 1, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(swatches.minY, app.buttons["color-back"].frame.maxY)
         try shot("all-swatches"); tap("color-sheet-close"); tap("color-cancel")
         try drawer(panel: "layers")
         let paper = artworkRows(in: app).matching(NSPredicate(format: "label CONTAINS %@", "Paper")).firstMatch
@@ -156,6 +211,15 @@ extension EditorLaunchTests {
         func activate(_ id: String) { phonePageActivate(id, in: app) }
         func capture(_ state: String) {
             XCTAssertNoThrow(try phonePageCapture(state, in: app, theme: theme))
+        }
+        func editsNameOnOpen(_ id: String) {
+            let field = app.textFields[id]
+            expectation(for: NSPredicate(format: "hasKeyboardFocus == YES"), evaluatedWith: field)
+            waitForExpectations(timeout: 10)
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+            let before = editorTextMatches(field, "") ? "" : field.value as? String ?? ""
+            field.typeText("X")
+            XCTAssertEqual(field.value as? String, before + "X", "A name page opened by touch keeps its caret at the end")
         }
         for (application, label, state, closedBy) in [
             ("Image", "Assign Profile…", "assign-profile", "document-color-cancel"),
@@ -235,6 +299,7 @@ extension EditorLaunchTests {
                 activate("export-preset-save")
                 XCTAssertTrue(any("export-preset-name").waitForExistence(timeout: 10))
                 capture("save-export-preset")
+                editsNameOnOpen("export-preset-name")
                 activate("export-preset-cancel")
             }
             activate("export-back")
@@ -257,6 +322,7 @@ extension EditorLaunchTests {
         XCTAssertTrue(any("workspace-form-title").waitForExistence(timeout: 10))
         XCTAssertLessThan(any("workspace-form-title").frame.midY, workspaceViewport(in: app).frame.minY + workspaceViewport(in: app).frame.height / 3)
         capture("new-workspace")
+        editsNameOnOpen("workspace-form-name")
         activate("workspace-form-cancel")
         activate("workspace-manager-close")
     }

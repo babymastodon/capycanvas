@@ -59,43 +59,27 @@ pub fn workspace_database(
 ) -> Result<JsValue, JsValue> {
     let result = (|| -> Result<JsValue, StoreError> {
         let request: StoreRequest = serde_json::from_str(&request)?;
-        let mut restored = None;
-        let compatibility = if compatibility.is_null() || compatibility.is_undefined() {None} else {
-            let mut environment: snapshots::SnapshotEnvironment = serde_wasm_bindgen::from_value(compatibility).map_err(|error|StoreError::invalid(error.to_string()))?;
-            let restoring = environment.restoring.take();
-            let mut plan = snapshots::plan(snapshot.as_string().as_deref(),environment,matches!(request,StoreRequest::Adopted))?;
-            if let StoreRequest::RestoreSnapshot {id} = &request {
-                if !plan.marker.copies.iter().any(|copy|&copy.id==id) { return Err(StoreError::invalid("Unknown workspace snapshot.")); }
-                let text = restoring.ok_or_else(||StoreError::invalid("Missing workspace snapshot."))?;
-                let mut database = BrowserDatabase::decode(&text)?;
-                database.release_unlocked(&[],u64::MAX);
-                let current = snapshot.as_string().ok_or_else(||StoreError::invalid("Missing current workspace store."))?;
-                plan.keep_current(&current);
-                restored = Some(database);
-            }
-            Some(plan)
+        let protection = if compatibility.is_null() || compatibility.is_undefined() {None} else {
+            let environment: snapshots::SnapshotEnvironment = serde_wasm_bindgen::from_value(compatibility).map_err(|error|StoreError::invalid(error.to_string()))?;
+            Some(snapshots::protect(snapshot.as_string().as_deref(),environment,&request)?)
         };
-        if matches!(request,StoreRequest::RestoreSnapshot {..}) && restored.is_none() { return Err(StoreError::invalid("Workspace restoration requires a version copy.")); }
-        let reset = matches!(request, StoreRequest::Reset);
+        if protection.is_none() && request.needs_snapshots() { return Err(StoreError::invalid("Workspace restoration requires a version copy.")); }
+        let (compatibility,restored,protected) = protection.map_or((None,None,None),|protection|(Some(protection.plan),protection.restored,protection.response));
         let cached = DATABASE_CACHE.with(|cache| cache.borrow_mut().take());
         let mut cached = match (cached,restored) {
             (_,Some(database)) => CachedDatabase {source:snapshot,database,bytes:0,list:None},
-            (Some(cached),None) if !reset && js_sys::Object::is(&cached.source, &snapshot) => cached,
+            (Some(cached),None) if js_sys::Object::is(&cached.source, &snapshot) => cached,
             _ => {
                 let source = snapshot.as_string();
                 if source.is_none() && !snapshot.is_null() && !snapshot.is_undefined() {
                     return Err(StoreError::invalid("Invalid workspace database snapshot."));
                 }
                 CachedDatabase {
-                    database: if reset {
-                        BrowserDatabase::replace(source.as_deref())?
-                    } else {
-                        source
-                            .as_deref()
-                            .map(BrowserDatabase::decode)
-                            .transpose()?
-                            .unwrap_or_default()
-                    },
+                    database: source
+                        .as_deref()
+                        .map(BrowserDatabase::decode)
+                        .transpose()?
+                        .unwrap_or_default(),
                     bytes: source.as_ref().map_or(0, String::len),
                     source: snapshot,
                     list: None,
@@ -112,8 +96,8 @@ pub fn workspace_database(
         let read_only = !pending && matches!(&request,
             StoreRequest::Editing { .. } | StoreRequest::List | StoreRequest::Load { .. }
             | StoreRequest::Receipt { .. } | StoreRequest::Binding { .. }
-            | StoreRequest::Pending
-            | StoreRequest::Reopen | StoreRequest::Adopted | StoreRequest::Switcher | StoreRequest::WorkspaceOrder);
+            | StoreRequest::Pending | StoreRequest::Reopen | StoreRequest::Adopted
+            | StoreRequest::Switcher | StoreRequest::WorkspaceOrder);
         let listing = !pending && matches!(&request, StoreRequest::List);
         let response = if listing && let Some(reply) = &cached.list {
             reply.clone()
@@ -124,10 +108,8 @@ pub fn workspace_database(
                 };
                 cached.database.prepare_delivery(&batch)?;
                 StoreResponse::Done
-            } else if matches!(&request,StoreRequest::RestoreSnapshot {..}) {
-                StoreResponse::Done
-            } else if matches!(&request,StoreRequest::Reopen) {
-                StoreResponse::Reopened(compatibility.as_ref().and_then(|plan|plan.restore.clone()))
+            } else if let Some(response) = protected {
+                response
             } else {
                 let (database, response) = cached.database.execute_owned(request, now.max(0.) as u64)?;
                 cached.database = database;
@@ -171,6 +153,7 @@ impl WebApp {
             serde_json::from_str(&owner).map_err(js)?,
             js_sys::Date::now() as u64,
             self.session.localization().clone(),
+            std::sync::Arc::new(|| {}),
         ).with_mobile_browser(self.mobile_browser));
         Ok(())
     }

@@ -934,8 +934,8 @@ impl DockLayout {
         self.fit_tab_groups.retain(|g| !affected.contains(g));
         let band = self.bands.iter_mut().find(|b| b.root.find(column).is_some()).unwrap();
         let mut extent = column_width(&mut band.root, column, width, geometry).unwrap() + WORKSPACE_SPACING;
-        if extent > 800. {
-            width -= extent - 800.;
+        if extent > COLUMN_MAX_WIDTH {
+            width -= extent - COLUMN_MAX_WIDTH;
             extent = column_width(&mut band.root, column, width, geometry).unwrap() + WORKSPACE_SPACING;
         }
         band.extent = extent.max(TILE_SIZE + WORKSPACE_SPACING);
@@ -950,7 +950,7 @@ impl DockLayout {
     }
 
     pub(crate) fn open_column_minimum(&self, column: u32) -> f32 {
-        self.node(column).map_or(128., |node| expanded_node_width(node, self, DockLayout::group_preferred_width).clamp(128., 800.))
+        self.node(column).map_or(128., |node| expanded_node_width(node, self, DockLayout::group_preferred_width).clamp(128., COLUMN_MAX_WIDTH))
     }
 
     pub(crate) fn owner_resize(&self, divider: &Divider, geometry: &ResolvedLayout, cross: f32) -> Option<OwnerResize> {

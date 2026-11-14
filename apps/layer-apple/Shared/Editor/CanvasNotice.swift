@@ -43,7 +43,7 @@ struct CanvasFloorLayer: View {
         let preview: (view: JSON, operations: CanvasPreviewPanel.Operations)? = !tools["selection_resize"].isNull ? (tools["selection_resize"], .refine)
             : !tools["frequency_separation"].isNull ? (tools["frequency_separation"], .frequencySeparation) : nil
         GeometryReader { geometry in
-            let height = min(geometry.size.height, max(0, store.snapshot["layout"]["viewport"][1].number - store.keyboardInset))
+            let height = min(geometry.size.height, max(0, store.snapshot["layout"]["viewport"][1].number - store.obscuredBottom))
             let visible = JSON(["x": 0, "y": 0, "width": geometry.size.width, "height": height])
             let key = JSON([visible.raw, store.snapshot["layout"]["phone"].raw,
                 preview?.operations.identifier ?? "", previewHeight]).stableKey
@@ -94,8 +94,10 @@ struct CanvasFloorLayer: View {
         let widths = actions.map { ceil(toolbarTextWidth($0["label"].string, size: textSize)) + 2 * (BarMetrics.textPadding + metrics.clear) }
         let actionsWidth = widths.reduce(0, +) + CGFloat(max(0, widths.count - 1)) * metrics.gap
         let caption = ceil(toolbarTextWidth(text, size: textSize))
-        let beside = actions.isEmpty || BarMetrics.captionLeading + caption + BarMetrics.captionTrailing + metrics.gap + actionsWidth <= width
-            || width - actionsWidth - metrics.gap >= minTextWidth
+        let beside = ToolbarUI.cached(["type": "notice_layout",
+            "text": BarMetrics.captionLeading + caption + BarMetrics.captionTrailing, "content": width,
+            "actions": actionsWidth, "gap": metrics.gap, "min_text_width": minTextWidth],
+            language: store.interfaceLanguage)["beside"].bool
         return Group {
             if beside {
                 HStack(spacing: metrics.gap) {

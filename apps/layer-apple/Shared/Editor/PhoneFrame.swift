@@ -57,7 +57,6 @@ struct PhoneFrame: View {
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .accessibilityElement(children: .contain).accessibilityIdentifier("phone-frame")
             .onChange(of: JSON([layout.raw, tiles.map(\.raw)]).stableKey, initial: true) { _, _ in
                 input.update(layout: layout, tiles: JSON(tiles.map(\.raw)))
             }.onDisappear { input.cancel() }

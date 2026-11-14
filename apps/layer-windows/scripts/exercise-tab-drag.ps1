@@ -229,7 +229,7 @@ function Cold-Review {
  $script:stderr=Join-Path $run 'cold-stderr.log'
  $script:review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
  $null=$review.Handle;$fresh=@{window=$null}
- Wait-Until {$startup=Model;if($startup.windows_workspace.id -ne 'builtin:workspace:photographer' -or !$startup.brush_ready -or !$startup.windows_workspace.ready -or $startup.windows_workspace.busy){return $false};$fresh.window=Owned-DrawingWindow $review;$null -ne $fresh.window} 'Cold Photo process did not restore its workspace' 75
+ Wait-Until {$startup=Model;if($startup.windows_workspace.id -ne 'builtin:workspace:photographer' -or !(Review-Ready $startup) -or $startup.windows_workspace.busy){return $false};$fresh.window=Owned-DrawingWindow $review;$null -ne $fresh.window} 'Cold Photo process did not restore its workspace' 75
  $script:drawingWindow=$fresh.window.Handle;$script:root=$fresh.window.Root
  [CapyWindowApi]::ShowWindow($drawingWindow,3)|Out-Null
  [CapyCanvasTouch]::SetForegroundWindow($drawingWindow)|Out-Null
@@ -339,14 +339,17 @@ function Chrome-Review {
  Chrome-Sample 'chrome-edge-close' $area {param($i)if($i -eq 3){[CapyRowPointer]::Key(0x1b);[CapyRowPointer]::Up()}} {
   param($frames,$final,$area,$name)
   Chrome-Overview $frames $frames[2] $area ($name+'-hole') $closingOverview $closingHeader
-  $envelope=[TabFrames+Envelope]::new($frames[2],$final);$bad=@();$fullBad=@();$scores=@()
+  $envelope=[TabFrames+Envelope]::new($frames[2],$final);$bad=@();$fullBad=@();$scores=@();$handover=@()
+  $edge=$column.bounds;$strip=[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($origin.x+$edge.x*$scale-$area.Left),[int][Math]::Floor($origin.y+$edge.y*$scale-$area.Top),[int][Math]::Ceiling($origin.x+($edge.x+$edge.width)*$scale-$area.Left),[int][Math]::Ceiling($origin.y+($edge.y+$edge.height)*$scale-$area.Top))
+  $glass=(Model).state.palette.glass.panel;$tint=[Drawing.Color]::FromArgb([int][Math]::Round($glass[3]*255),[int][Math]::Round($glass[0]*255),[int][Math]::Round($glass[1]*255),[int][Math]::Round($glass[2]*255))
   for($i=3;$i -lt $frames.Count;$i++){
    $full=$envelope.Difference($frames[$i]);$native=$envelope.Difference($frames[$i],$excluded);$remaining=[TabFrames]::Remaining($frames[$i],$final,$excluded)
    $scores+=@{frame=$i;full_invalid_pixels=$full;native_invalid_pixels=$native;overview_invalid_pixels=($full-$native);native_remaining_pixels=$remaining[0];overview_remaining_pixels=$remaining[1]}
    if($full -gt 8){$fullBad+=@($i)}
-   if($native -gt 8){$bad+=@($i)}
+   if($native -gt 8){if($envelope.ExtraTint($frames[$i],$final,$strip,$excluded,$tint)){$handover+=@($i)}else{$bad+=@($i)}}
   }
-  @{overview=$closingOverview;excluded=$excluded;area=$area;native_invalid=$bad;full_invalid=$fullBad;scores=$scores}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run ($name+'-pixels.json'))
+  if($handover.Count -gt 2 -or ($handover.Count -eq 2 -and $handover[1] -ne $handover[0]+1)){$bad=@(@($bad)+@($handover)|Sort-Object)}
+  @{overview=$closingOverview;excluded=$excluded;area=$area;strip=$strip;native_invalid=$bad;column_handover=$handover;full_invalid=$fullBad;scores=$scores}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run ($name+'-pixels.json'))
   if($bad.Count){$script:frameFailures+=@("$name exposed a third native chrome state in frames $($bad -join ',')")}
  }
  Wait-Until {@((Model).layout.collapsed|Where-Object id -eq $column.id).Count -gt 0} 'Edge cancellation did not restore its column'
@@ -681,7 +684,7 @@ try{
  [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/tab-drag-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
  Write-Output "Owned tab review $($review.Id)"
  $native=@{window=$null}
- Wait-Until {$startup=Model;if(!$startup.brush_ready -or !$startup.windows_workspace.ready -or $startup.windows_workspace.busy){return $false};$native.window=Owned-DrawingWindow $review;$null -ne $native.window} 'Review did not start' 75
+ Wait-Until {$startup=Model;if(!(Review-Ready $startup) -or $startup.windows_workspace.busy){return $false};$native.window=Owned-DrawingWindow $review;$null -ne $native.window} 'Review did not start' 75
  $drawingWindow=$native.window.Handle;$root=$native.window.Root
  [CapyCanvasTouch]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  [CapyWindowApi]::ShowWindow($drawingWindow,3)|Out-Null
@@ -827,8 +830,9 @@ try{
  Wait-Until {@((Model).layout.groups|Where-Object {$_.active -eq 'navigator' -and $_.floating}).Count -eq 1} 'Navigator did not tear off'
  $navigator=(Model).layout.groups|Where-Object {$_.active -eq 'navigator' -and $_.floating}
  Wait-Until {@((Presentation).groups|Where-Object id -eq $navigator.id).Count -eq 1} 'Native Navigator did not tear off'
- Wait-OverviewProjection
  $before=Presentation
+ $overviewBefore=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle
+ $overviewId=(Control 'navigator-overview').GetRuntimeId() -join ':'
  $retained=(Control 'navigator-zoom_in').GetRuntimeId() -join ':'
  Capture 'navigator-first' -Composed
  $firstPixel=Check-OverviewOverlap 'navigator-before' 'navigator-first'
@@ -847,17 +851,17 @@ try{
   $old=$before.groups|Where-Object id -eq $navigator.id
   $g.bounds.x -gt $old.bounds.x+30
  } 'Native Navigator stopped moving'
- Wait-OverviewProjection
  $after=Presentation
  $afterModel=Model|Select-Object shaders_ready,canvas_ready,brush_ready,windows_gpu_generation,windows_surface_ready,windows_display,windows_workspace,windows_recovery
- [IO.File]::WriteAllText((Join-Path $run 'navigator-motion.json'),(@{before=$before;camera_applied=$cameraApplied;after=$after;camera_model=$cameraModel;after_model=$afterModel}|ConvertTo-Json -Depth 60))
+ $overviewAfter=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle
+ [IO.File]::WriteAllText((Join-Path $run 'navigator-motion.json'),(@{before=$before;camera_applied=$cameraApplied;after=$after;camera_model=$cameraModel;after_model=$afterModel;overview_before=$overviewBefore;overview_after=$overviewAfter;overview_runtime_id=$overviewId}|ConvertTo-Json -Depth 60))
  Check-Motion $cameraApplied $after $navigator.id
  if(((Control 'navigator-zoom_in').GetRuntimeId() -join ':') -ne $retained){throw 'Navigator motion replaced native controls'}
- if($before.overviews.Count -ne 1 -or $after.overviews.Count -ne 1){throw 'Navigator fixture did not retain exactly one GPU overview'}
+ if(@(Overview-Bounds).Count -ne 1 -or ((Control 'navigator-overview').GetRuntimeId() -join ':') -ne $overviewId){throw 'Navigator motion replaced the retained overview'}
  $old=$before.groups|Where-Object id -eq $navigator.id;$moved=$after.groups|Where-Object id -eq $navigator.id
- if([Math]::Abs(($after.overviews[0].bounds[0]-$before.overviews[0].bounds[0])-($moved.bounds.x-$old.bounds.x)) -gt 1 -or
-    [Math]::Abs(($after.overviews[0].bounds[1]-$before.overviews[0].bounds[1])-($moved.bounds.y-$old.bounds.y)) -gt 1){
-  throw 'GPU overview allocation did not follow native Navigator placement'
+ if([Math]::Abs(($overviewAfter.Left-$overviewBefore.Left)/$scale-($moved.bounds.x-$old.bounds.x)) -gt 1 -or
+    [Math]::Abs(($overviewAfter.Top-$overviewBefore.Top)/$scale-($moved.bounds.y-$old.bounds.y)) -gt 1){
+  throw 'Retained overview did not follow native Navigator placement'
  }
  Capture 'navigator-moved' -Composed
  $secondPixel=Check-OverviewOverlap 'navigator-before' 'navigator-moved'

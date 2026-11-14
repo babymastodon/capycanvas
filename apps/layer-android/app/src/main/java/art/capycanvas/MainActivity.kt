@@ -115,6 +115,8 @@ class MainActivity : ComponentActivity() {
     // superclass carries a class-wide restriction that lint also inherits here.
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (host.launchHolding(launchSplash.reveal) && host.dialogKeyHandler == null)
+            return if (event.keyCode == KeyEvent.KEYCODE_BACK || deviceKey(event.keyCode) != null) super.dispatchKeyEvent(event) else true
         host.shaderInput()
         if (host.textComposition.owns(event)) return super.dispatchKeyEvent(event)
         if (host.numberKeyHandler?.invoke(event) == true) return true

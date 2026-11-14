@@ -27,7 +27,7 @@ extension XCTestCase {
         let strength = sliders["component-slider-" + String(strengthCap.identifier.dropFirst("slider-cap-".count))]
         XCTAssertTrue(size.exists && strength.exists)
         XCTAssertNotEqual(size.identifier, strength.identifier)
-        let paper = editorPixels(in: app)
+        let paper = settledEditorPixels(in: app)
         let undoButtons = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "toolbar-tile-", "Undo"))
         let undo = undoButtons.firstMatch
         XCTAssertTrue(undo.waitForExistence(timeout: 10)); XCTAssertEqual(undoButtons.count, 1)

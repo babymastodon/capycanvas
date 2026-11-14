@@ -92,9 +92,26 @@ struct SettingsView: View {
             }.navigationTitle(store.catalog["native_copy"]["shortcuts"]["settings"].string)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
-            detail.navigationTitle(model["navigation"]["title"].isNull ? page["title"].string : model["navigation"]["title"].string)
+            Group {
+                #if os(macOS)
+                VStack(spacing: 0) {
+                    if layout["subpage"].bool {
+                        HStack {
+                            backButton
+                            Text(model["navigation"]["title"].string).font(.headline)
+                            Spacer()
+                        }.padding()
+                    }
+                    detail
+                }
+                #else
+                detail
+                #endif
+            }.navigationTitle(model["navigation"]["title"].isNull ? page["title"].string : model["navigation"]["title"].string)
                 .toolbar {
+                    #if os(iOS)
                     if layout["subpage"].bool { ToolbarItem(placement: .navigation) { backButton } }
+                    #endif
                     ToolbarItem(placement: .confirmationAction) {
                         SettingsDoneButton(store: store, label: store.bootstrap["common"]["done"].string)
                     }

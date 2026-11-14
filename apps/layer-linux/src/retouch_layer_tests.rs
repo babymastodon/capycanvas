@@ -19,7 +19,7 @@ fn brightness(pixel: [u8; 4]) -> u32 {
 /// The canvas's own composite at document point `at`, before the display's
 /// color conversion.
 fn composite(w: &Workspace, [x, y]: [f32; 2]) -> [u8; 4] {
-    let image = ui_session(w).engine().backend().capture().unwrap();
+    let image = w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap();
     let m = state(w).camera.document_to_surface();
     let [x, y] = [(m[0] * x + m[2] * y + m[4]) as usize, (m[1] * x + m[3] * y + m[5]) as usize];
     image.bytes[y * image.stride as usize + x * 4..][..4].try_into().unwrap()

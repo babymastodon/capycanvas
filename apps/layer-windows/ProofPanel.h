@@ -11,7 +11,7 @@ inline StackPanel ProofPanel(std::shared_ptr<WorkspaceData> const& data,Bindings
     auto form=[data]{return object(data->model,L"windows_proof_form");};
     auto copy=[form](wchar_t const* key){return str(object(form(),L"copy"),key);};
     auto send=[data](J const& action){
-        auto epoch=to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")));
+        auto epoch=to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch")));
         data->dispatch(O({{L"windows_proof_action",action},{L"windows_epoch",S(epoch)}}));
     };
     Grid mode;mode.ColumnSpacing(data->panelMetric(L"control_spacing"));
@@ -64,7 +64,7 @@ inline StackPanel ProofPanel(std::shared_ptr<WorkspaceData> const& data,Bindings
     auto status=label(data,L"");status.TextWrapping(TextWrapping::Wrap);status.Visibility(Visibility::Collapsed);root.Children().Append(status);
     bindings.emplace_back([data,form,copy,mode,modes,arrangeModes,modeHdr,pages,layoutChanged,sdrGate,print,printControls,printGate,printKey,printForm,gamut,status]{
         auto value=form();auto selected=str(value,L"mode");bool hdr=flag(value,L"hdr");
-        bool available=!flag(object(data->state,L"document_file"),L"busy")&&!flag(data->model,L"windows_rendering_suspended");
+        bool available=!flag(branch(data->state,L"document_file"),L"busy")&&!flag(data->model,L"windows_rendering_suspended");
         if(hdr!=*modeHdr){*modeHdr=hdr;arrangeModes(hdr);}
         AutomationProperties::SetName(mode,copy(L"mode"));
         for(auto const& [choice,id]:modes){
@@ -78,6 +78,7 @@ inline StackPanel ProofPanel(std::shared_ptr<WorkspaceData> const& data,Bindings
         auto settings=object(value,L"print_settings"),document=object(value,L"document_profile");
         auto key=array(value,L"identity").Stringify()+settings.Stringify()+document.Stringify()+array(value,L"library").Stringify()+data->language();
         if(array(value,L"profiles").Size()&&key!=*printKey&&!flag(value,L"preparing")){
+            settings=copyObject(settings);
             *printKey=key;printControls.Children().Clear();auto details=J::Parse(value.Stringify());
             auto options=J::Parse(value.Stringify());options.Insert(L"document_profile",document);
             if(!object(settings,L"profile").Size())settings.Insert(L"profile",document.Size()?document:array(value,L"profiles").GetObjectAt(0));
@@ -86,7 +87,7 @@ inline StackPanel ProofPanel(std::shared_ptr<WorkspaceData> const& data,Bindings
             for(auto box:{form->profile,form->intent,form->simulation})box.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
             for(auto const& [control,id]:std::initializer_list<std::pair<FrameworkElement,wchar_t const*>>{{form->profile,L"proof-panel-profile"},{form->intent,L"proof-panel-intent"},{form->simulation,L"proof-panel-simulation"},{form->bpc,L"proof-panel-bpc"}})AutomationProperties::SetAutomationId(control,id);
             *printForm=form;printControls.Children().Append(form->root);
-            auto epoch=num(object(data->state,L"document_file"),L"epoch");
+            auto epoch=num(branch(data->state,L"document_file"),L"epoch");
             auto edit=[data,source=std::weak_ptr<ProofFormView>(form),epoch]{auto form=source.lock();if(data->updating||!form)return;try{
                 auto settings=form->current();data->document(to_string(O({{L"operation",S(L"print_proof")},{L"epoch",N(epoch)},{L"settings",settings},{L"profile_id",form->profileId.empty()?JsonValue::CreateNullValue():S(form->profileId)}}).Stringify()));
             }catch(hresult_error const&){}};

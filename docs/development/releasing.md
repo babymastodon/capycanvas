@@ -27,8 +27,8 @@ configured channels and report deferred channels explicitly.
 ### 1. Check access and readiness
 
 Use the assigned worktree and install the [Git hooks](../COMMIT_GUIDE.md).
-Confirm authorized Actions access to `capyatelier/capycanvas`,
-`capyatelier/capycanvas-release` and `capyatelier/capycanvas-web`, approval access
+Confirm authorized Actions access to `babymastodon/capycanvas`,
+`babymastodon/capycanvas-release` and `babymastodon/capycanvas-web`, approval access
 to the protected `release` environment, and the configured
 [signing credentials](#signing-credentials). Confirm Play upload/internal testing
 access and App Store Connect upload/TestFlight access. Check existing reviews
@@ -77,7 +77,8 @@ Set these variables to that version and commit, not a later moving `main`:
 CAPY_RELEASE_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
 CAPY_RELEASE_TAG="v$CAPY_RELEASE_VERSION"
 CAPY_RELEASE_COMMIT=$(git rev-parse HEAD)
-gh run list --repo capyatelier/capycanvas --workflow ci.yml \
+gh workflow run ci.yml --repo babymastodon/capycanvas --ref main
+gh run list --repo babymastodon/capycanvas --workflow ci.yml \
   --commit "$CAPY_RELEASE_COMMIT" --json databaseId,status,conclusion,url
 ```
 
@@ -88,8 +89,8 @@ and require every compatibility job to pass; inspect its report artifacts.
 Then run the full release dry run:
 
 ```bash
-gh workflow run release.yml --repo capyatelier/capycanvas --ref main
-gh run list --repo capyatelier/capycanvas --workflow release.yml \
+gh workflow run release.yml --repo babymastodon/capycanvas --ref main
+gh run list --repo babymastodon/capycanvas --workflow release.yml \
   --event workflow_dispatch --json databaseId,headSha,status,conclusion,url
 ```
 
@@ -121,13 +122,13 @@ software adapters do not establish hardware rendering or performance.
 ```bash
 git tag -a "$CAPY_RELEASE_TAG" "$CAPY_RELEASE_COMMIT" -m "Capy Canvas $CAPY_RELEASE_VERSION"
 git push origin "$CAPY_RELEASE_TAG"
-gh run list --repo capyatelier/capycanvas --workflow release.yml \
+gh run list --repo babymastodon/capycanvas --workflow release.yml \
   --branch "$CAPY_RELEASE_TAG" --json databaseId,headSha,status,conclusion,url
 ```
 
 Approve the protected environment when required. Follow the run for this tag and
 commit until all jobs finish. Use `gh run view <run-id> --repo
-capyatelier/capycanvas` to inspect results. If a job fails, follow
+babymastodon/capycanvas` to inspect results. If a job fails, follow
 [recovery](#recovering-a-failed-release) before retrying uploads.
 
 CI creates a draft with the [package outputs](#release-workflow), `SHA256SUMS`
@@ -146,16 +147,16 @@ provenance for every asset, including the checksum manifest:
 
 ```bash
 CAPY_RELEASE_DOWNLOADS="artifacts/release/$CAPY_RELEASE_TAG/downloads"
-gh release view "$CAPY_RELEASE_TAG" --repo capyatelier/capycanvas \
+gh release view "$CAPY_RELEASE_TAG" --repo babymastodon/capycanvas \
   --json isDraft,tagName,targetCommitish,assets
-gh release download "$CAPY_RELEASE_TAG" --repo capyatelier/capycanvas \
+gh release download "$CAPY_RELEASE_TAG" --repo babymastodon/capycanvas \
   --dir "$CAPY_RELEASE_DOWNLOADS"
 (cd "$CAPY_RELEASE_DOWNLOADS" && sha256sum --check SHA256SUMS) || exit 1
 for CAPY_RELEASE_ASSET in "$CAPY_RELEASE_DOWNLOADS"/*; do
-  gh attestation verify "$CAPY_RELEASE_ASSET" --repo capyatelier/capycanvas \
+  gh attestation verify "$CAPY_RELEASE_ASSET" --repo babymastodon/capycanvas \
     --source-ref "refs/tags/$CAPY_RELEASE_TAG" \
     --source-digest "$CAPY_RELEASE_COMMIT" \
-    --signer-workflow capyatelier/capycanvas/.github/workflows/release.yml \
+    --signer-workflow babymastodon/capycanvas/.github/workflows/release.yml \
     --deny-self-hosted-runners || exit 1
 done
 ```
@@ -217,7 +218,7 @@ according to the actual state. Do not claim store production availability.
 Publish the tested draft through GitHub Releases or:
 
 ```bash
-gh release edit "$CAPY_RELEASE_TAG" --repo capyatelier/capycanvas --draft=false
+gh release edit "$CAPY_RELEASE_TAG" --repo babymastodon/capycanvas --draft=false
 ```
 
 With immutable releases enabled, assets and tag cannot change afterward. Keep
@@ -225,11 +226,11 @@ this a stable GitHub Release: Flatpak updates deploy only from the latest
 published release that is neither a draft nor a prerelease, even while mobile
 distribution remains in beta.
 
-Wait for `flatpak-publish.yml`, verify the public reference and repository
+Publishing starts `published.yml`, which updates the Flatpak repository and
+then deploys the [website and online editor](#website-and-online-editor). Wait
+for it and the two deploys it starts, verify the public reference and repository
 signatures, and test installation and updates from the preceding Flatpak release
-in an isolated environment ([Linux Flatpak](#linux-flatpak)). Then deploy the
-[website and online editor](#website-and-online-editor). Website deployment is
-a required release step; the release and editor workflows do not refresh it.
+in an isolated environment ([Linux Flatpak](#linux-flatpak)).
 
 ### 7. Report completion by channel
 
@@ -274,32 +275,30 @@ published signed installer is a separate delivery channel.
 
 ## Website and online editor
 
-The marketing site reads published GitHub Releases when it builds. After the
-release is public, dispatch its workflow:
+Cloudflare serves the site, release downloads, the editor and the Flatpak
+repository. When a release is published, `published.yml` starts the **Site**
+workflow in `babymastodon/capycanvas-web`, which copies the release to
+`downloads.capycanvas.art` and redeploys the marketing site, and the editor's
+`deploy.yml` in `babymastodon/capycanvas-release` for the tag, which builds the
+editor from that tag and deploys it. To repeat either deployment:
 
 ```bash
-gh workflow run deploy.yml --repo capyatelier/capycanvas-web
+gh workflow run site.yml --repo babymastodon/capycanvas-web --ref main
+gh workflow run deploy.yml --repo babymastodon/capycanvas-release -f ref="$CAPY_RELEASE_TAG"
 ```
 
-The editor is deployed separately from the tested source tag:
-
-```bash
-gh workflow run deploy.yml --repo capyatelier/capycanvas-release -f ref="$CAPY_RELEASE_TAG"
-```
-
-Wait for the site's build, browser checks and Pages deployment, and for both
-the editor's `deploy.yml` and triggered `pages.yml`. Verify the public
+Wait for the site's checks and deployment and for the editor's `deploy.yml`.
+Verify the public
 [downloads](https://capycanvas.art/download/) and
 [release notes](https://capycanvas.art/download/past-versions/), including any
 compatibility warning. Verify [the editor](https://editor.capycanvas.art/)
 against `release/source.json` and `release/manifest.json` in the
-`capyatelier/capycanvas-release` Git repository; these are not public editor URL
+`babymastodon/capycanvas-release` Git repository; these are not public editor URL
 paths. Their `commit` and `source.commit`, respectively, must match
 `CAPY_RELEASE_COMMIT`. Compare the live `index.html`, `sw.js`, application JS and
 Wasm sizes and SHA-256 hashes with that manifest. The editor rebuilds the source
 and prepares it for its domain, so its bytes can differ from the downloadable
-Web ZIP. Pages caches can temporarily serve an older deployment after Actions
-succeeds; check the live content before reporting the update complete.
+Web ZIP. Check the live content before reporting the update complete.
 
 Run the [Web journeys](web.md#tests) against the public origin separately from
 the ZIP. The deployment does not run browser journeys. On a private Wayland
@@ -317,10 +316,9 @@ start a local server and override the public target. Headless screenshots may
 omit WebGPU pixels. File-picker mocks verify application handling, not native
 save dialogs. A release asset alone does not update either site.
 
-If the editor's source commit is already deployed, `deploy.yml` makes no new
-commit and does not trigger Pages. Retry a failed Pages delivery directly with
-`gh workflow run pages.yml --repo capyatelier/capycanvas-release`, then recheck
-the public content.
+If the editor's source commit is already built, `deploy.yml` makes no new
+commit and redeploys the committed package, so rerunning it retries a failed
+delivery. Recheck the public content afterwards.
 
 ## Recovering a failed release
 
@@ -328,15 +326,15 @@ If an application check requires a code fix, discard the unpublished draft,
 fix `main` and release the next patch version. Never move a tag or reuse a
 version. A delivery or store-setup failure can be retried with the preserved,
 unchanged build. Download retained artifacts with `gh run download <run-id>
---repo capyatelier/capycanvas --dir artifacts/release/<tag>/recovered` and follow
+--repo babymastodon/capycanvas --dir artifacts/release/<tag>/recovered` and follow
 the [Android recovery steps](#android-apk). Inspect completed store uploads before
 rerunning any job: rerunning the successful `ipad-publish` job repeats the same
 version/build upload, and the workflow has no duplicate-upload recovery for it.
 Rerun only failed jobs when safe, rather than the whole release workflow.
 
 For a published release, repeat delivery with the unchanged assets: use
-`gh workflow run flatpak-publish.yml --repo capyatelier/capycanvas -f tag=<tag>`
-for the latest stable release, or repeat the
+`gh workflow run published.yml --repo babymastodon/capycanvas -f tag=<tag>` for the
+latest stable release, or repeat the
 [website/editor deployment](#website-and-online-editor).
 These retries do not require a new application version. Recheck live results and
 record any channel still blocked; never replace immutable assets or move the tag.
@@ -388,7 +386,9 @@ tools, commands, slots and panels; non-default palettes, brush and region
 options; custom and edited included workspaces; layer/record kinds and native
 sample depths; app-rendered previews; session history and UI membership; paper
 and profile content/indexes; and exported workspace, toolbar and keymap files.
-Keep unsupported files byte for byte. Follow the
+The UI generator also writes `saved-names.json`, the ledger of every saved
+workspace enum name and ID, and `workspace-layout.json`, a layout and history
+that use each of them. Keep unsupported files byte for byte. Follow the
 [expectation review](testing.md#saved-data-compatibility), rerun without
 `CAPY_BLESS`, and commit new inputs and reviewed expectations with the version and
 the [compatibility explanation](../COMMIT_GUIDE.md#commit-messages).
@@ -410,6 +410,12 @@ its own numbers from it at build time:
 - Versions are plain `MAJOR.MINOR.PATCH`, with a nonzero major part for the
   Microsoft Store and minor and patch parts below 1,000. Test status belongs to
   a distribution channel, never to the version.
+- About shows the plain version when `CAPY_PUBLIC_RELEASE=true`, which the
+  release workflow sets for tag pushes. Other builds add the commit, `*` when
+  tracked files differ from it and `dbg` when unoptimized:
+  `1.0.15 · 12ae790db* dbg`. A copy that is not its own Git checkout, such as
+  the Flatpak sandbox or the editor deploy's archive, shows the plain version
+  unless given `CAPY_SOURCE_REVISION` from `tools/build/source-revision.sh`.
 - Every build that leaves the project, including a store test upload, gets a new
   version. Stores reject a reused number, and a skipped number is harmless.
 - The AppStream release entry's `<description>` holds the release notes: a short
@@ -419,12 +425,16 @@ its own numbers from it at build time:
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request: the window-free
-shared Rust suites, including the localization catalogs, the Wasm consumer check,
-a check that the generated Xcode project matches `project.py`, the Git hook tests
-and `cargo deny`. Expensive platform builds and the Arch development/runtime
-check run in the release workflow rather than on every push. The same ordinary
-CI workflow is also called by release validation.
+Workflows run only on demand: push a version tag to release, or dispatch a
+workflow with `gh workflow run <file> --ref <branch>`. Commits and pull requests
+start nothing.
+
+`.github/workflows/ci.yml` runs the window-free shared Rust suites, including the
+localization catalogs, the Wasm consumer check, a check that the generated Xcode
+project matches `project.py`, the Git hook tests and `cargo deny`. Expensive
+platform builds and the Arch development/runtime check run in the release
+workflow instead. Release validation calls the same CI workflow, and
+`codeql.yml` runs code scanning when dispatched.
 
 ### Release validation
 
@@ -542,7 +552,7 @@ existing bundle to the `alpha` closed track, preserving release notes, and submi
 the edit for review:
 
 ```bash
-gh workflow run android-promote.yml --repo capyatelier/capycanvas \
+gh workflow run android-promote.yml --repo babymastodon/capycanvas \
   --ref "$CAPY_RELEASE_TAG" -f track=alpha
 ```
 
@@ -592,7 +602,7 @@ For local unsigned builds and runtime requirements, use the
 
 Open the release's `capycanvas.flatpakref` in Fedora Software and choose Install,
 or use `flatpak install capycanvas.flatpakref`, to download the application from
-`https://capyatelier.github.io/capycanvas/flatpak/`. The standalone
+`https://flatpak.capycanvas.art`. The standalone
 signed `capycanvas-<version>-linux-x86_64.flatpak` bundle installs the same
 application and records that repository as its update source. Both include the
 public key so Flatpak can verify repository signatures. Software manages later
@@ -605,18 +615,29 @@ references their public HTTPS URLs.
 
 The repository archive contains the OSTree objects and metadata needed to serve
 updates. The bundle and reference alone cannot supply a Flatpak repository.
-`.github/workflows/flatpak-publish.yml` runs when a GitHub Release is published,
-downloads its repository archive and deploys its contents under `flatpak/` on
-GitHub Pages. It also accepts a tag through `workflow_dispatch` to repeat a
-deployment. Only the latest published release that is neither a draft nor a
-prerelease can deploy, so an older release cannot replace the update source.
-Repository settings must select GitHub Actions as the Pages source and allow
-`main` and `v*` tags in the `github-pages` environment's deployment policies.
+When a GitHub Release is published, `.github/workflows/published.yml` runs
+`packaging/flatpak/publish.sh`, which downloads its repository archive, checks it against `SHA256SUMS`, writes the hosted
+`capycanvas.flatpakref` and deploys the static Worker `capycanvas-flatpak` from
+`packaging/flatpak/cloudflare/`. Files over Cloudflare's 25 MiB static-asset
+limit go to `https://downloads.capycanvas.art/flatpak/<path>` in the R2 bucket
+`capycanvas-downloads`, and `_redirects` sends their repository paths there;
+Flatpak follows the redirect. Downloads serve only files listed in the bucket's
+WAF allowlist, so the script runs `capycanvas-web`'s
+`site/scripts/allow-downloads.mjs` from the checkout in `CAPYCANVAS_WEB` before
+deploying. Only the latest published release
+that is neither a draft nor a prerelease can deploy, so an older release cannot
+replace the update source. Installations from 1.0.15 or earlier recorded
+`https://capyatelier.github.io/capycanvas/flatpak`; they update again after
+`flatpak remote-modify --url=https://flatpak.capycanvas.art capycanvas`.
 
 ### Signing credentials
 
 The `release` environment holds the signing material; restrict it to `v*` tags
-and require a maintainer's approval.
+and require a maintainer's approval. The `cloudflare` environment, restricted to
+`v*` tags and `main`, holds `CLOUDFLARE_API_TOKEN` (an account API token with
+Workers Scripts, Workers R2 Storage and Zone WAF edit access), `CLOUDFLARE_ACCOUNT_ID` and
+`DEPLOY_DISPATCH_TOKEN` (a fine-grained token with Actions write access to
+`capycanvas-web` and `capycanvas-release`) for `published.yml`.
 
 | Name | Kind | Use |
 | --- | --- | --- |

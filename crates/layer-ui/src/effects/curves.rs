@@ -159,6 +159,8 @@ impl PropertyEditorState {
         if !self.accepts(layer,epoch) || index.is_some_and(|i|i>=points.len()){return false;}
         self.selected=index.map(|index|(key.into(),index));true
     }
+    pub fn stop(&self,key:&str)->usize {self.selected.as_ref().filter(|(selected,_)|selected==key).map_or(0,|(_,index)|*index)}
+    pub fn select_stop(&mut self,key:&str,index:usize) {self.selected=Some((key.into(),index));}
     pub fn clear_selection(&mut self,key:&str) {if self.selected.as_ref().is_some_and(|(selected,_)|selected==key){self.selected=None;}}
     pub fn contact_index(&self,key:&str)->Option<usize> {self.contact.as_ref().filter(|capture|capture.key==key).map(|capture|capture.index)}
     pub fn begin_contact(&mut self,key:&str,index:usize,position:[f32;2],extent:[f32;2],graph:[f32;2]) {

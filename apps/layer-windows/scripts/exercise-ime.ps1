@@ -1,6 +1,7 @@
 ﻿param([Parameter(Mandatory)][string]$Executable,[ValidateSet('dark','light')][string]$Theme='dark')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'CapyUia.ps1')
+. (Join-Path $PSScriptRoot 'FixtureJapaneseInput.ps1')
 Add-Type -AssemblyName System.Drawing,System.Windows.Forms
 if(!('CapyRowPointer' -as [type])){Add-Type -Path (Join-Path $PSScriptRoot 'RowPointerDriver.cs')}
 Add-Type -TypeDefinition @'
@@ -24,7 +25,17 @@ $script:imeSequence=0
 function Value($Control){$Control.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value}
 function Key([uint16]$Code){[CapyRowPointer]::Key([uint32]$review.Id,$Code);Start-Sleep -Milliseconds 100}
 function Focus($Control){$Control.SetFocus();Wait-Until {$Control.Current.HasKeyboardFocus} 'The owned editor did not receive focus'}
-function Select-All{[CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(17),65)}
+function Select-All($Control){
+ [CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(17),65)
+ Wait-Until {$selection=@($Control.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern).GetSelection());$selection.Count -eq 1 -and $selection[0].GetText(-1) -ceq (Value $Control)} 'The owned editor did not select its full text before IME input'
+}
+function Initialize-IME{
+ Focus (Control 'drawing-canvas')
+ if([CapyIme]::Language($registeredWindow.Handle,[uint32]$review.Id) -ne 0x411){[CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(91),32)}
+ Wait-Until {[CapyIme]::Language($registeredWindow.Handle,[uint32]$review.Id) -eq 0x411} 'The owned editor did not activate the Japanese input profile'
+ [CapyIme]::Open($registeredWindow.Handle,[uint32]$review.Id)
+ [CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(17),20)
+}
 function Capture-Desktop([string]$Name){
  $bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
  $bitmap=[Drawing.Bitmap]::new($bounds.Width,$bounds.Height);$graphics=[Drawing.Graphics]::FromImage($bitmap)
@@ -35,9 +46,7 @@ function Compose($Control,[string]$Romaji,[string]$Preedit){
  $script:imeSequence++
  Focus $Control
  Start-Sleep -Milliseconds 250
- [CapyIme]::Open($registeredWindow.Handle,[uint32]$review.Id)
- [CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(17),20)
- Select-All
+ Select-All $Control
  foreach($letter in $Romaji.ToUpperInvariant().ToCharArray()){Key ([uint16]$letter)}
  try{Wait-Until {(Value $Control) -eq $Preedit} 'The installed Japanese IME did not produce genuine Hiragana preedit' 15}catch{
   @{romaji=$Romaji;expected=$Preedit;actual=(Value $Control);text=($Control.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern).DocumentRange.GetText(-1));control=$Control.Current.AutomationId}|ConvertTo-Json|Set-Content (Join-Path $run 'preedit-failure.json') -Encoding UTF8
@@ -53,25 +62,34 @@ function Begin-Rename{
  Wait-Until {(Model).state.layer_tools.rename_layer -eq $layer} 'Layer rename did not open'
  Control "layer-$layer-rename"
 }
+function Set-ImePrediction($Values){
+ $key=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Microsoft\IME\15.0\IMEJP\MSIME')
+ try{
+  $previous=@{}
+  foreach($name in $Values.Keys){
+   $previous[$name]=if($name -in $key.GetValueNames()){@{kind=$key.GetValueKind($name);value=$key.GetValue($name)}}
+   if($Values[$name]){$key.SetValue($name,$Values[$name].value,$Values[$name].kind)}else{$key.DeleteValue($name,$false)}
+  }
+  $previous
+ }finally{$key.Dispose()}
+}
 function Assert-Renaming([string]$Name){
  $view=Model
  if($view.state.layer_tools.rename_layer -ne $layer -or $view.state.layer_tools.editing_layer.label -ne $Name){throw 'An IME candidate key committed or canceled the layer rename'}
 }
 try{
  Enter-CapyEnvironment
- if(!(Get-WinUserLanguageList | Where-Object {$_.InputMethodTips -match '^0411:'})){throw 'Enable the installed Japanese IME in the private Windows user before running this fixture'}
+ $script:imeLanguage=Add-FixtureJapaneseInput
+ $script:imePrediction=Set-ImePrediction @{PredictionUseInputHistory=@{kind='DWord';value=0};PredictionUseSystemDictionary=@{kind='DWord';value=0}}
  $env:CAPY_STORAGE_DIR=Join-Path $run 'profile';$env:CAPY_TRACE_UI='1'
  [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json -Depth 4))
  $review=Start-Process -FilePath $Executable -WorkingDirectory $run -PassThru -RedirectStandardError (Join-Path $run 'stderr.log');$null=$review.Handle
- Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Model).brush_ready -and (Model).windows_workspace.ready} 'IME review did not prepare' 120
+ Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Review-Ready)} 'IME review did not prepare' 120
  $root=$registeredWindow.Root
  Wait-Until {[CapyRowPointer]::SetForegroundWindow($registeredWindow.Handle)|Out-Null;[CapyRowPointer]::GetForegroundWindow() -eq $registeredWindow.Handle} 'IME review did not own foreground input'
  $initial=Model;$layer=$initial.state.layer_tools.editing_layer.id;$original=$initial.state.layer_tools.editing_layer.label;$gpu=$initial.windows_gpu_generation
+ Initialize-IME
  $entry=Begin-Rename
- if([CapyIme]::Language($registeredWindow.Handle,[uint32]$review.Id) -ne 0x411){[CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(91),32)}
- Wait-Until {[CapyIme]::Language($registeredWindow.Handle,[uint32]$review.Id) -eq 0x411} 'The owned editor did not activate the Japanese input profile'
- [CapyIme]::Open($registeredWindow.Handle,[uint32]$review.Id)
- [CapyRowPointer]::Chord([uint32]$review.Id,[uint16[]]@(17),20)
  Compose $entry 'nihonn' 'にほん';Assert-Renaming $original
  $candidate=Value $entry;Key 13
  Wait-Until {(Value $entry) -eq $candidate} 'Candidate Enter changed the converted text'
@@ -79,7 +97,9 @@ try{
  Wait-Until {$view=Model;$null -eq $view.state.layer_tools.rename_layer -and $view.state.layer_tools.editing_layer.label -eq $candidate} 'The ordinary Enter after candidate confirmation did not commit rename'
  $entry=Begin-Rename;Compose $entry 'kanji' 'かんじ';Key 27;Assert-Renaming $candidate
  Wait-Until {(Value $entry) -eq 'かんじ'} 'Candidate Escape did not restore Hiragana preedit'
- Key 27;Assert-Renaming $candidate;Key 27
+ Key 27;Assert-Renaming $candidate
+ Wait-Until {(Value $entry) -ceq ''} 'The composition Escape did not cancel the Hiragana preedit'
+ Key 27
  Wait-Until {$null -eq (Model).state.layer_tools.rename_layer} 'The ordinary Escape after composition did not cancel rename'
  $opacity=Control 'layer-opacity';$before=Model;$value=$before.state.layer_tools.editing_layer.opacity
  Compose $opacity 'nihonn' 'にほん';Key 13
@@ -90,9 +110,12 @@ try{
  if($after.state.layer_tools.editing_layer.opacity -ne $value -or $after.state.document_file.revision -ne $before.state.document_file.revision -or $after.windows_gpu_generation -ne $gpu){throw 'Refused IME numeric input changed the document or GPU owner'}
  Key 27;Wait-Until {!$opacity.Current.HelpText} 'Cancel did not clear the numeric refusal'
  $entry=Begin-Rename;Compose $entry 'kanji' 'かんじ';$text=Value $entry
- $bounds=$entry.Current.BoundingRectangle;[CapyRowPointer]::Initialize([uint32]$review.Id)
+ $bounds=$entry.Current.BoundingRectangle;[CapyRowPointer]::Initialize([uint32]$review.Id);$presses=[long](Text-Input).pointer_presses
  [CapyRowPointer]::Down('mouse',[int]($bounds.X+$bounds.Width/2),[int]($bounds.Y+$bounds.Height/2));[CapyRowPointer]::Up()
+ Wait-Until {$textInput=Text-Input;[long]$textInput.pointer_presses -gt $presses -and $textInput.composing -eq $true} 'The pointer confirmation did not reopen the Japanese composition'
  Key 13
+ Wait-Until {(Text-Input).composing -eq $false} 'The IME Enter did not finish the reopened composition'
+ Assert-Renaming $candidate;Key 13
  Wait-Until {$view=Model;$null -eq $view.state.layer_tools.rename_layer -and $view.state.layer_tools.editing_layer.label -eq $text} 'Pointer confirmation consumed the next ordinary Enter'
  $entry=Begin-Rename;Compose $entry 'nihonn' 'にほん';$text=Value $entry
  Focus (Control 'layer-opacity')
@@ -103,5 +126,7 @@ try{
 }finally{
  [CapyRowPointer]::Dispose()
  if($completed -and $review -and !$review.HasExited){& (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -Action Close -DiscardUnsaved -StateDirectory $run}
+ if($script:imePrediction){$null=Set-ImePrediction $script:imePrediction}
+ if($null -ne $script:imeLanguage){Remove-FixtureJapaneseInput -Language:$script:imeLanguage}
  Exit-CapyEnvironment
 }

@@ -119,7 +119,7 @@ void WorkspaceBubbles::Impl::init(){
     thumbnailTimer=workspace.DispatcherQueue().CreateTimer();thumbnailTimer.Interval(std::chrono::milliseconds(120));thumbnailTimer.Tick([weak](auto&&,auto&&){if(auto self=weak.lock())self->thumbnails();});
     colorListener=data->colorView([weak]{if(auto self=weak.lock())for(auto const& [id,record]:self->records)self->refresh(record);});
     contentsLost=CompositionTarget::SurfaceContentsLost(auto_revoke,[weak](auto&&,auto&&){if(auto self=weak.lock())for(auto const& [id,record]:self->records){
-        for(auto const& [key,p]:record->parts){if(p->wheel){p->wheel->surface=nullptr;p->wheelKey=L"";}if(p->intensity)p->intensity->image->invalidate();}self->refresh(record);
+        for(auto const& [key,p]:record->parts){if(p->wheel){p->wheel->surface=nullptr;p->wheel->markerSurface=nullptr;p->wheelKey=L"";}if(p->intensity)p->intensity->image->invalidate();}self->refresh(record);
     }});
     workspace.Loaded([weak](auto&&,auto&&){if(auto self=weak.lock())self->thumbnails();});
     workspace.Unloaded([weak](auto&&,auto&&){if(auto self=weak.lock()){self->thumbnailTimer.Stop();ForgetLayerThumbnails(self->data->thumbnails,self.get());}});
@@ -128,14 +128,14 @@ void WorkspaceBubbles::Impl::init(){
 void WorkspaceBubbles::Impl::reattach(){for(auto const& [id,record]:records){uint32_t at;if(!layer.Children().IndexOf(record->root,at))layer.Children().Append(record->root);}}
 void WorkspaceBubbles::Impl::apply(){
     layer.Visibility(flag(data->state,L"workspace_ready")?Visibility::Visible:Visibility::Collapsed);
-    auto nextEpoch=uint64_t(num(object(data->state,L"document_file"),L"epoch"));auto packets=array(data->model,L"bubbles");std::set<uint32_t> alive;bool replaced=epoch!=nextEpoch;
+    auto nextEpoch=uint64_t(num(branch(data->state,L"document_file"),L"epoch"));auto packets=array(data->model,L"bubbles");std::set<uint32_t> alive;bool replaced=epoch!=nextEpoch;
     for(auto value:packets){auto packet=value.GetObject(),view=object(packet,L"view");auto id=uint32_t(num(view,L"id"));alive.insert(id);
         if(auto found=records.find(id);found!=records.end()&&found->second->source!=object(view,L"source").Stringify())replaced=true;}
     if(records.size()!=alive.size())replaced=true;
     if(epoch!=nextEpoch){dismiss();for(auto const& [id,record]:records)record->clearStamp();}
     if(contact&&(epoch!=nextEpoch||[&]{for(auto value:packets){auto v=object(value.GetObject(),L"view");if(num(v,L"id")==contact->record->id)return object(v,L"source").Stringify()!=contact->record->source;}return contact->mode!=L"moving"&&!(contact->paired&&contact->lifted);}()))cancel(true);
     if(candidate&&(epoch!=nextEpoch||!current(*candidate)))cancel(true);
-    if(replaced){++owners;lastRing.reset();}epoch=nextEpoch;
+    if(replaced){++owners;lastRing.Reset();}epoch=nextEpoch;
     for(auto it=records.begin();it!=records.end();)if(!alive.contains(it->first)){remove(layer,it->second->root);remove(stamps,it->second->stampImage);it=records.erase(it);}else ++it;
     int order=0;for(auto value:packets){auto packet=value.GetObject(),view=object(packet,L"view");auto id=uint32_t(num(view,L"id"));auto& record=records[id];
         if(record&&record->source!=object(view,L"source").Stringify()){remove(layer,record->root);remove(stamps,record->stampImage);record.reset();}
@@ -144,43 +144,56 @@ void WorkspaceBubbles::Impl::apply(){
     }
     if(menuId&&(!records.contains(menuId)||records.at(menuId)->source!=menuSource))dismiss();
     reattach();thumbnails();
-    if(records.empty()){active=false;frames.revoke();if(replaced&&changed)changed();}
+    if(records.empty()){ticks.polling=false;frames.revoke();if(replaced&&changed)changed();}
     else wake();
 }
 void WorkspaceBubbles::Impl::wake(){
     if(records.empty())return;
-    ++wakes;active=true;if(frames)return;
+    ++wakes;ticks.polling=true;if(frames)return;
     frames=CompositionTarget::Rendering(auto_revoke,[weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->frame();});
 }
 void WorkspaceBubbles::Impl::frame(){
-    if(disposed||!workspace.IsLoaded()){frames.revoke();return;}if(busy)return;
-    if(!active){frames.revoke();return;}
-    auto now=milliseconds();auto reduced=!winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled();auto ticket=owners,wake=wakes;busy=true;
-    auto request=JsonUnsignedFields(to_string(O({{L"type",S(L"bubble_motion")},{L"reduced",B(reduced)}}).Stringify()),
-        {{"now_ns",uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count())}});
-    if(!QueryWorkspace(data->query,std::move(request),[weak=weak_from_this(),ticket,wake,now,reduced](J reply){if(auto self=weak.lock()){
-        self->busy=false;if(self->disposed)return;auto motion=object(reply,L"result");if(ticket==self->owners&&motion.Size())self->step(motion,now,reduced,wake);
-    }}))busy=false;
+    if(disposed||!workspace.IsLoaded()){frames.revoke();return;}
+    auto reduced=!SystemUiSettings().AnimationsEnabled();
+    if(!ticks.tick(milliseconds(),[&](double now){return advance(now,reduced);},[&]{return request(reduced);}))frames.revoke();
 }
-void WorkspaceBubbles::Impl::step(J const& motion,double now,bool reduced,uint64_t requestedWake){
-    active=requestedWake!=wakes||flag(motion,L"moving")||contact||candidate&&candidate->moving;
-    auto fade=array(motion,L"fade");bool down=fade.Size()&&fade.GetBooleanAt(0);active=active||down;
-    std::set<uint32_t> faded;if(fade.Size()>1)for(auto id:fade.GetArrayAt(1))faded.insert(uint32_t(id.GetNumber()));
-    if(down){restoreAt=-1;for(auto const& [id,r]:records){r->faded=faded.contains(id);r->fade.to(r->faded?.2:1,140);}}
-    else if(stroke)restoreAt=now+180;stroke=down;
-    if(restoreAt>=0){if(now>=restoreAt){restoreAt=-1;for(auto const& [id,r]:records){r->faded=false;r->fade.to(1,140);}}else active=true;}
-    for(auto value:array(motion,L"placements")){auto p=value.GetObject();auto found=records.find(uint32_t(num(p,L"id")));if(found==records.end())continue;auto& r=*found->second;
-        r.center=point(array(p,L"center"));r.lifted=flag(p,L"lifted");r.homing=flag(p,L"homing");r.root.Visibility(Visibility::Visible);}
-    if(contact&&!contact->paired)contact->record->hovered=hit(*contact->record,contact->last);
+bool WorkspaceBubbles::Impl::request(bool reduced){
+    auto now=milliseconds();auto ticket=owners,wake=wakes;
+    auto message=JsonUnsignedFields(to_string(O({{L"type",S(L"bubble_motion")},{L"reduced",B(reduced)}}).Stringify()),
+        {{"now_ns",uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count())}});
+    return QueryWorkspace(data->query,std::move(message),[weak=weak_from_this(),ticket,wake,now](J reply){if(auto self=weak.lock()){
+        if(self->disposed)return;auto motion=object(reply,L"result");if(ticket==self->owners&&motion.Size())self->step(motion,now,wake);else self->ticks.busy=false;
+    }});
+}
+bool WorkspaceBubbles::Impl::advance(double now,bool reduced){
+    if(restoreAt>=0&&now>=restoreAt){restoreAt=-1;for(auto const& [id,r]:records){r->faded=false;r->fade.to(1,140);}}
+    bool animating=false;
+    for(auto const& [id,r]:records){animating=r->fade.step(now,reduced)||animating;
+        for(auto const& [key,p]:r->parts)animating=p->step(now,reduced)||p->inspector&&p->inspector->animating||animating;}
+    if(animating)present();
+    return animating||restoreAt>=0;
+}
+void WorkspaceBubbles::Impl::present(){
     bool overlayChanged=false;
-    for(auto const& [id,r]:records){active=r->fade.step(now,reduced)||active;
-        for(auto it=r->parts.begin();it!=r->parts.end();){auto& p=*it->second;active=p.step(now,reduced)||active;
-            if(p.appearance.value==0&&p.appearance.target==0){remove(r->root,p.root);it=r->parts.erase(it);continue;}
-            overlayChanged=draw(r,it->second)||overlayChanged;++it;}
+    for(auto const& [id,r]:records){
+        for(auto it=r->parts.begin();it!=r->parts.end();){auto const& p=it->second;
+            if(p->appearance.value==0&&p->appearance.target==0){remove(r->root,p->root);it=r->parts.erase(it);continue;}
+            overlayChanged=draw(r,p)||overlayChanged;++it;}
         r->place();r->root.IsHitTestVisible(!r->faded);Canvas::SetZIndex(r->root,(r->lifted?800:700)+r->order);
         stamp(r);
     }
-    contactSurface();if(changed)changed();if(overlayChanged&&overlayApplied)overlayApplied();
+    if(changed)changed();if(overlayChanged&&overlayApplied)overlayApplied();
+}
+void WorkspaceBubbles::Impl::step(J const& motion,double now,uint64_t requestedWake){
+    bool moving=requestedWake!=wakes||flag(motion,L"moving")||contact||candidate&&candidate->moving;
+    auto fade=array(motion,L"fade");bool down=fade.Size()&&fade.GetBooleanAt(0);
+    std::set<uint32_t> faded;if(fade.Size()>1)for(auto id:fade.GetArrayAt(1))faded.insert(uint32_t(id.GetNumber()));
+    if(down){restoreAt=-1;for(auto const& [id,r]:records){r->faded=faded.contains(id);r->fade.to(r->faded?.2:1,140);}}
+    else if(stroke)restoreAt=now+180;stroke=down;
+    for(auto value:array(motion,L"placements")){auto p=value.GetObject();auto found=records.find(uint32_t(num(p,L"id")));if(found==records.end())continue;auto& r=*found->second;
+        r.center=point(array(p,L"center"));r.lifted=flag(p,L"lifted");r.homing=flag(p,L"homing");r.root.Visibility(Visibility::Visible);}
+    if(contact&&!contact->paired)contact->record->hovered=hit(*contact->record,contact->last);
+    ticks.replied(moving||down);contactSurface();present();
 }
 void WorkspaceBubbles::Impl::update(std::shared_ptr<Record> const& r,J const& packet){
     if(r->packet.Size()&&r->packet.Stringify()==packet.Stringify())return;
@@ -271,7 +284,7 @@ bool WorkspaceBubbles::Impl::draw(std::shared_ptr<Record> const& r,std::shared_p
     if(p->contentDirty&&!p->retired){p->contentDirty=false;content(r,p);}
     if(p->inspector&&!p->retired){auto& inspector=*p->inspector;bool open=flag(p->data,L"properties");
         p->cardHost.Width(p->size.Width);p->cardHost.Height(p->size.Height);
-        if(inspector.animating){auto t=winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()?std::clamp(std::chrono::duration<double>(Clock::now()-inspector.started).count()/.2,0.,1.):1.;inspector.position=inspector.startPosition+(inspector.targetPosition-inspector.startPosition)*(1-std::pow(1-t,3));inspector.animating=t<1;active=active||inspector.animating;}
+        if(inspector.animating){auto t=SystemUiSettings().AnimationsEnabled()?std::clamp(std::chrono::duration<double>(Clock::now()-inspector.started).count()/.2,0.,1.):1.;inspector.position=inspector.startPosition+(inspector.targetPosition-inspector.startPosition)*(1-std::pow(1-t,3));inspector.animating=t<1;}
         inspector.place(p->layers->Root(),p->size.Width,p->size.Height,data->panelMetric(L"disclosure_height"),open);
         if(!inspector.animating&&!open&&inspector.anchor.Size()&&p->layers->layers->restoreAnchor(inspector.anchor))inspector.anchor=J{};
     }
@@ -301,7 +314,7 @@ void WorkspaceBubbles::Impl::content(std::shared_ptr<Record> const& r,std::share
         }
         auto& inspector=*p->inspector;bool open=flag(p->data,L"properties");auto target=open?1.:0.;
         if(inspector.targetPosition!=target){if(open)inspector.anchor=p->layers->layers->scrollAnchor();inspector.startPosition=inspector.position;inspector.targetPosition=target;inspector.started=Clock::now();inspector.animating=true;}
-        bool full=flag(p->data,L"full");p->layers->layers->full=full;p->layers->Apply(true);inspector.properties->Apply(open);inspector.refresh(open,str(p->data,L"disclosure"),!full);return;
+        bool full=flag(p->data,L"full"),modeChanged=std::exchange(p->layers->layers->full,full)!=full;p->layers->Apply(true,modeChanged);inspector.properties->Apply(open);inspector.refresh(open,str(p->data,L"disclosure"),!full);return;
     }
     if(p->key==L"halo"){
         auto rings=array(p->data,L"rings"),geometry=array(p->data,L"_geometry");
@@ -330,9 +343,10 @@ void WorkspaceBubbles::Impl::content(std::shared_ptr<Record> const& r,std::share
     if(p->key==L"face"){
         auto type=str(v,L"kind");
         if(type==L"color"){
-            if(!p->wheel){p->wheel=std::make_unique<CapyWheel::WheelImage>();p->wheel->start([weak,owner,part]{if(auto self=weak.lock())if(auto r=owner.lock())if(auto p=part.lock()){p->wheelKey=L"";self->refresh(r);}});}
+            if(!p->wheel){p->wheelMarkers=Image();p->wheel=std::make_unique<CapyWheel::WheelImage>();p->wheel->start([weak,owner,part]{if(auto self=weak.lock())if(auto r=owner.lock())if(auto p=part.lock()){p->wheelKey=L"";self->refresh(r);}});}
             auto color=object(r->packet,L"color");if(color.Size()){auto bounds=rectangle(object(color,L"bounds"));center={-bounds.X,-bounds.Y};}
-            auto side=float(num(v,L"diameter")-14);p->wheelImage.IsHitTestVisible(false);place(p->wheelImage,center,{side,side});AutomationProperties::SetAutomationId(p->wheelImage,L"bubble-wheel-"+to_hstring(r->id));p->art.Children().Append(p->wheelImage);
+            auto side=float(num(v,L"diameter")-14);for(auto const& layer:{p->wheelImage,p->wheelMarkers}){layer.IsHitTestVisible(false);place(layer,center,{side,side});}
+            AutomationProperties::SetAutomationId(p->wheelImage,L"bubble-wheel-"+to_hstring(r->id));AutomationProperties::SetAccessibilityView(p->wheelMarkers,Automation::Peers::AccessibilityView::Raw);p->art.Children().Append(p->wheelImage);p->art.Children().Append(p->wheelMarkers);
             if(color.Size()){
                 if(!p->intensity){
                     p->intensity=std::make_unique<IntensityArt>();auto& art=*p->intensity;art.root.IsHitTestVisible(false);
@@ -416,9 +430,9 @@ void WorkspaceBubbles::Impl::intensity(std::shared_ptr<Record> const& r,std::sha
 }
 void WorkspaceBubbles::Impl::refresh(std::shared_ptr<Record> const& r){
     bool overlayChanged=false;
-    for(auto const& [key,p]:r->parts){if(p->retired)continue;overlayChanged=draw(r,p)||overlayChanged;
+    for(auto const& [key,p]:r->parts){overlayChanged=draw(r,p)||overlayChanged;if(p->retired)continue;
         if(p->wheel){auto preview=data->colorPreview;auto model=object(preview,L"view");if(!model.Size())model=object(data->model,L"color_panel");auto colors=object(preview,L"colors");if(!colors.Size())colors=displayColors(data->state);auto side=num(r->view,L"diameter")-14,scale=workspace.XamlRoot()?workspace.XamlRoot().RasterizationScale():1.;auto next=model.Stringify()+colors.Stringify()+to_hstring(side)+L":"+to_hstring(scale);
-            if(p->wheelKey!=next&&side>0){try{p->wheel->present(p->wheelImage,model,colors,side,scale);p->wheelKey=next;}catch(hresult_error const& error){OutputDebugStringW(error.message().c_str());}}
+            if(p->wheelKey!=next&&side>0){try{p->wheel->present(p->wheelImage,p->wheelMarkers,model,colors,side,scale);p->wheelKey=next;}catch(hresult_error const& error){OutputDebugStringW(error.message().c_str());}}
         }
         intensity(r,p);
         if(p->inspector){p->layers->Apply(true);p->inspector->properties->Apply(flag(p->data,L"properties"));p->inspector->refresh(flag(p->data,L"properties"),str(p->data,L"disclosure"),!flag(p->data,L"full"));}

@@ -1553,7 +1553,7 @@ fn native_unreadable_workspace_storage_input() {
     let manager = d.w.workspaces.manager().unwrap();
     assert!(manager.error().is_none());
     assert!(!manager.in_memory());
-    assert_eq!(state(&d.w).notice.as_ref().unwrap().text,"This version of Capy Canvas can't open your saved workspaces. Update Capy Canvas to open them.");
+    assert!(state(&d.w).notice.is_none(), "{:?}", state(&d.w).notice);
     assert!(d.w.area.is_mapped());
     assert_eq!(state(&d.w).settings.pan_speed, 2.0);
     assert_eq!(state(&d.w).settings.zoom_speed, 1.0);
@@ -2206,6 +2206,51 @@ fn native_header_spacing_visual() {
                 .to_str()
                 .unwrap(),
         );
+    }
+    d.finish();
+}
+
+#[test]
+#[ignore = "isolated native-input.js --native-test=native_header_bar_drawer_corners"]
+fn native_header_bar_drawer_corners() {
+    let mut d = Driver::new("art.capycanvas.HeaderBarDrawerCorners");
+    use_transparency(&d.w, layer_ui::Transparency::Medium);
+    let painter = WorkspacePreset::Painter.layout(Platform::Gtk);
+    let mut tools = painter.header.entries().filter(|e| matches!(e.item, HeaderItem::Tool { .. })).cloned().collect::<Vec<_>>();
+    let color = tools.remove(tools.iter().position(|e| e.item == HeaderItem::Tool { control: ToolbarControl::Color }).unwrap());
+    for (zone, end) in [(vec![tools[0].clone(), color.clone()], true), (vec![tools[0].clone(), color.clone(), tools[1].clone()], false)] {
+        let mut layout = painter.clone();
+        layout.header.zones = [zone, Vec::new(), Vec::new()];
+        d.w.dispatch(UiAction::RestoreWorkspace { workspace: Box::new(WorkspaceState { layout, ..WorkspaceState::default() }) });
+        pump(250);
+        let tool = d.named(&d.header_tool(ToolbarControl::Color));
+        let t = tool.compute_bounds(&d.w.surface).unwrap();
+        let bar = widgets(d.w.header.root.upcast_ref())
+            .find(|w| w.has_css_class("header-bar") && w.is_child_visible() && w.compute_bounds(&d.w.surface).is_some_and(|b|
+                b.x() <= t.x() + 0.5 && b.x() + b.width() >= t.x() + t.width() - 0.5 && (b.y() - t.y()).abs() < 0.5))
+            .expect("Color shares a header bar");
+        let radii = |w: &Workspace| {
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(&bar)).snapshot(&snapshot, bar.width() as f64, bar.height() as f64);
+            let mut regions = Vec::new();
+            crate::glass::collect(&snapshot.to_node().unwrap(), &state(w).palette.glass.surfaces(), &mut regions);
+            assert_eq!(regions.len(), 1, "header bar glass: {regions:?}");
+            regions[0].radii
+        };
+        assert!(radii(&d.w).iter().all(|r| *r > 0.), "closed bar is round");
+        d.click(&tool);
+        pump(100);
+        let b = bar.compute_bounds(&d.w.surface).unwrap();
+        let joined = d.w.drawer.placement().unwrap().source_corners(Bounds { x: b.x(), y: b.y(), width: b.width(), height: b.height() });
+        assert_eq!(joined.contains(&true), end, "only a bar end joins its drawer: {joined:?}");
+        let open = radii(&d.w);
+        for (corner, (radius, joined)) in open.into_iter().zip(joined).enumerate() {
+            assert_eq!(radius == 0., joined, "bar corner {corner}: radius {radius}, joined {joined}");
+        }
+        d.click(&tool);
+        wait_for_drawer_close(&d.w);
+        pump(100);
+        assert!(radii(&d.w).iter().all(|r| *r > 0.), "closed bar is round again");
     }
     d.finish();
 }
@@ -4736,28 +4781,9 @@ fn native_saved_data_messages_input() {
         match fixture_case.as_str() {
             "damaged" => std::fs::write(&path,b"damaged SQLite store").unwrap(),
             "unavailable" => std::fs::create_dir(&path).unwrap(),
-            "newer" | "editing" => {
+            "newer" => {
                 std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/layer-workspace/tests/compat/1.0.15/workspaces.sqlite3"),&path).unwrap();
-                let sql = rusqlite::Connection::open(std::fs::canonicalize(&path).unwrap()).unwrap();
-                if fixture_case=="newer" {sql.pragma_update(None,"user_version",layer_workspace::SCHEMA_VERSION+1).unwrap();}
-                else {
-                    let text: String = sql.query_row("SELECT json FROM editing",[],|row|row.get(0)).unwrap();
-                    let mut editing: serde_json::Value = serde_json::from_str(&text).unwrap();
-                    editing["preset"] = "unreadable".into();
-                    sql.execute("UPDATE editing SET json=?1",[editing.to_string()]).unwrap();
-                }
-            },
-            "workspace" | "choice" => {
-                {
-                    let manager = layer_workspace::WorkspaceManager::new(layer_workspace::StoreWorker::shared(&directory).unwrap(),Platform::Gtk);
-                    pollster::block_on(manager.initialize(1000)).unwrap();
-                }
-                let sql = rusqlite::Connection::open(std::fs::canonicalize(&path).unwrap()).unwrap();
-                if fixture_case=="workspace" {sql.execute("UPDATE items SET content='{}' WHERE kind='workspace'",[]).unwrap();}
-                else {sql.execute("UPDATE items SET content='{}' WHERE id=?1",[layer_workspace::DEFAULT_WORKSPACES[0].0]).unwrap();}
-            },
-            "restore" | "keep-current" => {
-                std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/layer-workspace/tests/compat/1.0.15/workspaces.sqlite3"),directory.join("workspaces.unreadable.sqlite3")).unwrap();
+                rusqlite::Connection::open(std::fs::canonicalize(&path).unwrap()).unwrap().pragma_update(None,"user_version",layer_workspace::SCHEMA_VERSION+1).unwrap();
             },
             "drawing-unsupported" | "drawing-damaged" => {},
             _ => panic!("unknown saved-data case"),
@@ -4776,13 +4802,9 @@ fn native_saved_data_messages_input() {
     let package = super::canvas_bar_tests::until_some(||receiver.try_recv().ok(),"saved-data fixture");
     let mut d = Driver::managed("art.capycanvas.SavedDataMessages");
     let expected = match case.as_str() {
-        "restore" | "keep-current" => M::WORKSPACE_RESTORE_WORKSPACES_TITLE,
         "newer" => M::WORKSPACE_STORAGE_NEWER_NOTICE,
         "unavailable" => M::WORKSPACE_STORAGE_UNAVAILABLE_NOTICE,
         "damaged" => M::WORKSPACE_STORAGE_DAMAGED_NOTICE,
-        "editing" => M::WORKSPACE_EDITING_UNREADABLE_NOTICE,
-        "workspace" => M::WORKSPACE_CREATED_UNREADABLE_NOTICE,
-        "choice" => M::WORKSPACE_REFUSAL_INVALID_WORKSPACE,
         "drawing-unsupported" => M::DOCUMENTS_PACKAGE_UNSUPPORTED_BODY,
         "drawing-damaged" => M::DOCUMENTS_PACKAGE_DAMAGED_BODY,
         _ => unreachable!(),
@@ -4792,12 +4814,7 @@ fn native_saved_data_messages_input() {
         let w = d.w.clone();
         glib::MainContext::default().spawn_local(async move {crate::files::open::show_package(w.window.upcast_ref(),package,None,&w.localization()).await.unwrap();});
         until(|| d.w.window.visible_dialog().is_some(),"saved drawing dialog");
-    } else if case=="choice" {
-        d.w.workspaces.send(&d.w,layer_workspace::WorkspaceInput::Open {page:layer_workspace::ManagerPage::Workspaces});
-        d.w.workspaces.send(&d.w,layer_workspace::WorkspaceInput::Select {id:Some(layer_workspace::DEFAULT_WORKSPACES[0].0.into())});
-        until(||d.w.workspaces.view().error.is_some(),"unreadable workspace choice");
-        assert_eq!(d.w.workspaces.view().error.as_deref(),Some(expected.as_str()));
-    } else if case!="restore" && case!="keep-current" {assert_eq!(state(&d.w).notice.as_ref().unwrap().text,expected);}
+    } else {assert_eq!(state(&d.w).notice.as_ref().unwrap().text,expected);}
     fn shown(widget:&gtk::Widget,text:&str)->bool {
         if widget.is_mapped() && widget.downcast_ref::<gtk::Label>().is_some_and(|label|label.text()==text) {return true;}
         let mut child=widget.first_child();
@@ -4807,13 +4824,120 @@ fn native_saved_data_messages_input() {
     until(||shown(d.w.window.upcast_ref(),&expected),"saved-data message is rendered");
     let theme = std::env::var("CAPY_NATIVE_TEST_THEME").unwrap();
     d.input.perform(serde_json::json!([{"capture":format!("gtk-{case}-{theme}")} ]));
-    if case=="restore" || case=="keep-current" {
-        d.click_label(if case=="restore" {"Restore"} else {"Keep Current"});
-        until(||d.w.workspaces.view().prompt.is_none() && d.w.workspaces.view().ready && !d.w.workspaces.view().busy,"restore choice adopted");
-        assert_eq!(state(&d.w).brush.diameter,if case=="restore" {37.} else {9.});
-        assert!(d.w.workspaces.view().error.is_none());
-    } else if let Some(dialog)=d.w.window.visible_dialog() {dialog.close();}
+    if let Some(dialog)=d.w.window.visible_dialog() {dialog.close();}
     d.finish();
+}
+
+#[test]
+#[ignore = "isolated native-input.js --native-test=native_released_workspaces_open_without_asking --native-storage, with CAPY_NATIVE_TEST_THEME light and dark"]
+fn native_released_workspaces_open_without_asking() {
+    const WORKSPACES: [(&str, &str); 3] = [("builtin:workspace:painter","sketch"),("builtin:workspace:illustrator","paint"),("builtin:workspace:photographer","photo")];
+    let (database,theme) = released_workspace_store(false);
+    let released: serde_json::Value = serde_json::from_str(include_str!("../../../crates/layer-workspace/tests/fixtures/web-store-1.0.12.json")).unwrap();
+    let sql = rusqlite::Connection::open(std::fs::canonicalize(&database).unwrap()).unwrap();
+    for (id,_) in WORKSPACES {
+        sql.execute("UPDATE items SET content=?2 WHERE id=?1",(id,released["items"][id]["entity"]["content"].to_string())).unwrap();
+    }
+    let stored = |sql: &rusqlite::Connection| WORKSPACES.map(|(id,_)| sql.query_row("SELECT content FROM items WHERE id=?1",[id],|row|row.get::<_,String>(0)).unwrap());
+    let toolbars = |layout: &serde_json::Value| layout["panels"].as_array().unwrap().iter().filter(|panel| panel["content"]["kind"] == "toolbar")
+        .map(|panel| (panel["id"].to_string(),panel["content"]["tiles"].as_array().unwrap().iter()
+            .filter(|tile| !matches!(tile["control"]["kind"].as_str(),Some("opacity" | "brush_opacity_slider")) && tile["control"]["command"] != "decoration")
+            .map(|tile| tile["id"].as_u64().unwrap()).collect::<Vec<_>>()))
+        .collect::<std::collections::BTreeMap<_,_>>();
+    let before = stored(&sql);
+    let mut d = Driver::managed("art.capycanvas.ReleasedWorkspaces");
+    let quiet = |w: &Workspace, step: &str| {
+        let view = w.workspaces.view();
+        assert!(view.error.is_none() && view.status.is_none() && view.prompt.is_none(),"{step}: {:?} {:?}",view.status,view.prompt);
+        assert!(w.window.visible_dialog().is_none(),"{step} asks nothing");
+    };
+    quiet(&d.w,"startup");
+    if state(&d.w).workspace.zen_mode { d.w.dispatch(UiAction::Invoke {command:CommandId::ZenMode}); }
+    for (id,name) in WORKSPACES {
+        d.click_name(&format!("workspace-switch-{}",id.rsplit(':').next().unwrap()));
+        until(|| {let view = d.w.workspaces.view(); view.id.as_deref() == Some(id) && view.ready && !view.busy},"the released workspace opens");
+        quiet(&d.w,name);
+        let history = &released["items"][id]["entity"]["content"]["history"];
+        let current = &history["revisions"][history["current"].as_str().unwrap()]["layout"];
+        assert_eq!(toolbars(&serde_json::to_value(&state(&d.w).workspace.layout).unwrap()),toolbars(current),"{name} keeps every released tile this build reads");
+        capture_store(&mut d,&format!("gtk-released-{name}-{theme}"));
+    }
+    until(|| !d.w.workspaces.view().dirty && !d.w.workspaces.view().saving,"opening saves nothing pending");
+    d.w.window.close();
+    until(|| !d.w.window.is_visible(),"the window closes");
+    assert_eq!(stored(&sql),before,"opening released workspaces rewrites none of them");
+    d.w = Workspace::new(&d._app);
+    d.w.window.maximize();
+    d.w.window.present();
+    wait_workspaces(&d.w);
+    pump(500);
+    quiet(&d.w,"relaunch");
+    assert_eq!(d.w.workspaces.view().id.as_deref(),Some(WORKSPACES[2].0));
+    capture_store(&mut d,&format!("gtk-released-relaunch-{theme}"));
+    d.finish();
+}
+
+#[test]
+#[ignore = "isolated native-input.js --native-test=native_damaged_workspace_store_installs_its_newest_copy --native-storage, with CAPY_NATIVE_TEST_THEME light and dark"]
+fn native_damaged_workspace_store_installs_its_newest_copy() {
+    let (database,theme) = released_workspace_store(true);
+    std::fs::write(&database,b"damaged SQLite store").unwrap();
+    let copies = |directory: &std::path::Path| std::fs::read_dir(directory).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.starts_with("workspaces.") && name.ends_with(".sqlite3") && name != "workspaces.sqlite3").collect::<std::collections::BTreeSet<_>>();
+    let directory = database.parent().unwrap().to_path_buf();
+    let before = copies(&directory);
+    let mut d = Driver::managed("art.capycanvas.DamagedWorkspaceStore");
+    let restored = d.w.localization().text(layer_ui::MessageId::WORKSPACE_STORAGE_RESTORED_NOTICE).to_string();
+    until(|| state(&d.w).notice.as_ref().is_some_and(|notice| notice.text == restored) && mapped_label(d.w.window.upcast_ref(),&restored).is_some(),"the restored-copy notice is shown");
+    let quiet = |w: &Workspace, step: &str| {
+        let view = w.workspaces.view();
+        assert!(view.error.is_none() && view.status.is_none() && view.prompt.is_none(),"{step}: {:?} {:?}",view.status,view.prompt);
+        assert!(w.window.visible_dialog().is_none(),"{step} asks nothing");
+    };
+    quiet(&d.w,"set aside");
+    assert!(state(&d.w).notice.as_ref().unwrap().actions.is_empty(),"the notice has no buttons");
+    assert_eq!(state(&d.w).brush.diameter,37.,"the retained copy's settings open");
+    let after = copies(&directory);
+    assert_eq!(after.iter().filter(|name| name.starts_with("workspaces.damaged.")).count(),1);
+    assert!(before.iter().all(|name| !after.contains(name)),"the installed copy is consumed");
+    capture_store(&mut d,&format!("gtk-damaged-restored-{theme}"));
+    until(|| !d.w.workspaces.view().dirty && !d.w.workspaces.view().saving,"the restored workspaces are saved");
+    d.w.window.close();
+    until(|| !d.w.window.is_visible(),"the window closes");
+    d.w = Workspace::new(&d._app);
+    d.w.window.maximize();
+    d.w.window.present();
+    wait_workspaces(&d.w);
+    pump(500);
+    quiet(&d.w,"relaunch");
+    assert!(state(&d.w).notice.is_none(),"the restored store reopens without a notice");
+    assert_eq!(state(&d.w).brush.diameter,37.);
+    assert_eq!(copies(&directory),after,"a second start sets nothing aside and installs nothing");
+    capture_store(&mut d,&format!("gtk-damaged-relaunch-{theme}"));
+    d.finish();
+}
+
+fn capture_store(d: &mut Driver, name: &str) {
+    if std::env::var_os("LAYER_NATIVE_CAPTURE_DIR").is_some() { d.input.perform(serde_json::json!([{"wait_ms":300},{"capture":name}])); }
+}
+
+fn released_workspace_store(retained: bool) -> (std::path::PathBuf,String) {
+    use layer_workspace::snapshots;
+    let theme = std::env::var("CAPY_NATIVE_TEST_THEME").unwrap();
+    let directory = crate::storage::workspaces().unwrap();
+    let database = directory.join("workspaces.sqlite3");
+    std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/layer-workspace/tests/compat/1.0.15/workspaces.sqlite3"),&database).unwrap();
+    let mut marker = snapshots::VersionMarker {version:snapshots::VERSION.into(),..Default::default()};
+    if retained {
+        let id = format!("workspaces.{}.{}.sqlite3",snapshots::VERSION,layer_workspace::new_id());
+        std::fs::copy(&database,directory.join(&id)).unwrap();
+        marker.copies.push(snapshots::SnapshotInfo {bytes:std::fs::metadata(directory.join(&id)).unwrap().len(),id});
+    }
+    std::fs::write(directory.join("last-version"),serde_json::to_vec(&marker).unwrap()).unwrap();
+    let settings = crate::storage::roots().unwrap().settings();
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings,serde_json::json!({"theme":theme,"language":{"Explicit":"en"}}).to_string()).unwrap();
+    (database,theme)
 }
 
 #[test]

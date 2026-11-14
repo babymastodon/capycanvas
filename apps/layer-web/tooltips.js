@@ -3,6 +3,29 @@
 // A disabled control can also reveal its title on tap, for any device, until
 // the next contact or REVEAL_MS.
 export const REVEAL_MS = 4000;
+const contents = new WeakMap();
+let refreshContent = () => {};
+export function plainTip(tip) {
+  return [tip.text,...tip.lines.map(line=>`${line.label}: ${line.value}`)].filter(Boolean).join('\n');
+}
+export function setTooltipContent(node, tip) {
+  const key=JSON.stringify(tip),previous=contents.get(node);
+  if(previous?.key===key)return;
+  const plain=plainTip(tip);
+  contents.set(node,{key,tip,plain});
+  if(previous?.plain!==plain)node.title=plain;
+  refreshContent(node);
+}
+function renderContent(node,tip) {
+  node.replaceChildren();
+  if(tip.text){const text=document.createElement('div');text.className='tip-text';text.textContent=tip.text;node.append(text);}
+  const grid=document.createElement('div');grid.className=`tip-lines${tip.figures?' tip-figures':''}`;
+  for(const line of tip.lines){
+    const key=document.createElement('span'),value=document.createElement('span');
+    key.className='tip-key';key.textContent=line.label;value.textContent=line.value;grid.append(key,value);
+  }
+  node.append(grid);
+}
 let reveal = () => {};
 export function revealTooltip(node) { reveal(node); }
 export function installTooltips() {
@@ -41,8 +64,9 @@ export function installTooltips() {
     const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
     const width = viewport?.width || innerWidth, height = viewport?.height || innerHeight;
     if (!r.width || !r.height || r.bottom <= top || r.top >= top + height || r.right <= left || r.left >= left + width) { hide(); return; }
-    tip.textContent = text;
-    tip.style.maxWidth = `${Math.min(320, width - 16)}px`;
+    const content=contents.get(source)?.tip;
+    if(content?.lines.length)renderContent(tip,content);else tip.textContent=text;
+    tip.style.maxWidth = `${Math.min(content?.lines.length?width:320, width - 16)}px`;
     if (!tip.matches(":popover-open")) tip.showPopover();
     const b = tip.getBoundingClientRect();
     const x = Math.max(left + 8, Math.min(r.left + r.width / 2 - b.width / 2, left + width - b.width - 8));
@@ -51,6 +75,7 @@ export function installTooltips() {
     const ids = new Set((source.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
     ids.add(tip.id); source.setAttribute("aria-describedby", [...ids].join(" "));
   }
+  refreshContent = node => { if(node===source && tip.matches(":popover-open"))show(); };
   function follow(next) {
     source = next; parent = next.parentNode; text = next.getAttribute("title");
     // An empty title also suppresses inherited browser tooltips. Restore the

@@ -9,6 +9,34 @@ is 4248 × 2832.
 - Geometry measurements use the 12 MP photo at Fit zoom. Older UI-only rows
   name their own canvas sizes.
 
+## Settled Fit half-float presentation
+
+Measured 2026-11-11: `3a98291d7` → `440f2dbff`, release Rust/unminified
+benchmark APKs that differ only in `liblayer_android.so`, B/C/C/B order run
+twice. Each build has twelve six-second contacts per row on the 12 MP JPEG at
+factory density 320/font scale 1 and thermal status 0. "After Fit" zooms in
+one step and fits before each 1024 px stroke. Brushes count fresh
+input-attributed updates; navigation counts actual canvas presents. Rates are
+medians of contact summaries; gaps are the worst contact p99.
+
+| Row | Hz, base → candidate | Gap p99 ms, base → candidate |
+| --- | ---: | ---: |
+| G-Pen after Fit | 31.383 → 31.373 | 84.513 → 72.496 |
+| Pencil after Fit | 13.809 → 13.793 | 123.571 → 119.550 |
+| Pan, Navigator open | 60.023 → 60.023 | 16.853 → 16.860 |
+| Pinch, Navigator open | 54.519 → 54.519 | 33.442 → 33.489 |
+| Two-finger rotate, Navigator open | 59.505 → 59.505 | 33.311 → 33.327 |
+| Pinch, Navigator closed | 48.156 → 48.156 | 50.006 → 49.992 |
+| Smooth Zoom, left/right | 53.143 → 53.143 | 33.492 → 33.505 |
+| Smooth Zoom, up/down | 53.143 → 53.143 | 33.492 → 33.472 |
+
+Pan with Navigator open meets the tier in both builds; the other rows miss in
+both. No rate differs between builds (rank-test p 0.07–0.89). Rotate with
+Navigator open has a two-frame gap p99 in 2 of 12 control and 4 of 12
+candidate contacts (Fisher p 0.64). Median gesture onset after Fit is
+58.6–75.5 ms against 59.2–75.4 ms, and pen-down to first submitted update
+after Fit is 53.1–63.1 ms against 55.2–61.2 ms, above the 33 ms limit in both.
+
 ## Paper without texture
 
 Measured 2026-11-09 against `0d5dee316`: optimized benchmark APKs in ABBA
@@ -317,6 +345,7 @@ optimized APK SHA-256 `e74cd6b9b8f0dc15e1beb2f5e6ff6348bae20025ebc6e1f6adbd9dca7
 | Levels Auto, Web, 12 MP | [Latency limits](responsiveness.md) | Median 13.229 → 10.861 s; all controls and resulting exact histograms match | [Shared shader preparation](#shared-shader-preparation); latency only |
 | G-Pen 220 px, Web shader diagnostic | 60 | **Unqualified; no measured gain.** CPU frame calls 21.79–27.24 → 21.97–26.10/s; GPU diagnostic p95 14.48–26.21 → 16.25–32.24 ms | [Shared shader preparation](#shared-shader-preparation); presentation unmeasured |
 | Tool cursor hover, with and without brush size | 60 | Unmeasured on the reference tablet | [Top-tier rendering measurements](top-tier.md#tool-cursors) do not qualify this tier |
+| Pencil 9 px with visible Filters apply warming | 60 | **Meets these strokes.** Median 76.424 → 79.123 completed updates/s; worst contact p99 23.298 → 21.941 ms | [Visible-filter preparation](#visible-filter-preparation), 2026-11-11; four candidate contacts overlap an apply compile |
 | G-Pen 1024 px, Android with idle brush preparation | 60 | **Meets these strokes.** Pending: 75.57–75.87 fresh updates/s, fresh completion-gap p99 22.64–24.01 ms; fully warm: 75.00–76.19/s, p99 22.50–24.20 ms | [Idle brush preparation](#idle-brush-preparation), Perceptual, 100 × 60 px radii |
 | G-Pen 1024 px, Android fully warm | 60 | **Both miss 60/s.** Median 52.753 → 52.061 fresh updates/s (−1.31%, overlapping ranges); worst completion-gap p99 36.839 → 26.985 ms | 2026-10-31, `66e0b8a87` → M3 on `8ae2d95fe`; ABBA, Perceptual, 100 × 60 px radii, thermal 0 |
 | G-Pen 1024 px, Web while brush warmup is paused | 60 | **Unqualified; CPU proxy below target.** After the in-flight compile: 17.58–22.30 frame calls/s, interval p99 84.6–148.1 ms; fully warm: 21.36–23.31/s. Presentation unmeasured | [Idle brush preparation](#idle-brush-preparation) |
@@ -403,7 +432,7 @@ optimized APK SHA-256 `e74cd6b9b8f0dc15e1beb2f5e6ff6348bae20025ebc6e1f6adbd9dca7
 | Windows tool bubble drag through four neighbours | 60 | Unmeasured on reference hardware; Surface Pro / Adreno X1-85 functional checks do not qualify timing (PresentMon ETW access denied) | [Windows tool bubbles](../development/windows.md#tool-bubbles) |
 | Windows HDR color bubble drag and intensity scrub | 60 | Unmeasured on reference hardware; native input and pixel checks do not qualify presentation timing (PresentMon ETW access denied) | [Windows tool bubbles](../development/windows.md#tool-bubbles) |
 | HDR color bubble drag and intensity scrub | 60 | Unqualified: HDR drag and intensity fixtures fail on matched control and candidate. | [Android UI motion](#android-ui-motion), 2026-10-29 |
-| Drawer open and close | 60 | Native header open/close now has 34 actual-SF diagnostic windows, worst gap p99 166.522 ms. No sustained FPS claim; independent draw/geometry clocks replace the faulty join. | [Final affected-row evidence](../../artifacts/android-ui-motion/final-report/affected-rows-final.local.json); harness `be0038bc1`, 2026-10-29 |
+| Drawer open and close | 60 | **Unqualified.** Note 10 glass fixes, 12 MP at Fit plus Paint, inherited font scale 1.1: shadow 11/12 → 12/12 observed cadence passes; tint 24/24 → 24/24 across two matched three-warm-cycle blocks, worst present-gap p99 16.930 → 17.000 ms. Selection preservation: 12/12 → 12/12, worst row p99 16.812 → 16.741 ms. Complete local SF joins; global trace-parser errors and short transitions keep these diagnostic. Earlier native header diagnostics cover 34 windows, worst gap p99 166.522 ms. | [Face glass comparison](../../artifacts/phone-device-fixes/face-glass-stable-paint-perf.local.md), APKs `3c72bb8b` → `b714307e` → `33aecc8d`, 2026-11-13; [selection comparison](../../artifacts/phone-device-fixes/face-glass-selection-one-paint-physical.local.md); [native header evidence](../../artifacts/android-ui-motion/final-report/affected-rows-final.local.json) |
 | Zen fade, expanded configuration and dialog page transitions | 60 | Android Zen and New Drawing open/Cancel have fresh diagnostic observations; expanded configuration and general page traversal remain unmeasured. Windows live-theme header replacement remains unmeasured | [Android baseline evidence](../../artifacts/android-ui-motion/final-report/low-tier-ui-details.local.md), 2026-10-28; [shared chrome](../ui/shared-ui.md#window-chrome-and-zen-mode) |
 | Grouped tool menus, drawer switching and tile drag | 60 | Android native grouped menus and tile/drop hints have fresh diagnostic observations; general sibling switching remains unmeasured | [Android baseline evidence](../../artifacts/android-ui-motion/final-report/low-tier-ui-details.local.md), 2026-10-28 |
 | Grouped Drawing drawer scrolling | 60 | Android actual presents 57.946–59.502/s, p99 16.985–33.315 ms; older short primer, diagnostic | [Android baseline evidence](../../artifacts/android-ui-motion/final-report/low-tier-ui-details.local.md), 2026-10-28 |
@@ -900,6 +929,36 @@ Candidate Wasm SHA-256:
 Raw samples, immutable builds, pixel comparisons and source hashes are under
 `artifacts/shader-optimization/`; `implementation-audit.tsv` records every shader
 and builtin filter conclusion.
+
+## Visible-filter preparation
+
+Measured on 2026-11-11 on the reference TCL, 4248 × 2832 photo at Fit,
+factory density 320, font scale 1 and 60 Hz. The factory All Filters panel stays
+docked and visible while Pencil 9 px paints. Matched release-Rust builds share
+unminified DEX and host visibility reporting; the control removes T/F warming
+from `44b8aec7c` plus F v19. Each of eight ABBAABBA visits starts with cold
+private app caches and has one ten-second contact. A fixed 2.380955500 s idle
+offset places all four candidate pen-downs inside an Anticipated filter compile.
+Device-global caches remain untouched. These are GPU completions, not scanout.
+
+| Metric | Control → candidate |
+| --- | ---: |
+| Moving completed updates/s, median | 76.424 → 79.123 |
+| Moving completion-gap p99, worst contact | 23.298 → 21.941 ms |
+| Full-contact onset/longest gap, median | 189.853 → 194.057 ms |
+| Pen-up to first owner callback returning idle, median wall time | 202.308 → 202.532 ms |
+| Android main Running CPU in that window, median | 74.042 → 76.409 ms |
+| Canvas owner Running CPU in that window, median | 162.764 → 166.827 ms |
+
+All contacts meet the 60/s and 33.333 ms moving limits, excluding 100 ms at
+both contact edges. Candidate onset ranges 178.801–220.233 ms against
+181.819–198.903 ms; onset and longest gap are not consistently worse across
+candidate visits. Post-up CPU ranges overlap. This qualifies this Pencil row,
+not all filters or physical pen latency. The separate eight-launch first-use
+cohort has zero new module/render/compute creations at every class on candidate
+Scale/Rotate downscale-and-Apply and visible-filter Apply, cold and warm after
+60 s idle. Original harness failures, the approved same-trace process-identity
+reanalysis and every visit remain in the [protocol and evidence](../../artifacts/compile-speed/followups-tf-v19-tcl/protocol.md).
 
 ## Idle brush preparation
 

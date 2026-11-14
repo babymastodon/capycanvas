@@ -12,8 +12,6 @@ public:
     double ContentHeight(double width=0)const;
     void SetVisible(bool visible);
     winrt::Microsoft::UI::Xaml::FrameworkElement Anchor(std::wstring const& control)const;
-    void AppendOverviews(CapyUi::A& slots,winrt::Microsoft::UI::Xaml::UIElement const& reference,
-        winrt::Windows::Foundation::Rect clip,int order)const;
 private:
     struct Impl;
     std::shared_ptr<Impl> impl;

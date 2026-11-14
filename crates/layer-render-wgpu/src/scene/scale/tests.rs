@@ -2428,21 +2428,21 @@ fn first_tiled_transform_draw_waits_for_its_fine_resample_entries() {
             layer_core::Projective::rect_to_quad(layer_core::Rect::from_extent(extent),
                 [[900., 150.], [5140., 100.], [5900., 3920.], [150., 3940.]]
                     .map(|[x, y]| layer_core::Point { x, y })).unwrap()), ..Default::default() } };
-    r.set_transform_preview(Some(&preview)).unwrap();
     crate::memory::memory_tests::legacy_scene_frame(&mut r, frame);
-    let selected = request(&r, frame).unwrap();
-    assert_eq!(selected.plan.level, 1);
-    assert!(matches!(selected.evaluation, Evaluation::Tiled(_)));
     assert!(r.scene_pipelines.fine_resample.mesh.iter().all(|p| !p.ready()));
-    assert!(!r.prepare_transform_preview(frame, Some(&preview)), "the first fine draw must wait for its cold pipelines");
+    assert!(!r.raster_dependencies_ready(frame, Some(&preview)), "the first fine draw must wait for its cold pipelines");
     while !r.raster_dependencies_ready(frame, Some(&preview)) {
         r.poll_startup().unwrap();
         assert!(std::time::Instant::now() < deadline, "Fine transform preparation timed out");
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert!(r.scene_pipelines.fine_resample.mesh[4..].iter().all(|p| p.ready()));
+    assert!(r.scene_pipelines.fine_resample.mesh[4..].iter().all(|p| p.ready()), "admission prepares what the admitted preview binds");
     assert!(r.scene_pipelines.fine_resample.mesh[..4].iter().all(|p| !p.ready()));
     assert!(r.scene_pipelines.resample.mesh[..4].iter().all(|p| !p.ready()));
+    r.set_transform_preview(Some(&preview)).unwrap();
+    let selected = request(&r, frame).unwrap();
+    assert_eq!(selected.plan.level, 1);
+    assert!(matches!(selected.evaluation, Evaluation::Tiled(_)));
     crate::test_support::submit_published(&mut r, frame);
     assert!(matches!(r.scale_display.as_ref().unwrap().evaluation, Evaluation::Tiled(_)));
     assert!(r.scene_pipelines.fine_resample.mesh[..4].iter().all(|p| !p.ready()));

@@ -988,11 +988,14 @@ impl Drawer {
     fn mark_source_corners(&self, w: &Workspace, placement: Option<&DrawerPlacement>) {
         let mut next = Vec::new();
         if let Some(placement) = placement {
-            let mut ancestor = self.source_button(w).and_then(|b| b.parent());
-            while let Some(widget) = ancestor {
-                if widget == w.surface.clone().upcast::<gtk::Widget>() {
-                    break;
-                }
+            let surface = w.surface.clone().upcast::<gtk::Widget>();
+            let ancestors = std::iter::successors(self.source_button(w).and_then(|b| b.parent()), |widget| widget.parent())
+                .take_while(|widget| *widget != surface);
+            let bar = match self.anchor() {
+                Some(DrawerAnchor::Header { id }) => w.header.bar_holding(id),
+                _ => None,
+            };
+            for widget in ancestors.chain(bar) {
                 if let Some(b) = widget.compute_bounds(&w.surface) {
                     let corners = placement.source_corners(Bounds {
                         x: b.x(),
@@ -1001,10 +1004,9 @@ impl Drawer {
                         height: b.height(),
                     });
                     if corners.into_iter().any(|c| c) {
-                        next.push((widget.clone(), corners));
+                        next.push((widget, corners));
                     }
                 }
-                ancestor = widget.parent();
             }
         }
         let mut old = self.source_corners.borrow_mut();

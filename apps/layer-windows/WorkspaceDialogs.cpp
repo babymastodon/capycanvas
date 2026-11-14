@@ -208,10 +208,13 @@ struct WorkspaceDialogs::Impl:std::enable_shared_from_this<Impl>{
         showing=false;closing=false;programmatic=false;cancelPending=false;changed();
     }
     void hide(){if(showing&&!closing){programmatic=true;closing=true;dialog.Hide();}}
+    CanvasModelInputs inputs;bool wasBlocked=false;
     void apply(J const& snapshot,bool blocked){
         data->adoptLocalization(snapshot);
         if(!snapshot.HasKey(L"state"))return;
-        data->model=snapshot;data->state=object(snapshot,L"state");data->refreshPalette();
+        data->model=snapshot;data->state=branch(snapshot,L"state");
+        bool blockedChanged=std::exchange(wasBlocked,blocked)!=blocked;auto presentation=data->presentation(inputs,blockedChanged);if(!presentation)return;
+        data->refreshPalette();
         auto next=desiredKind(),nextIdentity=identity(next);
         if(stopping||next.empty()){
             if(next.empty()){failed=false;nameDraft.reset();searchDraft.reset();}

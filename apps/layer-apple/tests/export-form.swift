@@ -71,6 +71,33 @@ import SwiftUI
         try await wait("JPEG export loaded") { store.projectFiles.exportEditor?.loaded == true }
         let editor = store.projectFiles.exportEditor!
         let host = NSHostingView(rootView: ExportForm(editor: editor)); window.contentView = host
+        editor.act(["type": "navigate", "page": "size"])
+        try await wait("Export size") { !editor.busy && editor.view["page"].string == "size" }
+        editor.act(["type": "fit", "enabled": true])
+        try await wait("Export bounds") { !editor.busy && editor.view["show_size"].bool }
+        try await drain(0.2)
+        guard let width = fields(host).first(where: { $0.placeholderString == editor.copy["maximum_width"].string }),
+            let height = fields(host).first(where: { $0.placeholderString == editor.copy["maximum_height"].string }) else {
+            throw HostFailure(message: "Missing native export bounds fields")
+        }
+        width.selectText(nil); try await drain()
+        for character in "37" { try key(String(character), code: 0, window: window); try await drain(0.01) }
+        let releaseCommit = DispatchSemaphore(value: 0)
+        do {
+            defer { releaseCommit.signal() }
+            await withCheckedContinuation { continuation in
+                native.submit(2, JSON(["type": "native_caption", "caption": ["type": "export_size", "width": 64, "height": 48]])) { _ in
+                    continuation.resume(); releaseCommit.wait()
+                }
+            }
+            height.selectText(nil); try await drain(0.2)
+            try require(editor.busy, "The previous field commit must remain in flight")
+            try require(width.isEnabled && height.isEnabled && height.currentEditor() === window.firstResponder,
+                "Committing width must keep the newly focused height field enabled and focused")
+        }
+        try await wait("Committed export width") { !editor.busy && editor.view["bounds"][0].uint == 37 }
+        editor.act(["type": "back"])
+        try await wait("Export root") { !editor.busy && editor.view["page"].string == "root" }
         try await drain(0.2)
         editor.change("format", JSON("Jpeg")); try await wait("JPEG format") { !editor.busy }; try await drain(0.2)
         guard let field = fields(host).first(where: { $0.isEditable && $0.placeholderString == editor.copy["quality"].string }) else {

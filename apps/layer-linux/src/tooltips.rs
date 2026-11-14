@@ -8,13 +8,13 @@ use std::{
     time::Duration,
 };
 
-type Text = Rc<dyn Fn(&gtk::Widget) -> Option<String>>;
+type Content = Rc<dyn Fn(&gtk::Widget) -> Option<layer_ui::Tip>>;
 #[derive(Default)]
 pub(crate) struct PenTooltips {
     pending: RefCell<Option<glib::SourceId>>,
     source: RefCell<Option<(gtk::Widget, gtk::Widget)>>,
     popup: RefCell<Option<gtk::Popover>>,
-    providers: RefCell<Vec<(glib::WeakRef<gtk::Widget>, Text)>>,
+    providers: RefCell<Vec<(glib::WeakRef<gtk::Widget>, Content)>>,
     suppressed: RefCell<Vec<glib::WeakRef<gtk::Widget>>>,
     pen_active: Cell<bool>,
     watchers: RefCell<Vec<(gtk::Widget, glib::SignalHandlerId)>>,
@@ -26,22 +26,40 @@ impl PenTooltips {
         widget: &impl IsA<gtk::Widget>,
         text: impl Fn(&gtk::Widget) -> Option<String> + 'static,
     ) {
+        self.bind_tip(widget, move |widget| text(widget).map(layer_ui::Tip::text));
+    }
+
+    pub fn bind_tip(
+        &self,
+        widget: &impl IsA<gtk::Widget>,
+        tip: impl Fn(&gtk::Widget) -> Option<layer_ui::Tip> + 'static,
+    ) {
         let widget = widget.as_ref();
-        let text: Text = Rc::new(text);
+        let tip: Content = Rc::new(tip);
         widget.set_has_tooltip(true);
         widget.connect_query_tooltip({
-            let text = text.clone();
+            let tip = tip.clone();
+            let shown = RefCell::new(None::<(layer_ui::Tip, gtk::Widget)>);
             move |widget, _, _, _, tooltip| {
-                let Some(text) = text(widget) else {
+                let Some(tip) = tip(widget).filter(|tip| !tip.is_empty()) else {
                     return false;
                 };
-                tooltip.set_text(Some(&text));
+                if tip.lines.is_empty() {
+                    tooltip.set_text(Some(&tip.text));
+                    return true;
+                }
+                let mut shown = shown.borrow_mut();
+                if shown.as_ref().is_none_or(|(current, _)| *current != tip) {
+                    let content = view(&tip);
+                    *shown = Some((tip, content));
+                }
+                tooltip.set_custom(shown.as_ref().map(|(_, content)| content));
                 true
             }
         });
         let mut providers = self.providers.borrow_mut();
         providers.retain(|(w, _)| w.upgrade().is_some_and(|w| w != *widget));
-        providers.push((widget.downgrade(), text));
+        providers.push((widget.downgrade(), tip));
     }
 
     pub fn install(self: &Rc<Self>, window: &impl IsA<gtk::Window>) {
@@ -129,18 +147,18 @@ impl PenTooltips {
         ));
     }
 
-    fn text(&self, widget: &gtk::Widget) -> Option<String> {
+    fn content(&self, widget: &gtk::Widget) -> Option<layer_ui::Tip> {
         let provider = self
             .providers
             .borrow()
             .iter()
             .find(|(w, _)| w.upgrade().as_ref() == Some(widget))
             .map(|(_, p)| p.clone());
-        if let Some(provider) = provider {
-            provider(widget)
-        } else {
-            widget.tooltip_text().map(Into::into)
+        match provider {
+            Some(provider) => provider(widget),
+            None => widget.tooltip_text().map(|text| layer_ui::Tip::text(text)),
         }
+        .filter(|tip| !tip.is_empty())
     }
 
     // A parked mouse must not show a second, unrelated native tooltip while
@@ -198,9 +216,7 @@ impl PenTooltips {
                 .borrow()
                 .iter()
                 .any(|w| w.upgrade().as_ref() == Some(&widget));
-            if (widget.has_tooltip() || suppressed)
-                && self.text(&widget).is_some_and(|s| !s.is_empty())
-            {
+            if (widget.has_tooltip() || suppressed) && self.content(&widget).is_some() {
                 break widget;
             }
             picked = widget.parent();
@@ -256,7 +272,7 @@ impl PenTooltips {
             self.hide();
             return;
         }
-        let Some(text) = self.text(&source) else {
+        let Some(tip) = self.content(&source) else {
             self.hide();
             return;
         };
@@ -270,16 +286,12 @@ impl PenTooltips {
             return;
         };
         self.suppress_mouse(&native);
-        let label = gtk::Label::new(Some(&text));
-        label.set_wrap(true);
-        label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        label.set_max_width_chars(40);
         let popup = gtk::Popover::builder()
             .accessible_role(gtk::AccessibleRole::Tooltip)
             .autohide(false)
             .has_arrow(false)
             .position(gtk::PositionType::Bottom)
-            .child(&label)
+            .child(&view(&tip))
             .build();
         popup.add_css_class("pen-tooltip");
         popup.set_widget_name("pen-tooltip");
@@ -317,4 +329,38 @@ impl Drop for PenTooltips {
         self.hide();
         self.restore_mouse();
     }
+}
+
+fn view(tip: &layer_ui::Tip) -> gtk::Widget {
+    let text = gtk::Label::new(Some(&tip.text));
+    text.set_wrap(true);
+    text.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    text.set_max_width_chars(40);
+    if tip.lines.is_empty() {
+        return text.upcast();
+    }
+    text.set_xalign(0.);
+    let grid = gtk::Grid::builder().column_spacing(16).row_spacing(4).build();
+    for (row, line) in (0..).zip(&tip.lines) {
+        let label = gtk::Label::new(Some(&line.label));
+        label.set_xalign(0.);
+        label.set_valign(gtk::Align::Start);
+        label.add_css_class("tip-key");
+        let value = gtk::Label::new(Some(&line.value));
+        if tip.figures {
+            value.set_xalign(1.);
+            value.add_css_class("tip-figure");
+        } else {
+            value.set_xalign(0.);
+            value.set_wrap(true);
+            value.set_max_width_chars(38);
+        }
+        grid.attach(&label, 0, row, 1, 1);
+        grid.attach(&value, 1, row, 1, 1);
+    }
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    text.set_visible(!tip.text.is_empty());
+    content.append(&text);
+    content.append(&grid);
+    content.upcast()
 }

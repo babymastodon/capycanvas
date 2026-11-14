@@ -22,14 +22,14 @@ import org.junit.Rule
 import org.junit.Test
 
 @OptIn(androidx.compose.runtime.InternalComposeTracingApi::class)
-internal class CompositionCounts : AutoCloseable {
+internal class CompositionCounts(private val name: (String) -> String? = { it.substringBefore(" (").substringAfterLast('.') }) : AutoCloseable {
     private val counts = mutableMapOf<String, Int>()
     init {
         androidx.compose.runtime.Composer.setTracer(object : androidx.compose.runtime.CompositionTracer {
             override fun isTraceInProgress() = true
             override fun traceEventStart(key: Int, dirty1: Int, dirty2: Int, info: String) {
-                val name = info.substringBefore(" (").substringAfterLast('.')
-                counts[name] = (counts[name] ?: 0) + 1
+                val selected = name(info) ?: return
+                counts[selected] = (counts[selected] ?: 0) + 1
             }
             override fun traceEventEnd() {}
         })

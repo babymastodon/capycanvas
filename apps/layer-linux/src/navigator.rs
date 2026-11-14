@@ -80,7 +80,8 @@ impl Overviews {
                 .filter(|v| v.is_ancestor(child))
                 .filter_map(|view| node.and_then(|node| view.projection(parent, child, node, order))),
         );
-        projections[first..].iter().map(|p| p.clip).collect()
+        let grid = crate::squircle::PixelGrid::for_widget(parent);
+        projections[first..].iter().filter_map(|p| hole(&p.clip, grid)).collect()
     }
     pub fn commit(&self, projections: Vec<Projection>) -> bool {
         *self.projections.borrow() != projections && {
@@ -116,6 +117,11 @@ impl Overviews {
             target.pop();
         }
     }
+}
+fn hole(clip: &gtk::graphene::Rect, grid: crate::squircle::PixelGrid) -> Option<gtk::graphene::Rect> {
+    let [left, top] = [grid.ceil(0, clip.x()), grid.ceil(1, clip.y())];
+    let [right, bottom] = [grid.floor(0, clip.x() + clip.width()), grid.floor(1, clip.y() + clip.height())];
+    (right > left && bottom > top).then(|| gtk::graphene::Rect::new(left, top, right - left, bottom - top))
 }
 fn subtract(rect: gtk::graphene::Rect, hole: gtk::graphene::Rect) -> Vec<gtk::graphene::Rect> {
     let Some(c) = rect.intersection(&hole) else {
@@ -158,6 +164,22 @@ fn node_opacity(node: &gtk::gsk::RenderNode) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overview_holes_stay_inside_the_image_clip_on_device_pixels() {
+        use gtk::graphene::Rect;
+        let grid = crate::squircle::PixelGrid { scale: [1.5; 2], offset: [37.5, 109.5] };
+        let clip = Rect::new(469.33334, 290.2, 181.6, 136.);
+        let cut = hole(&clip, grid).unwrap();
+        let device = |value: f32, axis: usize| value * grid.scale[axis] + grid.offset[axis];
+        for (value, axis) in [(cut.x(), 0), (cut.x() + cut.width(), 0), (cut.y(), 1), (cut.y() + cut.height(), 1)] {
+            assert!((device(value, axis) - device(value, axis).round()).abs() < 1e-3, "hole edge {value} meets the device grid");
+        }
+        assert!(cut.x() >= clip.x() && cut.y() >= clip.y() && cut.x() + cut.width() <= clip.x() + clip.width()
+            && cut.y() + cut.height() <= clip.y() + clip.height(), "the hole never shows past the presented image: {cut:?} in {clip:?}");
+        assert!(cut.width() > clip.width() - 1.4 && cut.height() > clip.height() - 1.4, "the hole loses under a device pixel per side");
+        assert_eq!(hole(&Rect::new(10.1, 10.1, 0.4, 0.4), grid), None);
+    }
 
     #[test]
     fn overview_holes_partition_the_native_panel_without_overdraw() {

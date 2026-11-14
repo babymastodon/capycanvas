@@ -17,6 +17,20 @@ Add-Type -Path (Join-Path $PSScriptRoot 'PackageFixture.cs') -ReferencedAssembli
     'System.IO.Compression.dll','System.IO.Compression.FileSystem.dll'
     if($PSVersionTable.PSEdition -eq 'Core'){'System.Collections.dll';'System.IO.Compression.ZipFile.dll'}
 )
+if(!('NewDrawingFocus' -as [type])){Add-Type -ReferencedAssemblies @([System.Windows.Automation.AutomationElement].Assembly.Location;[System.Windows.Automation.AutomationEvent].Assembly.Location;if($PSVersionTable.PSEdition -eq 'Core'){'System.Collections.dll'}) -TypeDefinition @'
+using System.Collections.Generic;using System.Windows.Automation;
+public static class NewDrawingFocus {
+ static readonly List<string> ids=new List<string>();static AutomationFocusChangedEventHandler handler;
+ public static void Start(int process){
+  lock(ids)ids.Clear();
+  handler=(sender,e)=>{var element=sender as AutomationElement;if(element==null)return;try{if(element.Cached.ProcessId==process)lock(ids)ids.Add(element.Cached.AutomationId);}catch(System.Exception){}};
+  var request=new CacheRequest();request.Add(AutomationElement.AutomationIdProperty);request.Add(AutomationElement.ProcessIdProperty);
+  using(request.Activate())Automation.AddAutomationFocusChangedEventHandler(handler);
+ }
+ public static bool Saw(string id){lock(ids)return ids.Contains(id);}
+ public static string[] Stop(){if(handler!=null)Automation.RemoveAutomationFocusChangedEventHandler(handler);handler=null;lock(ids)return ids.ToArray();}
+}
+'@}
 $CapyCacheModel=$true
 $CapyPopups=$true
 $drawIndex=0
@@ -30,10 +44,7 @@ public static class CapyDocumentControls {
     [StructLayout(LayoutKind.Sequential)] public struct Rect {public int left,top,right,bottom;}
     [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
-    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect rect);
-    [StructLayout(LayoutKind.Sequential)] public struct Point {public int x,y;}
-    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point point);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr h,uint message,UIntPtr w,IntPtr l,uint flags,uint timeout,out UIntPtr result);
     [DllImport("user32.dll",SetLastError=true)] public static extern bool PostMessage(IntPtr h,uint message,UIntPtr w,IntPtr l);
@@ -224,11 +235,15 @@ function Context-Item([string]$Target,[string]$Item) {
 }
 function New-Capture([string]$Name) {Start-Sleep -Milliseconds 800;Capture "new-drawing-$Name-$($script:newTheme)" -WithModel}
 function Open-NewDrawing {
-    File-Command 'new_document'
-    Wait-Until {
-        $name=Find 'new-drawing-name' -Within $root
-        (Drawing) -and (Find 'new-drawing-dialog' -Within $root) -and (Find 'document-width' -Within $root) -and $name -and !$name.Current.IsOffscreen -and $name.Current.HasKeyboardFocus
-    } 'New drawing did not open with its native name field focused' 45
+    [NewDrawingFocus]::Start([int]$review.Id)
+    try{
+        File-Command 'new_document'
+        Wait-Until {
+            $name=Find 'new-drawing-name' -Within $root
+            (Drawing) -and (Find 'new-drawing-dialog' -Within $root) -and (Find 'document-width' -Within $root) -and $name -and !$name.Current.IsOffscreen -and $name.Current.HasKeyboardFocus -and [NewDrawingFocus]::Saw('new-drawing-name')
+        } 'New drawing did not open with its native name field focused' 45
+    }finally{$focused=@([NewDrawingFocus]::Stop())}
+    if(@($focused|Where-Object {$_ -ceq 'new-drawing-preview' -or $_ -ceq 'new-drawing-name'})[0] -cne 'new-drawing-name'){throw "New drawing focused its preview before its name field: $($focused -join ', ')"}
     if((Drawing).untitled -ne (Model).windows_tabs.upcoming_untitled){throw 'New drawing did not offer the next untitled name'}
 }
 function Close-NewDrawing([string]$Id) {
@@ -626,20 +641,16 @@ function Package-Action([string]$Name) {
 function Stroke-InkPixels {
     $context=[CapyDocumentControls]::SetThreadDpiAwarenessContext([IntPtr](-4))
     try {
-        $rect=[CapyDocumentControls+Rect]::new()
-        if(![CapyDocumentControls]::GetClientRect($drawing.Handle,[ref]$rect)){throw 'No canvas bounds'}
-        $bitmap=[Drawing.Bitmap]::new($rect.right,$rect.bottom)
+        $model=Model;$camera=$model.state.camera;$tab=@($model.state.tabs|Where-Object active)[0]
+        if($camera.rotation -ne 0 -or $camera.flipped[0] -or $camera.flipped[1]){throw 'Stroke sampling requires the initial unrotated camera'}
+        $bounds=(Control 'drawing-canvas' -Within $root -Arranged -NoPopups).Current.BoundingRectangle
+        $bitmap=[Drawing.Bitmap]::new(30,20)
         try {
             $graphics=[Drawing.Graphics]::FromImage($bitmap)
-            try{
-                $origin=[CapyDocumentControls+Point]::new()
-                if(![CapyDocumentControls]::ClientToScreen($drawing.Handle,[ref]$origin)){throw 'No canvas origin'}
-                $graphics.CopyFromScreen($origin.x,$origin.y,0,0,$bitmap.Size)
-            }finally{$graphics.Dispose()}
             # Early pen segment, away from its current cursor and chrome.
-            $left=[int][Math]::Floor($rect.right*0.4)+20;$top=[int][Math]::Floor($rect.bottom/2)+10
+            try{$graphics.CopyFromScreen([int]($bounds.X+$camera.translation[0]+$camera.zoom*$tab.width*.3),[int]($bounds.Y+$camera.translation[1]+$camera.zoom*$tab.height*.53),0,0,$bitmap.Size)}finally{$graphics.Dispose()}
             $ink=0
-            for($y=$top;$y -lt $top+20;$y++){for($x=$left;$x -lt $left+30;$x++){
+            for($y=0;$y -lt 20;$y++){for($x=0;$x -lt 30;$x++){
                 $pixel=$bitmap.GetPixel($x,$y)
                 if($pixel.R -lt 128 -and $pixel.G -lt 128 -and $pixel.B -lt 128){$ink++}
             }}
@@ -703,7 +714,7 @@ function Start-RecoveryReview([string]$label){
     Write-Output "GPU save review process $($review.Id), $label"
     Bind-ReviewWindow 'No GPU save review window'
     # GPU readiness can precede the asynchronous restoration of saved Zen/layout.
-    Wait-Until {$model=Model;$model.brush_ready -and $model.windows_workspace.ready} 'GPU save review did not restore its workspace' 60
+    Wait-Until {Review-Ready} 'GPU save review did not restore its workspace' 60
     if((Model).state.workspace.zen_mode){
         (Find-Id 'zen-capy').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
         Wait-Until {!(Model).state.workspace.zen_mode -and !(Model).chrome_hidden} 'Reopened review could not leave Zen'
@@ -772,6 +783,7 @@ function Set-InkColor([string[]]$Channels) {
         (Control "edit-color-0-$i").GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
         $entry=Control "edit-color-0-$i-entry";$entry.SetFocus()
         $entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($channels[$i])
+        Wait-Until {$entry.Current.HasKeyboardFocus} 'Controlled ink entry did not take keyboard focus'
         [CapyRowPointer]::Key([uint32]$review.Id,0x0D)
         Wait-Until {!(Find-Id "edit-color-0-$i-entry")} 'Controlled ink value did not commit'
     }
@@ -811,14 +823,91 @@ function Test-GpuRecovery {
         foreach($field in @('revision','export_uri')){$state.document_file.PSObject.Properties.Remove($field)}
         @($state.document_file,$state.camera,$state.workspace,$state.brush)|ConvertTo-Json -Depth 80 -Compress
     }
+    function Recovery-NavigatorFrame([string]$Name){
+        $context=[CapyDocumentControls]::SetThreadDpiAwarenessContext([IntPtr](-4))
+        try{
+            $bounds=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle
+            $area=[Drawing.Rectangle]::FromLTRB([int][Math]::Ceiling($bounds.Left),[int][Math]::Ceiling($bounds.Top),[int][Math]::Floor($bounds.Right),[int][Math]::Floor($bounds.Bottom))
+            if($area.Width -lt 8 -or $area.Height -lt 8){throw 'GPU recovery Navigator has no usable image bounds'}
+            $null=[TabFrames]::DwmFlush();$frame=[TabFrames]::Grab($area.Left,$area.Top,$area.Width,$area.Height)
+            try{$first=Join-Path $run ("gpu-navigator-$Name-first.png");if(!(Test-Path $first)){$frame.Save($first)}}catch{$frame.Dispose();throw}
+            $frame
+        }finally{[CapyDocumentControls]::SetThreadDpiAwarenessContext($context)|Out-Null}
+    }
+    function Recovery-NavigatorImage($Frame,[double]$Dpi,[double]$Aspect){
+        $width=[Math]::Min($Frame.Width-8*$Dpi,$Aspect*($Frame.Height-8*$Dpi));$height=$width/$Aspect
+        @((($Frame.Width-$width)/2),(($Frame.Height-$height)/2),$width,$height)
+    }
+    function Recovery-NavigatorWitnesses($Reference,$Image,$Camera,$Document,[double]$Dpi,[Drawing.Color]$Paper){
+        if($Camera.rotation -ne 0 -or $Camera.flipped[0] -or $Camera.flipped[1]){throw 'Recovery outline witnesses require the fitted unrotated camera'}
+        $sx=$Image[2]/$Document[0]/$Camera.zoom;$sy=$Image[3]/$Document[1]/$Camera.zoom;$work=$Camera.work_area;$move=$Camera.translation
+        $left=$Image[0]+($work[0]-$move[0])*$sx;$top=$Image[1]+($work[1]-$move[1])*$sy;$right=$left+$work[2]*$sx;$bottom=$top+$work[3]*$sy
+        $padding=[int][Math]::Ceiling(1.5*$Dpi+.5)
+        $artwork=[Drawing.Rectangle]::FromLTRB([int][Math]::Ceiling($Image[0]+$Image[2]*.25),[int][Math]::Ceiling($Image[1]+$Image[3]*.25),[int][Math]::Floor($Image[0]+$Image[2]*.75),[int][Math]::Floor($Image[1]+$Image[3]*.75))
+        $bands=@([Drawing.Rectangle]::FromLTRB([int][Math]::Floor($left-$padding),[int][Math]::Floor($top-$padding),[int][Math]::Ceiling($right+$padding),[int][Math]::Ceiling($top+$padding)),[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($left-$padding),[int][Math]::Floor($bottom-$padding),[int][Math]::Ceiling($right+$padding),[int][Math]::Ceiling($bottom+$padding)),[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($left-$padding),[int][Math]::Floor($top-$padding),[int][Math]::Ceiling($left+$padding),[int][Math]::Ceiling($bottom+$padding)),[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($right-$padding),[int][Math]::Floor($top-$padding),[int][Math]::Ceiling($right+$padding),[int][Math]::Ceiling($bottom+$padding)))
+        if(@($bands|Where-Object {$artwork.IntersectsWith($_)}).Count){throw 'Recovery artwork witness intersects the expected work-area outline'}
+        $x0=[Math]::Max($Image[0]+$padding,$left+$padding);$x1=[Math]::Min($Image[0]+$Image[2]-$padding,$right-$padding)
+        $y0=[Math]::Max($Image[1]+$padding,$top+$padding);$y1=[Math]::Min($Image[1]+$Image[3]*.5-$padding,$bottom-$padding)
+        $candidates=@([Drawing.Rectangle]::FromLTRB([int][Math]::Ceiling($x0+($x1-$x0)*.25),[int][Math]::Floor($top-$padding),[int][Math]::Floor($x0+($x1-$x0)*.75),[int][Math]::Ceiling($top+$padding+1)),[Drawing.Rectangle]::FromLTRB([int][Math]::Floor($left-$padding),[int][Math]::Ceiling($y0),[int][Math]::Ceiling($left+$padding+1),[int][Math]::Floor($y1)))
+        $edge=@($candidates|Where-Object {$_.Width -gt 0 -and $_.Height -gt 0 -and $_.Width*$_.Height -ge 20 -and $_.Left -ge $Image[0] -and $_.Top -ge $Image[1] -and $_.Right -le ($Image[0]+$Image[2]) -and $_.Bottom -le ($Image[1]+$Image[3]*.5) -and !$artwork.IntersectsWith($_)})[0]
+        if(!$edge){throw 'Recovery has no visible work-area edge witness inside the upper image'}
+        $a=$Reference.Clone($artwork,$Reference.PixelFormat);$e=$Reference.Clone($edge,$Reference.PixelFormat)
+        $blank=[Drawing.Bitmap]::new($a.Width,$a.Height);$graphics=[Drawing.Graphics]::FromImage($blank)
+        try{
+            $graphics.Clear($Paper)
+            if(([TabFrames+Envelope]::new($blank,$blank)).Difference($a) -lt 20){throw 'Recovery central witness contains no authored pixels'}
+            @{artwork=$artwork;edge=$edge;artworkEnvelope=[TabFrames+Envelope]::new($a,$a);edgeEnvelope=[TabFrames+Envelope]::new($e,$e);outline=@($left,$top,$right,$bottom)}
+        }finally{$graphics.Dispose();$blank.Dispose();$a.Dispose();$e.Dispose()}
+    }
+    function Recovery-NavigatorZoomMatches($Frame,$Witnesses){
+        $a=$Frame.Clone($Witnesses.artwork,$Frame.PixelFormat);$e=$Frame.Clone($Witnesses.edge,$Frame.PixelFormat)
+        try{$Witnesses.artworkEnvelope.Difference($a) -eq 0 -and $Witnesses.edgeEnvelope.Difference($e) -ge 20}finally{$a.Dispose();$e.Dispose()}
+    }
+    function Recovery-NavigatorPaper($Frame){
+        $image=Recovery-NavigatorImage $Frame ([CapyRowPointer]::GetDpiForWindow($drawing.Handle)/96.) $aspect;$left=$image[0];$top=$image[1];$width=$image[2];$height=$image[3]
+        foreach($point in @(@(.1,.1),@(.9,.1),@(.1,.9),@(.9,.9))){
+            $pixel=$Frame.GetPixel([int]($left+$width*$point[0]),[int]($top+$height*$point[1]))
+            if([Math]::Max([Math]::Abs($pixel.R-$corner.R),[Math]::Max([Math]::Abs($pixel.G-$corner.G),[Math]::Abs($pixel.B-$corner.B))) -gt 6){return $false}
+        }
+        $true
+    }
+    function Recovery-NavigatorPixels([string]$Name,$Envelope,[bool]$Changed,$Witnesses=$null){
+        $accepted=@{frame=$null}
+        Wait-Until {
+            $frame=Recovery-NavigatorFrame $Name
+            try{
+                $difference=$Envelope.Difference($frame)
+                $filled=if($Changed){
+                    if(!$Witnesses){throw 'Zoom requires registered artwork and work-area edge witnesses'}
+                    Recovery-NavigatorZoomMatches $frame $Witnesses
+                }else{Recovery-NavigatorPaper $frame}
+                if((($Changed -and $difference -ge 20) -or (!$Changed -and $difference -eq 0)) -and $filled){
+                    $frame.Save((Join-Path $run ("gpu-navigator-$Name.png")));$accepted.frame=$frame;$frame=$null;return $true
+                }
+                $false
+            }finally{if($frame){$frame.Dispose()}}
+        } "Navigator pixels did not reach $Name after GPU recovery"
+        $accepted.frame
+    }
+    $navigatorIdentity=(Control 'navigator-overview' -Arranged).GetRuntimeId() -join ':'
     $png={
-        Combo-Select (Find-Id 'export-format') {$_.Current.Name -like 'PNG*'}
+        Combo-Select (Control 'export-format' -Arranged) {$_.Current.Name -like 'PNG*'}
         Wait-Until {$format=Find-Id 'export-format';$format -and (Combo-Value $format) -like 'PNG*'} 'Export did not choose PNG'
     }
     $reference=Join-Path $run 'Recovered-0.png'
     $script:scope=$root;File-Command 'export_document' $png;Picker 'Save As';Choose-Path $reference;Idle
     Wait-Until {Test-Path -LiteralPath $reference} 'The drawing did not export before GPU recovery'
     $exportHash=(Get-FileHash -LiteralPath $reference -Algorithm SHA256).Hash
+    $source=[Drawing.Bitmap]::new($reference)
+    try{
+        $corner=$source.GetPixel(0,0);$aspect=[double]$source.Width/$source.Height;$navigatorDocument=@($source.Width,$source.Height)
+        Wait-Until {
+            $frame=Recovery-NavigatorFrame 'before-loss'
+            try{
+                if(Recovery-NavigatorPaper $frame){$frame.Save((Join-Path $run 'gpu-navigator-before-loss.png'));return $true};$false
+            }finally{$frame.Dispose()}
+        } 'Navigator did not display the exported paper before GPU loss'
+    }finally{$source.Dispose()}
     $beforeRecovery=Signature
     foreach($attempt in 1..2){
         $generation=(Model).windows_gpu_generation
@@ -838,6 +927,7 @@ function Test-GpuRecovery {
         }
         Wait-Until {(Model).windows_gpu_generation -eq $generation+1 -and (Model).brush_ready} 'GPU reconstruction did not finish' 60
         Wait-Until {(Model).state.document_file.revision -gt $undone} 'GPU recovery lost queued pen samples'
+        if(((Control 'navigator-overview' -Arranged).GetRuntimeId() -join ':') -ne $navigatorIdentity){throw 'GPU replacement rebuilt the live Navigator'}
         $documentRevision=(Model).state.document_file.revision
         Wait-Until {(Signature) -eq $beforeRecovery} 'GPU recovery changed document, history, camera, workspace or brush'
         $status=Find-Id 'canvas-status'
@@ -856,6 +946,21 @@ function Test-GpuRecovery {
         Wait-Until {(Model).state.document_file.revision -ne $undoRevision -and (Signature) -eq $beforeRecovery} 'Redo after reconstruction did not restore the drawing'
         Wait-Until {$thumbnail=Find-Id "layer-$imported-thumbnail";$thumbnail -and $thumbnail.Current.ItemStatus -eq 'Ready'} 'Imported image thumbnail did not recover' 15
     }
+    $navigatorReference=[Drawing.Bitmap]::new((Join-Path $run 'gpu-navigator-before-loss.png'));$navigatorBefore=$null;$navigatorZoomed=$null
+    try{
+        $envelope=[TabFrames+Envelope]::new($navigatorReference,$navigatorReference)
+        $navigatorBefore=Recovery-NavigatorPixels 'recovered' $envelope $false
+        $pose=(Control 'canvas-camera').Current.Name
+        Invoke 'navigator-zoom_in'
+        Wait-Until {(Control 'canvas-camera').Current.Name -ne $pose} 'Recovered Navigator Zoom In did not change the camera'
+        (Control 'navigator-overview' -Arranged).SetFocus()
+        Wait-Until {!@(Capy-Tooltips $review.Id).Count} 'The focused Zoom in tooltip stayed over the recovered Navigator'
+        $image=Recovery-NavigatorImage $navigatorBefore ([CapyRowPointer]::GetDpiForWindow($drawing.Handle)/96.) $aspect
+        $witnesses=Recovery-NavigatorWitnesses $navigatorBefore $image (Model).state.camera $navigatorDocument ([CapyRowPointer]::GetDpiForWindow($drawing.Handle)/96.) $corner
+        @{image=$image;camera=(Model).state.camera;artwork=$witnesses.artwork;edge=$witnesses.edge;outline=$witnesses.outline}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run 'gpu-navigator-witnesses.json')
+        $navigatorZoomed=Recovery-NavigatorPixels 'zoomed' $envelope $true $witnesses
+        if(((Control 'navigator-overview' -Arranged).GetRuntimeId() -join ':') -ne $navigatorIdentity){throw 'Recovered camera updates replaced the Navigator'}
+    }finally{foreach($frame in @($navigatorReference,$navigatorBefore,$navigatorZoomed)){if($frame){$frame.Dispose()}}}
     & (Join-Path $PSScriptRoot 'inspect-window.ps1') -TraceDirectory $CapyTraceDirectory -ProcessId $review.Id -Output (Join-Path $run 'gpu-recovered.png') -ClientOnly *> (Join-Path $run 'gpu-capture.json')
 }
 function Test-PaperColorReopen {
@@ -970,7 +1075,7 @@ function Test-LightNewDrawing {
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/document-ui-review.pid'),[string]$review.Id)
     Write-Output "Light New drawing review process $($review.Id)"
     Bind-ReviewWindow 'No light review window'
-    Wait-Until {$model=Model;$model.brush_ready -and $model.state.theme -eq 'light'} 'Light review did not start' 45
+    Wait-Until {$model=Model;(Input-Ready $model) -and $model.state.theme -eq 'light'} 'Light review did not start' 45
     if($Journey -eq 'paper-color'){Test-PaperColorReopen}elseif($Journey -eq 'new-drawing-problem'){Test-NewDrawingProblem 'light'}else{New-Journey 'light'}
     if($Journey -eq 'new-drawing'){Test-PhotoPaper}
     if($Journey -eq 'full'){Color-Workflows}
@@ -978,7 +1083,7 @@ function Test-LightNewDrawing {
     if((Get-Item -LiteralPath $stderr).Length){throw 'Light native review reported stderr'}
 }
 Bind-ReviewWindow 'No review window'
-Wait-Until {(Model).brush_ready} 'Canvas startup did not finish' 45
+Wait-Until {Input-Ready} 'Canvas startup did not finish' 45
 if(!(Model).windows_isolated_settings){throw 'Review must use an isolated profile'}
 if($focusedGpu -or $nativeWriteback){
     $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
@@ -1426,6 +1531,7 @@ if($focusedGpu){
     Wait-Until {((Model).state.commands|Where-Object id -eq 'undo').enabled} 'Placement did not enter undo history'
     File-Command 'save_document';Picker 'Save As';Choose-Path $first;Idle
     Wait-Until {(Test-Path -LiteralPath $first) -and (Model).state.document_file.location.uri -eq $first -and !(Model).state.document_file.modified} 'GPU recovery seed did not save cleanly'
+    if($RecoverGpu){$drawingWindow=$drawing.Handle;Expand-PanelColumn 'navigator';Document-Panel 'navigator';Fit-Canvas}
     Draw
     if($gpuUnavailable){
         Test-GpuUnavailableSave -CurrentReview
@@ -1481,6 +1587,7 @@ Wait-Until {(Test-Path -LiteralPath $first) -and (Model).state.document_file.loc
 $hash=(Get-FileHash -LiteralPath $first).Hash
 # This generated source is no longer needed; later Open must use embedded pixels.
 Remove-Item -LiteralPath $imageSource
+if($RecoverGpu){$drawingWindow=$drawing.Handle;Expand-PanelColumn 'navigator';Document-Panel 'navigator';Fit-Canvas}
 Draw
 $exported=Join-Path $run 'Export 日本語.png'
 if(((Model).state.commands|Where-Object id -eq 'export_again').enabled){throw 'Export Again was available before the first export'}
@@ -1524,7 +1631,7 @@ $script:scope=$root;Invoke-Control 'Undo'
 Wait-Until {(Model).state.document_file.revision -gt $revision -and (Model).state.document_file.modified} 'Undo did not remove the Export Again stroke'
 $webp=Join-Path $run 'Export.webp'
 File-Command 'export_document' {
-    Combo-Select (Find-Id 'export-format') {$_.Current.Name -like 'WebP*'}
+    Combo-Select (Owned 'export-format') {$_.Current.Name -like 'WebP*'}
     Wait-Until {$format=Find-Id 'export-format';$format -and (Combo-Value $format) -like 'WebP*'} 'Export did not choose WebP'
 }
 Picker 'Save As';Choose-Path $webp;Idle
@@ -1549,7 +1656,7 @@ $documentEpoch=(Model).state.document_file.epoch
 File-Command 'open_document';Picker 'Open';Choose-Path $photo;Idle
 Wait-Until {(Model).state.document_file.epoch -gt $documentEpoch} 'Open did not select the photo'
 File-Command 'export_document' {
-    $format=Find-Id 'export-format';Combo-Select $format {$_.Current.Name -eq 'JPEG image'}
+    Combo-Select (Owned 'export-format') {$_.Current.Name -eq 'JPEG image'}
     Wait-Until {$format=Find-Id 'export-format';$format -and (Combo-Value $format) -eq 'JPEG image'} 'Export did not choose JPEG'
     Wait-Until {$script:metadata=Find-Id 'export-metadata';$script:metadata -and !$script:metadata.Current.IsOffscreen} 'Export did not offer Metadata for a photo'
     $remove=Find-Id 'export-remove-location'
@@ -1647,7 +1754,7 @@ $stderr=Join-Path $run 'reopened.stderr.log'
 $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
 $null=$review.Handle
 Bind-ReviewWindow 'No restarted review window'
-Wait-Until {(Model).brush_ready -and !(Model).windows_recovery.busy -and !(Model).windows_recovery.restoring} 'Session did not reopen' 120
+Wait-Until {(Input-Ready) -and !(Model).windows_recovery.busy -and !(Model).windows_recovery.restoring} 'Session did not reopen' 120
 if(@((Model).state.tabs|Where-Object active)[0].id -ne $reopenedDrawing){throw 'Session reopened a different drawing'}
 if((Model).state.settings.dark_base -ne '#223344' -or !(Model).state.document_file.modified){throw 'Window close lost the focused Preferences draft or unsaved drawing'}
 Request-Close;Wait-Closed 'Restarted session close did not finish'
@@ -1659,7 +1766,7 @@ $null=$review.Handle
 [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/document-ui-review.pid'),[string]$review.Id)
 Write-Output "Untitled close review process $($review.Id)"
 Bind-ReviewWindow 'No untitled review window'
-Wait-Until {(Model).brush_ready} 'Untitled canvas did not finish starting' 45
+Wait-Until {Input-Ready} 'Untitled canvas did not finish starting' 45
 Test-UntitledClose
 if(!$RecoverGpu -and !$FailGpu){
     Test-LightNewDrawing

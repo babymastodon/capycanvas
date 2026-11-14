@@ -27,7 +27,7 @@ struct FiltersView : std::enable_shared_from_this<FiltersView> {
     struct PreviewRow {hstring id;Button button{nullptr};Image image{nullptr};TextBlock text{nullptr},heading{nullptr};bool bundled=false;};
     std::vector<PreviewRow> previews;
     ~FiltersView(){if(timer)timer.Stop();RemoveFilterPreviewView(data->previews,reinterpret_cast<uint64_t>(this));}
-    hstring previewContext()const{return object(data->state,L"document_file").GetNamedValue(L"epoch",JsonValue::CreateNullValue()).Stringify();}
+    hstring previewContext()const{return named(branch(data->state,L"document_file"),L"epoch").Stringify();}
     void bindPreview(Image const& image,hstring const& id,hstring const& context){
         bool current=false;auto source=FilterPreviewSource(data->previews,context,id,&current);
         if(image.Source()!=source)image.Source(source);
@@ -38,10 +38,9 @@ struct FiltersView : std::enable_shared_from_this<FiltersView> {
         auto context=previewContext();
         std::vector<hstring> visible;
         for(auto const& row:previews){
-            if(row.bundled)continue;
             auto rect=row.button.TransformToVisual(list).TransformBounds({0,0,float(row.button.ActualWidth()),float(row.button.ActualHeight())});
             if(rect.Y+rect.Height>0&&rect.Y<list.ActualHeight())visible.push_back(row.id);
-            bindPreview(row.image,row.id,context);
+            if(!row.bundled)bindPreview(row.image,row.id,context);
         }
         RefreshFilterPreviews(data->previews,reinterpret_cast<uint64_t>(this),context,visible);
     }

@@ -2,6 +2,45 @@
 use super::*;
 
 pub const LAUNCH_CAPTION_DELAY_MS: u64 = 5000;
+pub const LAUNCH_REVEAL_MS: u64 = 500;
+pub const LAUNCH_MARK_SIZE: f32 = 7. * crate::layout::TILE_SIZE;
+pub const LAUNCH_MARK_MAX_FRACTION: f32 = 0.4;
+pub const LAUNCH_CAPTION_GAP: f32 = crate::layout::TILE_SIZE * 0.5;
+pub const LAUNCH_CAPTION_SIZE: f32 = crate::UI_TEXT_PT as f32 * 96. / 72.;
+pub const LAUNCH_CAPTION_COLOR_ROLE: &str = "settings_secondary";
+
+pub fn launch_mark_size(viewport: [f32; 2]) -> f32 {
+    LAUNCH_MARK_SIZE.min(viewport[0].min(viewport[1]).max(0.) * LAUNCH_MARK_MAX_FRACTION)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+pub struct LaunchMark {
+    pub icon: &'static str,
+    pub ink_bottom: f32,
+}
+
+struct LaunchInk { view_top: f32, view_size: f32, bottom: f32, circle: [f32; 3] }
+
+impl crate::ZenIcon {
+    fn launch_ink(self) -> LaunchInk {
+        match self {
+            Self::LookingUp => LaunchInk { view_top: 4.84, view_size: 428., bottom: 400., circle: [180.24, 214.49, 232.] },
+            Self::FacingForward => LaunchInk { view_top: 31., view_size: 364., bottom: 378., circle: [136.86, 223.94, 184.] },
+            Self::Bathing => LaunchInk { view_top: -21., view_size: 460., bottom: 370.76, circle: [245.21, 254.61, 211.1] },
+            Self::Sleeping => LaunchInk { view_top: -73., view_size: 428., bottom: 244., circle: [210.45, 173.55, 193.5] },
+        }
+    }
+    pub fn launch_system_circle(self) -> [f32; 3] {
+        self.launch_ink().circle
+    }
+    pub fn launch_mark(self) -> LaunchMark {
+        let ink = self.launch_ink();
+        LaunchMark {
+            icon: self.icon(),
+            ink_bottom: (ink.bottom - ink.view_top) / ink.view_size,
+        }
+    }
+}
 
 pub(super) const PAINTING_UNAVAILABLE: &str = "Painting is unavailable. Save the drawing and reopen it.";
 
@@ -18,14 +57,12 @@ pub struct LaunchReadiness {
     pub brush: bool,
     pub chrome: bool,
     pub failed: bool,
-    pub interaction: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LaunchView {
     pub visible: bool,
     pub finished: bool,
-    pub notice: CanvasNotice,
     pub frame: Option<u64>,
 }
 
@@ -71,12 +108,34 @@ impl ThumbnailRequests {
 }
 
 impl<R: CanvasRenderer> UiSession<R> {
-    pub fn launch_state(&self, readiness: LaunchReadiness) -> LaunchView {
-        let blocked = readiness.failed || readiness.interaction || self.rendering_suspended || self.state.host_error.is_some()
+    fn launch_blocked(&self) -> bool {
+        self.rendering_suspended || self.workspace_attention || self.host_attention || self.state.host_error.is_some()
             || self.state.settings_open || self.state.new_drawing.is_some()
             || self.state.requests.iter().any(|request| !matches!(request.kind,
                 HostRequestKind::SaveSettings { .. } | HostRequestKind::SetFullscreen { .. }
-                    | HostRequestKind::NewWindow | HostRequestKind::OpenLink { .. }));
+                    | HostRequestKind::NewWindow | HostRequestKind::OpenLink { .. }))
+    }
+
+    pub(super) fn launch_covering(&self) -> bool {
+        !self.launch_finished && !self.launch_blocked()
+    }
+
+    pub fn set_workspace_attention(&mut self, attention: bool) -> UiChange {
+        let changed = std::mem::replace(&mut self.workspace_attention, attention) != attention;
+        self.launch_attention_changed(changed)
+    }
+
+    pub fn set_host_attention(&mut self, attention: bool) -> UiChange {
+        let changed = std::mem::replace(&mut self.host_attention, attention) != attention;
+        self.launch_attention_changed(changed)
+    }
+
+    fn launch_attention_changed(&mut self, changed: bool) -> UiChange {
+        if changed && !self.launch_finished { self.changed(regions::HOST, false) } else { UiChange::default() }
+    }
+
+    pub fn launch_state(&self, readiness: LaunchReadiness) -> LaunchView {
+        let blocked = readiness.failed || self.launch_blocked();
         let workspace = self.state.workspace_ready && !self.workspace_read_only;
         let canvas = readiness.canvas && self.engine.backend().showing_drawing();
         let ready = workspace && canvas && readiness.brush && readiness.chrome;
@@ -95,9 +154,6 @@ impl<R: CanvasRenderer> UiSession<R> {
         LaunchView {
             visible: !self.launch_finished && !blocked,
             finished: self.launch_finished,
-            notice: if workspace && canvas && readiness.chrome && !readiness.brush {
-                CanvasNotice::Brush
-            } else { CanvasNotice::Canvas },
             frame,
         }
     }
@@ -106,6 +162,7 @@ impl<R: CanvasRenderer> UiSession<R> {
         let view = self.launch_state(readiness);
         if view.frame != Some(frame) { return false; }
         self.launch_finished = true;
+        self.release_held_notice();
         true
     }
 
@@ -211,6 +268,8 @@ impl<R: CanvasRenderer> UiSession<R> {
     /// tools, history, dirty checkpoint or color interpretation.
     pub fn inherit_window_state(&mut self, previous: &Self) -> Result<UiChange, String> {
         self.launch_finished = previous.launch_finished;
+        self.workspace_attention = previous.workspace_attention;
+        self.host_attention = previous.host_attention;
         let navigation=self.camera_navigation_revision();
         let camera=(!self.initial_fit).then(||self.state.camera.clone());
         let restored_view=self.restored_view.take();
@@ -445,6 +504,7 @@ impl<R: CanvasRenderer> UiSession<R> {
         }
         self.refresh_commands();
         self.begin_canvas_transition();
+        self.preparation_context = None;
         let change = self.changed(regions::DOCUMENT | regions::BRUSH | regions::COMMANDS, true);
         Ok((previous, change))
     }
@@ -455,10 +515,10 @@ mod tests {
     use super::*;
     use crate::session::test_support::*;
 
-    const LAUNCH_READY: LaunchReadiness = LaunchReadiness { canvas: true, brush: true, chrome: true, failed: false, interaction: false };
+    const LAUNCH_READY: LaunchReadiness = LaunchReadiness { canvas: true, brush: true, chrome: true, failed: false };
 
     fn launching() -> UiSession<Recorder> {
-        let mut app = session(Platform::Windows);
+        let mut app = launching_session(Platform::Windows);
         app.finish_workspace_startup();
         app.renderer_mut().showing_drawing = true;
         app
@@ -478,7 +538,7 @@ mod tests {
             let pending = app.launch_state(readiness);
             assert!(pending.visible && !pending.finished);
             assert_eq!(pending.frame, None);
-            assert_eq!(pending.notice, if missing == 2 { CanvasNotice::Brush } else { CanvasNotice::Canvas });
+            assert!(serde_json::to_value(pending).unwrap().get("notice").is_none());
             app.set_workspace_read_only(false);
             let ready = app.launch_state(LAUNCH_READY);
             assert!(ready.visible && !ready.finished);
@@ -534,7 +594,7 @@ mod tests {
 
     #[test]
     fn launch_waits_for_restored_workspace_to_accept_input() {
-        let mut app = session(Platform::Gtk);
+        let mut app = launching_session(Platform::Gtk);
         app.renderer_mut().showing_drawing = true;
         assert!(!app.state.workspace_ready);
         assert_eq!(app.launch_state(LAUNCH_READY).frame, None);
@@ -561,9 +621,11 @@ mod tests {
     #[test]
     fn launch_never_covers_failures_or_required_interaction() {
         let mut app = launching();
-        for condition in 0..6 {
+        for condition in 0..7 {
             let old = app.launch_state(LAUNCH_READY).frame.unwrap();
-            let readiness = LaunchReadiness { failed: condition == 0, interaction: condition == 5, ..LAUNCH_READY };
+            let readiness = LaunchReadiness { failed: condition == 0, ..LAUNCH_READY };
+            app.set_host_attention(condition == 5);
+            app.set_workspace_attention(condition == 6);
             app.state.host_error = (condition == 1).then(|| "Cannot initialize canvas".into());
             app.state.settings_open = condition == 2;
             app.rendering_suspended = condition == 3;
@@ -578,7 +640,60 @@ mod tests {
             app.state.settings_open = false;
             app.rendering_suspended = false;
             app.state.requests.retain(|request| request.id != 999);
+            app.set_host_attention(false);
+            app.set_workspace_attention(false);
             assert!(app.launch_state(LAUNCH_READY).visible);
+        }
+    }
+
+    #[test]
+    fn notices_raised_under_the_launch_cover_wait_for_its_reveal() {
+        let mut app = launching();
+        app.notify_window("Workspace storage was restored");
+        let id = app.last_notice_id();
+        assert!(app.state.notice.is_none());
+        assert!(app.update_notice_text(id, "Restored".into()));
+        app.changed(regions::HOST, false);
+        assert!(app.state.notice.is_none(), "a covered launch keeps the notice for its reveal");
+        let frame = app.launch_state(LAUNCH_READY).frame.unwrap();
+        assert!(app.launch_presented(frame, LAUNCH_READY));
+        assert_eq!(app.state.notice.as_ref().map(|notice| (notice.id, notice.text.as_str())), Some((id, "Restored")));
+        app.notify("Visible after launch");
+        assert_eq!(app.state.notice.as_ref().map(|notice| notice.id), Some(app.last_notice_id()));
+    }
+
+    #[test]
+    fn a_blocked_launch_shows_held_notices_with_the_workspace() {
+        let mut app = launching();
+        app.notify_window("Workspace storage was restored");
+        let id = app.last_notice_id();
+        assert!(app.state.notice.is_none());
+        let change = app.set_workspace_attention(true);
+        assert_ne!(change.regions & regions::HOST, 0);
+        assert!(!app.launch_state(LAUNCH_READY).visible);
+        assert_eq!(app.state.notice.as_ref().map(|notice| notice.id), Some(id));
+        assert_eq!(app.set_workspace_attention(true).regions, 0);
+        app.set_workspace_attention(false);
+        app.notify("Raised while a host dialog is open");
+        assert!(app.state.notice.is_none());
+        assert_ne!(app.set_host_attention(true).regions & regions::HOST, 0);
+        assert_eq!(app.state.notice.as_ref().map(|notice| notice.text.as_str()), Some("Raised while a host dialog is open"));
+        assert!(app.set_host_attention(false).regions != 0 && app.launch_state(LAUNCH_READY).visible);
+        let frame = app.launch_state(LAUNCH_READY).frame.unwrap();
+        assert!(app.launch_presented(frame, LAUNCH_READY));
+        assert_eq!(app.set_host_attention(true).regions, 0, "a revealed window republishes nothing for later dialogs");
+    }
+
+    #[test]
+    fn launch_marks_match_the_shared_capy_artwork() {
+        let icons = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/layer-web/icons");
+        for (icon, _) in crate::ZenIcon::CHOICES {
+            let svg = std::fs::read_to_string(icons.join(format!("layer-{}-symbolic.svg", icon.icon()))).unwrap();
+            let view = svg.split("viewBox=\"").nth(1).unwrap().split('"').next().unwrap()
+                .split(' ').map(|value| value.parse::<f32>().unwrap()).collect::<Vec<_>>();
+            let ink = icon.launch_ink();
+            assert_eq!([view[1], view[3]], [ink.view_top, ink.view_size], "{icon:?}");
+            assert!(ink.view_top < ink.bottom && ink.bottom <= ink.view_top + ink.view_size, "{icon:?}");
         }
     }
 

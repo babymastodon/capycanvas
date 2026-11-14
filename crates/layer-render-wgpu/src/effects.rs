@@ -49,7 +49,7 @@ impl Gpu for Context {
 // the rest let ordinary aligned masks participate in the same fused shader.
 pub(super) const MASK_SLOTS: usize = 14;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Execution {
     Fused,
     Reduced,
@@ -202,7 +202,6 @@ pub(super) struct Effects {
     // Reuse the lookup key; ordinary painting/animation does not repack inputs.
     ids: (Vec<OccurrenceHandle>, u32),
     preparation: preparation::Preparation,
-    pub compilations: u64,
     tier: Arc<crate::residency::Tier>,
 }
 impl std::ops::Deref for Effects {
@@ -307,7 +306,6 @@ impl Effects {
             instances: HashMap::new(),
             ids: (Vec::new(), 0),
             preparation: self.preparation.fork(),
-            compilations: 0,
             tier: Default::default(),
         }
     }
@@ -348,7 +346,7 @@ impl Effects {
         if let Some(cache) = &r.validated_effects { return cache.fork(); }
         let recipes = r.recipes.effects.get_or_init(|| Arc::new(Recipes::new(&r.device, uniforms))).clone();
         Self { preparation: preparation::Preparation::from_recipes(recipes.preparation.clone()), recipes,
-            pipelines: Vec::new(), instances: HashMap::new(), ids: (Vec::new(), 0), compilations: 0, tier: Default::default() }
+            pipelines: Vec::new(), instances: HashMap::new(), ids: (Vec::new(), 0), tier: Default::default() }
     }
 }
 impl Recipes {
@@ -500,12 +498,7 @@ impl Effects {
             )?;
             let compute=computable(&programs,execution);
             let original_independent=validate_source(&mut source,compute,programs.len().min(MASK_SLOTS),execution.reduced(),&programs)?;
-            let module = r
-                .device()
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("checked pointwise effect"),
-                    source: wgpu::ShaderSource::Wgsl(source.into()),
-                });
+            let module = Deferred::wgsl(r.device(), "checked pointwise effect", source);
             let pipeline = if compute {
                 let (device,layout)=(r.device().for_recipe(),self.compute_layout[programs.len().min(MASK_SLOTS)-1].clone());
                 Pipeline::Compute(Deferred::pipeline(move |mode|mode.compute(&device,&wgpu::ComputePipelineDescriptor {
@@ -533,7 +526,6 @@ impl Effects {
                     (pipeline.clone(), *original_independent)
                 } else {
                     shared.push((programs.clone(), stage, pipeline.clone(), original_independent));
-                    self.compilations += 1;
                     (pipeline, original_independent)
                 }
             };

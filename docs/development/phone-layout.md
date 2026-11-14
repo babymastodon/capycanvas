@@ -2,7 +2,7 @@
 
 [Developer guide](README.md) · [Workspace and UI](../ui/README.md) · [Default workspaces](../ui/default-workspaces.md) · [Title bar](../ui/window-bar.md)
 
-This plan covers [issue #15](https://github.com/capyatelier/capycanvas/issues/15):
+This plan covers [issue #8](https://github.com/babymastodon/capycanvas/issues/8):
 the workspace layouts don't fit phone screens. Today a docked column shrinks only
 to its panels' minimum (usually 242 px), that minimum overrides the canvas
 (`layout.rs`, band widths), and nothing in the layout reads the window's height.
@@ -44,7 +44,8 @@ toolbar panels use the same existing phone drawer path.
 - Crossing the line or rotating cancels chrome drags (toolbar reorders, slider
   drags, panel moves) without saving and closes drawers and menus whose openers
   move. A stroke in progress continues to its end. The test uses the window's size,
-  never the space an on-screen keyboard leaves.
+  never the space an on-screen keyboard leaves. Opening or closing the keyboard
+  never changes the result; a resize while it is open applies when it closes.
 - The supported minimum short side is 320: Android's smallest phone width, an
   iPhone SE with Display Zoom (320 × 568 pt) and narrow iPad windows. Narrower
   windows (browsers, freely resized windows; the first Galaxy Fold's cover screen

@@ -92,10 +92,12 @@ def merge(expected, shards):
     found = {}
     errors = []
     assigned = []
+    owners = {}
     for shard in shards:
         name = shard["vm"]
         selection = shard["selectors"]
         assigned.extend(selection)
+        owners.update(dict.fromkeys(selection, shard))
         rows = shard.get("results", [])
         if shard.get("failure"):
             errors.append(f"{name}: {shard['failure']}")
@@ -116,8 +118,11 @@ def merge(expected, shards):
     for selector in expected:
         row = found.get(selector)
         if row is None:
-            row = {"name": selector, "exit": "missing", "seconds": 0,
-                   "message": "The assigned shard did not return this selector"}
+            owner = owners.get(selector)
+            message = ("No runner claimed this selector" if owner is None
+                       else f"{owner['vm']} stopped before returning this selector: {owner['failure']}" if owner.get("failure")
+                       else "The assigned shard did not return this selector")
+            row = {"name": selector, "exit": "missing", "seconds": 0, "message": message}
         if row.get("exit") != 0:
             errors.append(f"{selector}: {row.get('message') or row.get('exit', 'missing exit')}")
         merged.append(row)

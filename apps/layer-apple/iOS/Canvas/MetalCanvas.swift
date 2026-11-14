@@ -213,12 +213,28 @@ final class CanvasView: UIView {
     private func reportPhoneMetrics() {
         guard let window = factsWindow, let owner = store.native, store.state["workspace_ready"].bool else { return }
         let edge = store.snapshot["layout"]["phone"]["edge"].string
-        let insets: UIEdgeInsets
+        var insets: UIEdgeInsets
         if #available(iOS 26.0, *), !edge.isEmpty {
             insets = window.edgeInsets(for: .safeArea(cornerAdaptation: edge == "top" ? .horizontal : .vertical))
         } else { insets = window.safeAreaInsets }
+        if traitCollection.userInterfaceIdiom == .phone {
+            let orientation = window.windowScene?.interfaceOrientation
+            let navigation = orientation == .portraitUpsideDown ? 0 : window.safeAreaInsets.bottom
+            if store.navigationInset != navigation {
+                DispatchQueue.main.async { [weak store = store] in
+                    if store?.navigationInset != navigation { store?.navigationInset = navigation }
+                }
+            }
+            switch orientation {
+            case .landscapeLeft: insets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: insets.right)
+            case .landscapeRight: insets = UIEdgeInsets(top: 0, left: insets.left, bottom: 0, right: 0)
+            case .portraitUpsideDown: insets = UIEdgeInsets(top: 0, left: 0, bottom: insets.bottom, right: 0)
+            default: insets = UIEdgeInsets(top: insets.top, left: 0, bottom: 0, right: 0)
+            }
+        }
         let metrics = JSON(["kind": "metrics", "insets": [insets.left, insets.top, insets.right, insets.bottom],
-            "corners": [0, 0, 0, 0], "native": [0, 0], "native_counts": [0, 0], "movable": false])
+            "corners": [0, 0, 0, 0], "native": [0, 0], "native_counts": [0, 0], "movable": false,
+            "keyboard": keyboardFrame?.height ?? 0])
         guard phoneMetricsOwner !== owner || phoneMetricsKey != metrics.stableKey else { return }
         phoneMetricsOwner = owner; phoneMetricsKey = metrics.stableKey
         store.dispatch(["type": "phone", "action": metrics.raw])
@@ -232,6 +248,7 @@ final class CanvasView: UIView {
         let field = FocusedResponder.find() as? UIView
         keyboardScreenFrame = field?.window != nil && field?.window !== window ? nil
             : (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+        reportPhoneMetrics()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             factsWindow?.layoutIfNeeded()

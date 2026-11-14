@@ -60,8 +60,7 @@ impl<'a> SnapshotFields<'a> {
 
 impl NativeHost {
     pub fn set_launch_interaction(&mut self, interaction: bool) {
-        if self.launch_interaction != interaction {
-            self.launch_interaction = interaction;
+        if self.session.set_host_attention(interaction).regions != 0 {
             self.invalidate_snapshot();
             self.dirty = true;
         }
@@ -74,7 +73,6 @@ impl NativeHost {
             brush: progress.brush_ready,
             chrome: self.chrome_ready,
             failed: self.error.is_some(),
-            interaction: self.launch_interaction,
         }
     }
 
@@ -402,7 +400,10 @@ impl NativeHost {
             &self.session.filter_preview_revision(),
         )?;
         map.serialize_entry("application_menus", &menus)?;
-        map.serialize_entry("header", &self.session.header_view_with(!model_transport))?;
+        map.serialize_entry("header", &self.session.header_view_with((!model_transport).then(|| self.session.application_menu_from(
+            layer_ui::ApplicationMenu::Primary,
+            |id| menus.iter().find(|menu| menu.id == id).map(|menu| menu.model.sections.clone()).unwrap_or_default(),
+        ))))?;
         map.serialize_entry("proof_panel", &layer_ui::color_management::proof_view(&self.session))?;
         map.serialize_entry("color_preview", &self.color_preview())?;
         let colors = state.display_colors();
@@ -485,6 +486,14 @@ mod tests {
         assert_eq!(&read(host)["state"]["workspace"], saved);
         host.dispatch(UiAction::Invoke { command: CommandId::RedoWorkspace }).unwrap();
         assert_eq!(read(host)["state"]["workspace"], committed["state"]["workspace"]);
+    }
+
+    #[test]
+    fn snapshot_primary_menu_matches_the_session_primary_menu() {
+        for platform in [Platform::Windows,Platform::Ios] {
+            let host = host(platform);
+            assert_eq!(host.snapshot()["header"]["primary_menu"],serde_json::json!(host.session.application_menu(layer_ui::ApplicationMenu::Primary)));
+        }
     }
 
     #[test]

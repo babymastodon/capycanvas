@@ -48,7 +48,7 @@ fn fixture_cleanup_survives_poisoned_locks() {
     })).is_err());
     drop(fixture);
 }
-fn capture() -> (SessionCapture, SessionStamp, RetainedTiles, Arc<layer_core::raster::TileBlob>) {
+pub(super) fn capture() -> (SessionCapture, SessionStamp, RetainedTiles, Arc<layer_core::raster::TileBlob>) {
     let mut document = layer_core::Document::new(PortableId::random(), 256, 256,
         layer_core::DocumentNames {paint: "Ink".into(), paper: "Paper".into()});
     use layer_core::raster::{RasterPlane, RasterTile, RasterRevision, RasterData, TileKey, TileBlob};
@@ -105,6 +105,77 @@ fn named(capture: &SessionCapture, stamp: &SessionStamp, name: &str) -> (Session
     (capture, stamp)
 }
 
+struct GatedOpener {
+    inner: layer_core::package::session_store::NativeStoreOpener,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    resume: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+impl StoreOpener for GatedOpener {
+    fn storage_facts<'a>(&'a self, path: &'a std::path::Path) -> layer_core::package::store_io::FileFuture<'a, layer_core::package::storage_budget::StorageFacts> {
+        self.inner.storage_facts(path)
+    }
+    fn open<'a>(&'a self, path: &'a std::path::Path, retirement: bool) -> layer_core::package::store_io::FileFuture<'a, Option<layer_core::package::session_store::SessionStore>> {
+        if let Some(entered) = self.entered.lock().unwrap().take() { entered.send(()).unwrap(); }
+        if let Some(resume) = self.resume.lock().unwrap().take() { resume.recv_timeout(std::time::Duration::from_secs(60)).unwrap(); }
+        self.inner.open(path, retirement)
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn process_finish_waits_for_an_accepted_session_store_write_to_land() {
+    let root = std::env::temp_dir().join(format!("capy-store-finish-{}", PortableId::random()));
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let opener = Arc::new(GatedOpener {inner: layer_core::package::session_store::NativeStoreOpener, entered: Mutex::new(Some(entered)), resume: Mutex::new(Some(resume))});
+    let stores = SessionStores::with_opener(root.clone(), opener, Arc::new(native_worker), Arc::new(|| {}), native_now_ms, CompactionActivity::default());
+    let binding = stores.bind(1, None).unwrap();
+    let (saved, stamp, _, _) = capture();
+    let reply = stores.checkpoint(1, saved, stamp, true).unwrap();
+    started.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+    let (finished, done) = std::sync::mpsc::channel();
+    let finishing = std::thread::spawn(move || {
+        crate::finish_native_process();
+        finished.send(()).unwrap();
+    });
+    let early = done.recv_timeout(std::time::Duration::from_millis(500)).is_ok();
+    release.send(()).unwrap();
+    done.recv_timeout(std::time::Duration::from_secs(60)).ok();
+    finishing.join().unwrap();
+    assert!(!early, "process finish returned before an accepted session-store write");
+    assert!(matches!(reply.try_take(), Some(Ok(_))));
+    assert!(heads(binding.path()).iter().any(Option::is_some));
+    drop((binding, stores));
+    let _ = std::fs::remove_dir_all(&root);
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn panicking_session_store_jobs_leave_the_queue_served_and_drainable() {
+    let root = std::env::temp_dir().join(format!("capy-store-panics-{}", PortableId::random()));
+    let stores = |wake: Arc<dyn Fn() + Send + Sync>| SessionStores::with_opener(root.clone(), Arc::new(layer_core::package::session_store::NativeStoreOpener), Arc::new(native_worker), wake, native_now_ms, CompactionActivity::default());
+    let failing = [stores(Arc::new(|| panic!("session-store wake failed"))), stores(Arc::new(|| panic!("session-store wake failed")))];
+    let healthy = stores(Arc::new(|| {}));
+    for (index, store) in failing.iter().enumerate() {
+        let (saved, stamp, _, _) = capture();
+        store.bind(index as u64 + 1, None).unwrap();
+        store.checkpoint(index as u64 + 1, saved, stamp, true).unwrap();
+    }
+    let (saved, stamp, _, _) = capture();
+    let binding = healthy.bind(3, None).unwrap();
+    let reply = healthy.checkpoint(3, saved, stamp, true).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let result = loop {
+        if let Some(result) = reply.try_take() { break Some(result); }
+        if std::time::Instant::now() > deadline { break None; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(matches!(result, Some(Ok(_))), "a job queued after two panicking jobs never ran");
+    assert!(heads(binding.path()).iter().any(Option::is_some));
+    let (drained, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || { drain_native_work(); drained.send(()).unwrap(); });
+    assert!(done.recv_timeout(std::time::Duration::from_secs(20)).is_ok(), "draining never returned after panicking jobs");
+    drop((binding, failing, healthy));
+    let _ = std::fs::remove_dir_all(&root);
+}
 #[test]
 fn failed_adoption_keeps_the_existing_binding() {
     let fixture = Fixture::new();
@@ -161,7 +232,7 @@ fn explicit_discard_prepares_a_corrupt_head_without_decoding_or_changing_another
     assert!(pollster::block_on(SessionStore::open(&path)).is_err());
     let reply=fixture.stores.prepare_retirement("corrupt").unwrap();fixture.run();
     assert!(matches!(reply.try_take(),Some(Ok(StoreResult::RetirementPrepared))));
-    pollster::block_on(collect_unreferenced_stores(&fixture.root,&["corrupt".into()].into(),&cancel)).unwrap();
+    pollster::block_on(collect_unreferenced_stores(&fixture.root,&["corrupt".into()].into(),&cancel));
     assert_eq!(heads(&path),[Some(b"invalid head".to_vec()),Some(b"invalid head".to_vec())]);
     assert_eq!(std::fs::read_dir(path.join("generations")).unwrap().count(),1);
     let manifest=layer_ui::SessionManifest::default().stage(vec![layer_ui::session_recovery::SessionDrawing {id:1,key:"corrupt".into()}],1).unwrap();
@@ -186,9 +257,9 @@ fn retirement_preserves_missing_unrecognized_and_locked_paths() {
     let unknown=fixture.root.join("unrecognized");std::fs::create_dir_all(&unknown).unwrap();
     std::fs::write(unknown.join("keep"),b"unrecognized bytes").unwrap();
     let prepared=fixture.stores.prepare_retirement("unrecognized").unwrap();fixture.run();
-    assert!(matches!(prepared.try_take(),Some(Err(error)) if error=="Invalid drawing session directory"));
+    assert!(matches!(prepared.try_take(),Some(Ok(StoreResult::RetirementPrepared))));
     let retired=fixture.stores.retire_copy("unrecognized").unwrap();fixture.run();
-    assert!(matches!(retired.try_take(),Some(Err(error)) if error=="Invalid drawing session directory"));
+    assert!(matches!(retired.try_take(),Some(Ok(StoreResult::Retired))));
     assert_eq!(std::fs::read_dir(&unknown).unwrap().count(),1);
     assert_eq!(std::fs::read(unknown.join("keep")).unwrap(),b"unrecognized bytes");
     let locked=fixture.root.join("locked");let owner=pollster::block_on(SessionStore::open(&locked)).unwrap();
@@ -220,8 +291,9 @@ fn retirement_never_follows_root_or_nested_storage_symlinks() {
             let target=if ["resources","generations","packs"].contains(&name) {outside.root.clone()}else {outside.root.join("keep")};
             symlink(target,link).unwrap();
         }
-        let prepared=fixture.stores.prepare_retirement(&key).unwrap();fixture.run();assert!(prepared.try_take().unwrap().is_err());
-        let retired=fixture.stores.retire_copy(&key).unwrap();fixture.run();assert!(retired.try_take().unwrap().is_err());
+        let prepared=fixture.stores.prepare_retirement(&key).unwrap();fixture.run();assert!(prepared.try_take().is_some());
+        let retired=fixture.stores.retire_copy(&key).unwrap();fixture.run();assert!(retired.try_take().is_some());
+        assert!(std::fs::symlink_metadata(if name=="root" {path.clone()}else {path.join(name)}).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read(outside.root.join("keep")).unwrap(),b"outside bytes");
         assert_eq!(std::fs::read_dir(&outside.root).unwrap().count(),1);
     }
@@ -241,7 +313,7 @@ fn repeated_retirement_preserves_the_empty_terminal_marker() {
     for _ in 0..8 {
         let prepared=fixture.stores.prepare_retirement("closed").unwrap();fixture.run();assert!(prepared.try_take().unwrap().is_ok());
         let retired=fixture.stores.retire_copy("closed").unwrap();fixture.run();assert!(retired.try_take().unwrap().is_ok());
-        pollster::block_on(collect_unreferenced_stores(&fixture.root,&Default::default(),&AtomicBool::new(false))).unwrap();
+        pollster::block_on(collect_unreferenced_stores(&fixture.root,&Default::default(),&AtomicBool::new(false)));
         let unchanged=std::fs::metadata(path.join(".retired")).unwrap();
         assert_eq!(marker.modified().unwrap(),unchanged.modified().unwrap());
         assert_eq!(directory.modified().unwrap(),std::fs::metadata(&path).unwrap().modified().unwrap());

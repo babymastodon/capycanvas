@@ -53,9 +53,9 @@ import AppKit
         let first = layout["tool_hits"][0].rect, second = layout["tool_hits"][1].rect
         let start = CGPoint(x: first.midX, y: first.midY)
         let destination = CGPoint(x: second.midX, y: second.midY)
-        var actions: [JSON] = [], menus: [JSON] = []
+        var actions: [JSON] = [], menus: [JSON] = [], dismissals = 0
         let input = PhoneBarInput(enabled: { store.workspace.input.enabled },
-            action: { actions.append($0) }, menu: { target, _ in menus.append(target) })
+            action: { actions.append($0) }, menu: { target, _ in menus.append(target) }, dismissMenu: { dismissals += 1 })
         input.update(layout: layout, tiles: tiles)
         precondition(input.begin(at: start, device: .touch))
         input.finish(at: start)
@@ -67,10 +67,13 @@ import AppKit
         actions.removeAll()
 
         precondition(input.begin(at: start, device: .pen))
-        input.arm()
-        precondition(input.preview["outcome"]["kind"].string == "held" && input.suppressed)
+        input.arm(at: start)
+        precondition(input.preview["outcome"]["kind"].string == "menu" && input.suppressed)
+        precondition(menus.count == 1 && menus[0]["kind"].string == "phone_tile" && menus[0]["tile"].uint == tiles[0]["id"].uint
+            && dismissals == 0, "A held pen tile opens its menu before release")
         input.move(to: destination, pastSlop: true)
-        precondition(input.preview["outcome"]["kind"].string == "dragging")
+        precondition(input.preview["outcome"]["kind"].string == "dragging" && dismissals == 1,
+            "The original contact closes its held menu when it starts reordering")
         precondition(!input.preview["geometry"].array.isEmpty && !input.preview["lifted"].isNull
             && input.preview["lifted"].uint == 0)
         input.finish(at: destination); input.finish(at: destination)
@@ -84,15 +87,45 @@ import AppKit
         precondition(!input.suppressed)
 
         precondition(input.begin(at: start, device: .touch))
-        input.arm(); input.finish(at: start)
-        precondition(menus.count == 1 && menus[0]["kind"].string == "phone_tile"
-            && menus[0]["tile"].uint == tiles[0]["id"].uint)
+        input.arm(at: start)
+        precondition(menus.count == 2 && menus[1]["kind"].string == "phone_tile" && menus[1]["tile"].uint == tiles[0]["id"].uint,
+            "A held touch tile opens its menu before release")
+        input.finish(at: start)
+        precondition(menus.count == 2 && dismissals == 1, "A stationary release keeps the held menu open")
+        input.cancel()
+        precondition(dismissals == 1, "A released contact no longer owns the menu")
         input.endGesture()
         try await Task.sleep(for: .milliseconds(1))
 
+        weak var cancelling: PhoneBarInput?
+        let cancelled = PhoneBarInput(enabled: { true }, action: { actions.append($0) },
+            menu: { target, _ in menus.append(target) }, dismissMenu: { dismissals += 1; cancelling?.cancel() })
+        cancelling = cancelled
+        cancelled.update(layout: layout, tiles: tiles)
+        precondition(cancelled.begin(at: start, device: .touch))
+        cancelled.arm(at: start); cancelled.cancel(); cancelled.cancel()
+        precondition(menus.count == 3 && dismissals == 2 && !cancelled.active && cancelled.suppressed,
+            "Reentrant and repeated cancellation dismiss a held menu exactly once")
+        cancelled.endGesture()
+
+        let mouse = PhoneBarInput(enabled: { true }, action: { actions.append($0) },
+            menu: { target, _ in menus.append(target) }, dismissMenu: { dismissals += 1 })
+        mouse.update(layout: layout, tiles: tiles)
+        precondition(mouse.begin(at: start, device: .mouse))
+        mouse.arm(at: start)
+        precondition(mouse.preview["outcome"]["kind"].string == "menu" && mouse.suppressed && menus.count == 3,
+            "A mouse hold arms pickup without a menu")
+        let beforeMouseDrop = actions.count
+        mouse.move(to: destination, pastSlop: true)
+        precondition(mouse.preview["outcome"]["kind"].string == "dragging")
+        mouse.finish(at: destination)
+        precondition(menus.count == 3 && dismissals == 2 && actions.count == beforeMouseDrop + 1
+            && actions.last!["kind"].string == "move_tool")
+        mouse.endGesture()
+
         let capy = layout["capy_target"].rect
         precondition(input.begin(at: CGPoint(x: capy.midX, y: capy.midY), device: .touch))
-        input.arm(); input.cancel(); input.cancel()
+        input.arm(at: start); input.cancel(); input.cancel()
         precondition(actions.suffix(2).map { $0["kind"].string } == ["capy_hold", "capy_drop"])
         precondition(actions.last!["position"].array.map(\.number) == [-1, -1])
         precondition(input.pointerDown && input.suppressed)
@@ -101,7 +134,7 @@ import AppKit
 
         let popup = UUID()
         precondition(input.begin(at: start, device: .touch))
-        input.arm(); input.move(to: destination, pastSlop: true)
+        input.arm(at: start); input.move(to: destination, pastSlop: true)
         let beforeBlockedDrop = actions.count, snapshot = store.snapshot.json.stableKey
         store.workspace.popover(popup, open: true)
         input.finish(at: destination)
@@ -118,7 +151,7 @@ import AppKit
         precondition(input.acceptsClick)
 
         precondition(input.begin(at: CGPoint(x: capy.midX, y: capy.midY), device: .touch))
-        input.arm()
+        input.arm(at: start)
         let beforeBlockedCapy = actions.count
         store.workspace.popover(popup, open: true)
         input.move(to: start, pastSlop: true); input.finish(at: start)
@@ -131,6 +164,19 @@ import AppKit
         try await Task.sleep(for: .milliseconds(1))
         precondition(!input.pointerDown && !input.suppressed && input.acceptsClick)
 
+        let keyboardHold = PhoneBarInput(enabled: { true }, action: { actions.append($0) },
+            menu: { target, _ in menus.append(target) }, dismissMenu: { dismissals += 1 })
+        keyboardHold.update(layout: layout, tiles: tiles)
+        precondition(keyboardHold.begin(at: CGPoint(x: capy.midX, y: capy.midY), device: .touch))
+        keyboardHold.arm(at: start)
+        keyboardHold.update(layout: layout.replacing("keyboard", with: JSON(300)), tiles: tiles)
+        precondition(keyboardHold.active, "A keyboard-only metrics change retains a held Capy contact")
+        keyboardHold.finish(at: destination)
+        precondition(actions.last!["kind"].string == "capy_drop"
+            && actions.last!["position"].array.map(\.number) == [Double(destination.x), Double(destination.y)],
+            "A held Capy contact drops where it lifts after keyboard height changes")
+        keyboardHold.endGesture()
+
         precondition(input.begin(at: start, device: .touch))
         var changed = layout["work_area"].object
         changed["x"] = layout["work_area"]["x"].number + 1
@@ -138,9 +184,9 @@ import AppKit
         precondition(!input.active && input.pointerDown && input.suppressed,
             "A shared geometry invalidation retires decisions without ending the physical stream")
         let count = actions.count
-        input.arm(); input.move(to: destination, pastSlop: true); input.finish(at: destination)
+        input.arm(at: start); input.move(to: destination, pastSlop: true); input.finish(at: destination)
         precondition(actions.count == count)
         input.endGesture()
-        print("PASS: shared phone begin, hold, motion, finish, menu, cancellation and physical-stream click suppression")
+        print("PASS: shared phone begin, held menu, motion, finish, cancellation and physical-stream click suppression")
     }
 }

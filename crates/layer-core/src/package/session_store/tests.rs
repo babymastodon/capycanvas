@@ -450,7 +450,7 @@
             for (index, key) in ["drawing-a", "drawing-b"].into_iter().enumerate() {
                 assert!(!root.join(key).exists()); assert_eq!(session_history(&packed.join(key)), expected[index]);
             }
-            collect_unreferenced_stores(root, &BTreeSet::new(), &AtomicBool::new(false)).wait().unwrap();
+            collect_unreferenced_stores(root, &BTreeSet::new(), &AtomicBool::new(false)).wait();
             assert!(!packed.join(".lock").exists()); assert!(packed.join("drawing-a/head.json").is_file()); assert!(packed.join("drawing-b/head.json").is_file());
         }
     }
@@ -672,17 +672,18 @@
         assert_eq!(callbacks, 1); assert!(OwnerLock::claim(&old.join(".lock")).unwrap().is_none());
         let packed = import_session_directories(&root.0, "window.json", ".lock").unwrap();
         assert!(old.is_dir()); assert!(!packed.join("scene").exists()); drop(live);
-        assert_eq!(import_session_directories(&root.0, "window.json", ".lock").unwrap_err(), "Recovery drawing is already open");
+        import_session_directories(&root.0, "window.json", ".lock").unwrap(); assert!(old.is_dir());
         let reader = resource_owner(&store, tile_resource(&first).payload.resource_id(), tile_resource(&first).bytes); drop(store); drop(first);
-        assert_eq!(import_session_directories(&root.0, "window.json", ".lock").unwrap_err(), "Recovery drawing is already open"); drop(reader);
+        import_session_directories(&root.0, "window.json", ".lock").unwrap(); assert!(old.is_dir()); drop(reader);
         import_session_directories(&root.0, "window.json", ".lock").unwrap();
         assert_eq!(fs::read(packed.join("scene/window.json")).unwrap(), b"original membership");
         assert!(!old.exists());
         create_directory(&old).unwrap(); fs::write(old.join("window.json"), b"downgrade latest membership").unwrap();
-        assert_eq!(import_session_directories(&root.0, "window.json", ".lock").unwrap_err(), "The saved session exists in both versions; both copies were kept");
+        import_session_directories(&root.0, "window.json", ".lock").unwrap();
         assert_eq!(fs::read(packed.join("scene/window.json")).unwrap(), b"original membership");
-        assert_eq!(fs::read(old.join("window.json")).unwrap(), b"downgrade latest membership");
-        fs::remove_file(old.join("window.json")).unwrap(); fs::remove_file(old.join(".lock")).unwrap(); fs::remove_dir(&old).unwrap();
+        assert!(!old.exists());
+        let renamed = fs::read_dir(&packed).unwrap().map(|entry| entry.unwrap().path()).find(|path| fs::read(path.join("window.json")).is_ok_and(|bytes| bytes == b"downgrade latest membership")).unwrap();
+        fs::remove_dir_all(renamed).unwrap();
         let upgraded = packed.join("scene/drawing");
         let mut upgraded_store = SessionStore::open(&upgraded).wait().unwrap();
         let mut opened = upgraded_store.load(ProjectLimits::default(), &AtomicBool::new(false)).wait().unwrap().unwrap();
@@ -696,7 +697,7 @@
         checkpoint(&mut upgraded_store, &captured(&capture, json!({"marker":42})), &AtomicBool::new(false)).unwrap();
         drop(opened); drop(upgraded_store);
         let newest = session_history(&upgraded);
-        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &AtomicBool::new(false)).wait().unwrap();
+        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &AtomicBool::new(false)).wait();
         assert_eq!(session_history(&upgraded), newest);
         let downgrade = root.0.join("new-legacy-window"); create_directory(&downgrade).unwrap();
         fs::write(downgrade.join("window.json"), b"fresh downgrade membership").unwrap();
@@ -1044,10 +1045,10 @@
         drop(store);
         assert!(OwnerLock::claim(&directory.0.join(".lock")).unwrap().is_none());
         assert!(SessionStore::open(&directory.0).wait().is_err());
-        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &AtomicBool::new(false)).wait().unwrap();
+        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &AtomicBool::new(false)).wait();
         assert_eq!(count(&directory.0.join("packs")), 1);
         drop(bytes); drop(pack); drop(live); drop(original);
-        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &AtomicBool::new(false)).wait().unwrap();
+        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &AtomicBool::new(false)).wait();
         assert_eq!(count(&directory.0.join("packs")), 0);
         assert_eq!(count(&directory.0.join("generations")), 0);
         assert!(directory.0.join(".lock").exists());
@@ -1232,8 +1233,8 @@
         fs::write(orphan.path.join("head.json"), b"invalid").unwrap();
         drop(orphan); drop(kept);
         let reachable = ["kept".into()].into();
-        assert!(collect_unreferenced_stores(&root.0, &reachable, &AtomicBool::new(true)).wait().is_err());
-        collect_unreferenced_stores(&root.0, &reachable, &cancel).wait().unwrap();
+        assert_eq!(collect_unreferenced_stores(&root.0, &reachable, &AtomicBool::new(true)).wait(), 0);
+        collect_unreferenced_stores(&root.0, &reachable, &cancel).wait();
         assert!(head_path(&root.0.join("kept")).is_file());
         assert!(head_path(&root.0.join("writer")).is_file());
         assert!(!root.0.join("orphan/head.json").exists());
@@ -1242,7 +1243,7 @@
         assert_eq!(fs::read(unrecognized.join("keep")).unwrap(), b"user bytes");
         assert!(head_path(&root.0.join("unpublished")).is_file());
         drop(reader); drop(live); drop(prepared);
-        collect_unreferenced_stores(&root.0, &reachable, &cancel).wait().unwrap();
+        collect_unreferenced_stores(&root.0, &reachable, &cancel).wait();
         assert_eq!(count(&root.0.join("orphan/packs")), 0);
         assert!(head_path(&root.0.join("writer")).is_file());
         assert!(root.0.join("orphan/.lock").is_file());
@@ -1260,7 +1261,7 @@
         assert_eq!(count(&path.join("generations")), 1);
         drop(store);
         assert!(SessionStore::open(&path).wait().is_err());
-        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &AtomicBool::new(false)).wait().unwrap();
+        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &AtomicBool::new(false)).wait();
         assert!(!path.join("head.json").exists());
         assert_eq!(count(&path.join("resources")), 0);
         assert_eq!(count(&path.join("generations")), 0);
@@ -1277,14 +1278,14 @@
         checkpoint(&mut store, &capture(1), &cancel).unwrap();
         store.prepare_retirement().wait().unwrap();
         drop(store);
-        collect_unreferenced_stores(&root.0, &["closing".into()].into(), &cancel).wait().unwrap();
+        collect_unreferenced_stores(&root.0, &["closing".into()].into(), &cancel).wait();
         let mut store = SessionStore::open(&path).wait().unwrap();
         assert_eq!(marker(&mut store), 1);
         checkpoint(&mut store, &capture(2), &cancel).unwrap();
         assert_eq!(marker(&mut store), 2);
         assert!(!path.join(".retired").exists());
         drop(store);
-        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &cancel).wait().unwrap();
+        collect_unreferenced_stores(&root.0, &BTreeSet::new(), &cancel).wait();
         assert_eq!(count(&path.join("resources")), 0);
         assert_eq!(count(&path.join("generations")), 0);
         assert!(SessionStore::open(&path).wait().is_err());
@@ -1293,20 +1294,18 @@
 
 
     #[test]
-    fn malformed_retirement_markers_stop_collection_even_without_a_head() {
+    fn torn_or_foreign_retirement_markers_still_retire_an_unreferenced_store() {
         let root = Directory::new(); let cancel = AtomicBool::new(false);
-        for marker in [".retired", ".retiring"] {
+        for (marker, bytes) in [(".retired", &b"malformed"[..]), (".retiring", &b""[..])] {
             let path = root.0.join(marker.trim_start_matches('.'));
             let mut store = SessionStore::open(&path).wait().unwrap();
             checkpoint(&mut store, &capture(2), &cancel).unwrap();
             drop(store);
-            for name in ["head.0","head.1","head.json"] {remove_file(&path.join(name)).unwrap();}
-            atomic_replace(&path.join(marker), b"malformed").unwrap();
+            atomic_replace(&path.join(marker), bytes).unwrap();
+            assert_eq!(collect_unreferenced_stores(&root.0, &BTreeSet::new(), &cancel).wait(), 1);
+            assert!(!head_path(&path).exists() && !path.join("generations").exists());
             assert!(SessionStore::open(&path).wait().is_err());
-            assert_eq!(count(&path.join("generations")), 1);
-            assert!(collect_unreferenced_stores(&root.0, &BTreeSet::new(), &cancel).wait().is_err());
-            assert_eq!(count(&path.join("generations")), 1);
-            assert_eq!(read_bounded(&path.join(marker), 16).unwrap(), b"malformed");
+            assert_eq!(collect_unreferenced_stores(&root.0, &BTreeSet::new(), &cancel).wait(), 0);
             fs::remove_dir_all(path).unwrap();
         }
     }
@@ -1370,7 +1369,7 @@
             assert!(NativeTransport::new(path.clone()).list(name).wait().is_err());
             drop(store);
             assert!(SessionStore::open(&path).wait().is_err());
-            assert_eq!(collect_unreferenced_stores(&root.0, &BTreeSet::new(), &cancel).wait().unwrap(), 0);
+            assert_eq!(collect_unreferenced_stores(&root.0, &BTreeSet::new(), &cancel).wait(), 0);
             assert_eq!(fs::read(&target).unwrap(), b"outside user bytes");
             assert!(head_path(&path).is_file());
             fs::remove_file(path.join(name)).unwrap();

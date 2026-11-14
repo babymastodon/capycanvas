@@ -368,3 +368,68 @@ no regression. If a physical iPhone is available, record the same rows there.
   that command. iOS must treat those as explicit text-entry requests, like
   rename, while browsing pickers remain unfocused after touch opening. Verify
   that each requested search focuses and raises the keyboard with one tap.
+
+- **Open phone tile menus when the hold arms.** Shared `PhoneBarContact::arm`
+  returns Menu; a held release returns Pending. GTK, Web and Android open
+  touch/pen menus at arm, retain the original contact, close on drag or cancel
+  and leave the menu open on release. iOS phone menus are unavailable until
+  `PhoneBarInput.swift` consumes Menu at arm instead of finish and dismisses
+  it on drag. Mouse holds only arm pickup. Verify menu visibility before Up,
+  retained menu after Up, same-contact reorder, cancellation and mouse pickup.
+
+- **Keep phone drawers above the keyboard.** Shared phone metrics now carry the
+  final keyboard height in dp. Drawer and menu placement and the Color wheel
+  budget use it while bars, canvas work area and contact keys remain unchanged.
+  iOS must send `keyboard` from the keyboard layout guide's final frame
+  (`keyboardWillChangeFrame` end frame), once per show, hide or frame change,
+  rather than per animation frame. Verify Palette search with a complete result
+  row and Tool Settings' Size entry above the real keyboard in portrait and both
+  landscapes, in light and dark.
+  If `PhoneBarInput.swift` keys Capy on the whole layout, key it on `capy_target`.
+
+- **Grow brush size tiles around large labels.** The shared `brush_size_tile`
+  query reserves 24 pt above each label and grows the tile around the measured
+  label height. iOS must measure complete labels and consume the query instead
+  of fixing every tile to 44 pt. Verify labels start at least 24 pt below the
+  tile top at every text size, with 44 pt tiles at normal text.
+
+- **Fit alert responses in short windows.** Shared `alert_dialog_layout`
+  stacks responses whenever their row does not fit, regardless of height, and
+  bounds the alert width to the viewport. iOS must consume that decision, keep
+  responses outside the message scroller, and preserve fitting inline rows.
+  Verify Unsaved Changes at 320×320 with 16 pt text and 280×280, in both themes.
+
+- **Keep canvas panels usable above the keyboard.** Shared canvas-panel
+  presentation falls back to the full work area when its visible intersection
+  is shorter than the existing header minimum. iOS must consume those bounds
+  and scroll the focused field into view. Verify Refine and Frequency with a
+  14 pt keyboard intersection at 320 pt width, including text entry and Done.
+
+- **Keep shortcut recording actions visible on phones.** GTK, Web and Android
+  put recording actions in the phone page's fixed footer and use the shared
+  notice rule when actions remain beside a conflict message. iOS must use the
+  same placement. Verify recording at 320 pt and conflicts at 280 pt, scrolling
+  the content while the action buttons remain visible, in both themes.
+
+- **Share the calibration graph minimum with Android.** Shared pressure and
+  tilt views expose `graph_minimum`, a square derived from GTK's existing
+  64×200 pt curve minimum. iOS must consume that minimum while retaining a
+  positive plot and visible axis gutters. Verify 891×412 and 320 pt with 16 pt
+  text, in both themes.
+
+- **Keep requested name editing in the active dialog.** Parent modal focus
+  containment must yield to a child page, and initial dialog focus must preserve
+  its requested name field. Touch-opened rename/name pages show the keyboard
+  with the existing caret or selection; picker search keeps its input-mode rule.
+  Verify Paper, Workspace, toolbar and preset names in both themes, including
+  native edits that retain their caret and keyboard-opened Choose Action.
+
+- **Measure every column when a drawer retargets.** Android renders the current
+  model's columns and takes missing placement bounds from the new measure plan.
+  SwiftUI's `WorkspaceContentDrawer.columns` still limits columns by the old
+  placement count. iOS must render the model's columns, falling back to the new
+  measurement plan for missing bounds. Verify Tool Settings→Color during a
+  partial opening reaches Color and Palettes in two columns, then settles in
+  both themes; retargeting to fewer columns must still work.
+
+- **Show separate-layer drawer glass only at rest.** Consume `drawer_frame.glass`; keep the moving pane opaque, await glass removal before closing or retargeting, and reveal its translucent fill only after the settled glass is presented.

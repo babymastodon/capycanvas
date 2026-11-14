@@ -456,6 +456,7 @@ pub(super) struct LayerInteraction {
     pub changed: bool,
     pub gradient: GradientToolSettings,
     pub gradient_before: Option<GradientToolSettings>,
+    pub gradient_stop: usize,
     pub figure: (FigureShape, FigurePaint),
 }
 impl LayerInteraction {

@@ -25,3 +25,4 @@ if [[ "$layer_profile" == dev || "$layer_profile" == test ]]; then layer_directo
 "$layer_bindgen" --target web --out-dir "${1:-apps/layer-web/pkg}" \
   "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/$layer_directory/layer_web.wasm"
 python3 tools/build/web-icons.py "$(dirname -- "${1:-apps/layer-web/pkg}")/icons.svg"
+cargo run --locked --quiet --profile "$layer_profile" -p layer-ui --example launch_style > "$(dirname -- "${1:-apps/layer-web/pkg}")/launch.css"

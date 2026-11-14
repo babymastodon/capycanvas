@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -206,21 +207,23 @@ private fun Modifier.menuGestures(input: PhoneMenuInteraction, width: Float, rtl
     }
     val layout = snapshot.getJSONObject("layout").getJSONObject("phone")
     val density = LocalDensity.current.density
+    val glass=rememberDrawerGlass(host,dock)
     var target by remember { mutableStateOf<JSONObject?>(null) }
     LaunchedEffect(target?.toString(), open) {
         val to = target ?: return@LaunchedEffect
         val from = input.frame?.getJSONObject("placement")
+        glass.hide()
         workspaceFrames(200) { p ->
             val current = JSONObject(Native.drawerFrame(obj("from" to from, "to" to to,
-                "progress" to (1f-(1f-p)*(1f-p)*(1f-p)), "closing" to !open, "clip_contents" to true).toString()))
+                "progress" to (1f-(1f-p)*(1f-p)*(1f-p)), "closing" to !open, "clip_contents" to true,"pixel_scale" to dock.density).toString()))
             input.frame = current
             current.objectOrNull("connection")?.let {
                 dock.drawerSources["menu"] = DockInteraction.DrawerSource(current.getJSONObject("placement").getString("direction"),
-                    current.getJSONObject("placement").getJSONObject("anchor").rect(), obj("kind" to "phone", "anchor" to obj("kind" to "capy")))
+                    current.getJSONObject("placement").getJSONObject("anchor").rect(), obj("kind" to "phone", "anchor" to obj("kind" to "capy")),glass)
             } ?: dock.drawerSources.remove("menu")
             dock.refresh()
         }
-        if (!open) model = null
+        if (!open) model = null else input.frame?.let {glass.show(it)}
     }
     DisposableEffect(dock) { onDispose { dock.drawerSources.remove("menu"); input.frame = null; dock.refresh() } }
     SubcomposeLayout(Modifier.fillMaxSize().zIndex(220f)) { constraints ->
@@ -240,7 +243,7 @@ private fun Modifier.menuGestures(input: PhoneMenuInteraction, width: Float, rtl
         val destination = next ?: target
         val shown = input.frame
         val body = if (shown != null && destination != null) subcompose("body") {
-            key(host.phoneContactEpoch) { PhoneMenuSurface(host, dock, view, page, parent, input, destination, shown, rowHeight, rtl) }
+            key(host.phoneContactEpoch) { PhoneMenuSurface(host, dock, view, page, parent, input, destination, shown, rowHeight, rtl, glass) }
         }.single().measure(constraints) else null
         layout(constraints.maxWidth, constraints.maxHeight) { body?.place(0,0) }
     }
@@ -254,7 +257,7 @@ private fun Modifier.menuGestures(input: PhoneMenuInteraction, width: Float, rtl
 }
 
 @Composable private fun PhoneMenuSurface(host: CanvasHost, dock: DockInteraction, model: JSONObject, page: JSONObject, parent: JSONObject?,
-    input: PhoneMenuInteraction, target: JSONObject, frame: JSONObject, rowHeight: Float, rtl: Boolean) {
+    input: PhoneMenuInteraction, target: JSONObject, frame: JSONObject, rowHeight: Float, rtl: Boolean, glass: DrawerGlass) {
     val density = LocalDensity.current.density
     val scope = rememberCoroutineScope()
     val active = rememberMenuActivation(host)
@@ -272,9 +275,10 @@ private fun Modifier.menuGestures(input: PhoneMenuInteraction, width: Float, rtl
         input.list = geometry.getJSONObject("list").let { Rect(it.number("x")*density,it.number("y")*density,(it.number("x")+it.number("width"))*density,(it.number("y")+it.number("height"))*density) }
     }
     Box(Modifier.fillMaxSize(), contentAlignment = AbsoluteAlignment.TopLeft) {
-        connection?.let { DrawerBridge(it, dock, 219f) }
-        Box(Modifier.placedAbsolute(bounds, density).testTag("phone-menu").chromeRegion(dock).panelSurface(6.dp, panelShape)
-            .glass(panelShape, colors.onGlass.panelFill).semantics { paneTitle = page.getString("title") }
+        DrawerChrome(rememberUpdatedState(frame),dock,true,false,220,glass,obj("kind" to "phone","anchor" to obj("kind" to "capy")))
+        Box(Modifier.placedAbsolute(bounds, density).zIndex(220f).testTag("phone-menu").chromeRegion(dock)
+            .clip(panelShape).background(colors.drawerFill(glass.presented),panelShape)
+            .semantics { paneTitle = page.getString("title") }
             .menuGestures(input, geometry.getJSONObject("list").number("width")*density, rtl, scope), contentAlignment = AbsoluteAlignment.TopLeft) {
             Box(Modifier.requiredSize(targetBounds.number("width").dp,targetBounds.number("height").dp), contentAlignment = AbsoluteAlignment.TopLeft) {
                 val scroll = rememberScrollState()
@@ -296,7 +300,7 @@ private fun Modifier.menuGestures(input: PhoneMenuInteraction, width: Float, rtl
                 model.array("strip").objects().forEachIndexed { index, item ->
                     val hit = obj("kind" to "strip", "position" to index)
                     val action = { if (active()) item.objectOrNull("action")?.let(host::dispatch); Unit }
-                    HeaderButton(item.getString("label"), item.optBoolean("selected"), item.getBoolean("enabled"), false,
+                    HeaderButton(item.getString("label"), item.optBoolean("selected"), item.getBoolean("enabled"), null,
                         Modifier.placedAbsolute(geometry.array("buttons").getJSONObject(index), density).testTag("phone-${names[index]}").then(if (item.isNull("selected")) Modifier else Modifier.semantics { selected = item.getBoolean("selected") })
                             .menuHit(input, hit, item.getBoolean("enabled"), activate = action), inBar = true, onClick = action) {
                         SharedIcon(item.getString("icon"), null, Modifier.size(geometry.number("icon").dp))
@@ -353,7 +357,7 @@ private fun Modifier.menuGestures(input: PhoneMenuInteraction, width: Float, rtl
                     item.objectOrNull("close")?.let { close ->
                         val closeHit = obj("kind" to "close", "position" to org.json.JSONArray(listOf(sectionIndex,index)))
                         val closeAction = { if (active()) host.dispatch(close.getJSONObject("action")) }
-                        HeaderButton(close.getString("label"), false, item.getBoolean("enabled"), false,
+                        HeaderButton(close.getString("label"), false, item.getBoolean("enabled"), null,
                             Modifier.width(closeWidth.dp).height(36.dp).then(if (input != null) Modifier.testTag("phone-menu-close-$sectionIndex-$index") else Modifier).menuHit(input, closeHit, item.getBoolean("enabled"), activate = closeAction),
                             surface = false, onClick = closeAction) { SharedIcon("close", null, Modifier.size(16.dp)) }
                     }

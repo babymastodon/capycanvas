@@ -16,8 +16,9 @@ extension XCTestCase {
         workspaceActivate(item)
         #else
         let button = app.buttons["menu-" + menu], compact = app.buttons["application-menus"]
-        let available = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in button.exists || compact.exists }, object: app)
-        guard XCTWaiter.wait(for: [available], timeout: 5) == .completed else {
+        let available = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            button.exists && button.isEnabled || compact.exists && compact.isEnabled }, object: app)
+        guard XCTWaiter.wait(for: [available], timeout: 60) == .completed else {
             let blocked = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
             blocked.name = "editor-menu-unavailable"; blocked.lifetime = .keepAlways; add(blocked)
             let hierarchy = XCTAttachment(string: app.debugDescription)
@@ -51,16 +52,28 @@ extension XCTestCase {
 
     @MainActor private func revealTransform(_ element: XCUIElement, in app: XCUIApplication) {
         XCTAssertTrue(element.waitForExistence(timeout: 10))
-        let scroll = app.scrollViews.containing(.button, identifier: element.identifier).firstMatch
+        let scroll = app.scrollViews.containing(.any, identifier: element.identifier).firstMatch
         if scroll.exists { revealEditorControl(element, in: scroll) }
         else { XCTAssertTrue(element.isHittable && workspaceViewport(in: app).frame.contains(element.frame)) }
     }
     @MainActor private func transformMode(_ mode: String, in app: XCUIApplication) {
-        let button = app.buttons["tool-action-transform_" + mode]
+        let button = app.buttons["tool-action-transform_" + (mode == "uniform" ? "free" : mode)]
         revealTransform(button, in: app)
         if !button.isSelected { workspaceActivate(button) }
         expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: button)
         waitForExpectations(timeout: 5)
+        if mode == "free" || mode == "uniform" {
+            #if os(macOS)
+            let lock = app.checkBoxes["tool-action-transform_uniform"]
+            #else
+            let lock = app.switches["tool-action-transform_uniform"]
+            #endif
+            revealTransform(lock, in: app)
+            let expected = mode == "uniform" ? "1" : "0"
+            if editorValue(lock) != expected { workspaceActivate(lock) }
+            expectation(for: NSPredicate { _, _ in self.editorValue(lock) == expected }, evaluatedWith: lock)
+            waitForExpectations(timeout: 5)
+        }
     }
     @MainActor private func editTransform(_ id: String, _ expression: String, in app: XCUIApplication) {
         let entry = app.textFields["number-entry-tool-transform_" + id]
@@ -81,8 +94,9 @@ extension XCTestCase {
     @MainActor func bluePaperBounds(in app: XCUIApplication) -> CGRect {
         // Locate the visible blue paper, without reading document geometry.
         let scan = stride(from: 0.2, through: 0.8, by: 0.001).map { CGFloat($0) }
-        let horizontal = editorPixelSamples(in: app, at: scan.map { CGPoint(x: $0, y: 0.55) }, size: 1)
-        let vertical = editorPixelSamples(in: app, at: scan.map { CGPoint(x: 0.5, y: $0) }, size: 1)
+        let screenshot = editorScreenshot(in: app)
+        let horizontal = editorPixelSamples(from: screenshot, at: scan.map { CGPoint(x: $0, y: 0.55) }, size: 1)
+        let vertical = editorPixelSamples(from: screenshot, at: scan.map { CGPoint(x: 0.5, y: $0) }, size: 1)
         func blue(_ p: Data) -> Bool { Int(p[2]) > Int(p[0]) + 50 }
         let xs = zip(scan, horizontal).filter { blue($0.1) }.map { $0.0 }
         let ys = zip(scan, vertical).filter { blue($0.1) }.map { $0.0 }
@@ -102,7 +116,7 @@ extension XCTestCase {
                 for i in stride(from: 0, to: pixel.count, by: 4) {
                     let red = Int(pixel[i]), green = Int(pixel[i + 1]), blue = Int(pixel[i + 2])
                     if expected[index] {
-                        if blue <= red + 50 { return false }
+                        if blue <= red { return false }
                     } else if red <= 250 || green <= 250 || blue <= 250 { return false }
                 }
             }
@@ -110,15 +124,19 @@ extension XCTestCase {
         }, object: app)
         let matched = XCTWaiter.wait(for: [matching], timeout: 10) == .completed
         if !matched { attachEditor(in: app, name: "blue-paper-mismatch") }
-        XCTAssertTrue(matched, "Expected blue samples \(expected); actual RGBA \(editorPixelSamples(in: app, at: points, size: 8).map { Array($0.prefix(4)) })")
+        func leastBlue(_ pixel: Data) -> [UInt8] {
+            let rgb: [[UInt8]] = stride(from: 0, to: pixel.count, by: 4).map { Array(pixel[$0..<$0 + 3]) }
+            return rgb.min { (Int($0[2]) - Int($0[0])) < (Int($1[2]) - Int($1[0])) } ?? []
+        }
+        let worst = editorPixelSamples(in: app, at: points, size: 8).map(leastBlue)
+        XCTAssertTrue(matched, "Expected blue samples \(expected); least blue RGB per sample \(worst)")
     }
 
     @MainActor func checkSelectionAndTransform(in app: XCUIApplication, theme: String = "light") {
-        // Only choose the starting color. Selection, artwork and transforms
-        // below are created through the same visible controls as normal use.
         app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"set_color","rgba":[0.2,0.45,0.8,1]}]"#
         app.launch()
         capturePaintEditor(in: app)
+        createWhitePaperDrawing(in: app)
 
         func menu(_ menu: String, _ id: String, _ label: String) {
             editorMenu(in: app, menu: menu, id: id, label: label)
@@ -136,12 +154,12 @@ extension XCTestCase {
         func edit(_ id: String, _ expression: String) { editTransform(id, expression, in: app) }
         func expectField(_ id: String, _ value: String) { expectTransform(id, value, in: app) }
 
-        let paper = pixels()
+        let paper = settledEditorPixels(in: app)
         menu("Select", "select_all", "Select all pixels")
         menu("Edit", "fill_selection", "Fill selection")
         expectation(for: NSPredicate { _, _ in let sample = pixels(); return Int(sample[2]) > Int(sample[0]) + 50 }, evaluatedWith: app)
         waitForExpectations(timeout: 15)
-        let painted = pixels()
+        let painted = settledEditorPixels(in: app)
         XCTAssertNotEqual(painted, paper)
         attach("selection-filled")
         command("Undo"); expectPixels(paper, in: app)

@@ -50,7 +50,7 @@ struct AdjustmentPanel: View {
                                 .modifier(PanelBodyMeasurement(panel: "adjustments", part: "row-unit", kind: .unit))
                                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(projection)) } action: { rect in
                                     let token = projection + ":" + choice["id"].string
-                                    if !choice["bundled_preview"].bool && rect.intersects(CGRect(origin: .zero, size: viewport.size)) {
+                                    if rect.intersects(CGRect(origin: .zero, size: viewport.size)) {
                                         store.filterPreviews.show(token: token, id: choice["id"].string)
                                     } else { store.filterPreviews.hide(token) }
                                 }

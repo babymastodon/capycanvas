@@ -132,40 +132,63 @@ export function showGpuNotice({ container, error, restart, restartLabel }) {
   container.hidden = false;
 }
 
-export function createLaunchCover({ container, now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
+export function createLaunchCover({ container, asset, now = () => performance.now(), setTimer = setTimeout }) {
   const content = container.querySelector('.launch-splash');
+  const mark = content.querySelector('.launch-capy');
   const caption = content.querySelector('.launch-caption');
   const controls = blocked => {
     for (const node of container.parentElement.children)
       if (node !== container && node.inert !== blocked) node.inert = blocked;
   };
   controls(true);
-  let fade, captionTimer;
+  container.addEventListener('transitionend', event => {
+    if (event.target === container && event.propertyName === 'opacity' && container.dataset.launch === 'leaving')
+      container.hidden = true;
+  });
+  const alignCaption = () => {
+    const document = caption.ownerDocument;
+    if (!document) return;
+    const style = document.defaultView.getComputedStyle(caption);
+    const context = document.createElement('canvas').getContext('2d');
+    context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const ink = context.measureText(caption.textContent);
+    const baseline = (parseFloat(style.lineHeight) - ink.fontBoundingBoxAscent - ink.fontBoundingBoxDescent) / 2 + ink.fontBoundingBoxAscent;
+    caption.style.transform = `translateY(${ink.actualBoundingBoxAscent - baseline}px)`;
+  };
+  caption.ownerDocument?.fonts.ready.then(alignCaption);
+  let captionTimer;
   return {
     update(view, copy) {
       if (!view.visible && container.dataset.launch === undefined) return;
+      container.style.setProperty('--launch-reveal', `${Number(copy.launch_reveal_ms)}ms`);
+      container.style.setProperty('--launch-mark-size', `${copy.launch_mark_size}px`);
+      container.style.setProperty('--launch-mark-fit', `calc(${copy.launch_mark_max_fraction} * min(100vw, 100dvh))`);
+      container.style.setProperty('--launch-caption-gap', `${copy.launch_caption_gap}px`);
+      container.style.setProperty('--launch-caption-size', `${copy.launch_caption_size}px`);
+      container.style.setProperty('--launch-caption-color', `var(--${copy.launch_caption_color_role.replaceAll('_', '-')})`);
+      if (copy.launch_mark && mark.dataset.icon === undefined) {
+        mark.style.maskImage = `url(${JSON.stringify(asset(`icons/layer-${copy.launch_mark.icon}-symbolic.svg`))})`;
+        mark.dataset.icon = copy.launch_mark.icon;
+        container.style.setProperty('--launch-mark-ink-bottom', copy.launch_mark.ink_bottom);
+      }
       captionTimer ??= setTimer(() => { caption.dataset.visible = ''; }, Math.max(0, Number(copy.launch_caption_delay_ms) - now()));
       controls(view.visible);
       if (view.visible) {
-        caption.textContent = copy[`preparing_${view.notice}`];
-        if (fade !== undefined) clearTimer(fade);
-        fade = undefined;
-        if (container.firstElementChild !== content) container.replaceChildren(content);
+        const changed = caption.textContent !== copy.launch_caption;
+        const detached = container.firstElementChild !== content;
+        if (changed) caption.textContent = copy.launch_caption;
+        if (detached) container.replaceChildren(content);
+        if (changed || detached) alignCaption();
         container.hidden = false;
         container.dataset.launch = 'loading';
       } else if (!view.finished) {
-        if (fade !== undefined) clearTimer(fade);
-        fade = undefined;
         container.hidden = true;
       } else if (container.dataset.launch === 'loading') {
         container.dataset.launch = 'leaving';
-        fade = setTimer(() => { container.hidden = true; fade = undefined; }, 180);
       }
     },
     diagnostic() {
       controls(false);
-      if (fade !== undefined) clearTimer(fade);
-      fade = undefined;
       container.removeAttribute('data-launch');
       container.hidden = false;
     },

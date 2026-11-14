@@ -344,7 +344,7 @@ impl Scene {
 }
 /// The blend space a filter's preview compiles for: the document's when the
 /// filter reads the document's encoded values, otherwise Linear.
-fn preview_space(effect: layer_core::EffectView<'_>, blend: layer_core::BlendSpace) -> layer_core::BlendSpace {
+pub(crate) fn preview_space(effect: layer_core::EffectView<'_>, blend: layer_core::BlendSpace) -> layer_core::BlendSpace {
     if effect.program.space.encoded(blend) { blend } else { layer_core::BlendSpace::Linear }
 }
 impl WgpuRasterizer {

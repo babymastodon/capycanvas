@@ -5,18 +5,18 @@ mod selection_tools_checks {
     fn choosing_selection_tools_prepares_the_brush_once_until_leaving() {
         for platform in Platform::ALL { for command in [CommandId::Lasso, CommandId::RectangleSelect] {
             let mut s=session(platform);
-            assert_eq!(s.engine.backend().selection_brush_preparations,0);
+            assert_eq!(s.engine.backend().contexts.iter().filter(|c| c.next.selection_strokes).count(),0);
             invoke(&mut s,command);
-            assert_eq!(s.engine.backend().selection_brush_preparations,1,"{platform:?}/{command:?}");
+            assert_eq!(s.engine.backend().contexts.iter().filter(|c| c.next.selection_strokes).count(),1,"{platform:?}/{command:?}");
             invoke(&mut s,command);invoke(&mut s,CommandId::SelectionAdd);s.frame(1,1).unwrap();
             invoke(&mut s,if command==CommandId::Lasso {CommandId::RectangleSelect}else{CommandId::Lasso});
-            assert_eq!(s.engine.backend().selection_brush_preparations,1);
+            assert_eq!(s.engine.backend().contexts.iter().filter(|c| c.next.selection_strokes).count(),1);
             invoke(&mut s,CommandId::Brush);invoke(&mut s,command);
-            assert_eq!(s.engine.backend().selection_brush_preparations,2);
+            assert_eq!(s.engine.backend().contexts.iter().filter(|c| c.next.selection_strokes).count(),2);
             invoke(&mut s,CommandId::SelectAll);
             assert!(s.engine.document().working.selection.is_some());
             invoke(&mut s,CommandId::Brush);invoke(&mut s,command);s.frame(2,2).unwrap();
-            assert_eq!(s.engine.backend().selection_brush_preparations,2,"an existing selection needs no speculative preparation");
+            assert_eq!(s.engine.backend().contexts.iter().filter(|c| c.next.selection_strokes).count(),2,"an existing selection needs no speculative preparation");
         }}
     }
 

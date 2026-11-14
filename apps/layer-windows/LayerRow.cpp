@@ -1,7 +1,5 @@
 #include "pch.h"
 #include "LayersView.h"
-#include <chrono>
-#include <winrt/Windows.UI.ViewManagement.h>
 #include "ColorEditor.h"
 #include "ExternalImages.h"
 #include "WorkspaceQuery.h"
@@ -65,7 +63,7 @@ void ThumbnailEdge::stop(){if(animation){animation.Stop();animation=nullptr;}}
 void ThumbnailEdge::update(std::shared_ptr<WorkspaceData> const& data,bool editing){
     base.Fill(editing?accent(data):data->brush(L"text"));base.Opacity(editing?1:.1);outline.Fill(accent(data));
     if(selected==editing)return;
-    bool animate=selected.has_value()&&outline.IsLoaded()&&Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+    bool animate=selected.has_value()&&outline.IsLoaded()&&SystemUiSettings().AnimationsEnabled();
     double fromScale=scale.ScaleX(),fromOpacity=outline.Opacity();
     stop();selected=editing;
     double toScale=editing?1:38./32,toOpacity=editing?1:0;
@@ -119,10 +117,7 @@ bool LayerRow::loadThumbnail(bool isMask,Windows::System::VirtualKeyModifiers mo
     return true;
 }
 void LayerRow::init(){
-    auto weak=weak_from_this();root.Child(swipeFrame);
-    swipeActions.HorizontalAlignment(HorizontalAlignment::Right);swipeActions.VerticalAlignment(VerticalAlignment::Stretch);
-    swipeFrame.Children().Append(swipeActions);swipeFrame.Children().Append(body);body.RenderTransform(swipeTransform);
-    swipeFrame.SizeChanged([weak](auto&&,SizeChangedEventArgs const& e){if(auto self=weak.lock()){RectangleGeometry clip;clip.Rect({0,0,e.NewSize().Width,e.NewSize().Height});self->swipeFrame.Clip(clip);}});
+    auto weak=weak_from_this();root.Child(swipePresenter.Frame());
     root.Unloaded([weak](auto&&,auto&&){if(auto self=weak.lock()){self->swipe(0,false);self->contentEdge.stop();self->maskEdge.stop();self->textureEdge.stop();}});layerRowFrame(data,root,body);
     root.BorderBrush(accent(data));
     AutomationProperties::SetAutomationId(root,L"layer-row-"+to_hstring(uint64_t(id)));
@@ -246,27 +241,15 @@ void LayerRow::init(){
     mask.RightTapped([weak](auto&&,RightTappedRoutedEventArgs const& e){if(auto self=weak.lock();self&&self->contextAllowed())self->context(true,self->mask);e.Handled(true);});
     dropMark.IsHitTestVisible(false);dropMark.BorderBrush(accent(data));auto rowPadding=layerRowPadding(data);dropMark.Margin({-rowPadding.Left,-rowPadding.Top,-rowPadding.Right,-rowPadding.Bottom});
     Grid::SetColumnSpan(dropMark,13);body.Children().Append(dropMark);
+    swipePresenter.Attach(body,grip,.55);
     swipe(0);
 }
 double LayerRow::revealWidth()const{return std::min(std::max(1.,root.ActualWidth()),array(model(),L"swipe_actions").Size()*data->panelMetric(L"layer_swipe_action_width"));}
 bool LayerRow::canSwipe()const{for(auto value:array(model(),L"swipe_actions"))if(flag(value.GetObject(),L"enabled"))return true;return false;}
 void LayerRow::swipe(double offset,bool animate){
-    swipeFrames.revoke();
-    auto target=std::clamp(offset,object(model(),L"right_swipe").Size()?-data->panelMetric(L"layer_swipe_action_width"):0.,revealWidth());
-    if(!animate||!root.IsLoaded()||!Windows::UI::ViewManagement::UISettings().AnimationsEnabled()||target==swipeOffset){positionSwipe(target);return;}
-    auto from=swipeOffset;auto start=std::chrono::steady_clock::now();
-    swipeFrames=CompositionTarget::Rendering(auto_revoke,[weak=weak_from_this(),from,target,start](auto&&,auto&&){if(auto self=weak.lock()){
-        auto t=std::clamp(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/150.,0.,1.);
-        self->positionSwipe(from+(target-from)*(1-std::pow(1-t,3)));
-        if(t>=1)self->swipeFrames.revoke();
-    }});
-}
-void LayerRow::positionSwipe(double offset){
-    swipeOffset=std::clamp(offset,object(model(),L"right_swipe").Size()?-data->panelMetric(L"layer_swipe_action_width"):0.,revealWidth());swipeTransform.X(-swipeOffset);
-    auto width=revealWidth();swipeActions.Width(width);
-    grip.Opacity(.55*(1-std::clamp(std::abs(swipeOffset)/(swipeOffset>0?std::max(1.,width):data->panelMetric(L"layer_swipe_action_width")),0.,1.)));
-    RectangleGeometry clip;clip.Rect({float(width-std::max(0.,swipeOffset)),0,float(std::max(0.,swipeOffset)),float(root.ActualHeight())});swipeActions.Clip(clip);
-    swipeActions.Visibility(swipeOffset>0?Visibility::Visible:Visibility::Collapsed);
+    auto unit=data->panelMetric(L"layer_swipe_action_width");
+    swipePresenter.Configure(object(model(),L"right_swipe").Size()?-unit:0.,array(model(),L"swipe_actions").Size()*unit,unit);
+    swipePresenter.SetOffset(offset,animate);
     if(auto view=owner.lock())view->connections();
 }
 void LayerRow::commit(bool cancel){
@@ -284,6 +267,7 @@ void LayerRow::highlight(int position, bool attachment){
 }
 void LayerRow::refresh(){
     if(!current())return;auto layer=model();auto view=owner.lock();bool full=!view||view->full;
+    auto swipeActions=swipePresenter.Actions();
     check.Visibility(full?Visibility::Visible:Visibility::Collapsed);body.ColumnDefinitions().GetAt(1).Width({full?data->panelMetric(L"control_height")+data->panelMetric(L"compound_spacing"):0.,GridUnitType::Pixel});
     body.Background(flag(layer,L"selected")?selected(data):clear());swipeActions.Background(data->brush(L"bg"));
     auto actions=array(layer,L"swipe_actions");
@@ -306,7 +290,10 @@ void LayerRow::refresh(){
         Grid::SetColumn(pick,i);swipeActions.Children().Append(pick);
     }
     }
-    if((swipeOffset>0&&!canSwipe())||(swipeOffset<0&&!object(layer,L"right_swipe").Size())||renaming)swipe(0);else positionSwipe(swipeOffset);
+    auto unit=data->panelMetric(L"layer_swipe_action_width");
+    swipePresenter.Configure(object(layer,L"right_swipe").Size()?-unit:0.,actions.Size()*unit,unit);
+    auto offset=swipePresenter.Offset();
+    if((offset>0&&!canSwipe())||(offset<0&&!object(layer,L"right_swipe").Size())||renaming)swipe(0);
     title.Text(str(layer,L"label"));AutomationProperties::SetName(name,str(layer,L"label"));
     auto nextTitle=str(layer,L"label");if(nextTitle!=captionTitle){captionTitle=nextTitle;AutomationProperties::SetName(root,data->caption(O({{L"type",S(L"layer_row")},{L"title",S(nextTitle)}})));}
     auto shown=flag(layer,L"visible")&&!flag(layer,L"visibility_blocked")?L"eye":L"eye-hidden";

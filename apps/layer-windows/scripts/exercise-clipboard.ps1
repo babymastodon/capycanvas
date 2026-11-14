@@ -26,7 +26,7 @@ function Start-Review([string]$Name){
  $null=$review.Handle
  Write-Output "Owned clipboard review $($review.Id): $run"
  $native=@{window=$null}
- Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Review did not start' 90
+ Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Review-Ready) -and !(Model).windows_workspace.busy} 'Review did not start' 90
  if((Model).state.theme -ne $Theme){throw 'The clipboard review did not apply the requested theme'}
  $script:drawingWindow=$native.window.Handle;$script:root=$native.window.Root
  [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
@@ -53,7 +53,7 @@ function Cross-Window-Clip{
  try{
   $script:CapyStateFile=Join-Path $run ("ui-state-"+$review.Id+"-"+$peer.id+".json")
   $native=@{window=$null}
-  Wait-Until {$native.window=Owned-DrawingWindow $review ([long]$peer.hwnd);$native.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'The clipboard destination window did not become ready' 90
+  Wait-Until {$native.window=Owned-DrawingWindow $review ([long]$peer.hwnd);$native.window -and (Input-Ready (Model) $peer.hwnd) -and !(Model).windows_workspace.busy} 'The clipboard destination window did not become ready' 90
   $script:root=$native.window.Root;$script:drawingWindow=$native.window.Handle
   Chord @(0x11) 0x56
   Wait-Until {(Requests) -eq 0 -and (Model).state.document_file.modified -and (Model).brush_ready} 'The copied layer did not paste into the second window' 90

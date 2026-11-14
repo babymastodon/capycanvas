@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, sync::Arc};
 const IDLE_NS: u64 = 200_000_000;
 const RETRY_NS: u64 = 1_000_000_000;
 const CACHE_ROWS: usize = 64;
+const APPLY_ROWS: usize = 8;
 
 /// Presentation facts, not a host-side invalidation policy. Reporting retained
 /// images also recovers from a lost view or a failed native bitmap conversion.
@@ -39,6 +40,7 @@ struct Pending {
 }
 #[derive(Default)]
 pub(crate) struct Previews {
+    pub visible: Vec<Arc<layer_core::EffectProgram>>,
     source: Option<u64>,
     generation: u64,
     serial: u64,
@@ -49,6 +51,7 @@ pub(crate) struct Previews {
 }
 impl Previews {
     pub fn renderer_replaced(&mut self) {
+        self.visible.clear();
         self.source = None;
         self.pending = None;
         self.loaded.clear();
@@ -74,6 +77,7 @@ impl<R: CanvasRenderer> UiSession<R> {
     pub fn reset_filter_previews(&mut self) {
         self.renderer_mut().cancel_filter_previews();
         self.filter_previews.renderer_replaced();
+        self.prepare_shader_context();
     }
     /// Poll once per host wake-up. An empty visible list cancels optional work.
     /// This call may submit one bounded GPU chunk, and must run on its owner.
@@ -89,6 +93,20 @@ impl<R: CanvasRenderer> UiSession<R> {
         {
             return Err(self.state.localization.text(crate::MessageId::RESOURCES_INVALID_VISIBLE_FILTERS).to_string());
         }
+        let mut apply = Vec::new();
+        let mut ordered: Vec<_> = filters.iter().collect();
+        ordered.sort_by_key(|id| self.state.adjustments.iter().position(|choice| choice.id.as_ref() == id.as_ref()).unwrap_or(usize::MAX));
+        for id in ordered {
+            if let Some(definition) = self.effect_catalog.get(id) {
+                let program = definition.program();
+                if !apply.contains(&program) { apply.push(program); }
+            }
+            if apply.len() == APPLY_ROWS { break; }
+        }
+        if self.filter_previews.visible != apply {
+            self.filter_previews.visible = apply;
+        }
+        self.prepare_shader_context();
         let mut visible = Vec::new();
         for id in filters {
             if self.effect_catalog.get(&id).is_some_and(|definition| !super::effects::bundled_preview(definition)) && !visible.contains(&id) {
@@ -551,5 +569,154 @@ mod tests {
                 .iter()
                 .any(|kept| kept.as_ref() == *id)
         }));
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    use crate::session::test_support::session;
+
+    #[test]
+    fn painting_with_docked_visible_filters_keeps_the_prepared_context() {
+        use crate::session::test_support::{pen_at, FILTER_DOCUMENT_PREPARATIONS};
+        use layer_engine::PenPhase;
+        let mut session = session(crate::Platform::Gtk);
+        session.frame(0, 0).unwrap();
+        let initial_revision = session.engine().document().revision;
+        for (sequence, phase, point) in [(1, PenPhase::Down, [450., 450.]),
+            (2, PenPhase::Move, [500., 500.]), (3, PenPhase::Up, [550., 550.])] {
+            pen_at(&mut session, sequence, phase, point);
+            session.frame(sequence * 20_000_000, sequence * 20_000_000).unwrap();
+        }
+        session.frame(200_000_000, 200_000_000).unwrap();
+        assert!(session.engine().document().revision > initial_revision);
+        assert!(!session.engine().has_pending_document_edits());
+        let target = session.engine().document().drawing_target().unwrap();
+        let data = session.engine().document().target_raster(target).unwrap().try_data().unwrap().unwrap();
+        assert!(data.tiles.values().any(|tile| tile.descriptor().channels > 1
+            && tile.descriptor().depth() == layer_core::color::SampleDepth::U8));
+        session.state.workspace.layout.set_panel_visible(crate::Panel::Adjustments, true).unwrap();
+        let group = session.state.workspace.layout.panel_group(crate::Panel::Adjustments).unwrap();
+        session.state.workspace.layout.select_tab(group, crate::Panel::Adjustments).unwrap();
+        session.changed(crate::regions::LAYOUT, false);
+        session.frame(210_000_000, 210_000_000).unwrap();
+        let visible = vec![Arc::from("curves"), Arc::from("gaussian_blur")];
+        session.poll_filter_previews(210_000_000, visible.clone(), FilterPreviewCache::default()).unwrap();
+        assert_eq!(session.engine().backend().contexts.last().unwrap().filters.len(), visible.len());
+        let before = (session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get()));
+        let revision = session.engine().document().revision;
+        for (sequence, phase, point) in [(4, PenPhase::Down, [450., 450.]),
+            (5, PenPhase::Move, [500., 500.]), (6, PenPhase::Up, [550., 550.])] {
+            pen_at(&mut session, sequence, phase, point);
+            let now = 200_000_000 + sequence * 20_000_000;
+            session.frame(now, now).unwrap();
+            session.poll_filter_previews(now, visible.clone(), FilterPreviewCache::default()).unwrap();
+        }
+        session.frame(400_000_000, 400_000_000).unwrap();
+        session.poll_filter_previews(400_000_000, visible, FilterPreviewCache::default()).unwrap();
+        assert!(!session.engine().has_pending_input());
+        assert!(!session.engine().has_active_stroke());
+        assert!(!session.engine().has_pending_document_edits());
+        assert!(session.engine().document().revision > revision, "the stroke must publish");
+        let after = (session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get()));
+        assert_eq!(after, before, "painting must neither redeclare contexts nor rebuild candidate documents");
+    }
+
+    #[test]
+    fn coarse_filter_preparation_survives_layer_and_selection_changes() {
+        use crate::session::test_support::{rectangle, select, FILTER_DOCUMENT_PREPARATIONS};
+        let mut session = session(crate::Platform::Gtk);
+        let first = session.engine().document().working.occurrence.unwrap();
+        session.dispatch(crate::UiAction::Layer { action: crate::LayerAction::New { group: false, clipped: false } }).unwrap();
+        select(&mut session, rectangle([100., 100., 300., 300.]));
+        session.poll_filter_previews(0, vec![Arc::from("curves")], FilterPreviewCache::default()).unwrap();
+        let key = layer_render_wgpu::ShaderDocument::new(session.engine().document());
+        let brush = layer_render_wgpu::ShaderBrushKey::new(session.engine().document(), session.engine().brush());
+        let before = (session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get()));
+        for action in [crate::LayerAction::Select { id: crate::occurrence_token(first), mask: false },
+            crate::LayerAction::Visibility { id: crate::occurrence_token(first), value: false }] {
+            session.dispatch(crate::UiAction::Layer { action }).unwrap();
+            assert!(key.matches(session.engine().document()), "ordinary layer changes keep startup preparation");
+            assert!(brush == layer_render_wgpu::ShaderBrushKey::new(session.engine().document(), session.engine().brush()));
+            assert_eq!((session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get())), before);
+        }
+        let pixels = layer_core::SelectionPixels::new([8, 1], [0, 0, 8, 1], vec![0x44444444]).unwrap();
+        select(&mut session, layer_core::Selection { shape: layer_core::SelectionShape::Pixels(Arc::new(pixels)),
+            affine: layer_core::Affine::IDENTITY, inverted: false });
+        assert!(key.matches(session.engine().document()), "selection shape keeps startup preparation");
+        assert!(brush == layer_render_wgpu::ShaderBrushKey::new(session.engine().document(), session.engine().brush()));
+        assert_eq!((session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get())), before);
+    }
+
+    #[test]
+    fn visible_filters_reprepare_after_coarse_dependencies_change() {
+        use crate::session::test_support::{rectangle, select, FILTER_DOCUMENT_PREPARATIONS};
+        use layer_core::authored::RecordChange;
+        let mut session = session(crate::Platform::Gtk);
+        session.frame(0, 0).unwrap();
+        let visible = vec![Arc::from("curves"), Arc::from("gaussian_blur")];
+        session.poll_filter_previews(0, visible.clone(), FilterPreviewCache::default()).unwrap();
+        let mut before = (session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get()));
+        select(&mut session, rectangle([100., 100., 300., 300.]));
+        session.poll_filter_previews(2, visible.clone(), FilterPreviewCache::default()).unwrap();
+        let after = (session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get()));
+        assert!(after.0 > before.0 && after.1 > before.1);
+        before = after;
+        select(&mut session, rectangle([150., 150., 350., 350.]));
+        session.poll_filter_previews(2, visible.clone(), FilterPreviewCache::default()).unwrap();
+        assert_eq!((session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get())), before,
+            "selection geometry reuses the same recipe kind");
+        let document = session.engine().document();
+        let mut composition = document.composition().clone();
+        composition.color.space = layer_core::color::RgbSpace::DisplayP3;
+        let color = composition.color;
+        let change = RecordChange::replace(&document.artwork.compositions, document.artwork.root, Some(composition)).unwrap();
+        let (prepared, _) = session.prepare_document_color_transition(layer_core::ColorTransition::Apply {
+            edit: Box::new(layer_core::Edit::Composition(change)),
+        }).unwrap();
+        session.renderer_mut().prepared_color = Some(color);
+        session.commit_document_color_transition(prepared).unwrap();
+        session.poll_filter_previews(4, visible, FilterPreviewCache::default()).unwrap();
+        let after = (session.engine().backend().contexts.len(), FILTER_DOCUMENT_PREPARATIONS.with(|count| count.get()));
+        assert!(after.0 > before.0 && after.1 > before.1);
+    }
+
+    #[test]
+    fn bundled_visible_rows_prepare_apply_in_picker_order_without_live_previews() {
+        let mut session = session(crate::Platform::Gtk);
+        session.frame(0, 0).unwrap();
+        assert!(session.filter_previews_idle());
+        session.state.filter_picker.category = None;
+        session.state.adjustments = super::super::effects::catalog(&session.effect_catalog,
+            &session.state.filter_picker, &session.state.localization);
+        let ordered: Vec<_> = session.state.adjustments.iter().filter(|choice| choice.bundled_preview)
+            .take(APPLY_ROWS + 2).map(|choice| choice.id.clone()).collect();
+        assert_eq!(ordered.len(), APPLY_ROWS + 2);
+        let shown: Vec<_> = ordered.iter().rev().cloned().collect();
+        let before = session.engine().backend().contexts.len();
+        for now in [0, 200_000_000, 400_000_000] {
+            let update = session.poll_filter_previews(now, shown.clone(), FilterPreviewCache::default()).unwrap();
+            assert_eq!(update.status.requests, 0);
+            assert!(update.image.is_none());
+            assert_eq!(session.engine().backend().contexts.len(), before + 1);
+        }
+        let prepared: Vec<_> = session.engine().backend().contexts.last().unwrap().filters.iter()
+            .map(|filter| filter.program.id.clone()).collect();
+        assert_eq!(prepared, ordered[..APPLY_ROWS]);
+        session.changed(crate::regions::CAMERA, false);
+        assert_eq!(session.engine().backend().contexts.len(), before + 1);
+        session.input_pending = true;
+        session.poll_filter_previews(450_000_000, shown.clone(), FilterPreviewCache::default()).unwrap();
+        assert_eq!(session.engine().backend().contexts.last().unwrap().filters.len(), APPLY_ROWS);
+        let held = session.engine().backend().contexts.len();
+        session.changed(crate::regions::DOCUMENT, true);
+        assert_eq!(session.engine().backend().contexts.len(), held);
+        session.input_pending = false;
+        session.poll_filter_previews(500_000_000, shown, FilterPreviewCache::default()).unwrap();
+        assert_eq!(session.engine().backend().contexts.last().unwrap().filters.len(), APPLY_ROWS);
+        session.poll_filter_previews(600_000_000, Vec::new(), FilterPreviewCache::default()).unwrap();
+        assert!(session.engine().backend().contexts.last().unwrap().filters.is_empty());
+        assert_eq!(session.engine().backend().contexts.len(), before + 2);
     }
 }

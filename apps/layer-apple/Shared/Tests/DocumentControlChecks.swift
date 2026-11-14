@@ -191,7 +191,7 @@ extension XCTestCase {
 
     @MainActor func checkNativeImagePaste(in app: XCUIApplication) throws {
         let clipboard = try NativePhotoPasteboard()
-        addTeardownBlock { await MainActor.run { clipboard.restore() } }
+        addTeardownBlock { MainActor.assumeIsolated { clipboard.restore() } }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Capy Paste " + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -385,7 +385,7 @@ extension XCTestCase {
         chooseOpen(invalid)
         let failure = dialog
         XCTAssertTrue(failure.waitForExistence(timeout: 20), "An invalid project must report its error")
-        XCTAssertTrue(failure.staticTexts["Document"].exists)
+        XCTAssertTrue(failure.staticTexts["Cannot open file"].exists)
         XCTAssertGreaterThan(failure.staticTexts.count, 1, "The error must explain why the project could not open")
         workspaceActivate(failure.buttons["OK"])
         XCTAssertTrue(failure.waitForNonExistence(timeout: 10))
@@ -667,22 +667,25 @@ extension XCTestCase {
         XCTAssertTrue(preview.waitForExistence(timeout: 15))
         XCTAssertEqual(preview.label, "Preview Output")
         let exportScroll = app.scrollViews.containing(.button, identifier: "export-preview").firstMatch
+        let sizePage = app.buttons["export-page-size"]
+        revealEditorControl(sizePage, in: exportScroll); activate(sizePage)
+        let sizeScroll = app.scrollViews.containing(.switch, identifier: "export-fit").firstMatch
         let fit = app.switches["export-fit"]
-        revealEditorControl(fit, in: exportScroll)
+        revealEditorControl(fit, in: sizeScroll)
         if fit.value as? String != "1" { workspaceActivate(fit) }
         let exportWidth = app.textFields["export-width"], exportHeight = app.textFields["export-height"]
-        replaceEditorText(exportWidth, with: "7.5", in: app)
+        replaceEditorText(exportWidth, with: "7 +", in: app)
         dismissEditorKeyboard(in: app)
-        revealEditorControl(preview, in: exportScroll); workspaceActivate(preview)
-        let integerError = app.staticTexts["export-error"]
+        let expressionError = app.staticTexts["export-error"]
         expectation(for: NSPredicate { _, _ in
-            integerError.exists && (integerError.label == "Maximum width (px) needs a whole number." || integerError.value as? String == "Maximum width (px) needs a whole number.")
+            expressionError.exists && (expressionError.label == "Enter a valid mathematical expression." || expressionError.value as? String == "Enter a valid mathematical expression.")
         }, evaluatedWith: app)
         waitForExpectations(timeout: 15)
-        XCTAssertEqual(exportWidth.value as? String, "7.5")
+        XCTAssertEqual(exportWidth.value as? String, "7 +")
         replaceEditorText(exportWidth, with: "32", in: app)
         replaceEditorText(exportHeight, with: "32", in: app)
         dismissEditorKeyboard(in: app)
+        activate(app.buttons["export-back"])
         revealEditorControl(preview, in: exportScroll); workspaceActivate(preview)
         let outputSize = app.staticTexts["export-output-size"]
         expectation(for: NSPredicate { _, _ in
@@ -791,8 +794,7 @@ extension XCTestCase {
         XCTAssertTrue(open.waitForNonExistence(timeout: 20))
         #else
         enterRunnerFolder()
-        let input = fileProviderFile("Unsupported.capy", in: app).images.firstMatch
-        XCTAssertTrue(input.waitForExistence(timeout: 10)); workspaceActivate(input)
+        workspaceActivate(revealFileProviderFile("Unsupported.capy", in: app))
         submitFileProviderSelection(in: app)
         #endif
         let preview = app.descendants(matching: .any)["preserved-package-preview"].firstMatch
@@ -800,9 +802,14 @@ extension XCTestCase {
         XCTAssertTrue(copy.waitForExistence(timeout: 30)); XCTAssertTrue(copy.isEnabled)
         XCTAssertTrue(preview.exists)
         XCTAssertTrue(app.staticTexts["This drawing can be viewed, but cannot be edited."].exists)
-        XCTAssertTrue(app.staticTexts["Pass through requires a stack"].exists)
+        XCTAssertTrue(app.staticTexts["It has layers or settings that this version of Capy Canvas can't edit."].exists)
         XCTAssertFalse(app.buttons["export-package-preview"].exists)
+        #if os(macOS)
+        XCTAssertTrue(app.sheets.firstMatch.buttons["copy-original-package"].exists,
+            "The preserved package must be a window-modal sheet that keeps input from the editable canvas")
+        #else
         XCTAssertFalse(canvas.isHittable, "The preserved package must not expose editable canvas input")
+        #endif
         app.typeKey("z", modifierFlags: .command)
         XCTAssertTrue(copy.exists)
         attachEditor(in: app, name: "preserved-unsupported-read-only-" + theme)

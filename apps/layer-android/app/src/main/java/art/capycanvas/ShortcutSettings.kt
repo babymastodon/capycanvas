@@ -14,6 +14,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -292,19 +294,10 @@ private fun subtitle(row: JSONObject): String =
     }
 }
 
-@Composable private fun RecordingRow(host: CanvasHost, capture: JSONObject) {
-    val colors = LocalPalette.current
+@Composable internal fun RecordingActions(host: CanvasHost, capture: JSONObject) {
     val existing = capture.optBoolean("existing")
     val conflict = !capture.isNull("conflict")
-    val notice = capture.optString("notice")
-    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        SharedIcon(if (existing || notice.isNotEmpty()) "info" else "keyboard", null, Modifier.size(20.dp),
-            tint = if (!existing && notice.isNotEmpty()) MaterialTheme.colorScheme.error else colors.text)
-        Column(Modifier.weight(1f)) {
-            Text(capture.optString("shortcut"), Modifier.testTag("shortcut-recording"), style = settingsLabelStyle())
-            if (notice.isNotEmpty()) Text(notice, color = colors.settingsSecondary, fontSize = 13.sp, lineHeight = 18.sp, style = settingsLabelStyle())
-        }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         TextButton({ host.preference(obj("type" to "cancel_shortcut")) }, Modifier.testTag("cancel-shortcut")) { Text(host.bootstrap!!.getJSONObject("common").getString("cancel")) }
         Button({ host.preference(obj("type" to "confirm_shortcut", "replace" to conflict)) }, Modifier.testTag("confirm-shortcut"),
             enabled = capture.objectOrNull("chord") != null && capture.isNull("error")) {
@@ -313,8 +306,38 @@ private fun subtitle(row: JSONObject): String =
     }
 }
 
+@Composable private fun RecordingRow(host: CanvasHost, capture: JSONObject, actions: Boolean = true) {
+    val colors = LocalPalette.current
+    val existing = capture.optBoolean("existing")
+    val notice = capture.optString("notice")
+    Layout(modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 12.dp), content = {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SharedIcon(if (existing || notice.isNotEmpty()) "info" else "keyboard", null, Modifier.size(20.dp),
+                tint = if (!existing && notice.isNotEmpty()) MaterialTheme.colorScheme.error else colors.text)
+            Column(Modifier.weight(1f)) {
+                Text(capture.optString("shortcut"), Modifier.testTag("shortcut-recording"), style = settingsLabelStyle())
+                if (notice.isNotEmpty()) Text(notice, color = colors.settingsSecondary, fontSize = 13.sp, lineHeight = 18.sp, style = settingsLabelStyle())
+            }
+        }
+        if (actions) RecordingActions(host,capture) else Box(Modifier)
+    }) { (text, controls), constraints ->
+        val gap = if(actions)6.dp.roundToPx() else 0
+        val natural = text.maxIntrinsicWidth(Int.MAX_VALUE)
+        val offers = controls.maxIntrinsicWidth(Int.MAX_VALUE)
+        val beside = toolbarUi(host.languageTag,obj("type" to "notice_layout","text" to natural,"content" to constraints.maxWidth,
+            "actions" to offers,"gap" to gap,"min_text_width" to constraints.maxWidth)).getBoolean("beside")
+        val buttons = controls.measure(Constraints(maxWidth = minOf(offers,constraints.maxWidth)))
+        val caption = text.measure(Constraints(maxWidth = (constraints.maxWidth-if(beside && buttons.width>0)buttons.width+gap else 0).coerceAtLeast(0)))
+        val height = (if(beside)maxOf(caption.height,buttons.height) else caption.height+gap+buttons.height).coerceAtLeast(constraints.minHeight)
+        layout(constraints.maxWidth,height) {
+            caption.placeRelative(0,if(beside)(height-caption.height)/2 else 0)
+            buttons.placeRelative(constraints.maxWidth-buttons.width,if(beside)(height-buttons.height)/2 else caption.height+gap)
+        }
+    }
+}
+
 /** One sheet: the action's keys, inline recording and reset. */
-@Composable internal fun ShortcutEditor(host: CanvasHost, view: JSONObject, editor: JSONObject) {
+@Composable internal fun ShortcutEditor(host: CanvasHost, view: JSONObject, editor: JSONObject, fixedActions: Boolean = false) {
     val id = editor.getString("id")
     val capture = view.objectOrNull("capture")?.takeIf { it.getString("id") == id }
     val focus = remember { FocusRequester() }
@@ -345,7 +368,7 @@ private fun subtitle(row: JSONObject): String =
                 }
             }
             val last: List<@Composable () -> Unit> = when {
-                capture != null -> listOf({ RecordingRow(host, capture) })
+                capture != null -> listOf({ RecordingRow(host, capture, actions = !fixedActions) })
                 editor.getBoolean("can_add") -> listOf({
                     SettingRow(host.catalog.getJSONObject("native_copy").getJSONObject("shortcuts").getString("add_shortcut"), "add-shortcut", onClick = { host.preference(obj("type" to "begin_shortcut", "id" to id)) }) {
                         SharedIcon("plus", null, Modifier.size(20.dp))
@@ -384,7 +407,7 @@ private fun subtitle(row: JSONObject): String =
 }
 
 @Composable private fun SheetFrame(intent:JSONObject,title: String,tag: String,close: () -> Unit,
-    keys: (androidx.compose.ui.input.key.KeyEvent) -> Boolean,content: @Composable ColumnScope.() -> Unit) {
+    keys: (androidx.compose.ui.input.key.KeyEvent) -> Boolean,footer: (@Composable () -> Unit)? = null,content: @Composable ColumnScope.() -> Unit) {
     val host=LocalCanvasHost.current
     val phone=host.snapshot?.getJSONObject("layout")?.objectOrNull("phone")!=null
     DialogShell(host,intent,title,onCancel=close,tag=tag,naturalWidth=520.dp,scrollBody=false,header=phone,
@@ -395,21 +418,22 @@ private fun subtitle(row: JSONObject): String =
                 IconButton(close,Modifier.align(Alignment.CenterEnd)){SharedIcon("close",host.bootstrap!!.getJSONObject("common").getString("close"),Modifier.size(20.dp))}
             }
         }),
-        keys={ if(host.textComposition.owns(it))false else keys(androidx.compose.ui.input.key.KeyEvent(it)) },body={
+        keys={ if(host.textComposition.owns(it))false else keys(androidx.compose.ui.input.key.KeyEvent(it)) },footer=footer,body={
             Column(Modifier.fillMaxWidth().padding(bottom=16.dp),verticalArrangement=Arrangement.spacedBy(12.dp),content=content)
         })
 }
 
 @Composable internal fun ShortcutDialogs(host: CanvasHost, view: JSONObject) {
     val capture = view.objectOrNull("capture")
+    val phone = host.snapshot?.getJSONObject("layout")?.objectOrNull("phone") != null
     if (capture?.getString("id") == MODIFIER_CAPTURE) {
         SheetFrame(view.getJSONObject("dialog"),capture.getString("label"), "modifier-key", { host.preference(obj("type" to "cancel_shortcut")) }, { event ->
             if (event.key == Key.Back) false else { host.key(event.nativeKeyEvent); true }
-        }) {
+        },footer=if(phone)({PickerFooter("shortcut-recording") {Spacer(Modifier.weight(1f));RecordingActions(host,capture)}})else null) {
             Description(host.catalog.getJSONObject("native_copy").getJSONObject("shortcuts").getString("press_hold_key"), Modifier.padding(horizontal = 16.dp), TextAlign.Center)
             BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 val width = (org.json.JSONTokener(Native.dialogUi(obj("kind" to "preferences_content_width", "width" to maxWidth.value, "minimum" to 0).toString())).nextValue() as Number).toFloat()
-                SettingsCard(Modifier.widthIn(max = width.dp), rows = listOf { RecordingRow(host, capture) })
+                SettingsCard(Modifier.widthIn(max = width.dp), rows = listOf { RecordingRow(host, capture, actions = !phone) })
             }
         }
     }

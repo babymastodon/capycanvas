@@ -95,11 +95,7 @@ fn native_managed_canvas_and_gtk_artwork_agree() {
         },
     });
     pump(200);
-    let capture = ui_session(&w)
-        .engine()
-        .backend()
-        .capture_in(view)
-        .unwrap();
+    let capture = w.capture_canvas(view).unwrap();
     let m = state(&w).camera.document_to_surface();
     let x = (m[0] * 32. + m[2] * 32. + m[4]).round() as usize;
     let y = (m[1] * 32. + m[3] * 32. + m[5]).round() as usize;

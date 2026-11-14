@@ -254,6 +254,7 @@ pub enum ColorEditorError {
     Intensity(crate::NumericError),
     Hdr(layer_core::color::hdr::HdrPixelError),
     Detail(String),
+    ClipboardFailed,
 }
 impl From<String> for ColorEditorError {
     fn from(value: String) -> Self { Self::Detail(value) }
@@ -276,6 +277,7 @@ impl ColorEditorError {
                 layer_core::color::hdr::HdrPixelError::StorageRange => Id::COLOR_HDR_STORAGE_RANGE,
             }).to_string(),
             Self::Detail(reason) => reason.clone(),
+            Self::ClipboardFailed => localizer.text(Id::COMMON_CLIPBOARD_FAILED).to_string(),
         }
     }
 }
@@ -316,6 +318,7 @@ pub enum ColorEditorAction {
     Search { text: String },
     ToggleSwatches,
     Back,
+    ClipboardFailed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -583,6 +586,7 @@ impl ColorEditor {
                 Ok(())
             }
             ColorEditorAction::Back => { self.route = ColorEditorRoute::Editor; Ok(()) }
+            ColorEditorAction::ClipboardFailed => Err(ColorEditorError::ClipboardFailed),
         }
     }
     fn scrub(&mut self, target: ColorEditorTarget, pixels: f32, speed: ColorScrubSpeed) -> Result<(), ColorEditorError> {
@@ -816,6 +820,19 @@ mod tests {
         editor.apply(ColorEditorAction::Revert).unwrap();
         assert_eq!(editor.value(), definition);
         assert!(!editor.changed());
+    }
+
+    #[test]
+    fn a_failed_clipboard_reports_shared_copy_and_keeps_the_editor_usable() {
+        let mut editor = editor(0x3B7EA1);
+        let before = editor.clone();
+        let action: ColorEditorAction = serde_json::from_value(serde_json::json!({"op": "clipboard_failed"})).unwrap();
+        let refused = editor.apply(action).unwrap_err();
+        assert_eq!(refused, ColorEditorError::ClipboardFailed);
+        assert_eq!(refused.message(&english()), "Could not use the clipboard. Try again.");
+        assert_eq!(editor, before);
+        editor.apply(ColorEditorAction::Text { text: "#336699".into(), row: None }).unwrap();
+        assert_eq!(view(&editor).hex, "#336699");
     }
 
     #[test]

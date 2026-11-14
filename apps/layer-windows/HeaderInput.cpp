@@ -43,7 +43,7 @@ struct HeaderInput::Impl:std::enable_shared_from_this<Impl>{
         return pointer&&PointerGesture::Captured(element,*pointer);
     }
     bool active()const{return pointer||starting||started||busy||ending;}
-    bool editable()const{return editing&&flag(object(data->model,L"header"),L"editing");}
+    bool editable()const{return editing&&flag(branch(data->model,L"header"),L"editing");}
     void evidence(){
         if(!trace)return;
         AutomationProperties::SetHelpText(root,O({

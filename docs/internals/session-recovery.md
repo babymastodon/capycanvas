@@ -17,9 +17,12 @@ preserve the failed copies. Recovery never substitutes an empty drawing for a
 failed restore. Retrying a failed drawing appends it without replacing work begun
 since launch.
 
-On Apple, an invalid drawing list preserves its entire directory before a fresh
-session is created. Missing membership does not authorize deletion of drawing
-heads. A temporary read or permission failure stays retryable in place. Known
+A drawing list that can't be parsed or validated is set aside by the window that
+claims it, once: native hosts rename it to `preserved-<id>` beside it and the web
+marks its folder `.damaged`. That start shows one "Recovery unavailable" notice
+and later starts read past it; its drawings' stores stay on disk. Missing
+membership does not authorize deletion of drawing heads. A temporary read or
+permission failure stays retryable in place. Known
 per-drawing failures are recorded separately from authored data, so the next
 restart can show the original cause. Dismissing a warning changes its visibility,
 not its stored drawing or recovery status.
@@ -192,7 +195,12 @@ Native packed recovery keeps membership and stores under
 holds its window and drawing locks. Flat layouts move stores first, preserving
 their keys, then membership and its lock. Both namespace GC gates protect the move;
 restart completes partial moves without copying or rewriting released data.
-Conflicting paths are preserved and refused.
+A legacy window whose name is already taken in `packed/`, for example after a
+downgrade reused an Apple scene's name, moves under a new name and can be
+adopted. A legacy drawing whose key already holds a moved copy is renamed to
+`preserved-<id>` where it was. A window or drawing still in use by another
+process stays where it is until a later start. An unreadable flat list moves
+without its drawings and is set aside as any other unreadable list.
 
 [`SessionManifest`](../../crates/layer-ui/src/session_recovery.rs) owns tab order,
 selection, membership and unfinished restore attempts. The native window holds an
@@ -247,8 +255,11 @@ Web uses the same store over one OPFS worker's sync access handles. Required rea
 precede writes, each bounded to 8 MiB. The main Wasm instance owns the coordinator
 and metadata; the worker verifies range checksums. Released IndexedDB recovery is
 read only: import copies resources and heads into OPFS, retaining source identities
-and verified generation baselines. Independent edits in both stores remain separate
-recovered drawings. Original project files remain separate and recovery never
+and verified generation baselines. A released list or drawing that can't be imported,
+because it is missing, damaged or unsupported, is recorded in the import index and
+reported once; later loads skip it and the record stays in IndexedDB. If the import
+index itself can't be read, import is skipped. Independent edits in both stores
+remain separate recovered drawings. Original project files remain separate and recovery never
 overwrites them.
 
 Cleanup retains current and previous generations plus resources pinned by readers
@@ -261,10 +272,14 @@ Before removing membership, publish a retirement intent. The intent leaves an
 indexed drawing usable, including after a cancelled or failed close. Once the
 authoritative manifest excludes its key, cleanup makes retirement terminal, even
 if the process stopped between membership removal and resource cleanup. Explicit
-discard can prepare this intent without decoding a damaged checkpoint.
+discard can prepare this intent without decoding a damaged checkpoint. The intent
+and terminal markers count by presence, whatever they contain, so a close
+interrupted while writing its marker still completes. Discarding a directory that
+is not a valid store leaves it untouched and still removes the drawing.
 Cleanup only removes unindexed stores with that intent, proven retired, or without
 a published head; an unexplained head is preserved. Only a typed file-not-found
-error establishes absence; access errors stop destructive cleanup. Lock files remain
+error establishes absence. Cleanup never reports an error: it skips a store it
+can't claim, read or retire and leaves it for the next sweep. Lock files remain
 to avoid replacing a lock inode under another process. After readers release retired resources, cleanup removes
 the empty resource and generation directories. A closed drawing keeps only its
 directory, permanent empty lock file and empty terminal marker. These filesystem
@@ -274,8 +289,7 @@ synchronization. GTK checks reachability across every window manifest and
 fails closed when any manifest is unreadable.
 
 Apple performs this sweep after a committed checkpoint, outside the startup
-path. Cleanup failure is a warning about retired files; the acknowledged drawing
-remains saved and later edits can checkpoint again.
+path. The acknowledged drawing remains saved whether or not the sweep finishes.
 
 ## Scheduling, restart and close
 
@@ -346,7 +360,9 @@ branched history, transferring to a worker, storing, restoring and transferring
 back. Storage tests interrupt publication before and after durability boundaries,
 kill subprocess writers, corrupt resources and heads, exercise lock contention,
 retain live readers during collection and check bounded generations over repeated
-edits. UI tests cover manual-save checkpoints, title state, camera, strict records,
+edits. `session_stores::recovery_tests::starting_three_times_shows_no_repeating_notice`
+starts three times on each kind of damaged recovery record in the GTK and
+window-folder layouts and requires every start after the first to be silent. UI tests cover manual-save checkpoints, title state, camera, strict records,
 membership staging/remapping, stale completion and interrupted restore batches.
 
 Captured-frame context tests retain finite filter phases while removing and

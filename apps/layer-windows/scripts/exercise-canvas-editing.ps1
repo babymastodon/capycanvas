@@ -173,7 +173,7 @@ try{
  @{process_id=$review.Id;executable=$Executable;theme=$Theme;journey=$Journey;sha256=(Get-FileHash -LiteralPath $Executable).Hash}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $run 'owner.json')
  Write-Output "Owned canvas editing review $($review.Id): $run"
  $native=@{window=$null}
- Wait-Until {$native.window=Owned-DrawingWindow $review;$m=Model;$null -ne $native.window -and $m.brush_ready -and $m.state.theme -eq $Theme} 'Isolated editing canvas did not start' 45
+ Wait-Until {$native.window=Owned-DrawingWindow $review;$m=Model;$null -ne $native.window -and (Review-Ready $m) -and $m.state.theme -eq $Theme} 'Isolated editing canvas did not start' 45
  $handle=$native.window.Handle;$root=$native.window.Root
  Use-PaintWorkspace
  & (Join-Path $PSScriptRoot 'open-application-menu.ps1') -Root $root -Name 'File';Invoke 'new_document'

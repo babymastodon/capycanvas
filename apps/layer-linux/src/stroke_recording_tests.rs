@@ -120,3 +120,45 @@ fn native_stroke_recording() {
     w.window.close();
     pump(100);
 }
+
+#[test]
+#[ignore = "private Mutter display and tablet proxy; workspace-motion.sh gtk --native-test=native_barrel_twist_recording --tablet"]
+fn native_barrel_twist_recording() {
+    use layer_engine::{PenPhase, SampleFlags, recording::{self, Record, StopReason}};
+    let app = native_test_app("art.capycanvas.BarrelTwist");
+    let w = Workspace::with_project(&app, Some((new_drawing(384, 256, &layer_ui::Localizer::shared(layer_ui::UiLanguage::English)).unwrap(), None)));
+    w.window.present();
+    super::new_photo::ready(&w);
+    let mut native = RemoteInput::new();
+    native.ready();
+    native.click(screen_point(w.header.root.upcast_ref(), &w.window, [0.5, 0.5]));
+    until(|| w.window.is_active(), "the tablet proxy targets the activated window");
+    w.gpu.borrow_mut().as_mut().unwrap().session.stroke_recording().start("gtk").unwrap();
+    let from = super::photo_edit::window_point(&w, [120., 128.]);
+    let to = super::photo_edit::window_point(&w, [260., 128.]);
+    let strokes = ui_session(&w).engine().metrics().committed_strokes;
+    native.perform(serde_json::json!([
+        {"pen": "move", "point": from, "tool": "rotating", "twist": 90.},
+        {"pen": "down", "point": from, "tool": "rotating", "twist": 90.},
+        {"pen": "move", "point": to, "tool": "rotating", "twist": 90.},
+        {"pen": "up", "tool": "rotating"},
+        {"pen": "leave"},
+    ]));
+    until(|| ui_session(&w).engine().metrics().committed_strokes > strokes, "the rotating pen commits its stroke");
+    let bytes = {
+        let mut gpu = w.gpu.borrow_mut();
+        let mut recorder = gpu.as_mut().unwrap().session.stroke_recording();
+        recorder.stop(StopReason::Manual);
+        recorder.bytes().unwrap()
+    };
+    let contact: Vec<_> = recording::read(&bytes[..]).unwrap().into_iter().filter_map(|record| match record {
+        Record::Raw { event, .. } if matches!(event.phase, PenPhase::Down | PenPhase::Move) => Some(event),
+        _ => None,
+    }).collect();
+    assert!(!contact.is_empty(), "the rotating pen's contact reaches the recording");
+    for event in contact {
+        assert!((event.twist_radians - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "a 90° barrel rotation records π/2 radians, got {}", event.twist_radians);
+        assert!(event.flags.contains(SampleFlags::BARREL_TWIST), "a rotation-capable pen measures barrel twist");
+    }
+}

@@ -198,11 +198,11 @@ function Check-Open([int]$Id){
     if([Math]::Abs($column.open.bounds.y-$top) -gt .6 -or [Math]::Abs($column.open.bounds.height-($bottom-$top)) -gt .6){throw 'Open column did not span the complete stack height'}
 }
 function Drag([string]$Id,$To,[switch]$Cancel,[switch]$Hold,[switch]$Stack,[switch]$Captured,$Expected){
-    $from=At $Id;$generation=(Gesture).generation
+    $from=At $Id;$generation=(Gesture).generation;$down=@{gesture=$null}
     $script:dragProbe=@{source=$Id;from=$from;to=$To;expected=$Expected;device=$Device}
     [CapyRowPointer]::Down($Device,$from.x,$from.y)
-    Wait-Until {(Gesture).generation -gt $generation} 'Native handle did not receive pointer down'
-    if((Gesture).requires_hold -ne [bool]$Hold -or (Gesture).device -ne $Device){throw 'Source used the wrong device or pickup policy'}
+    Wait-Until {$g=Gesture;$down.gesture=$g;$g.generation -gt $generation -and $null -ne $g.pointer_id -and $g.phase -ne 'idle'} 'Native handle did not receive pointer down'
+    if($down.gesture.requires_hold -ne [bool]$Hold -or $down.gesture.device -ne $Device){throw 'Source used the wrong device or pickup policy'}
     if($Captured){Wait-Until {(Gesture).captured} 'Immediate custom handle did not capture its contact on press'}
     if($Hold){
         Wait-Until {(Gesture).phase -eq 'held'} 'Tile did not reach a native stationary hold'
@@ -254,7 +254,7 @@ function Start-Review([string]$Phase){
     @{process_id=$review.Id;run=$run;device=$Device}|ConvertTo-Json|Set-Content (Join-Path $repo 'artifacts/windows/column-stack-review.json')
     Write-Output "Owned column-stack review $($review.Id) ($Device)"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Native stack review did not start' 45
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready) -and !(Model).windows_workspace.busy} 'Native stack review did not start' 45
     $script:root=$native.window.Root;$script:window=$native.window.Handle
     $null=[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4));$null=[CapyRowPointer]::SetForegroundWindow($window)
     (Control 'drawing-canvas').SetFocus()

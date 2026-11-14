@@ -449,14 +449,26 @@ function Assert-BubbleHdrNoTooltip([long]$Id,[string]$Stage='hdr-keyboard-no-too
     if(@($visible|Where-Object over).Count){throw 'Focused HDR intensity displayed a native tooltip over its presentation'}
 }
 function Assert-BubbleHdrFocus([long]$Id){
-    (Control 'drawing-canvas').SetFocus();$spec=(Packet $Id).color.intensity
-    $at=Relative $Id @(($spec.point[0]+$spec.geometry.marker_radius+4),$spec.point[1]);$before=Bubble-HdrPixel $at 'hdr-focus-before'
+    (Control 'drawing-canvas').SetFocus();$packet=Packet $Id;$spec=$packet.color.intensity
+    $face=(Control "tool-bubble-$Id" -Arranged).Current.BoundingRectangle;$bounds=$packet.color.bounds
+    $marker=@{x=$face.X+($spec.point[0]-$bounds.x)*$scale;y=$face.Y+($spec.point[1]-$bounds.y)*$scale}
+    $radius=($spec.geometry.marker_radius+4)*$scale
+    $at=@{x=[int][Math]::Round($marker.x+$radius);y=[int][Math]::Round($marker.y)}
+    $interior=@{x=[int][Math]::Round($marker.x);y=[int][Math]::Round($marker.y)}
+    $before=Read-BubbleVisualPatch $at (Join-Path $run 'hdr-focus-before.png');$markerBefore=Bubble-HdrPixel $interior 'hdr-focus-marker-before'
     $element=Control "bubble-intensity-$Id";Focus-Keyboard $element
     Assert-BubbleHdrNoTooltip $Id 'hdr-focus-ring-no-tooltip'
-    Start-Sleep -Milliseconds 150;$after=Bubble-HdrPixel $at 'hdr-focus-after';$ink=[Drawing.ColorTranslator]::FromHtml((Model).state.palette.text);$error=0.
-    foreach($channel in @('r','g','b')){$expected=.1*$before[$channel]+.9*$ink.($channel.ToUpperInvariant());$error=[Math]::Max($error,[Math]::Abs($after[$channel]-$expected))}
-    $hdrEvidence.Add(@{stage='hdr-focus-ring';point=$at;before=$before;after=$after;maximum_error=$error})
-    if($error -gt 4){throw 'HDR focus ring does not use its shared marker position and GTK text overlay'}
+    Start-Sleep -Milliseconds 150;$after=Read-BubbleVisualPatch $at (Join-Path $run 'hdr-focus-after.png');$markerAfter=Bubble-HdrPixel $interior 'hdr-focus-marker-after'
+    $color=[Drawing.ColorTranslator]::FromHtml((Model).state.palette.text);$ink=@{r=[int]$color.R;g=[int]$color.G;b=[int]$color.B}
+    $samples=@(foreach($x in 0..8){
+        $distance=[Math]::Sqrt([Math]::Pow($at.x+$x-4-$marker.x,2)+[Math]::Pow($at.y-$marker.y,2))
+        if([Math]::Abs($distance-$radius) -le 1){Measure-BubbleVisualOverlay @($before[36+$x]) @($after[36+$x]) $ink (230/255.)}
+    })
+    $overlay=$samples|Sort-Object {$_.maximum_error}|Select-Object -First 1
+    $unchanged=Measure-BubbleVisualOverlay @($markerBefore) @($markerAfter) $ink 0
+    $hdrEvidence.Add(@{stage='hdr-focus-ring';point=$at;marker=$marker;radius=$radius;overlay=$overlay;marker_interior=$unchanged})
+    if(!$overlay -or $overlay.maximum_error -gt 4){throw 'HDR focus ring does not use its shared marker position and GTK text overlay'}
+    if($unchanged.maximum_error -ne 0){throw 'HDR focus ring changed its marker interior'}
     Settled-Capture 'hdr-focus-ring';(Control 'drawing-canvas').SetFocus()
 }
 function Assert-BubbleHdrZeroTick([long]$Id){

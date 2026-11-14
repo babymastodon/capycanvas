@@ -10,7 +10,7 @@ $elsewhere=Join-Path $run 'elsewhere'
 [IO.Directory]::CreateDirectory($elsewhere)|Out-Null
 $CapyTraceDirectory=$run
 $review=$null;$other=$null
-if(!('CapyFileDrag' -as [type])){Add-Type -TypeDefinition @"
+$fileDragDefinition=@"
 using System;using System.ComponentModel;using System.Runtime.InteropServices;using System.Threading;
 public static class CapyFileDrag {
  [StructLayout(LayoutKind.Sequential)] struct Mouse {public int dx,dy;public uint data,flags,time;public UIntPtr extra;}
@@ -21,6 +21,7 @@ public static class CapyFileDrag {
  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window,out Rect rect);
  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
  public static volatile Exception Failure;
+ public static void Release(int x,int y){Send(4,x,y);}
  static void Send(uint flags,int x,int y){
   var mouse=new Mouse{dx=(x-GetSystemMetrics(76))*65535/(GetSystemMetrics(78)-1),dy=(y-GetSystemMetrics(77))*65535/(GetSystemMetrics(79)-1),flags=flags|0xC001};
   if(SendInput(1,new[]{new Input{mouse=mouse}},40)!=1)throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -46,24 +47,52 @@ public static class CapyFileDrag {
   glide.Start();return glide;
  }
 }
-"@}
+"@
+if(!('CapyFileDrag' -as [type])){Add-Type -TypeDefinition $fileDragDefinition}
 function Drop-Files([string[]]$Paths,[string]$Target){
     [CapyWindowApi]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     $bounds=(Control $Target -Arranged).Current.BoundingRectangle
-    $shell=[powershell]::Create();$shell.Runspace=[runspacefactory]::CreateRunspace();$shell.Runspace.ApartmentState='STA';$shell.Runspace.Open()
-    try{
-        $null=$shell.AddScript({param($Paths,$X,$Y)
+    $receipt=Join-Path $run ('drop-'+[Guid]::NewGuid().ToString('N')+'.json')
+    $payload=@{paths=$Paths;x=[int]($bounds.X+$bounds.Width/2);y=[int]($bounds.Y+$bounds.Height/2);receipt=$receipt}|ConvertTo-Json -Compress
+    $source={param($fileDragDefinition,$Payload)
+        $ErrorActionPreference='Stop'
+        $data=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Payload))|ConvertFrom-Json
+        $result=@{effect=$null;error=$null};$form=$null
+        try{
+            Add-Type -TypeDefinition $fileDragDefinition
             Add-Type -AssemblyName System.Windows.Forms,System.Drawing
             [CapyFileDrag]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
-            $source=[Windows.Forms.Form]@{FormBorderStyle='None';ShowInTaskbar=$false;TopMost=$true;StartPosition='Manual';Bounds=[Drawing.Rectangle]::new($X-40,$Y+160,80,80)}
-            $source.Show();[Windows.Forms.Application]::DoEvents()
-            $glide=[CapyFileDrag]::Press($source.Handle,$X,$Y);[Windows.Forms.Application]::DoEvents()
-            $effect=$source.DoDragDrop([Windows.Forms.DataObject]::new([Windows.Forms.DataFormats]::FileDrop,[string[]]$Paths),[Windows.Forms.DragDropEffects]::Copy)
+            $form=[Windows.Forms.Form]@{FormBorderStyle='None';ShowInTaskbar=$false;TopMost=$true;StartPosition='Manual';Bounds=[Drawing.Rectangle]::new($data.x-40,$data.y+160,80,80)}
+            $form.Show();[Windows.Forms.Application]::DoEvents()
+            $glide=[CapyFileDrag]::Press($form.Handle,$data.x,$data.y);[Windows.Forms.Application]::DoEvents()
+            $effect=$form.DoDragDrop([Windows.Forms.DataObject]::new([Windows.Forms.DataFormats]::FileDrop,[string[]]$data.paths),[Windows.Forms.DragDropEffects]::Copy)
             if(!$glide.Join(10000)){throw 'The file drag did not release'}
-            $source.Close();if([CapyFileDrag]::Failure){throw [CapyFileDrag]::Failure};[string]$effect
-        }).AddArgument($Paths).AddArgument([int]($bounds.X+$bounds.Width/2)).AddArgument([int]($bounds.Y+$bounds.Height/2))
-        $result=$shell.Invoke();if($shell.HadErrors){throw ($shell.Streams.Error|Out-String)};[string]$result[-1]
-    }finally{$shell.Runspace.Dispose();$shell.Dispose()}
+            if([CapyFileDrag]::Failure){throw [CapyFileDrag]::Failure};$result.effect=[string]$effect
+        }catch{$result.error=$_|Out-String}
+        finally{
+            try{if($form){$form.Close();$form.Dispose()}}catch{if(!$result.error){$result.error=$_|Out-String}}
+            [IO.File]::WriteAllText($data.receipt,($result|ConvertTo-Json -Compress))
+        }
+    }
+    $definition=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($fileDragDefinition))
+    $arguments=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
+    $command='& {'+$source.ToString()+"} ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$definition'))) '$arguments'"
+    $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $drag=$null;$failure=$null
+    try{
+        $drag=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-STA','-EncodedCommand',$encoded) -WindowStyle Hidden -PassThru
+        $null=$drag.Handle
+        $refused=if($Target -eq 'drawing-canvas'){'The canvas refused the dropped photo: None'}else{'The drawing tabs refused an image and a drawing: None'}
+        Wait-Until {$drag.Refresh();$drag.HasExited} $refused
+        if(![IO.File]::Exists($receipt)){throw "The file drag source exited without a result: $($drag.ExitCode)"}
+        $result=Read-Snapshot $receipt
+        if($result.error){throw $result.error};[string]$result.effect
+    }catch{$failure=$_;throw}
+    finally{
+        try{
+            if($drag){try{$drag.Refresh();if(!$drag.HasExited){try{$drag.Kill();if(!$drag.WaitForExit(5000)){throw 'The file drag source did not stop'}}finally{[CapyFileDrag]::Release([int]($bounds.X+$bounds.Width/2),[int]($bounds.Y+$bounds.Height/2))}}}finally{$drag.Dispose()}}
+        }catch{if($failure){Write-Warning ('The file drag cleanup failed: '+$_.Exception.Message)}else{throw}}
+    }
 }
 function Tabs {@((Model).windows_tabs.tabs)}
 function Image([string]$Name,[Drawing.Color]$Color){
@@ -87,7 +116,7 @@ try {
     $review=Start-Process -FilePath $Executable -WorkingDirectory $run -PassThru -RedirectStandardError (Join-Path $run 'stderr.log')
     $null=$review.Handle
     Write-Output "Owned file activation review $($review.Id): $run"
-    Wait-Until {$m=Model;$m.brush_ready -and $m.state.theme -eq $Theme -and $m.windows_workspace.ready -and !$m.windows_workspace.busy -and @($m.state.commands|Where-Object {$_.id -eq 'open_document' -and $_.enabled}).Count} 'File activation review did not start' 90
+    Wait-Until {$m=Model;(Review-Ready $m) -and $m.state.theme -eq $Theme -and !$m.windows_workspace.busy -and @($m.state.commands|Where-Object {$_.id -eq 'open_document' -and $_.enabled}).Count} 'File activation review did not start' 90
     $before=@(Tabs).Count
     $first=Image 'First 日本語.png' ([Drawing.Color]::FromArgb(255,200,40,40))
     $second=Image 'Second drawing.png' ([Drawing.Color]::FromArgb(255,40,60,200))
@@ -144,7 +173,7 @@ try {
     [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json -Depth 4))
     $review=Start-Process -FilePath $Executable -WorkingDirectory $run -ArgumentList ('"'+$saved+'"') -PassThru -RedirectStandardError (Join-Path $run 'cold-stderr.log')
     $null=$review.Handle
-    Wait-Until {$m=Model;$m.state.document_file.location.uri -eq $saved -and $m.brush_ready -and $m.state.theme -eq $Theme -and $m.windows_workspace.ready} 'Launching the closed app with a saved drawing did not open it' 90
+    Wait-Until {$m=Model;$m.state.document_file.location.uri -eq $saved -and (Review-Ready $m) -and $m.state.theme -eq $Theme} 'Launching the closed app with a saved drawing did not open it' 90
     $opened=Model
     if($opened.error -or $opened.state.host_error -or @($opened.state.requests).Count -or $opened.state.document_file.busy){throw 'The drawing passed at launch left an error or pending file operation'}
     Wait-Until {$drawing.window=Owned-DrawingWindow $review;$null -ne $drawing.window} 'The launched drawing window is unavailable'

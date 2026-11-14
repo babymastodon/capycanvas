@@ -41,6 +41,16 @@ extension EditorLaunchTests {
                     if app.descendants(matching: .any)["color-panel-controls"].firstMatch.exists {
                         visitPhoneDrawerColor(in: app, tile: tile, theme: theme, fixture: actions)
                     }
+                    if app.buttons["filter-search-toggle"].exists {
+                        workspaceActivate(app.buttons["filter-search-toggle"])
+                        let search = app.textFields["filter-search"]
+                        XCTAssertTrue(search.waitForExistence(timeout: 10))
+                        expectation(for: NSPredicate(format: "hasKeyboardFocus == YES"), evaluatedWith: search)
+                        waitForExpectations(timeout: 10)
+                        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+                        dismissEditorKeyboard(in: app)
+                        workspaceActivate(app.buttons["filter-search-toggle"])
+                    }
                     if app.buttons["layer-properties-disclosure"].exists {
                         visitPhoneDrawerProperties(in: app) {
                             phoneDrawerCapture(in: app, id: phoneInventoryTileID(in: app, tile: tile, variant: "properties"),
@@ -81,10 +91,40 @@ extension EditorLaunchTests {
     @MainActor private func checkPhoneWindowDrawers(theme: String) throws {
         for orientation in phoneCaptureOrientations {
             requestedPhoneOrientation = orientation
+            try visitPhoneKeyboardDrawer(theme: theme)
             try visitPhoneWindowDrawers(theme: theme)
             try visitPhoneLayerCounts(theme: theme)
             try visitPhoneDrawerAnchors(theme: theme)
         }
+    }
+
+    @MainActor private func visitPhoneKeyboardDrawer(theme: String) throws {
+        let app = try phoneCaptureApplication(theme: theme, actions: [
+            ["type": "workspace_manager", "command": ["type": "switch", "id": "builtin:workspace:painter"]],
+            ["type": "invoke", "command": "drawing_brush"]])
+        defer { app.terminate() }
+        workspaceActivate(app.buttons["phone-tool-settings"])
+        let drawer = phoneDrawer(in: app)
+        XCTAssertTrue(drawer.waitForExistence(timeout: 10))
+        let value = drawer.buttons["number-value-tool-size"]
+        XCTAssertTrue(value.waitForExistence(timeout: 10))
+        phoneDrawerReveal(value, in: drawer)
+        let bars = ["phone-bar-0", "phone-bar-1"].map { app.descendants(matching: .any)[$0].firstMatch.frame }
+        workspaceActivate(value)
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 10))
+        let entry = app.textFields["number-entry-tool-size"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 10))
+        XCTAssertTrue(entry.isHittable)
+        XCTAssertLessThanOrEqual(entry.frame.maxY, keyboard.frame.minY + 1)
+        expectation(for: NSPredicate { _, _ in drawer.exists && drawer.frame.maxY <= keyboard.frame.minY + 1 }, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+        for (index, frame) in bars.enumerated() {
+            XCTAssertEqual(app.descendants(matching: .any)["phone-bar-" + String(index)].firstMatch.frame, frame)
+        }
+        entry.typeText("\n")
+        XCTAssertTrue(keyboard.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(drawer.exists)
     }
 
     @MainActor private func phoneDrawer(in app: XCUIApplication) -> XCUIElement {
@@ -232,6 +272,28 @@ extension EditorLaunchTests {
                     phoneDrawerCapture(in: app, id: id, theme: theme, fixture: actions, extra: ["opener": "phone-capy", "menu_row": identifier])
                 }
             }
+            if panels.contains("drawer-panel-sizes") {
+                let tiles = phoneDrawer(in: app).buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "size-")).allElementsBoundByIndex
+                XCTAssertEqual(tiles.count, 40)
+                let first = try XCTUnwrap(tiles.first)
+                for tile in tiles {
+                    phoneDrawerReveal(tile, in: phoneDrawer(in: app))
+                    XCTAssertEqual(tile.frame.width, first.frame.width, accuracy: 1)
+                    XCTAssertEqual(tile.frame.height, first.frame.height, accuracy: 1)
+                    XCTAssertGreaterThanOrEqual(tile.frame.height, 44)
+                    XCTAssertGreaterThanOrEqual(tile.frame.width, 36)
+                    let labels = tile.staticTexts.allElementsBoundByIndex
+                    for caption in labels where caption.frame.height > 0 {
+                        if caption.frame.height <= 18 {
+                            XCTAssertEqual(tile.frame.height, 44, accuracy: 1)
+                        } else {
+                            XCTAssertGreaterThanOrEqual(tile.frame.height, 24 + caption.frame.height + 2 - 1)
+                        }
+                        XCTAssertGreaterThanOrEqual(caption.frame.minY - tile.frame.minY, 24 - 1)
+                        XCTAssertLessThanOrEqual(caption.frame.maxY, tile.frame.maxY)
+                    }
+                }
+            }
             try visitPhoneDrawerSets(in: app)
             if app.descendants(matching: .any)["color-panel-controls"].firstMatch.exists {
                 visitPhoneDrawerColor(in: app, tile: nil, theme: theme, fixture: actions)
@@ -357,8 +419,10 @@ extension EditorLaunchTests {
                 expectation(for: NSPredicate { _, _ in rows.firstMatch.identifier != last }, evaluatedWith: app)
                 waitForExpectations(timeout: 10)
                 XCTAssertEqual(drawer.frame.height, height, accuracy: 1)
-                let scroll = app.descendants(matching: .any)["layer-rows"].firstMatch
-                scroll.swipeUp(); scroll.swipeDown()
+                let scroll = app.descendants(matching: .any)["layer-rows"].firstMatch, top = rows.firstMatch.frame
+                XCTAssertTrue(dragEditorScroll(scroll, snapshot: try scroll.snapshot(), towardEnd: true))
+                XCTAssertNotEqual(rows.firstMatch.frame, top, "The capped layer rows must scroll inside their drawer")
+                XCTAssertTrue(dragEditorScroll(scroll, snapshot: try scroll.snapshot(), towardEnd: false))
             }
             app.terminate()
         }
@@ -410,16 +474,15 @@ extension EditorLaunchTests {
         return target
     }
 
-    @MainActor private func phoneDrawerCanvasPoint(in app: XCUIApplication) -> XCUICoordinate? {
+    @MainActor private func phoneDrawerCanvasOffset(in app: XCUIApplication) -> CGVector? {
         guard let target = phoneDrawerCanvasRegion(in: app) else { return nil }
-        let canvas = app.descendants(matching: .any)["canvas"].firstMatch, bounds = canvas.frame
-        return canvas.coordinate(withNormalizedOffset: CGVector(dx: (target.midX - bounds.minX) / bounds.width,
-            dy: (target.midY - bounds.minY) / bounds.height))
+        let bounds = app.descendants(matching: .any)["canvas"].firstMatch.frame
+        return CGVector(dx: (target.midX - bounds.minX) / bounds.width, dy: (target.midY - bounds.minY) / bounds.height)
     }
 
     @MainActor private func phoneDrawerOutsideContact(in app: XCUIApplication) {
-        guard let point = phoneDrawerCanvasPoint(in: app) else { return }
-        point.tap()
+        guard let offset = phoneDrawerCanvasOffset(in: app) else { return }
+        app.descendants(matching: .any)["canvas"].firstMatch.coordinate(withNormalizedOffset: offset).tap()
         XCTAssertTrue(phoneDrawer(in: app).waitForNonExistence(timeout: 10))
     }
 
@@ -433,10 +496,9 @@ extension EditorLaunchTests {
     }
 
     @MainActor private func phoneDrawerStroke(in app: XCUIApplication) {
-        guard let from = phoneDrawerCanvasPoint(in: app) else { return }
+        guard let offset = phoneDrawerCanvasOffset(in: app) else { return }
         let canvas = app.descendants(matching: .any)["canvas"].firstMatch
-        let sample = CGPoint(x: (from.screenPoint.x - canvas.frame.minX) / canvas.frame.width,
-            y: (from.screenPoint.y - canvas.frame.minY) / canvas.frame.height)
+        let from = canvas.coordinate(withNormalizedOffset: offset), sample = CGPoint(x: offset.dx, y: offset.dy)
         let pixels = editorPixels(in: app, at: sample, size: 96)
         let to = from.withOffset(CGVector(dx: 28, dy: 0))
         let drawer = phoneDrawer(in: app)

@@ -50,6 +50,17 @@ impl Drop for ColorSurface {
     }
 }
 impl Child {
+    pub fn compositor_describes_wide_color(&mut self) -> Result<bool, String> {
+        if self.color.is_none() {
+            return Ok(false);
+        }
+        self.events.roundtrip(&mut self.state).map_err(error)?;
+        let state = &self.state.color;
+        let primaries = |named: manager::Primaries| state.primaries.contains(&(named as u32));
+        Ok(state.features.contains(&(manager::Feature::Parametric as u32))
+            && (primaries(manager::Primaries::DisplayP3) || (primaries(manager::Primaries::Bt2020)
+                && state.transfers.contains(&(manager::TransferFunction::St2084Pq as u32)))))
+    }
     /// A compositor without color management uses the explicit sRGB fallback.
     pub fn describe_sdr(&mut self) -> Result<ViewColor, String> {
         let Some(color) = self.color.as_mut() else {

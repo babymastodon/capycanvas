@@ -60,19 +60,23 @@ internal class RecoveryController(private val host: CanvasHost) {
             try {
                 restoring = true
                 startupStamp = host.withNative {Native.sessionStamp(it,host.drawingTabs.selected)}
+                val setAside = mutableListOf<String>()
                 val abandoned = withContext(NonCancellable) {withContext(Dispatchers.IO) {
                     Native.sessionImport(host.storage.sessions.absolutePath)
                     var selected: SessionOwners.Held? = null
                     for(path in directory.listFiles().orEmpty().filter {it.isDirectory&&File(it,"session.json").isFile}
                         .sortedByDescending {File(it,"session.json").lastModified()}) {
                         val owner = claim(path) ?: continue
-                        val saved = runCatching {Native.sessionManifestRead(File(path,"session.json").absolutePath)}.getOrNull()
+                        val claimed = runCatching {JSONObject(Native.sessionManifestClaim(File(path,"session.json").absolutePath))}.getOrNull()
+                        if(claimed?.has("set_aside") == true) {setAside.add(claimed.getString("set_aside"));owner.close();continue}
+                        val saved = claimed?.optJSONObject("manifest")?.toString()
                         val empty = saved != null&&JSONObject(saved).array("drawings").length() == 0
                         if(empty)try {Native.sessionCollect(path.absolutePath,keys(checkNotNull(saved)))}finally {owner.close()}
                         else if(selected == null)selected = owner else owner.close()
                     }
                     selected
                 }.also {held=it}}
+                for(detail in setAside)reportFailure(IllegalStateException(detail),true)
                 if(abandoned == null)withContext(NonCancellable) {
                     held = withContext(Dispatchers.IO) {checkNotNull(claim(File(directory,UUID.randomUUID().toString())))}
                 }

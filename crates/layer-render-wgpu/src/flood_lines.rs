@@ -4,6 +4,8 @@ use wgpu::util::DeviceExt;
 const PIXELS_PER_END:u64=256;
 const MIN_END_CAPACITY:u64=16384;
 const END_WORDS:u64=20;
+const SEAL_SLOTS:u64=8192;
+const FRONTIER_NODES:u64=256;
 const HEADER_WORDS:u32=5;
 const GAP_REACH:u32=64;
 pub(super) const WINDOW_HALO:u32=GAP_REACH+2*MAX_LINE_WIDTH;
@@ -39,6 +41,7 @@ pub(super) struct Lines {
     pipelines: std::collections::HashMap<&'static str, Deferred<wgpu::ComputePipeline>>,
     scratch: Option<[wgpu::Buffer; 2]>,
     tokens:Option<wgpu::Buffer>,
+    frontier:Option<wgpu::Buffer>,
     data: Option<wgpu::Buffer>,
     extent: [u32; 2],
     offsets: [u32; 4],
@@ -68,10 +71,10 @@ impl Lines {
             label:Some("area colours"),bind_group_layouts:&[Some(&colour_layout)],immediate_size:0,
         });
         let colour=Deferred::compute(device,"area colours",&colour_pipeline_layout,&shader,"colour_tokens");
-        Self {layout,colour_layout,colour,pipelines,scratch:None,tokens:None,data:None,extent:[0;2],offsets:[0;4],windows:Vec::new(),building:None,ends:0,overflow:false}
+        Self {layout,colour_layout,colour,pipelines,scratch:None,tokens:None,frontier:None,data:None,extent:[0;2],offsets:[0;4],windows:Vec::new(),building:None,ends:0,overflow:false}
     }
     pub fn storage_bytes(&self)->u64 {
-        self.tokens.as_ref().map_or(0,wgpu::Buffer::size)+self.data.as_ref().map_or(0,wgpu::Buffer::size)+self.scratch.as_ref().map_or(0,|buffers|buffers.iter().map(wgpu::Buffer::size).sum())
+        self.tokens.as_ref().map_or(0,wgpu::Buffer::size)+self.frontier.as_ref().map_or(0,wgpu::Buffer::size)+self.data.as_ref().map_or(0,wgpu::Buffer::size)+self.scratch.as_ref().map_or(0,|buffers|buffers.iter().map(wgpu::Buffer::size).sum())
     }
     fn cache_pipelines(&self)->impl Iterator<Item=&Deferred<wgpu::ComputePipeline>> {
         STAGES.iter().filter(|entry|self.building.as_ref().map_or_else(
@@ -145,6 +148,12 @@ impl Lines {
         if self.scratch.as_ref().is_none_or(|buffers|buffers[0].size()<compact_bytes || buffers[1].size()<scratch_bytes) {
             self.scratch=Some(std::array::from_fn(|index|device.create_buffer(&wgpu::BufferDescriptor {label:Some("region window coordinates"),size:if index==0 {compact_bytes}else{scratch_bytes},
                 usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false})));
+        }
+        if self.frontier.is_none() {
+            let limits=device.limits();
+            let slots=(limits.max_storage_buffer_binding_size.min(limits.max_buffer_size)/(FRONTIER_NODES*8)).clamp(64,SEAL_SLOTS)/64*64;
+            self.frontier=Some(device.create_buffer(&wgpu::BufferDescriptor {label:Some("region seal search frontier"),size:slots*FRONTIER_NODES*8,
+                usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false}));
         }
         self.extent=extent;self.offsets=offsets;
         self.windows=windows.iter().map(|(_,core)|(*core,analysis_window(*core,extent))).collect();
@@ -280,12 +289,14 @@ impl Lines {
             let weight=match entry {"grain_bits"=>f64::from(radius*16+32),"jump_distance"=>9.,"store_distance"=>16.,"skeleton_ridges"=>32.,"skeleton_prune"=>if params[16]==0 {1.}else{8.},"line_ends"=>32.,"refine_ends"=>1024.,"seal_candidates"=>4096.,_=>1.};
             let sparse=entry=="skeleton_ridges" || entry=="jump_distance" && matches!(params[17],0|4);
             let weight=weight*if sparse {32.}else{1.};
-            let count=((((budget-spent)/weight) as u64).max(64)/64*64).min(remaining);
+            let count=((((budget-spent)/weight) as u64).max(64)/64*64).min(remaining).min(if entry=="seal_candidates" {self.frontier.as_ref().unwrap().size()/(FRONTIER_NODES*8)}else{u64::MAX});
             steps.push((entry,count,params.clone()));spent+=count as f64*weight;
             if count<remaining {params[24]+=count as u32;work.steps.push_front((entry,remaining-count,params));}
         }
         let mut encoded=!steps.is_empty();
-        if encoded {self.encode(input,encoder,None,None,steps);}
+        for run in steps.chunk_by(|a,b|(a.0=="seal_candidates")==(b.0=="seal_candidates")) {
+            self.encode(input,encoder,None,(run[0].0=="seal_candidates").then(||self.frontier.as_ref().unwrap()),run.to_vec());
+        }
         if work.steps.is_empty() && !work.ranked {
             let readback=device.create_buffer(&wgpu::BufferDescriptor {label:Some("region line end count"),size:8,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
             encoder.copy_buffer_to_buffer(self.data.as_ref().unwrap(),u64::from(self.offsets[1])*4,&readback,0,8);
@@ -475,6 +486,18 @@ mod tests {
             drop(held);
             r.uploads.finish(&encoder);encoder.submit(&r.queue);crate::test_support::complete(&r);
         }
+    }
+
+    #[cfg(not(target_arch="wasm32"))]
+    #[test]
+    fn region_line_function_arrays_fit_small_gpu_stacks() {
+        let r=WgpuRasterizer::new_native_headless(Default::default()).unwrap();
+        let source=compose_wgsl(&[&working_color::shader(&r.device),include_str!("region_lines.wgsl")]);
+        let module=naga::front::wgsl::parse_str(&source).unwrap();
+        let mut sizes=naga::proc::Layouter::default();sizes.update(module.to_ctx()).unwrap();
+        let functions=module.functions.iter().map(|(_,function)|function).chain(module.entry_points.iter().map(|entry|&entry.function));
+        let largest=functions.flat_map(|function|function.local_variables.iter().map(|(_,local)|sizes[local.ty].size)).max().unwrap();
+        assert!(largest<=512,"a {largest}-byte function array does not fit the A10 GPU stack");
     }
 
     #[test]

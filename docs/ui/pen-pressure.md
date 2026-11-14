@@ -16,6 +16,7 @@ their drawer connections. Each opening starts near the upper-right corner of
 the clear canvas area with a 16-pixel inset, avoiding floating panels and open
 drawers where space allows. A dragged position lasts until the utility closes.
 If the canvas cannot hold the measured utility, it stays within the window.
+Where the window has room, it stays below or beside native window controls.
 
 The panel shows the curve, its control polygon, selectable handles and a live
 pressure marker. Input is centered below the horizontal axis; Output is centered

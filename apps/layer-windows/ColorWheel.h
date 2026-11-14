@@ -99,11 +99,11 @@ struct FieldWorker : std::enable_shared_from_this<FieldWorker> {
 // Marker motion redraws their image without rerasterizing the color field.
 struct WheelImage {
     std::shared_ptr<Device> device;
-    Imaging::SurfaceImageSource surface{nullptr};
+    Imaging::SurfaceImageSource surface{nullptr},markerSurface{nullptr};
     int pixels=0;
     com_ptr<ID2D1ImageBrush> ring;
     com_ptr<ID2D1Bitmap> field;
-    hstring ringKey,ringLayout,fieldKey,fieldLayout,presentedLayout;
+    hstring ringKey,ringLayout,fieldKey,fieldLayout,presentedLayout,baseKey;
     std::shared_ptr<FieldWorker> ringWorker,worker;
     std::optional<FieldResult> ringReady,ready;
     uint64_t ringEpoch=0,epoch=0;uint32_t fieldPixels=0;
@@ -113,19 +113,19 @@ struct WheelImage {
         worker->deliver=[this,changed](FieldResult result){ready=std::move(result);changed();};
         ringWorker->deliver=[this,changed](FieldResult result){ringReady=std::move(result);changed();};
     }
-    void present(Image const& image,J const& model,J const& colors,double size,double scale){
-        try{draw(image,model,colors,size,scale);}
+    void present(Image const& image,Image const& markerImage,J const& model,J const& colors,double size,double scale){
+        try{draw(image,markerImage,model,colors,size,scale);}
         catch(hresult_error const& error){
             auto code=error.code();
             if(code!=DXGI_ERROR_DEVICE_REMOVED&&code!=DXGI_ERROR_DEVICE_RESET&&code!=D2DERR_RECREATE_TARGET&&code!=E_SURFACE_CONTENTS_LOST)throw;
-            draw(image,model,colors,size,scale,true);
+            draw(image,markerImage,model,colors,size,scale,true);
         }
     }
-    void draw(Image const& image,J const& model,J const& state,double size,double scale,bool reset=false){
+    void draw(Image const& image,Image const& markerImage,J const& model,J const& state,double size,double scale,bool reset=false){
         int next=std::max(1,int(std::ceil(size*scale)));
-        if(reset){surface=nullptr;device.reset();}
+        if(reset){surface=nullptr;markerSurface=nullptr;device.reset();}
         if(!device||FAILED(device->d3d->GetDeviceRemovedReason())){
-            device=Device::get();surface=nullptr;ring=nullptr;field=nullptr;ringKey=fieldKey=L"";
+            device=Device::get();surface=nullptr;markerSurface=nullptr;ring=nullptr;field=nullptr;ringKey=fieldKey=L"";
         }
         auto shape=str(model,L"shape");uint32_t projection=shape==L"circle"?2:shape==L"triangle"?1:0;
         auto working=str(model,L"rgb_space",L"Srgb");uint32_t rgbSpace=working==L"DisplayP3"?1:working==L"AdobeRgb"?2:working==L"ProPhoto"?3:0;
@@ -148,26 +148,34 @@ struct WheelImage {
             bool currentRing=ring&&std::wstring_view(ringKey).starts_with(std::wstring_view(shapeKey+L"/"));
             if((!currentRing&&!readyRing)||!((field&&presentedLayout==layoutKey)||readyField))return;
         }
-        if(!surface||pixels!=next){
-            pixels=next;
-            surface=Imaging::SurfaceImageSource(pixels,pixels,false);
-            check_hresult(surface.as<ISurfaceImageSourceNativeWithD2D>()->SetDevice(device->d2d.get()));
-            image.Source(surface);
-        }
-        auto native=surface.as<ISurfaceImageSourceNativeWithD2D>();
-        com_ptr<ID2D1DeviceContext> base;
-        POINT offset{};
-        check_hresult(native->BeginDraw(RECT{0,0,pixels,pixels},__uuidof(ID2D1DeviceContext),base.put_void(),&offset));
-        bool active=true;
-        try{
-            auto context=base.as<ID2D1DeviceContext2>();
-            context->SetDpi(96,96);
-            context->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            context->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
-            context->SetTransform(D2D1::Matrix3x2F::Scale(float(pixels),float(pixels))*
-                D2D1::Matrix3x2F::Translation(float(offset.x),float(offset.y)));
-            context->Clear(D2D1::ColorF(0,0,0,0));
-            auto geometry=object(model,L"geometry");
+        if(pixels!=next){pixels=next;surface=nullptr;markerSurface=nullptr;}
+        auto drawInto=[&](Imaging::SurfaceImageSource& target,Image const& view,auto&& body){
+            if(!target){
+                target=Imaging::SurfaceImageSource(pixels,pixels,false);
+                check_hresult(target.as<ISurfaceImageSourceNativeWithD2D>()->SetDevice(device->d2d.get()));
+                view.Source(target);
+            }
+            auto native=target.as<ISurfaceImageSourceNativeWithD2D>();
+            com_ptr<ID2D1DeviceContext> base;
+            POINT offset{};
+            check_hresult(native->BeginDraw(RECT{0,0,pixels,pixels},__uuidof(ID2D1DeviceContext),base.put_void(),&offset));
+            bool active=true;
+            try{
+                auto context=base.as<ID2D1DeviceContext2>();
+                context->SetDpi(96,96);
+                context->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                context->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+                context->SetTransform(D2D1::Matrix3x2F::Scale(float(pixels),float(pixels))*
+                    D2D1::Matrix3x2F::Translation(float(offset.x),float(offset.y)));
+                context->Clear(D2D1::ColorF(0,0,0,0));
+                body(context);
+                active=false;check_hresult(native->EndDraw());
+            }catch(...){if(active)native->EndDraw();throw;}
+        };
+        Paint white{1,1,1,1};
+        auto geometry=object(model,L"geometry");
+        auto nextBase=layoutKey+L"/"+to_hstring(size)+L"/"+geometry.Stringify();
+        if(!surface||ringReady||ready||nextBase!=baseKey){drawInto(surface,image,[&](com_ptr<ID2D1DeviceContext2> const& context){
             auto center=point(array(geometry,L"center"));
             float inner=float(num(geometry,L"inner")),outer=float(num(geometry,L"outer"));
             if(auto result=std::exchange(ringReady,std::nullopt);result&&result->epoch==ringEpoch&&result->device==device){
@@ -175,7 +183,6 @@ struct WheelImage {
                 ring=nullptr;check_hresult(context->CreateImageBrush(result->bitmap.get(),D2D1::ImageBrushProperties(D2D1::RectF(0,0,side,side)),
                     D2D1::BrushProperties(1,D2D1::Matrix3x2F::Scale(1/side,1/side)),ring.put()));ringKey=result->key;
             }
-            Paint white{1,1,1,1};
             if(auto result=std::exchange(ready,std::nullopt);result&&result->epoch==epoch&&result->device==device){check_hresult(result->status);field=result->bitmap;fieldKey=result->key;fieldPixels=result->pixels;}
             com_ptr<ID2D1Factory> factory;context->GetFactory(factory.put());com_ptr<ID2D1Geometry> clip;
             if(projection==0){auto square=array(geometry,L"square");float x=float(square.GetNumberAt(0)),y=float(square.GetNumberAt(1)),w=float(square.GetNumberAt(2));
@@ -195,6 +202,8 @@ struct WheelImage {
             }
             // Stroke one ellipse, as in the reference canvas, to keep both rims consistent.
             if(ring)context->DrawEllipse(D2D1::Ellipse(center,(inner+outer)/2,(inner+outer)/2),ring.get(),outer-inner);
+        });baseKey=nextBase;presentedLayout=layoutKey;}
+        drawInto(markerSurface,markerImage,[&](com_ptr<ID2D1DeviceContext2> const& context){
             float radius=float(std::clamp(size*.04,6.,10.)/size);
             com_ptr<ID2D1SolidColorBrush> brush;check_hresult(context->CreateSolidColorBrush(white,brush.put()));
             for(auto const& entry:{std::pair{L"wheel_hue_marker",L"wheel_hue_color"},std::pair{L"wheel_marker",L"marker_color"}}){
@@ -203,8 +212,7 @@ struct WheelImage {
                 brush->SetColor(Paint{0,0,0,.5f});context->DrawEllipse(ellipse,brush.get(),float(4/size));
                 brush->SetColor(white);context->DrawEllipse(ellipse,brush.get(),float(2/size));
             }
-            active=false;check_hresult(native->EndDraw());presentedLayout=layoutKey;
-        }catch(...){if(active)native->EndDraw();throw;}
+        });
     }
 };
 }

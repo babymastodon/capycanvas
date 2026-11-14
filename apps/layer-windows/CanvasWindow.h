@@ -1,6 +1,7 @@
 #pragma once
 #include "pch.h"
 #include "CanvasModelUpdate.h"
+#include "NativeJson.h"
 #include "WorkspaceView.h"
 #include "HeaderView.h"
 #include "SettingsView.h"
@@ -39,6 +40,7 @@
 void CapyLifecycle(char const* event);
 
 namespace CapyUi {struct WorkspaceData;}
+struct OrderedTraceFile;
 
 class CanvasWindow : public std::enable_shared_from_this<CanvasWindow> {
 public:
@@ -57,7 +59,9 @@ private:
     CanvasLatencyTrace latencyTrace{GetEnvironmentVariableW(L"CAPY_LATENCY_TRACE",nullptr,0)!=0};
     PresentationTrace presentationTrace{GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0)!=0};
     bool brushReady=false;
-    void TracePresentation(bool frame,bool dirty,bool repeat=false);
+    bool TracePresentation(bool frame,bool dirty,bool repeat=false);
+    std::shared_ptr<OrderedTraceFile> textInputTrace;uint64_t textInputPresses=0;
+    void TraceTextInput(bool pressed);
     std::vector<std::wstring> launchFiles;
     void SendLaunchFiles(winrt::Windows::Data::Json::JsonObject const& model);
     struct Size { uint32_t width=1, height=1; float scale=1; };
@@ -80,11 +84,18 @@ private:
     winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer launchCaptionTimer{nullptr};
     winrt::Microsoft::UI::Xaml::Media::Animation::Storyboard launchFade{nullptr},launchCaptionFade{nullptr};
     CanvasLaunchTiming launchTiming;
+    CanvasLaunchPaint launchPaint;
+    winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendered_revoker launchFrame;
     bool launchLoaded=false;
     void CreateLaunchCover();
+    void LayoutLaunchCover();
     void ArmLaunchCaption();
     void ApplyLaunchCover(winrt::Windows::Data::Json::JsonObject const& model);
     void HideLaunchCover(bool animate);
+    void QueueLaunchReveal();
+    void CancelLaunchReveal();
+    static winrt::fire_and_forget AwaitLaunchPresent(std::weak_ptr<CanvasWindow>,
+        winrt::Microsoft::UI::Dispatching::DispatcherQueue,CanvasLaunchPaint::Receipt);
 
     std::shared_ptr<CapyUi::WorkspaceData> screenData;
     winrt::Microsoft::UI::Xaml::Controls::Button screenChip;
@@ -122,7 +133,7 @@ private:
     std::set<uint32_t> xamlContacts;
     // Captured together under mutex; never pair a new DPI with an old camera.
     float inputScale=1;
-    uint64_t revision=0;
+    CapyView inputView{};
     std::unordered_map<uint32_t,std::pair<std::wstring,std::wstring>> heldKeys; // UI thread
     std::unordered_set<uint32_t> penButtons; // input thread
     PenSourceCache penSources;
@@ -145,6 +156,7 @@ private:
     std::unique_ptr<WorkspaceManagerView> workspaceManager;
     winrt::Windows::Data::Json::JsonObject lastModel;
     winrt::Windows::Data::Json::JsonObject tracedModel;
+    CapyUi::CameraTrace cameraTrace;
     std::string lastGlass;
     uint64_t chromeRevision=0;
     std::wstring workspaceOwnerProperty;
@@ -166,9 +178,11 @@ private:
         std::deque<std::pair<uint64_t,std::function<void()>>> replies;
         std::string layoutInputBytes;
         NativeLayoutInput layoutInput;
+        bool layoutInputFull=false;
         NativeModelUpdates modelUpdates;
         CanvasModelUpdate models;
         uint32_t unappliedSections=0;
+        CanvasModelChanges unappliedChanges;
         winrt::Windows::Data::Json::JsonObject pendingLocalization{nullptr};
         void Close(){pending.Close();replies.clear();}
         void Reply(std::function<void()> deliver){
@@ -185,9 +199,16 @@ private:
         winrt::Windows::Data::Json::JsonObject full{nullptr},layout{nullptr},workspace{nullptr},camera{nullptr},search{nullptr},localization{nullptr},glass{nullptr};
         NativeLayoutInput fullInput,reflowInput;
         uint32_t sections=CanvasAllSections;
+        CanvasModelChanges changes;
     };
     std::shared_ptr<SnapshotState> snapshots=std::make_shared<SnapshotState>();
     winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendered_revoker glassFrame;
+    struct NavigatorWork {CapyNavigatorViewport viewport{};bool remove=false;std::function<void(NativeSurfaceAttachment)> reply;};
+    struct NavigatorWatch {std::function<void(NativeSurfaceAttachment)> reply;CapyNavigatorSurfaceInfo published{};};
+    std::map<uint64_t,NavigatorWork> navigatorWork;
+    std::map<uint64_t,NavigatorWatch> navigatorWatches;
+    bool navigatorDirty=false;
+    void PresentNavigators();
     void UpdateNavigationCursor();
     void Publish(std::string snapshot, CapySnapshotInfo const& info);
     std::vector<std::pair<std::function<void(int32_t)>,int32_t>> completedCommands;
@@ -197,10 +218,11 @@ private:
         winrt::Microsoft::UI::Dispatching::DispatcherQueue,std::weak_ptr<CanvasWindow>,CanvasSnapshotMailbox::Batch);
     bool ApplyPending(PreparedSnapshots);
     void FailPresentation(std::string);
-    bool ApplyModel(winrt::Windows::Data::Json::JsonObject const&,NativeLayoutInput,uint32_t sections=CanvasAllSections);
+    bool ApplyModel(winrt::Windows::Data::Json::JsonObject const&,NativeLayoutInput,uint32_t sections=CanvasAllSections,CanvasModelChanges const& changes={true});
+    CanvasModelInputs windowInputs,captionInputs;
     void Popup(bool open);
     void UpdatePopup();
-    void ApplyDialogs();
+    void ApplyDialogs(CanvasModelChanges const* changes=nullptr);
     bool ModalOpen()const;
     void RequestClose();
     void ChromeMotion(winrt::Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&,bool leave=false);

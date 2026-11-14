@@ -3,12 +3,15 @@
 #include "../TextCompositionKeys.h"
 #include "../NativeKeyRepeats.h"
 #include "../CanvasPointerSample.h"
+#include "../ChildOrder.h"
 #include "../PenSourceCache.h"
 #include "../CanvasContactGate.h"
 #include "../PointerCompletion.h"
 #include "../PointerModality.h"
 #include "../ThumbnailOwners.h"
 #include "../PointerScrub.h"
+#include "../PressRepeat.h"
+#include "../BubbleMotion.h"
 #include <limits>
 #include "../CanvasQueryQueue.h"
 #include "../CanvasLatencyTrace.h"
@@ -31,36 +34,63 @@
 #endif
 
 int main() {
+    {
+        CapyUi::TabShapeInputs shape{100,30,{-6,-6}};
+        auto resized=shape;resized.width=120;assert(resized!=shape);
+        auto corners=shape;corners.bottom[0]=0;assert(corners!=shape);
+        assert((shape==CapyUi::TabShapeInputs{100,30,{-6,-6}}));
+        using Inputs=CapyUi::TabSurfaceInputs<std::array<float,2>,std::array<unsigned char,4>>;
+        Inputs surface{100,30,0,4,{{0,0},{100,30}},{{6,0},{30,30}},{255,10,20,30},{255,40,50,60}};
+        assert(surface==Inputs(surface));
+        for(unsigned field=0;field<8;++field){
+            auto next=surface;
+            switch(field){
+                case 0:++next.width;break;case 1:++next.height;break;
+                case 2:++next.clipLeft;break;case 3:++next.clipRight;break;
+                case 4:++next.band[0][0];break;case 5:++next.tab[0][1];break;
+                case 6:++next.strip[0];break;case 7:++next.panel[2];break;
+            }
+            assert(surface!=next);
+        }
+        CapyUi::ResizeHandleInputs<std::wstring> handle{true,17,L"top_left",false};
+        for(unsigned field=0;field<4;++field){
+            auto next=handle;
+            switch(field){case 0:next.floating=false;break;case 1:++next.id;break;case 2:next.edge=L"bottom_right";break;case 3:next.resetColumn=true;break;}
+            assert(handle!=next);
+        }
+    }
 #ifdef _WIN32
     winrt::init_apartment();
     {
         using J=winrt::Windows::Data::Json::JsonObject;
-        auto packet=J::Parse(LR"({"camera":{"revision":5,"zoom":0.657383918762207},"windows_tabs":{"selected":2,"session_stamps":[{"id":1,"stamp":{"artwork":"other","epoch":8,"camera_navigation":90}},{"id":2,"stamp":{"artwork":"drawing","epoch":0,"camera_navigation":2}}]}})");
         std::string identity="{\"process_id\":17,\"window_id\":23";
-        auto bytes=CapyUi::CameraTracePayload(packet,false,identity);
-        auto receipt=J::Parse(winrt::to_hstring(bytes));
-        auto navigation=receipt.GetNamedObject(L"navigation",J{});
-        assert(navigation.GetNamedNumber(L"revision",-1)==2);
-        assert(navigation.GetNamedNumber(L"drawing_id",-1)==2);
-        assert(navigation.GetNamedString(L"artwork",L"")==L"drawing");
-        assert(navigation.GetNamedNumber(L"epoch",-1)==0);
-        assert(receipt.GetNamedNumber(L"process_id")==17&&receipt.GetNamedNumber(L"window_id")==23);
-        assert(receipt.GetNamedObject(L"camera").GetNamedNumber(L"revision")==5);
-        packet.GetNamedObject(L"camera").Insert(L"revision",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(6));
-        packet.GetNamedObject(L"windows_tabs").GetNamedArray(L"session_stamps").GetObjectAt(1).GetNamedObject(L"stamp").Insert(L"camera_navigation",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(3));
-        receipt=J::Parse(winrt::to_hstring(CapyUi::CameraTracePayload(packet,false,identity)));
-        assert(receipt.GetNamedObject(L"camera").GetNamedNumber(L"revision")==6);
-        assert(receipt.GetNamedObject(L"navigation").GetNamedNumber(L"revision")==3);
-        auto full=J::Parse(LR"({"state":{"camera":{"revision":7,"zoom":0.657383918762207}},"windows_tabs":{"selected":2,"session_stamps":[{"id":2,"stamp":{"artwork":"drawing","epoch":0,"camera_navigation":4}}]}})");
-        receipt=J::Parse(winrt::to_hstring(CapyUi::CameraTracePayload(full,true,identity)));
-        assert(receipt.GetNamedObject(L"camera").GetNamedNumber(L"revision")==7);
-        assert(receipt.GetNamedObject(L"navigation").GetNamedNumber(L"revision")==4);
-        assert(CapyUi::CameraTracePayload(J{},false,identity).empty());
-        auto startup=J::Parse(LR"({"camera":{"revision":1},"windows_tabs":null})");
-        receipt=J::Parse(winrt::to_hstring(CapyUi::CameraTracePayload(startup,false,identity)));
-        assert(receipt.GetNamedObject(L"camera").GetNamedNumber(L"revision")==1&&!receipt.HasKey(L"navigation"));
+        CapyUi::CameraTrace trace;
+        auto receipt=[&](wchar_t const* packet,bool full){
+            auto bytes=trace.Payload(J::Parse(packet),full,identity);
+            return bytes.empty()?J{nullptr}:J::Parse(winrt::to_hstring(bytes));
+        };
+        auto revisions=[](J const& value){return std::pair{value.GetNamedObject(L"camera").GetNamedNumber(L"revision"),value.GetNamedObject(L"navigation",J{}).GetNamedNumber(L"revision",-1)};};
+        auto startup=receipt(LR"({"state":{"camera":{"revision":1}},"windows_tabs":null,"windows_glass":{}})",true);
+        assert(startup.GetNamedObject(L"camera").GetNamedNumber(L"revision")==1&&!startup.HasKey(L"navigation"));
+        auto full=receipt(LR"({"state":{"camera":{"revision":5,"zoom":0.657383918762207}},"windows_tabs":{"selected":2,"session_stamps":[{"id":1,"stamp":{"artwork":"other","epoch":8,"camera_navigation":90}},{"id":2,"stamp":{"artwork":"drawing","epoch":0,"camera_navigation":2}}]},"windows_glass":{}})",true);
+        auto navigation=full.GetNamedObject(L"navigation");
+        assert(navigation.GetNamedNumber(L"drawing_id")==2&&navigation.GetNamedString(L"artwork")==L"drawing"&&navigation.GetNamedNumber(L"epoch")==0);
+        assert(full.GetNamedNumber(L"process_id")==17&&full.GetNamedNumber(L"window_id")==23);
+        assert((revisions(full)==std::pair{5.,2.}));
+        auto pan=receipt(LR"({"camera":{"revision":8,"zoom":0.657383918762207},"revision":40,"windows_glass":{}})",false);
+        assert((revisions(pan)==std::pair{8.,5.}));
+        assert(pan.GetNamedObject(L"navigation").GetNamedString(L"artwork")==L"drawing");
+        assert(!receipt(LR"({"workspace_update":{"model_revision":30},"windows_tabs":{"selected":2,"session_stamps":[{"id":2,"stamp":{"artwork":"drawing","epoch":0,"camera_navigation":5}}]},"windows_glass":{}})",false));
+        auto fit=receipt(LR"({"workspace_update":{"model_revision":30},"camera":{"revision":9},"windows_tabs":{"selected":2,"session_stamps":[{"id":2,"stamp":{"artwork":"drawing","epoch":0,"camera_navigation":6}}]},"windows_glass":{}})",false);
+        assert((revisions(fit)==std::pair{9.,6.}));
+        auto resized=receipt(LR"({"layout":{},"camera":{"revision":11},"windows_tabs":{"selected":2,"session_stamps":[{"id":2,"stamp":{"artwork":"drawing","epoch":0,"camera_navigation":6}}]},"windows_glass":{}})",false);
+        assert((revisions(resized)==std::pair{11.,6.}));
+        assert((revisions(receipt(LR"({"camera":{"revision":12},"revision":44,"windows_glass":{}})",false))==std::pair{12.,7.}));
+        assert(!receipt(L"{}",false));
+        receipt(LR"({"state":{"camera":{"revision":13}},"windows_tabs":null,"windows_glass":{}})",true);
+        assert(!receipt(LR"({"camera":{"revision":14},"revision":46,"windows_glass":{}})",false).HasKey(L"navigation"));
     }
-    std::cout<<"Camera traces retain the active navigation receipt with the same camera packet\n";
+    std::cout<<"Camera traces carry the active navigation through camera-only packets\n";
 #endif
     CapyUi::PointerModality modality;
     assert(!modality.Mouse());
@@ -84,7 +114,55 @@ int main() {
         assert(timing.CaptionRemaining(start+delay-std::chrono::milliseconds(1),delay)==std::chrono::milliseconds(1));
         assert(timing.CaptionRemaining(start+delay,delay).count()==0);
         assert(timing.CaptionRemaining(start+delay+std::chrono::seconds(1),delay).count()==0);
-        assert(CanvasLaunchTiming::FadeDuration>=std::chrono::milliseconds(150)&&CanvasLaunchTiming::FadeDuration<=std::chrono::milliseconds(200));
+    }
+    {
+        for(auto extent:std::vector<std::array<double,3>>{{1400,1000,252},{320,150,60},{150,320,60}}){
+            CanvasLaunchPlacement placement(extent[0],extent[1],extent[2]);
+            assert(placement.left>=0&&placement.top>=0);
+            assert(placement.left+placement.size/2==extent[0]/2&&placement.top+placement.size/2==extent[1]/2);
+            for(double scale:{1.,1.5,2.}){
+                auto raster=std::ceil(placement.size*std::max(2.,scale));
+                auto top=placement.CaptionTop(18,.923271,raster,scale);
+                assert(top>=placement.top+placement.size*.923271+18);
+                assert(top+20<=extent[1]);
+                assert(std::abs(top*scale-std::round(top*scale))<1e-9);
+            }
+        }
+    }
+    {
+        CanvasLaunchPaint paint;
+        int surface;
+        auto request=paint.Request(&surface,1);
+        auto now=CanvasLaunchTiming::Clock::time_point{};
+        std::optional<CanvasLaunchTiming::Clock::time_point> began;
+        auto presented=[&](CanvasLaunchPaint::Receipt const& receipt){if(paint.Presented(receipt,&surface,1))began=now;};
+        presented(request);assert(!began);
+        now+=std::chrono::milliseconds(600);
+        assert(paint.Rendered(request));assert(!began);
+        assert(!paint.Request(&surface,1));assert(!paint.Rendered(request));
+        now+=std::chrono::milliseconds(16);
+        presented(request);assert(began==now);
+        auto duration=std::chrono::milliseconds(500);
+        assert(duration-(now-*began)==duration);
+        now+=duration/2;assert(duration-(now-*began)==duration/2);
+        presented(request);assert(*began+duration==now+duration/2);
+    }
+    {
+        CanvasLaunchPaint paint;
+        int first,second;
+        auto retired=paint.Request(&first,1);
+        assert(paint.Rendered(retired));paint.Cancel();
+        auto current=paint.Request(&first,1);
+        assert(current!=retired&&!paint.Rendered(retired));
+        assert(!paint.Presented(retired,&first,1));
+        assert(!paint.Presented(current,&first,1));
+        assert(paint.Rendered(current));
+        assert(!paint.Presented(current,&second,1)&&!paint.Presented(current,&first,2));
+        auto replacement=paint.Request(&second,2);
+        assert(!paint.Presented(current,&first,1));
+        assert(paint.Rendered(replacement)&&paint.Presented(replacement,&second,2));
+        auto closing=paint.Request(&second,2);paint.Cancel();
+        assert(!paint.Rendered(closing)&&!paint.Presented(closing,&second,2));
     }
     CanvasSurfaceState surface;
     surface.Reset(0);
@@ -242,6 +320,15 @@ int main() {
         contacts.Cancel(2);assert(canceled.back()=="other"&&canceled.size()==4);
         contacts.Observe(3,&scroll,[&]{canceled.push_back("cleared");});contacts.Clear();contacts.Cancel(3);assert(canceled.size()==4);
     }
+    {
+        PointerCancelRegistry contacts;int row,scroll;int rowCanceled=0,scrollCanceled=0,otherCanceled=0;
+        contacts.Observe(1,&row,[&]{++rowCanceled;});contacts.Observe(1,&scroll,[&]{++scrollCanceled;});
+        contacts.Observe(2,&row,[&]{++otherCanceled;});
+        contacts.Forget(1,&row);contacts.Cancel(1);
+        assert(rowCanceled==0&&scrollCanceled==1&&otherCanceled==0);
+        contacts.Observe(1,&row,[&]{++rowCanceled;});contacts.Cancel(1);assert(rowCanceled==1);
+        contacts.Cancel(2);assert(otherCanceled==1);
+    }
     std::cout<<"Capture transfer cancels every native owner once while preserving reentrant and unrelated contacts\n";
 
     {
@@ -368,6 +455,32 @@ int main() {
     }
     std::cout<<"Stationary and generated pointer updates cannot reapply a scrub with new modifiers\n";
 
+    {
+        CapyUi::PressRepeat press;CapyUi::PressRepeat::Limits limits{500000,8};
+        assert(!press.Next(limits,1000000,0,-12));
+        assert(!press.Next(limits,1200000,-12,0));
+        assert(press.Next(limits,1300000,-10,3));
+        assert(!press.Next(limits,1400000,-10,3));
+        assert(!press.Next(limits,2000000,0,0,1)&&!press.Next(limits,2100000,0,0,2)&&press.Next(limits,2200000,1,1,2));
+        assert(!press.Next(limits,3000000,0,0)&&!press.Next(limits,3500001,0,0));
+        press.Reset();assert(!press.Next(limits,3600000,0,0));
+    }
+    std::cout<<"Double presses need the second press within the double-click time and rectangle of the first\n";
+
+    {
+        CapyBubbles::Tween card{1};card.to(0,150);
+        CapyBubbles::MotionTicks ticks;ticks.polling=true;
+        double asked=0;std::vector<double> fading;
+        for(int frame=0;frame<=30;++frame){
+            auto now=frame*1000./60;if(ticks.busy&&now-asked>=200)ticks.replied(true);
+            ticks.tick(now,[&](double at){bool moving=card.step(at,false);if(card.value>0&&card.value<1)fading.push_back(at);return moving;},[&]{asked=now;return true;});
+        }
+        assert(fading.size()>=8&&fading.back()<150&&card.value==0&&"A retiring card must fade on every frame while motion replies are 200 ms apart");
+        ticks.replied(false);
+        assert(!ticks.tick(1000,[&](double at){return card.step(at,false);},[]{return true;})&&"Idle bubbles must stop their frames");
+    }
+    std::cout<<"Retiring bubble parts fade on every frame however late motion replies arrive, and idle bubbles stop their frames\n";
+
     for(uint32_t phase=0;phase<=4;++phase) {
         assert(CanvasPointerPhase(phase,false)==phase);
         assert(CanvasPointerPhase(phase,true)==4);
@@ -384,6 +497,20 @@ int main() {
         assert(CanvasPointerHistoryCount(History{true,3},phase)==((phase==0||phase==2)?3u:0u));
     }
     std::cout<<"Missing native pointer history uses the current point in every event phase\n";
+    struct HistoryPoint {
+        uint32_t frame;uint64_t time;
+        uint32_t FrameId()const{return frame;}
+        uint64_t Timestamp()const{return time;}
+    };
+    struct HistoryPoints {
+        std::vector<HistoryPoint> points;
+        HistoryPoint GetAt(uint32_t i)const{return points.at(i);}
+    };
+    HistoryPoint newest{42,7000};
+    assert(CanvasPointerHistoryNewestFirst(HistoryPoints{{{42,7000},{41,7000},{40,7000}}},3,newest));
+    assert(!CanvasPointerHistoryNewestFirst(HistoryPoints{{{40,7000},{41,7000},{42,7000}}},3,newest));
+    assert(!CanvasPointerHistoryNewestFirst(HistoryPoints{{{42,7000}}},1,newest));
+    std::cout<<"Native pointer history order follows input frames when timestamps tie\n";
     for(uint32_t tool:{0u,2u}) {
         for(bool middle:{false,true})for(bool right:{false,true})
             assert(CanvasPointerButton(tool,middle,right)==0);
@@ -409,6 +536,46 @@ int main() {
     actual.pressure=1.1f;
     assert(PrepareCanvasPrediction(actual)&&actual.pressure==1.1f); // real validation remains in Rust
     std::cout<<"Canvas predictions: extrapolated pressure bounded, invalid predictions rejected, real input preserved\n";
+    {
+        auto camera=[](float zoom,float rotation,bool flip,float x,float y,float width,float height){
+            float sx=flip?-zoom:zoom;
+            return CapyView{9,{std::cos(rotation)*sx,std::sin(rotation)*sx,-std::sin(rotation)*zoom,std::cos(rotation)*zoom,x,y},{width,height}};
+        };
+        auto inside=[](CapyView const& view,CapyPointer const& p){
+            auto const& m=view.document_to_surface;float det=m[0]*m[3]-m[1]*m[2],x=p.x-m[4],y=p.y-m[5];
+            float u=(m[3]*x-m[2]*y)/det,v=(m[0]*y-m[1]*x)/det;
+            return u>0&&u<view.document[0]&&v>0&&v<view.document[1];
+        };
+        for(auto view:{camera(3.3257809f,0,false,709.65f,889.36f,128,96),camera(.35f,.7f,true,1500,-120,2048,1536),camera(1,-1.9f,false,240,1100,32,24)}){
+            for(bool pen:{false,true})for(uint32_t i=0;i<42;i++){
+                auto p=CanvasReplaySample(view,i,42,pen,false,false);
+                assert(inside(view,p)&&p.view_revision==view.revision&&p.phase==(i==0?1u:i==41?3u:2u));
+            }
+            for(uint32_t i=0;i<32768;i+=97)assert(inside(view,CanvasReplaySample(view,i,32768,false,false,true)));
+            assert(inside(view,CanvasReplaySample(view,0,3,false,true,false)));
+        }
+    }
+    std::cout<<"Test replays stay inside the drawing under off-centre, rotated and flipped cameras\n";
+    {
+        struct Items{
+            std::vector<int> values,removed;
+            uint32_t Size()const{return uint32_t(values.size());}
+            int GetAt(uint32_t index)const{return values[index];}
+            bool IndexOf(int value,uint32_t& at)const{auto found=std::find(values.begin(),values.end(),value);at=uint32_t(found-values.begin());return found!=values.end();}
+            void RemoveAt(uint32_t index){removed.push_back(values[index]);values.erase(values.begin()+index);}
+            void InsertAt(uint32_t index,int value){values.insert(values.begin()+index,value);}
+        };
+        std::vector<int> start{1,2,3,4};
+        for(auto target:std::vector<std::vector<int>>{{1,2,3,4},{1,2,3,4,5},{1,2,4}})do{
+            for(int focused:start){
+                Items items{start,{}};
+                for(uint32_t index=0;index<target.size();++index)PlaceChild(items,index,target[index],[&](int value){return value==focused;});
+                assert(std::equal(target.begin(),target.end(),items.values.begin())&&items.Size()==std::max(target.size(),start.size()));
+                assert(std::find(items.removed.begin(),items.removed.end(),focused)==items.removed.end());
+            }
+        }while(std::next_permutation(target.begin(),target.end()));
+    }
+    std::cout<<"Reordering native children never removes the focused child\n";
     WorkspacePublication publication;
     assert(!publication.Accept(false,10,4,40));
     assert(!publication.Accept(false,10,4,40,true));
@@ -774,6 +941,20 @@ int main() {
             service(false);assert(answered==2&&afterFrame.Empty()&&!pendingInput.Empty());
             service(false);assert(answered==2);
         }
+        CanvasWorkBuffer work;CanvasQueryQueue ordered;
+        assert(ordered.Push({CanvasQueryKind::Workspace,"held-stamp",{},work.Pushed()}));
+        assert(work.Push(CanvasCommand{CanvasCommandKind::Action,"toggle-sliders"}));
+        assert(ordered.Push({CanvasQueryKind::Workspace,"menu-refresh",{},work.Pushed()}));
+        auto earlier=ordered.Take({},work.Taken());assert(earlier&&earlier->json=="held-stamp");
+        assert(!ordered.Take({},work.Taken())&&"A post-frame query must not overtake a command queued before it");
+        assert(work.Take().size()==1);
+        auto refreshed=ordered.Take({},work.Taken());assert(refreshed&&refreshed->json=="menu-refresh"&&ordered.Empty());
+        assert(work.Push(std::vector<CapyPointer>(1)));
+        assert(work.Push(CanvasCommand{CanvasCommandKind::Action,"behind-held-pointer"}));
+        assert(ordered.Push({CanvasQueryKind::LayerMenu,"context",{},work.Pushed()}));
+        assert(work.TakeBeforePointers().empty()&&!ordered.Take({},work.Taken()));
+        assert(work.Take().size()==2);
+        auto context=ordered.Take({},work.Taken());assert(context&&context->json=="context");
     }
     {
         CanvasWorkBuffer admitted;
@@ -790,6 +971,18 @@ int main() {
     }
     std::cout<<"Canvas queries: an idle canvas answers every query kind without acquiring or presenting a frame\n";
     {
+        auto at=[](int ms){return std::chrono::steady_clock::time_point{}+std::chrono::hours(1)+std::chrono::milliseconds(ms);};
+        auto refresh=std::chrono::milliseconds(16);auto services=at(250);
+        CanvasSurfacePoll poll;
+        assert(poll.Wake(services)==services&&!poll.Due(at(1000)));
+        poll.Schedule(true,at(0),refresh);
+        assert(poll.Wake(services)==at(16)&&!poll.Due(at(15))&&poll.Due(at(16)));
+        poll.Schedule(true,at(16),refresh);assert(poll.Wake(services)==at(32));
+        poll.Schedule(false,at(32),refresh);assert(poll.Wake(services)==services&&!poll.Due(at(1000)));
+        poll.Schedule(true,at(240),refresh);assert(poll.Wake(services)==services&&poll.Due(at(256)));
+    }
+    std::cout<<"Pending chrome acknowledgements wake the idle render loop at the next refresh, not the service tick\n";
+    {
         auto origin=PresentationTrace::Clock::time_point{}+std::chrono::hours(1);
         auto at=[&](int ms){return origin+std::chrono::milliseconds(ms);};
         PresentationTrace presentation(true);
@@ -805,9 +998,81 @@ int main() {
         presentation.Observe(false,false,false,7,7,at(9500));assert(!presentation.Withheld(at(20000)));
         presentation.Observe(true,false,false,8,std::nullopt,at(20000));assert(*presentation.displayed==7&&presentation.Withheld(at(21000)));
         PresentationTrace untraced(false);
-        untraced.Observe(true,false,false,2,1,at(0));assert(!untraced.Withheld(at(60000)));
+        untraced.Observe(true,false,false,2,1,at(0));assert(!untraced.Withheld(at(60000))&&!untraced.Stalled(at(60000)));
     }
     std::cout<<"Presentation trace: a withheld final acknowledgement asks for one unchanged repeat that never raises the requirement\n";
+    {
+        auto origin=PresentationTrace::Clock::time_point{}+std::chrono::hours(1);
+        auto at=[&](int ms){return origin+std::chrono::milliseconds(ms);};
+        PresentationTrace presentation(true);
+        presentation.Observe(true,false,false,60,58,at(0));
+        presentation.Observe(false,false,false,60,58,at(250));
+        assert(presentation.Withheld(at(1250))&&!presentation.Stalled(at(1250)));presentation.Repeat();
+        presentation.Observe(true,false,true,61,59,at(1300));assert(!presentation.Stalled(at(2000)));
+        for(int ms=1500;ms<=11500;ms+=250)presentation.Observe(false,false,false,61,59,at(ms));
+        assert(presentation.required==60&&*presentation.displayed==59);
+        assert(presentation.Stalled(at(11500))&&!presentation.Withheld(at(11500)));
+        presentation.Observe(false,false,false,61,61,at(11750));
+        assert(presentation.required==60&&*presentation.displayed==61&&!presentation.Stalled(at(20000))&&!presentation.Withheld(at(20000)));
+    }
+    std::cout<<"Presentation trace: a final present still unacknowledged after its repeat asks for a compositor flush, never a second repeat\n";
+    {
+        auto origin=PresentationTrace::Clock::time_point{}+std::chrono::hours(1);
+        auto at=[&](int ms){return origin+std::chrono::milliseconds(ms);};
+        int asked=0;
+        auto quiet=[&]{++asked;return true;};
+        auto busy=[&]{++asked;return false;};
+        PresentationTrace untraced(false);
+        untraced.Observe(true,false,false,2,1,at(0));
+        for(int ms=0;ms<=60000;ms+=250){if(untraced.Withheld(at(ms)))untraced.Repeat();assert(untraced.Repeats(quiet)==PresentationTrace::Repetition::None);}
+        assert(asked==0);
+        PresentationTrace presentation(true);
+        presentation.Observe(true,false,false,10,9,at(0));
+        assert(presentation.Repeats(quiet)==PresentationTrace::Repetition::None&&asked==0);
+        assert(presentation.Withheld(at(1000)));presentation.Repeat();
+        assert(presentation.Repeats(busy)==PresentationTrace::Repetition::None&&asked==1&&presentation.Repeats(quiet)==PresentationTrace::Repetition::None&&asked==1);
+        presentation.Observe(true,false,false,11,10,at(1100));
+        assert(presentation.required==11&&presentation.Withheld(at(2100)));presentation.Repeat();
+        assert(presentation.Repeats(quiet)==PresentationTrace::Repetition::Held&&asked==2&&presentation.Repeats(quiet)==PresentationTrace::Repetition::None&&asked==2);
+        presentation.Observe(true,false,true,12,10,at(2200));assert(presentation.required==11);
+    }
+    std::cout<<"Presentation trace: only a traced repeat with no input or frame demand re-presents the held image instead of drawing a canvas frame\n";
+    {
+        auto origin=PresentationTrace::Clock::time_point{}+std::chrono::hours(1);
+        auto at=[&](int ms){return origin+std::chrono::milliseconds(ms);};
+        auto quiet=[]{return true;};
+        using Repetition=PresentationTrace::Repetition;
+        auto flush=[&](PresentationTrace& trace,uint64_t last,uint64_t shown,int ms){
+            assert(trace.Stalled(at(ms)));auto before=trace.displayed;trace.Observe(false,false,false,last,shown,at(ms));return trace.Flushed(before);
+        };
+        PresentationTrace presentation(true);
+        presentation.Observe(true,false,false,20,18,at(0));
+        assert(presentation.Withheld(at(1000)));presentation.Repeat();
+        assert(presentation.Repeats(quiet)==Repetition::Held);
+        presentation.Observe(true,false,true,21,18,at(1100));
+        assert(!presentation.Stalled(at(2000)));
+        assert(!flush(presentation,21,18,2100)&&presentation.Repeats(quiet)==Repetition::None);
+        assert(flush(presentation,21,18,2350)&&presentation.Repeats(quiet)==Repetition::Drawn&&presentation.Repeats(quiet)==Repetition::None);
+        presentation.Observe(true,false,true,22,18,at(2400));assert(presentation.required==20);
+        for(int ms=2650;ms<=20000;ms+=250){
+            if(presentation.Stalled(at(ms)))assert(!flush(presentation,22,18,ms));
+            assert(!presentation.Withheld(at(ms))&&presentation.Repeats(quiet)==Repetition::None);
+        }
+        PresentationTrace moved(true);
+        moved.Observe(true,false,false,30,28,at(0));
+        assert(moved.Withheld(at(1000)));moved.Repeat();assert(moved.Repeats(quiet)==Repetition::Held);
+        moved.Observe(true,false,true,31,28,at(1100));
+        assert(!flush(moved,31,29,2100)&&moved.Repeats(quiet)==Repetition::None);
+        assert(!flush(moved,31,30,3100)&&moved.Repeats(quiet)==Repetition::None&&!moved.Stalled(at(9000)));
+        PresentationTrace untraced(false);
+        untraced.Observe(true,false,false,40,38,at(0));
+        for(int ms=0;ms<=60000;ms+=250){
+            if(untraced.Withheld(at(ms)))untraced.Repeat();
+            if(untraced.Stalled(at(ms))){auto before=untraced.displayed;untraced.Observe(false,false,false,40,38,at(ms));assert(!untraced.Flushed(before));}
+            assert(untraced.Repeats(quiet)==Repetition::None);
+        }
+    }
+    std::cout<<"Presentation trace: a held repeat whose stalled flushes leave the statistic unchanged draws one full frame per content, never more\n";
     CanvasQuerySlots slots;
     std::vector<std::shared_ptr<void>> held;
     std::deque<std::function<void()>> deferred;

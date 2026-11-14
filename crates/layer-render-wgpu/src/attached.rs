@@ -21,6 +21,9 @@ impl CanvasRenderer for AttachedRenderer {
     }
     fn shader_input(&mut self) { if let Some(gpu) = &self.0 { gpu.shader_input(); } }
     fn shader_idle(&mut self, idle: bool, speculative_idle: bool) { if let Some(gpu) = &self.0 { gpu.shader_idle(idle, speculative_idle); } }
+    fn preparation_key(&self, document: &layer_core::Document) -> Option<std::sync::Arc<dyn layer_render::PreparationKey>> {
+        self.0.as_deref().and_then(|gpu| gpu.preparation_key(document))
+    }
     fn prepare_context(&mut self, document: &layer_core::Document, brush: &layer_core::BrushSnapshot, context: layer_render::PreparationContext) {
         if let Some(gpu) = &mut self.0 { gpu.prepare_context(document, brush, context); }
     }

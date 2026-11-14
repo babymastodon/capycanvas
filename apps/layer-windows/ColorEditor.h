@@ -15,9 +15,9 @@ inline Windows::UI::Color previewColor(A const& a){
     return {byte(3),byte(0),byte(1),byte(2)};
 }
 inline Windows::UI::Color displayColor(J const& value){return previewColor(array(value,L"rgba"));}
-inline void copyText(hstring const& text){
+inline bool copyText(hstring const& text){
     Windows::ApplicationModel::DataTransfer::DataPackage package;package.SetText(text);
-    Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
+    try{Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);return true;}catch(hresult_error const&){return false;}
 }
 using ColorAccepted=std::function<void(J,std::optional<double>)>;
 void EditColor(std::shared_ptr<WorkspaceData> const& data,UIElement const& owner,J const& target,bool opaque,ColorAccepted accepted);

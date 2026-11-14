@@ -148,6 +148,293 @@ class AndroidPhoneAuditTest {
         }
     }
 
+    @Test fun phoneDrawerFieldsAndPaletteResultsStayAboveTheKeyboard() {
+        val scenario = launchCapy(180_000,compose)
+        val activity = scenario.activity()
+        val host = activity.host
+        val decor = activity.window.decorView
+        val original = activity.requestedOrientation
+        val rotationFilter = InstrumentationRegistry.getArguments().getString("phoneRotation")
+        require(rotationFilter == null || rotationFilter in listOf("portrait","landscape","reverse-landscape"))
+        val animations = mutableSetOf<android.view.WindowInsetsAnimation>()
+        fun guard() {
+            instrumentation.runOnMainSync {
+                assertTrue("Only the private focused app receives input",decor.isAttachedToWindow && decor.hasWindowFocus())
+                assertEquals(instrumentation.targetContext.packageName,decor.context.packageName)
+                assertFalse(instrumentation.targetContext.packageName in listOf("art.capycanvas","art.capycanvas.editor","art.capycanvas.capycanvas9"))
+            }
+        }
+        fun bars() = jsonValue(host.snapshot!!.getJSONObject("layout").getJSONObject("phone").getJSONArray("bars"))
+        fun tap(tag: String) {
+            compose.waitForIdle()
+            val (root,node) = checkNotNull(findTag(tag))
+            assertSame("The drawer field belongs to the Activity window",decor,root.view.rootView)
+            val origin = IntArray(2)
+            instrumentation.runOnMainSync { root.view.getLocationOnScreen(origin) }
+            val point = node.boundsInRoot.center+Offset(origin[0].toFloat(),origin[1].toFloat())
+            assertTrue("The contact stays inside the private window",node.boundsInRoot.width>0 && node.boundsInRoot.height>0 && point.x>=0 && point.y>=0 && point.x<decor.width && point.y<decor.height)
+            val down = SystemClock.uptimeMillis()
+            for (phase in listOf(MotionEvent.ACTION_DOWN,MotionEvent.ACTION_UP)) {
+                guard()
+                val event = motion(MotionEvent.TOOL_TYPE_FINGER,phase,point,down)
+                try { assertTrue(instrumentation.uiAutomation.injectInputEvent(event,true)) } finally { event.recycle() }
+            }
+            compose.waitForIdle()
+        }
+        fun settled(visible: Boolean) {
+            host.awaitFrame("The native IME animation completes") { animations.isEmpty() && decor.rootWindowInsets.isVisible(WindowInsets.Type.ime()) == visible }
+            compose.waitForIdle()
+            val committed = java.util.concurrent.CountDownLatch(1)
+            instrumentation.runOnMainSync { decor.viewTreeObserver.registerFrameCommitCallback { committed.countDown() };decor.invalidate() }
+            assertTrue("The native keyboard frame commits",committed.await(5,java.util.concurrent.TimeUnit.SECONDS))
+        }
+        fun fullyVisible(tag: String) {
+            var geometry = ""
+            host.awaitFrame("$tag has its complete allocation above the keyboard",diagnostics={geometry}) {
+                val node = findTag(tag)?.second ?: return@awaitFrame false
+                val origin = IntArray(2)
+                findTag(tag)!!.first.view.getLocationOnScreen(origin)
+                val bounds = node.boundsInRoot.translate(Offset(origin[0].toFloat(),origin[1].toFloat()))
+                val blocked = decor.rootWindowInsets.getInsets(WindowInsets.Type.ime() or WindowInsets.Type.navigationBars())
+                val visible = Rect(blocked.left.toFloat(),blocked.top.toFloat(),(decor.width-blocked.right).toFloat(),(decor.height-blocked.bottom).toFloat())
+                geometry = "$tag $bounds natural=${node.size} visible=$visible"
+                node.size.width>0 && node.size.height>0 && kotlin.math.abs(bounds.width-node.size.width)<=1f && kotlin.math.abs(bounds.height-node.size.height)<=1f &&
+                    bounds.left>=visible.left-1 && bounds.top>=visible.top-1 && bounds.right<=visible.right+1 && bounds.bottom<=visible.bottom+1
+            }
+        }
+        fun finish(tag: String) {
+            val view = checkNotNull(findTag(tag)).first.view
+            guard()
+            instrumentation.runOnMainSync { assertTrue(checkNotNull(view.onCreateInputConnection(android.view.inputmethod.EditorInfo())).performEditorAction(android.view.inputmethod.EditorInfo.IME_ACTION_DONE)) }
+            settled(false)
+            if(tag == "palette-search") {
+                compose.onNodeWithTag("palette-chooser",useUnmergedTree=true).performScrollTo()
+                tap("palette-chooser")
+                host.awaitFrame("The palette chooser closes before the next case") { findTag("palette-search") == null }
+            }
+            host.drain(obj("type" to "customize","action" to obj("type" to "close_expanded")))
+            host.awaitFrame("The drawer closes after Done") { findTag("tool-drawer") == null }
+        }
+        instrumentation.runOnMainSync {
+            decor.setWindowInsetsAnimationCallback(object: android.view.WindowInsetsAnimation.Callback(android.view.WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                override fun onPrepare(animation: android.view.WindowInsetsAnimation) { if(animation.typeMask and WindowInsets.Type.ime()!=0)animations.add(animation) }
+                override fun onProgress(insets: WindowInsets,running: MutableList<android.view.WindowInsetsAnimation>): WindowInsets {
+                    animations.addAll(running.filter { it.typeMask and WindowInsets.Type.ime()!=0 });return insets
+                }
+                override fun onEnd(animation: android.view.WindowInsetsAnimation) { animations.remove(animation) }
+            })
+        }
+        try {
+            host.awaitFrame("The launch cover releases the private canvas") { findTag("launch-splash") == null }
+            for((name,orientation,rotation) in listOf(Triple("portrait",android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,0),
+                Triple("landscape",android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,1),
+                Triple("reverse-landscape",android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE,3))) {
+                if(rotationFilter != null && rotationFilter != name)continue
+                instrumentation.runOnMainSync { activity.requestedOrientation = orientation }
+                host.awaitFrame("$name uses its native viewport and sensor insets") {
+                    val cutout = decor.rootWindowInsets.displayCutout
+                    val sideReady = cutout == null || when(rotation) { 1 -> cutout.safeInsetLeft>0;3 -> cutout.safeInsetRight>0;else -> cutout.safeInsetTop>0 }
+                    val native = decor.rootWindowInsets.getInsets(WindowInsets.Type.displayCutout())
+                    val waterfall = cutout?.waterfallInsets ?: android.graphics.Insets.NONE
+                    val expected = listOf(maxOf(native.left,waterfall.left),maxOf(native.top,waterfall.top),maxOf(native.right,waterfall.right),maxOf(native.bottom,waterfall.bottom))
+                    val reported = host.snapshot!!.getJSONObject("state").getJSONObject("phone").getJSONArray("insets")
+                    val viewport=host.snapshot!!.getJSONObject("layout").getJSONArray("viewport")
+                    val density=activity.resources.displayMetrics.density
+                    activity.display!!.rotation == rotation && (decor.width>decor.height) == (rotation!=0) && sideReady &&
+                        kotlin.math.abs(viewport.getDouble(0)-decor.width/density)<.01 && kotlin.math.abs(viewport.getDouble(1)-decor.height/density)<.01 &&
+                        expected.indices.all { kotlin.math.abs(reported.getDouble(it)-expected[it]/activity.resources.displayMetrics.density)<.001 }
+                }
+                android.app.UiAutomation::class.java.getMethod("syncInputTransactions").invoke(instrumentation.uiAutomation)
+                for(theme in listOf("light","dark")) {
+                    host.drain(obj("type" to "set_theme","theme" to theme))
+                    val color = host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
+                        .single { it.getJSONObject("control").getString("kind") == "color" }.getInt("id")
+                    tap("phone-tool-$color")
+                    host.awaitFrame("Color and Palettes are presented",diagnostics={
+                        val dock=host.workspaceInteraction
+                        "drawer=${host.snapshot?.getJSONObject("state")?.getJSONObject("customization")?.opt("drawer")}; enabled=${dock?.enabled}; focused=${dock?.focused}; popup=${dock?.popupOpen}; phone=${dock?.phone?.preview}; windowFocus=${decor.hasWindowFocus()}"
+                    }) { findTag("palette-chooser") != null }
+                    compose.onNodeWithTag("palette-chooser",useUnmergedTree=true).performScrollTo()
+                    tap("palette-chooser")
+                    host.awaitFrame("Palette search is presented") { findTag("palette-search") != null }
+                    val palette = host.palettes.view()!!.array("palettes").objects().first { it.getString("name").isNotEmpty() }
+                    val before = bars()
+                    compose.onNodeWithTag("palette-search",useUnmergedTree=true).performScrollTo()
+                    tap("palette-search")
+                    settled(true)
+                    fullyVisible("palette-search")
+                    fullyVisible("palette-choice-${palette.getLong("id")}")
+                    assertEquals("Keyboard placement keeps both bars fixed",before,bars())
+                    assertNotNull(findTag("tool-drawer"))
+                    guard();screenshot("fix4d-$name-$theme-palette.png")
+                    finish("palette-search")
+                    host.drain(obj("type" to "invoke","command" to "drawing_brush"))
+                    tap("phone-tool-settings")
+                    host.awaitFrame("Brush settings are presented") { findTag("number-value-size") != null }
+                    val field = host.snapshot!!.getJSONObject("state").array("tool_settings").objects().single { it.getString("id") == "size" }
+                    val value = field.getDouble("value")
+                    val sizeBars = bars()
+                    compose.onNodeWithTag("number-value-size",useUnmergedTree=true).performScrollTo()
+                    tap("number-value-size")
+                    val tag = "number-${field.getString("label")}"
+                    host.awaitFrame("Brush Size is editable") { findTag(tag) != null }
+                    settled(true)
+                    fullyVisible(tag)
+                    assertEquals("Keyboard placement keeps both bars fixed",sizeBars,bars())
+                    guard();screenshot("fix4d-$name-$theme-size.png")
+                    finish(tag)
+                    assertEquals(value,host.snapshot!!.getJSONObject("state").array("tool_settings").objects().single { it.getString("id")=="size" }.getDouble("value"),.0001)
+                }
+            }
+        } finally {
+            instrumentation.runOnMainSync { decor.setWindowInsetsAnimationCallback(null);activity.requestedOrientation=original }
+            scenario.close()
+        }
+    }
+
+    @Test fun phoneCapyHoldKeepsItsDropAcrossKeyboardMetrics() {
+        val scenario=launchCapy(180_000,compose)
+        val activity=scenario.activity()
+        val host=activity.host
+        val decor=activity.window.decorView
+        fun phone()=host.snapshot!!.getJSONObject("state").getJSONObject("phone")
+        fun event(phase: Int,point: Offset,down: Long) {
+            instrumentation.runOnMainSync {
+                assertTrue("Only the private focused window receives the Capy contact",decor.isAttachedToWindow && decor.hasWindowFocus())
+                assertEquals(instrumentation.targetContext.packageName,decor.context.packageName)
+                assertFalse(instrumentation.targetContext.packageName in listOf("art.capycanvas","art.capycanvas.editor","art.capycanvas.capycanvas9"))
+            }
+            val input=motion(MotionEvent.TOOL_TYPE_FINGER,phase,point,down)
+            try { assertTrue(instrumentation.uiAutomation.injectInputEvent(input,true)) } finally { input.recycle() }
+        }
+        try {
+            host.awaitFrame("The private canvas releases launch input") { findTag("launch-splash")==null }
+            host.awaitFrame("The phone viewport and hidden keyboard match the native window",diagnostics={"layout=${host.snapshot?.opt("layout")}; keyboard=${phone().opt("keyboard")}"}) {
+                val viewport=host.snapshot!!.getJSONObject("layout").getJSONArray("viewport")
+                val density=activity.resources.displayMetrics.density
+                !decor.rootWindowInsets.isVisible(WindowInsets.Type.ime()) && phone().getDouble("keyboard")==0.0 &&
+                    kotlin.math.abs(viewport.getDouble(0)-decor.width/density)<.01 && kotlin.math.abs(viewport.getDouble(1)-decor.height/density)<.01
+            }
+            compose.waitForIdle()
+            val (root,node)=checkNotNull(findTag("phone-capy"))
+            val origin=IntArray(2)
+            instrumentation.runOnMainSync { root.view.getLocationOnScreen(origin) }
+            val start=node.boundsInRoot.center+Offset(origin[0].toFloat(),origin[1].toFloat())
+            assertTrue("The Capy contact is inside the private window",start.x>=0 && start.y>=0 && start.x<decor.width && start.y<decor.height)
+            assertTrue("The contact targets Capy's shared hit bounds",host.snapshot!!.getJSONObject("layout").getJSONObject("phone").getJSONObject("capy_target").rect().contains(start/activity.resources.displayMetrics.density))
+            val down=SystemClock.uptimeMillis()
+            event(MotionEvent.ACTION_DOWN,start,down)
+            host.awaitFrame("Capy is held before keyboard metrics change",diagnostics={
+                val input=host.workspaceInteraction?.phone
+                "capy=${input?.capy}; held=${input?.held}; down=${input?.pointerDown}; enabled=${host.workspaceInteraction?.enabled}; focus=${decor.hasWindowFocus()}; keyboard=${phone().opt("keyboard")}; target=${input?.layout?.opt("capy_target")}; point=$start"
+            }) { host.workspaceInteraction?.phone?.let { it.capy && it.held } == true }
+            val before=JSONObject(phone().toString())
+            val target=host.snapshot!!.getJSONObject("layout").getJSONObject("phone").getJSONObject("capy_target").toString()
+            instrumentation.runOnMainSync { host.reportPhoneMetrics(before.getJSONArray("insets"),before.getJSONArray("corners"),120f) }
+            host.awaitFrame("The keyboard metric publishes during the Capy hold") { phone().getDouble("keyboard")==120.0 }
+            compose.waitForIdle()
+            host.drain()
+            assertTrue("Keyboard metrics keep the original Capy hold",host.workspaceInteraction?.phone?.let { it.capy && it.held } == true)
+            assertEquals(target,host.snapshot!!.getJSONObject("layout").getJSONObject("phone").getJSONObject("capy_target").toString())
+            val bar=host.snapshot!!.getJSONObject("layout").getJSONObject("phone").getJSONArray("bars").getJSONObject(0).rect()
+            val point=bar.center*activity.resources.displayMetrics.density
+            event(MotionEvent.ACTION_MOVE,point,down)
+            event(MotionEvent.ACTION_UP,point,down)
+            host.awaitFrame("The original held Capy drop swaps sides") { !phone().getBoolean("capy_drag") && phone().getBoolean("swapped") != before.getBoolean("swapped") }
+        } finally {
+            scenario.close()
+        }
+    }
+
+    @Test fun phoneHeldMenusPreserveTouchPenAndMouseContacts() {
+        val scenario = launchCapy(180_000,compose)
+        val activity = scenario.activity()
+        val host = activity.host
+        val decor = activity.window.decorView
+        val original = activity.requestedOrientation
+        fun tiles() = host.snapshot!!.getJSONObject("state").getJSONObject("workspace").getJSONObject("layout").array("phone").objects()
+        fun point(tile: Int): Offset {
+            compose.waitForIdle()
+            val (root,node) = checkNotNull(findTag("phone-tool-$tile"))
+            val origin = IntArray(2)
+            instrumentation.runOnMainSync { root.view.getLocationOnScreen(origin) }
+            return node.boundsInRoot.center+Offset(origin[0].toFloat(),origin[1].toFloat())
+        }
+        fun event(tool: Int,phase: Int,at: Offset,down: Long) {
+            val input = motion(tool,phase,at,down)
+            try { assertTrue(instrumentation.uiAutomation.injectInputEvent(input,true)) } finally { input.recycle() }
+        }
+        fun hold(tool: Int,at: Offset): Long {
+            val down = SystemClock.uptimeMillis()
+            event(tool,MotionEvent.ACTION_DOWN,at,down)
+            host.awaitFrame("The original contact opens its held menu") {
+                host.workspaceInteraction?.phone?.held == true && host.workspaceInteraction?.contactHeld == true &&
+                    (tool == MotionEvent.TOOL_TYPE_MOUSE || findTag("workspace-menu")?.second?.let { it.layoutInfo.isPlaced && it.size.width>0 && it.size.height>0 } == true)
+            }
+            compose.waitForIdle()
+            if(tool != MotionEvent.TOOL_TYPE_MOUSE) {
+                val committed = java.util.concurrent.CountDownLatch(1)
+                instrumentation.runOnMainSync {
+                    val view = checkNotNull(findTag("workspace-menu")).first.view
+                    view.viewTreeObserver.registerFrameCommitCallback { committed.countDown() }
+                    view.invalidate()
+                }
+                assertTrue("The held menu commits its own window frame before Up",committed.await(5,java.util.concurrent.TimeUnit.SECONDS))
+            }
+            return down
+        }
+        fun closeMenu() {
+            instrumentation.runOnMainSync { host.workspaceInteraction!!.closeContext() }
+            host.awaitFrame("The editing menu closes") { findTag("workspace-menu") == null && activity.hasWindowFocus() }
+        }
+        try {
+            host.awaitFrame("The launch cover releases input") { findTag("launch-splash") == null }
+            for((name,orientation) in listOf("portrait" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                "landscape" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+                "reverse-landscape" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE)) {
+                instrumentation.runOnMainSync { activity.requestedOrientation = orientation }
+                val rotation = when(orientation) { 0 -> 1;8 -> 3;else -> 0 }
+                host.awaitFrame("$name held-menu viewport") { activity.display!!.rotation == rotation && (decor.width>decor.height) == (rotation != 0) }
+                for(theme in listOf("light","dark")) {
+                    host.drain(obj("type" to "set_theme","theme" to theme))
+                    val ids = tiles().map { it.getInt("id") }
+                    val at = point(ids[0])
+                    for((device,tool) in listOf("touch" to MotionEvent.TOOL_TYPE_FINGER,"pen" to MotionEvent.TOOL_TYPE_STYLUS,"mouse" to MotionEvent.TOOL_TYPE_MOUSE)) {
+                        val down = hold(tool,at)
+                        if(tool == MotionEvent.TOOL_TYPE_MOUSE)assertNull("A mouse hold only arms pickup",findTag("workspace-menu"))
+                        screenshot("fix2-$name-$theme-$device-held.png")
+                        event(tool,MotionEvent.ACTION_UP,at,down)
+                        host.awaitFrame("Up retires only contact ownership") { host.workspaceInteraction?.contactHeld == false }
+                        if(tool != MotionEvent.TOOL_TYPE_MOUSE) {
+                            assertNotNull("Up leaves the held menu open",findTag("workspace-menu"))
+                            closeMenu()
+                        } else assertNull(findTag("workspace-menu"))
+                        assertEquals("Hold and release cannot activate a row",ids,tiles().map { it.getInt("id") })
+                    }
+                    val target = point(ids[2])+if(decor.width>decor.height)Offset(0f,1f) else Offset(1f,0f)
+                    val down = hold(MotionEvent.TOOL_TYPE_FINGER,at)
+                    event(MotionEvent.TOOL_TYPE_FINGER,MotionEvent.ACTION_MOVE,target,down)
+                    host.awaitFrame("Dragging closes the menu and keeps the same contact") {
+                        findTag("workspace-menu") == null && host.workspaceInteraction?.phone?.preview?.objectOrNull("outcome")?.optString("kind") == "dragging"
+                    }
+                    screenshot("fix2-$name-$theme-dragging.png")
+                    event(MotionEvent.TOOL_TYPE_FINGER,MotionEvent.ACTION_UP,target,down)
+                    host.awaitFrame("The same contact reorders once") { tiles()[2].getInt("id") == ids[0] }
+                    host.drain(obj("type" to "invoke","command" to "undo_workspace"))
+                    host.awaitFrame("Undo restores the toolbar") { tiles().map { it.getInt("id") } == ids }
+                    val cancelled = hold(MotionEvent.TOOL_TYPE_FINGER,point(ids[0]))
+                    pressKey(KeyEvent.KEYCODE_ESCAPE)
+                    host.awaitFrame("Escape closes the menu and cancels the contact") { findTag("workspace-menu") == null && host.workspaceInteraction?.phone?.contact == null }
+                    event(MotionEvent.TOOL_TYPE_FINGER,MotionEvent.ACTION_UP,at,cancelled)
+                    assertEquals("Cancelled release changes nothing",ids,tiles().map { it.getInt("id") })
+                }
+            }
+        } finally {
+            instrumentation.runOnMainSync { activity.requestedOrientation = original }
+            scenario.close()
+        }
+    }
+
     @Test fun pickerSearchFollowsNativeInputMode() {
         val scenario = launchCapy(180_000, compose)
         val activity = scenario.activity()
@@ -183,9 +470,7 @@ class AndroidPhoneAuditTest {
             for ((name, orientation) in listOf("portrait" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
                 "landscape" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
                 "reverse-landscape" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE)) {
-                instrumentation.runOnMainSync { activity.requestedOrientation = orientation }
-                val rotation = when (orientation) { 0 -> 1; 8 -> 3; else -> 0 }
-                host.awaitFrame("$name input viewport") { activity.display!!.rotation == rotation && (decor.width > decor.height) == (rotation != 0) }
+                requestPhoneOrientation(activity,host,orientation,"$name input viewport")
                 for (theme in listOf("light", "dark")) {
                     host.drain(obj("type" to "set_theme", "theme" to theme))
                     touchWorkspace()
@@ -193,7 +478,7 @@ class AndroidPhoneAuditTest {
                     awaitEditorPage(activity, host, "tool-picker")
                     assertFalse("Touch opening does not focus search", focused())
                     assertFalse("Touch opening does not raise the keyboard", decor.rootWindowInsets.isVisible(WindowInsets.Type.ime()))
-                    screenshot("fix4b-$name-$theme-touch.png")
+                    capturePhonePage("tool-picker","fix4b-$name-$theme-touch.png")
                     closePicker()
                     pressKey(KeyEvent.KEYCODE_DPAD_RIGHT)
                     compose.waitForIdle()
@@ -201,7 +486,7 @@ class AndroidPhoneAuditTest {
                     openPicker()
                     host.awaitFrame("Keyboard opening focuses search") { focused() }
                     awaitEditorPage(activity, host, "tool-picker")
-                    screenshot("fix4b-$name-$theme-keyboard.png")
+                    capturePhonePage("tool-picker","fix4b-$name-$theme-keyboard.png")
                     closePicker()
                 }
             }
@@ -326,22 +611,20 @@ class AndroidPhoneAuditTest {
             for ((name, orientation) in listOf("portrait" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
                 "landscape" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
                 "reverse-landscape" to android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE)) {
-                instrumentation.runOnMainSync { activity.requestedOrientation = orientation }
-                val rotation = when (orientation) { 0 -> 1; 8 -> 3; else -> 0 }
-                host.awaitFrame("$name phone page viewport") { activity.display!!.rotation == rotation && (decor.width > decor.height) == (rotation != 0) }
+                requestPhoneOrientation(activity,host,orientation,"$name phone page viewport")
                 for (theme in listOf("light", "dark")) {
                     host.drain(obj("type" to "set_theme", "theme" to theme))
                     host.drain(obj("type" to "phone", "action" to obj("kind" to "insert_tools", "before" to null)))
                     host.awaitFrame("Add Tools search opens") { findTag("tool-picker-search") != null }
                     done("tool-picker-search", "pen")
                     host.awaitFrame("Done preserves the search and page") { host.snapshot?.objectOrNull("picker")?.optString("query") == "pen" && findTag("tool-picker") != null }
-                    screenshot("fix4a-$name-$theme-search-done.png")
+                    capturePhonePage("tool-picker","fix4a-$name-$theme-search-done.png")
                     cancelPicker()
                     host.drain(obj("type" to "customize", "action" to obj("type" to "new_toolbar", "group" to JSONObject.NULL)))
                     host.awaitFrame("The toolbar name opens") { findTag("toolbar-name") != null }
                     done("toolbar-name", "Keyboard draft")
                     host.awaitFrame("Done preserves the unconfirmed name and page") { host.snapshot?.objectOrNull("picker")?.optString("name") == "Keyboard draft" && findTag("tool-picker") != null }
-                    screenshot("fix4a-$name-$theme-name-done.png")
+                    capturePhonePage("tool-picker","fix4a-$name-$theme-name-done.png")
                     cancelPicker()
                     host.drain(obj("type" to "invoke", "command" to "new_document"))
                     host.awaitFrame("New Drawing opens") { findTag("new-drawing-width") != null }
@@ -354,7 +637,7 @@ class AndroidPhoneAuditTest {
                     done("new-drawing-width", "64", "new-drawing-dialog")
                     assertNotNull("Valid Done keeps New Drawing open", findTag("new-drawing-width"))
                     host.awaitFrame("Done commits the numeric value") { host.snapshot!!.getJSONObject("state").getJSONObject("new_drawing").getJSONArray("values").getDouble(0) == 64.0 }
-                    screenshot("fix4a-$name-$theme-number-done.png")
+                    capturePhonePage("new-drawing-dialog","fix4a-$name-$theme-number-done.png")
                     compose.onNodeWithTag("new-drawing-cancel", useUnmergedTree = true).performClick()
                     host.awaitFrame("New Drawing cancels") { findTag("new-drawing-width") == null }
                 }
@@ -642,6 +925,203 @@ class AndroidPhoneAuditTest {
         } finally { scenario.close() }
     }
 
+    private fun requestPhoneOrientation(activity: MainActivity, host: CanvasHost, orientation: Int, label: String) {
+        val landscape = orientation != android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        val previous = activity.display!!.rotation
+        val turnsOver = landscape && activity.requestedOrientation in listOf(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE) && activity.requestedOrientation != orientation
+        instrumentation.runOnMainSync { activity.requestedOrientation = orientation }
+        host.awaitFrame(label,diagnostics = { "rotation=${activity.display!!.rotation}, extent=${activity.window.decorView.width}x${activity.window.decorView.height}, configuration=${activity.resources.configuration.orientation}, focus=${activity.window.decorView.hasWindowFocus()}" }) {
+            (activity.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) == landscape &&
+                (activity.window.decorView.width > activity.window.decorView.height) == landscape &&
+                (!turnsOver || activity.display!!.rotation != previous) && activity.window.decorView.hasWindowFocus()
+        }
+    }
+
+    private fun capturePhonePage(tag: String, path: String) {
+        compose.waitForIdle()
+        val owner = checkNotNull(findTag(tag)).first.view.rootView
+        assertTrue("The private page owns its capture",owner.isAttachedToWindow && owner.hasWindowFocus())
+        assertEquals(instrumentation.targetContext.packageName,owner.context.packageName)
+        val committed = java.util.concurrent.CountDownLatch(1)
+        instrumentation.runOnMainSync { owner.viewTreeObserver.registerFrameCommitCallback { committed.countDown() };owner.invalidate() }
+        assertTrue("The page frame commits",committed.await(5,java.util.concurrent.TimeUnit.SECONDS))
+        screenshot(path)
+    }
+
+    @Test fun actionPickerAcceptsNativeKeyboardEntry() {
+        startupTheme()
+        val scenario = launchCapy(180_000,compose)
+        val activity = scenario.activity()
+        val host = activity.host
+        val original = activity.requestedOrientation
+        fun searchFocused() = findTag("action-picker-search")?.second?.find { it.config.getOrNull(SemanticsProperties.Focused) == true } != null
+        fun keyboard() = findTag("action-picker-search")?.first?.view?.rootView?.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) == true
+        fun focusNodes(): List<SemanticsNode> {
+            val result = mutableListOf<SemanticsNode>()
+            fun visit(node: SemanticsNode) { if(node.config.getOrNull(SemanticsProperties.Focused) == true)result.add(node);node.children.forEach(::visit) }
+            semanticsRoots().forEach { visit(it.semanticsOwner.unmergedRootSemanticsNode) }
+            return result
+        }
+        try {
+            requestPhoneOrientation(activity,host,android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,"The private landscape window owns keyboard input")
+            host.drain(obj("type" to "open_settings","page" to "input"))
+            host.awaitFrame("The two-finger action row is composed") { findTag("trigger-touch.tap.2") != null }
+            compose.onNodeWithTag("trigger-touch.tap.2",useUnmergedTree=true).performScrollTo()
+            awaitEditorPage(activity,host,"preferences-dialog")
+            val (root,row) = checkNotNull(findTag("trigger-touch.tap.2"))
+            val origin = IntArray(2);instrumentation.runOnMainSync { root.view.getLocationOnScreen(origin) }
+            val point = row.boundsInRoot.center+Offset(origin[0].toFloat(),origin[1].toFloat())
+            val down = SystemClock.uptimeMillis()
+            for(phase in listOf(MotionEvent.ACTION_DOWN,MotionEvent.ACTION_UP)) {
+                assertTrue("The private window owns touch input",activity.window.decorView.hasWindowFocus())
+                val input = motion(MotionEvent.TOOL_TYPE_FINGER,phase,point,down)
+                try { assertTrue(instrumentation.uiAutomation.injectInputEvent(input,true)) } finally { input.recycle() }
+            }
+            host.awaitFrame("Touch activation opens Choose Action") { findTag("action-picker-search") != null }
+            awaitEditorPage(activity,host,"action-picker")
+            assertNull("Touch opening leaves search unfocused",findTag("action-picker-search")!!.second.find { it.config.getOrNull(SemanticsProperties.Focused) == true })
+            assertFalse("Touch opening leaves the keyboard hidden",findTag("action-picker-search")!!.first.view.rootView.rootWindowInsets.isVisible(WindowInsets.Type.ime()))
+            capturePhonePage("action-picker","action-picker-touch.png")
+            host.drain(obj("type" to "preferences","action" to obj("type" to "close_action_picker")))
+            host.awaitFrame("The touch-opened picker dismisses") { findTag("action-picker-search") == null }
+            assertTrue(activity.window.decorView.hasWindowFocus())
+            pressKey(KeyEvent.KEYCODE_DPAD_RIGHT)
+            compose.onNodeWithTag("trigger-touch.tap.2",useUnmergedTree=true).performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
+            assertTrue(activity.window.decorView.hasWindowFocus())
+            pressKey(KeyEvent.KEYCODE_DPAD_CENTER)
+            host.awaitFrame("Keyboard activation opens Choose Action") { findTag("action-picker-search") != null }
+            awaitEditorPage(activity,host,"action-picker")
+            val visited = mutableSetOf<List<Int>>()
+            var traversals = 0
+            while(!searchFocused()) {
+                val before = focusNodes().map { it.id }
+                assertTrue("Native traversal must not cycle before reaching search",visited.add(before))
+                assertTrue("Search follows its page header in the native focus order",traversals++ < 4)
+                assertTrue(activity.window.decorView.hasWindowFocus())
+                pressKey(KeyEvent.KEYCODE_TAB)
+                host.awaitFrame("Tab advances the native focused node",diagnostics = { "focused=${focusNodes().map { it.config.getOrNull(SemanticsProperties.TestTag) }}; search=${searchFocused()}; ime=${keyboard()}" }) { focusNodes().map { it.id } != before }
+            }
+            assertTrue("Native traversal focuses the search field",searchFocused())
+            assertTrue(activity.window.decorView.hasWindowFocus())
+            pressKey(KeyEvent.KEYCODE_DPAD_CENTER)
+            assertTrue(activity.window.decorView.hasWindowFocus())
+            instrumentation.sendStringSync("Undo")
+            host.awaitFrame("Native keyboard text filters actions") { host.snapshot?.objectOrNull("preferences")?.getJSONObject("shortcut_page")?.objectOrNull("picker")?.optString("query") == "Undo" }
+            host.awaitFrame("Native field activation opens the real IME") { keyboard() }
+            awaitEditorPage(activity,host,"action-picker")
+        } finally {
+            if(findTag("action-picker") != null) {
+                capturePhonePage("action-picker","action-picker-keyboard.png")
+            }
+            instrumentation.runOnMainSync { activity.requestedOrientation = original }
+            scenario.close()
+        }
+    }
+
+    @Test fun paperRenameRequestsFocusOnOpen() = renameRequestsFocusOnOpen("paper")
+    @Test fun workspaceRenameRequestsFocusOnOpen() = renameRequestsFocusOnOpen("workspace")
+
+    @Test fun toolbarPromptRequestsNameFocusOnOpen() = renameRequestsFocusOnOpen("toolbar")
+    @Test fun toolbarPickerRequestsNameFocusOnTouchOpen() = renameRequestsFocusOnOpen("picker")
+    @Test fun toolbarPickerRequestsNameFocusOnKeyboardOpen() = renameRequestsFocusOnOpen("picker",true)
+    @Test fun drawingPresetRequestsNameFocusOnOpen() = renameRequestsFocusOnOpen("preset")
+
+    private fun renameRequestsFocusOnOpen(kind: String, keyboardOpening: Boolean = false) {
+        startupTheme()
+        val scenario = launchCapy(180_000,compose)
+        val activity = scenario.activity()
+        val host = activity.host
+        val original = activity.requestedOrientation
+        val tag = when(kind) { "paper" -> "paper-rename-name";"workspace" -> "workspace-name";"preset" -> "new-drawing-save-name";else -> "toolbar-name" }
+        val page = when(kind) { "paper" -> "paper-rename-dialog";"workspace" -> "workspace-form";"picker" -> "tool-picker";"preset" -> "new-drawing-dialog";else -> "toolbar-prompt" }
+        val case = InstrumentationRegistry.getArguments().getString("case","$kind-name-${if(keyboardOpening)"keyboard" else "touch"}")
+        fun focused() = findTag(tag)?.second?.find { it.config.getOrNull(SemanticsProperties.Focused) == true } != null
+        fun ime() = findTag(tag)?.first?.view?.rootView?.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) == true
+        try {
+            requestPhoneOrientation(activity,host,android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,"The private landscape canvas owns input")
+            host.awaitFrame("The launch cover releases input") { findTag("launch-splash") == null }
+            createDrawing(host,800,600,"Rename focus")
+            val (root,canvas) = checkNotNull(findTag("workspace"))
+            val origin = IntArray(2);instrumentation.runOnMainSync { root.view.getLocationOnScreen(origin) }
+            val down = SystemClock.uptimeMillis()
+            for(phase in listOf(MotionEvent.ACTION_DOWN,MotionEvent.ACTION_UP)) {
+                assertTrue("The private rename fixture owns touch input",activity.window.decorView.hasWindowFocus())
+                val input = motion(MotionEvent.TOOL_TYPE_FINGER,phase,canvas.boundsInRoot.center+Offset(origin[0].toFloat(),origin[1].toFloat()),down)
+                try { assertTrue(instrumentation.uiAutomation.injectInputEvent(input,true)) } finally { input.recycle() }
+            }
+            assertTrue("The rename page opens in native touch mode",root.view.isInTouchMode)
+            if(keyboardOpening) { assertTrue(activity.window.decorView.hasWindowFocus());pressKey(KeyEvent.KEYCODE_DPAD_RIGHT) }
+            if(kind == "paper") {
+                val fixture = File(device.root,"Paper.webp")
+                instrumentation.targetContext.assets.open("10-light.webp").use { input -> fixture.outputStream().use { input.copyTo(it) } }
+                runBlocking { importLibraryPaper(host,android.net.Uri.fromFile(fixture)) }
+                host.drain()
+                val layer = host.snapshot!!.getJSONObject("state").array("layers").objects().first { it.optJSONObject("paper")?.optBoolean("editable") == true }.getLong("id")
+                host.drain(obj("type" to "layer","action" to obj("op" to "select","id" to layer,"mask" to false)))
+                instrumentation.runOnMainSync { host.textureDialog = TextureDialogRequest(layer,false) }
+                host.awaitFrame("The imported paper tile is composed") { findNode({ it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("texture-tile-") == true && it.config.contains(SemanticsActions.OnLongClick) }) != null }
+                val tile = checkNotNull(findNode({ it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("texture-tile-") == true && it.config.contains(SemanticsActions.OnLongClick) })).second.config[SemanticsProperties.TestTag]
+                compose.onNodeWithTag(tile,useUnmergedTree=true).performScrollTo().performSemanticsAction(SemanticsActions.OnLongClick)
+                host.awaitFrame("The paper rename action is composed") { findTag("texture-action-rename_paper") != null }
+                compose.onNodeWithTag("texture-action-rename_paper",useUnmergedTree=true).performClick()
+            } else if(kind == "picker") {
+                host.drain(obj("type" to "customize","action" to obj("type" to "new_toolbar","group" to JSONObject.NULL)))
+            } else if(kind == "preset") {
+                host.drain(obj("type" to "invoke","command" to "new_document"))
+                host.awaitFrame("New Drawing opens") { findTag("new-drawing-create") != null }
+                host.drain(obj("type" to "new_drawing","action" to obj("op" to "presets")))
+                host.awaitFrame("Preset browser opens") { findTag("new-drawing-save-as") != null }
+                host.drain(obj("type" to "new_drawing","action" to obj("op" to "save_as")))
+            } else if(kind == "toolbar") {
+                host.drain(obj("type" to "customize","action" to obj("type" to "manage_toolbars")))
+                host.awaitFrame("Toolbar manager opens") { host.snapshot?.objectOrNull("toolbar_manager") != null }
+                val panel = host.snapshot!!.getJSONObject("toolbar_manager").array("toolbars").objects().first().get("panel")
+                host.drain(obj("type" to "customize","action" to obj("type" to "close_toolbar_manager")))
+                host.awaitFrame("Toolbar manager closes") { findTag("toolbar-manager") == null }
+                host.drain(obj("type" to "customize","action" to obj("type" to "rename_toolbar","panel" to panel)))
+            } else {
+                instrumentation.runOnMainSync { host.workspaceInput(obj("type" to "open","page" to "workspaces")) }
+                host.awaitFrame("Workspace manager opens",diagnostics = { "manager=${host.workspaceManager}; blocked=${host.documentInputBlocked}; nameCommit=${host.workspaceNameCommit != null}; privateFocus=${activity.window.decorView.hasWindowFocus()}" }) { findTag("workspace-manager") != null }
+                instrumentation.runOnMainSync { host.workspaceInput(obj("type" to "form","action" to obj("type" to "new"))) }
+                host.awaitFrame("New workspace form opens") { findTag("workspace-name") != null }
+                instrumentation.runOnMainSync { host.workspaceInput(obj("type" to "submit","name" to "Rename focus workspace")) }
+                host.awaitFrame("The fixture workspace is stored") { host.workspaceManager?.objectOrNull("prompt_action") == null && host.workspaceManager?.optBoolean("busy") == false }
+                host.awaitFrame("The new workspace form dismisses before Rename",diagnostics = { "form=${findTag("workspace-form") != null}; manager=${findTag("workspace-manager") != null}; blocked=${host.documentInputBlocked}; privateFocus=${activity.window.decorView.hasWindowFocus()}; view=${host.workspaceManager}" }) {
+                    findTag("workspace-form") == null && !host.documentInputBlocked &&
+                        findTag("workspace-manager")?.first?.view?.rootView?.hasWindowFocus() == true
+                }
+                val id = host.workspaceManager!!.array("rows").objects().first { it.optString("title") == "Rename focus workspace" }.getString("id")
+                instrumentation.runOnMainSync { host.workspaceInput(obj("type" to "form","action" to obj("type" to "rename","value" to id))) }
+            }
+            host.awaitFrame("The rename field is placed without tapping it") { findTag(tag)?.second?.layoutInfo?.isPlaced == true }
+            compose.waitForIdle()
+            host.awaitFrame("The actual rename page is fully placed inside its own window") {
+                val (root,node) = checkNotNull(findTag(page))
+                val bounds = node.boundsInRoot
+                node.layoutInfo.isPlaced && bounds.width >= node.size.width-1 && bounds.height >= node.size.height-1 &&
+                    bounds.left >= -1 && bounds.top >= -1 && bounds.right <= root.view.width+1 && bounds.bottom <= root.view.height+1
+            }
+            host.awaitFrame("Requested rename focus opens the real IME without a tap",diagnostics = { "focused=${focused()}, ownIme=${ime()}" }) { focused() && ime() }
+            fun entry() = checkNotNull(findTag(tag)!!.second.find { it.config.getOrNull(SemanticsProperties.EditableText) != null })
+            val originalName = entry().config[SemanticsProperties.EditableText].text
+            assertEquals("Rename opens with its caret at the end",androidx.compose.ui.text.TextRange(originalName.length),entry().config[SemanticsProperties.TextSelectionRange])
+            val start = minOf(1,originalName.length);val end = minOf(3,originalName.length)
+            instrumentation.runOnMainSync {
+                val input = checkNotNull(findTag(tag)!!.first.view.onCreateInputConnection(android.view.inputmethod.EditorInfo()))
+                assertTrue(input.setSelection(start,end));assertTrue(input.commitText("X",1))
+            }
+            host.awaitFrame("Name entry preserves its native edit and caret") {
+                entry().config[SemanticsProperties.EditableText].text == originalName.take(start)+"X"+originalName.drop(end) &&
+                    entry().config[SemanticsProperties.TextSelectionRange] == androidx.compose.ui.text.TextRange(start+1)
+            }
+            compose.waitForIdle()
+        } finally {
+            if(findTag(tag) != null)capturePhonePage(page,"rename-focus/$case/open.png")
+            instrumentation.runOnMainSync { activity.requestedOrientation = original }
+            scenario.close()
+        }
+    }
+
     @Test fun admission() = visit(true)
     @Test fun frame() = visit(false)
     @Test fun proofProfileDialogUsesWindowBoundsOutsideItsPanel() = visit(false, "proofProfile")
@@ -696,6 +1176,7 @@ class AndroidPhoneAuditTest {
                 assertNotEquals("CPU adapter is forbidden", 4, gpu.getInt("deviceType"))
                 assertFalse("Software adapter is forbidden: $adapter", listOf("swiftshader", "llvmpipe", "lavapipe").any { adapter.contains(it, ignoreCase = true) })
             }
+            if (!admissionOnly) startupTheme()
             scenario = androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java)
             val activity = scenario.activity()
             val host = activity.host
@@ -780,7 +1261,7 @@ class AndroidPhoneAuditTest {
                     collect(if(family in listOf("pagesD1","pagesD2","pagesA4","sourcePages","fileProgress"))root.first.semanticsOwner.unmergedRootSemanticsNode else root.second, allocations)
                     report.put("phone_active", host.snapshot?.getJSONObject("layout")?.objectOrNull("phone") != null)
                     report.put("revision", host.snapshot?.getJSONObject("state")?.getLong("revision"))
-                    assertEquals("System theme", expectedTheme, host.snapshot?.getJSONObject("state")?.getString("theme"))
+                    assertEquals("Fixture theme", expectedTheme, host.snapshot?.getJSONObject("state")?.getString("theme"))
                     assertEquals("Configured density", expectedDensity, metrics.densityDpi)
                     assertEquals("Configured font scale", expectedFont, activity.resources.configuration.fontScale, .001f)
                     assertEquals("App viewport width in pixels", size[0], decor.width)
@@ -836,6 +1317,9 @@ class AndroidPhoneAuditTest {
         val epoch = host.snapshot!!.getJSONObject("state").getJSONObject("document_file").getLong("epoch")
         host.drain(obj("type" to "invoke", "command" to "new_document"))
         host.awaitFrame("New Drawing controller is open") { host.snapshot!!.getJSONObject("state").objectOrNull("new_drawing") != null }
+        host.awaitFrame("New Drawing presenter is placed") { findTag("new-drawing-dialog")?.second?.layoutInfo?.isPlaced == true }
+        val page = checkNotNull(findTag("new-drawing-dialog")).first.view.rootView
+        val canvas = checkNotNull(findTag("workspace")).first.view.rootView
         compose.waitForIdle()
         runBlocking { host.withNative {
             orderDrawing(it, width, height, create = false)
@@ -847,6 +1331,10 @@ class AndroidPhoneAuditTest {
             state.getJSONObject("document_file").getLong("epoch") != epoch &&
                 state.array("tabs").objects().any { it.getBoolean("active") && it.getInt("width") == width && it.getInt("height") == height } &&
                 !host.documents.working && !host.drawingTabs.switching && state.objectOrNull("new_drawing") == null
+        }
+        host.awaitFrame("New Drawing dismisses before canvas input") {
+            findTag("new-drawing-dialog") == null && (page === canvas || !page.isAttachedToWindow) &&
+                canvas.isAttachedToWindow && canvas.hasWindowFocus() && !host.documentInputBlocked
         }
     }
 
@@ -1003,11 +1491,11 @@ class AndroidPhoneAuditTest {
         val blocked = host.documentInputBlocked
         try {
             runBlocking { host.withNative { host.documentInputBlocked = true } }
-            instrumentation.runOnMainSync { host.reportPhoneMetrics(JSONArray(listOf(19,7,13,5)), originalCorners) }
+            instrumentation.runOnMainSync { host.reportPhoneMetrics(JSONArray(listOf(19,7,13,5)), originalCorners, 0f) }
             host.awaitFrame("Metrics arrive during a document interaction") { phone().getJSONArray("insets").getInt(0) == 19 }
         } finally {
             host.documentInputBlocked = blocked
-            instrumentation.runOnMainSync { host.reportPhoneMetrics(originalInsets, originalCorners) }
+            instrumentation.runOnMainSync { host.reportPhoneMetrics(originalInsets, originalCorners, 0f) }
             host.awaitFrame("Restore native inset metrics") { phone().getJSONArray("insets").toString() == originalInsets.toString() }
         }
         instrumentation.runOnMainSync {
@@ -1333,7 +1821,12 @@ class AndroidPhoneAuditTest {
         }
         for (panel in listOf("navigator","histogram","waveform","stats","sizes","brushes","adjustments","filter_types","proof")) {
             host.drain(obj("type" to "phone","action" to obj("kind" to "panel","panel" to panel)));ready()
-            state("inventory-window-$panel") {}
+            state("inventory-window-$panel") {
+                if (panel == "sizes") {
+                    assertBrushSizeLabelsAtFontScales(activity, host, compose)
+                    compose.onNodeWithTag("size-preset-2000",useUnmergedTree = true).performScrollTo()
+                }
+            }
             close()
         }
         host.drain(obj("type" to "phone","action" to obj("kind" to "panel","panel" to "brushes")));ready()
@@ -1695,32 +2188,19 @@ class AndroidPhoneAuditTest {
             host.awaitFrame("Workspace manager settles") { host.workspaceManager?.optBoolean("busy") == false && host.workspaceManager?.optBoolean("saving") != true }
         }
         fun close(tag: String) { if(exists(tag)) { try { tap(tag) } catch(error: Throwable) { predictiveBack(activity,cancel = false) };compose.waitForIdle() } }
-        var keyboardHeight = 0
-        fun measureKeyboard() {
-            if(keyboardHeight > 0) return
-            invoke("search_commands")
-            host.awaitFrame("Command search measures the native keyboard") { findTag("command-search") != null && keyboard() }
-            keyboardHeight = decor.rootWindowInsets.getInsets(WindowInsets.Type.ime()).bottom
-            if(keyboard())hideIme()
-            close("command-close")
-            host.awaitFrame("Search closes") { host.commandSearch == null && findTag("command-bar") == null }
-        }
         fun withKeyboard(tag: String) {
-            measureKeyboard()
-            val view = checkNotNull(findTag("workspace")).first.view
-            val original = decor.rootWindowInsets
-            instrumentation.runOnMainSync { view.dispatchApplyWindowInsets(WindowInsets.Builder(original)
-                .setInsets(WindowInsets.Type.ime(),android.graphics.Insets.of(0,0,0,keyboardHeight)).setVisible(WindowInsets.Type.ime(),true).build()) }
-            host.awaitFrame("$tag follows the reduced visible area") { findTag(tag)?.second?.boundsInRoot?.let { it.bottom <= decor.height-keyboardHeight+1 } == true }
+            tap("number-value-"+tag.removeSuffix("-panel"))
+            host.awaitFrame("$tag focuses its numeric field above the keyboard", diagnostics = {
+                "field=${findTag(tag)?.second?.find { it.config.getOrNull(SemanticsActions.SetText) != null }?.boundsInRoot}; ime=${decor.rootWindowInsets.getInsets(WindowInsets.Type.ime()).bottom}"
+            }) {
+                val field = findTag(tag)?.second?.find { it.config.getOrNull(SemanticsActions.SetText) != null } ?: return@awaitFrame false
+                val blocked = decor.rootWindowInsets.getInsets(WindowInsets.Type.ime() or WindowInsets.Type.navigationBars())
+                keyboard() && field.config.getOrNull(SemanticsProperties.Focused) == true && field.size.width > 0 && field.size.height > 0 &&
+                    field.boundsInRoot.height >= field.size.height-1 && field.boundsInRoot.bottom <= decor.height-blocked.bottom+1
+            }
             compose.waitForIdle()
         }
-        fun restoreKeyboard() {
-            val view = findTag("workspace")?.first?.view ?: return
-            val original = decor.rootWindowInsets
-            instrumentation.runOnMainSync { view.dispatchApplyWindowInsets(WindowInsets.Builder(original)
-                .setInsets(WindowInsets.Type.ime(),android.graphics.Insets.NONE).setVisible(WindowInsets.Type.ime(),false).build()) }
-            compose.waitForIdle()
-        }
+        fun restoreKeyboard() { if(keyboard())hideIme() }
         for ((command,tag) in listOf("canvas_size" to "canvas-size","image_size" to "image-size")) {
             state(tag) { invoke(command);wait("$tag-panel");settle() }
             close("$tag-cancel");gone("$tag-panel")
@@ -2108,6 +2588,14 @@ class AndroidPhoneAuditTest {
             preference(obj("type" to "edit_shortcut","id" to "command.Hand"));wait("settings-content-shortcut:command.Hand")
             reveal("add-shortcut");tap("add-shortcut")
             host.awaitFrame("Hand records a shortcut") { preferences()?.objectOrNull("capture") != null && placed("shortcut-recording") }
+            if (host.snapshot!!.getJSONObject("layout").getJSONArray("viewport").getDouble(0) <= 320) {
+                val divider = checkNotNull(findTag("shortcut-recording-divider")).second.boundsInRoot
+                for (tag in listOf("cancel-shortcut", "confirm-shortcut")) {
+                    val button = compose.onNodeWithTag(tag).assertIsDisplayed().fetchSemanticsNode()
+                    assertTrue("Recording actions stay in the fixed footer", button.boundsInRoot.top >= divider.bottom)
+                    assertFalse("Recording actions are outside the scrolling page", generateSequence(button.parent) { it.parent }.any { it.config.getOrNull(SemanticsActions.ScrollBy) != null })
+                }
+            }
         }
         state("shortcut-conflict") {
             pressKey(KeyEvent.KEYCODE_E)
@@ -2191,6 +2679,10 @@ class AndroidPhoneAuditTest {
             if(findTag("color-use") == null) { instrumentation.runOnMainSync { host.colorEditor = ColorEditorRequest("foreground",null,false,false) { _,_ -> } };wait("color-use") }
             reveal("color-swatches");tap("color-swatches");wait("color-sheet-search")
             if(keyboard())hideIme()
+            host.awaitFrame("All Swatches list fills its allocation") { findTag("color-sheet-list")?.second?.let { it.layoutInfo.isPlaced && it.boundsInRoot.height > 0 } == true }
+            val sheet = checkNotNull(findTag("color-sheet")).second.boundsInRoot
+            val list = checkNotNull(findTag("color-sheet-list")).second.boundsInRoot
+            assertEquals("All Swatches fills the available height", sheet.bottom, list.bottom, 1f)
         }
         if(findTag("color-sheet-search") != null) { tap("color-cancel");host.awaitFrame("All Swatches returns to Edit Color") { findTag("color-sheet-search") == null && findTag("color-value-hex") != null } }
         state("color-eyedropper") {
@@ -2421,6 +2913,21 @@ class AndroidPhoneAuditTest {
         state("unsaved-changes") {
             instrumentation.runOnMainSync { host.drawingTabs.closeSelected() }
             host.awaitFrame("Unsaved Changes opens") { findTag("document-close") != null }
+            compose.waitForIdle()
+            val buttons = listOf("document-close-save", "document-close-discard", "document-close-cancel").map { tag ->
+                val node = compose.onNodeWithTag(tag).assertIsDisplayed().fetchSemanticsNode()
+                textLayouts(tag).forEach { layout ->
+                    assertFalse("Alert response $tag keeps its complete label height", layout.didOverflowHeight)
+                    assertTrue("Alert response $tag shows every word", (0 until layout.lineCount).none { layout.isLineEllipsized(it) } &&
+                        layout.getLineEnd(layout.lineCount-1,visibleEnd = true) == layout.layoutInput.text.length)
+                }
+                val bounds = node.boundsInRoot
+                assertTrue("Alert responses fit the viewport", bounds.left >= 0 && bounds.top >= 0 && bounds.right <= activity.window.decorView.width && bounds.bottom <= activity.window.decorView.height)
+                bounds
+            }
+            if (activity.window.decorView.width <= 320) {
+                assertTrue("Short narrow alerts stack nonfitting responses", buttons.zipWithNext().all { (above, below) -> above.bottom <= below.top })
+            }
         }
         if(findTag("document-close") != null) {
             tap("document-close-cancel")
@@ -2460,10 +2967,22 @@ class AndroidPhoneAuditTest {
                 val area = host.snapshot!!.getJSONObject("layout").getJSONObject("phone").getJSONObject("work_area").rect()
                 val density = activity.resources.displayMetrics.density
                 assertTrue("Calibration fits the shared work area: $body in $area",body.left>=area.left*density-1 && body.top>=area.top*density-1 && body.right<=area.right*density+1 && body.bottom<=area.bottom*density+1)
+                val graph = checkNotNull(findTag("effect-curve")).second
+                val editor = shared().getJSONObject("${kind}_calibration").getJSONObject("editor")
+                val inset = editor.getJSONObject("controls").number("inset") * density
+                assertTrue("Calibration keeps a positive curve plot", graph.size.width > 2 * inset && graph.size.height > 2 * inset)
+                assertEquals("Calibration keeps symmetric curve gutters", body.center.x, graph.boundsInRoot.center.x, 1f)
+                if (activity.window.decorView.width > activity.window.decorView.height) {
+                    assertTrue("Landscape calibration preserves the shared graph minimum", graph.size.width >= 200 * density - 1 && graph.size.height >= 200 * density - 1)
+                }
                 if (kind == "tilt") {
                     for (tag in listOf("pen-tilt-sensitivity-title", "pen-tilt-direction-title"))
                         textLayouts(tag).forEach { assertEquals("Tilt labels stay on one line", 1, it.lineCount) }
                 }
+            }
+            if(shared().objectOrNull("${kind}_calibration") != null)state("$kind-calibration-controls") {
+                for (tag in listOf("pen-$kind-firmer", "pen-$kind-lighter"))
+                    compose.onNodeWithTag(tag).performScrollTo().assertIsDisplayed()
             }
             if(shared().objectOrNull("${kind}_calibration") != null) {
                 tap("pen-$kind-close")
@@ -2569,9 +3088,9 @@ class AndroidPhoneAuditTest {
                 val dock = host.workspaceInteraction
                 "at=$at; enabled=${dock?.enabled}; popup=${dock?.popupOpen}; windowFocus=${activity.hasWindowFocus()}; contact=${dock?.phone?.contact != null}; outcome=${dock?.phone?.preview?.opt("outcome")}"
             }) { host.workspaceInteraction?.phone?.held == true }
-            assertNull("The editing menu opens on release",findTag("workspace-menu"))
+            host.awaitFrame("The editing menu opens before release") { findTag("workspace-menu") != null }
             event(MotionEvent.ACTION_UP,at)
-            host.awaitFrame("Hold release opens the editing menu") { findTag("workspace-menu") != null }
+            assertNotNull("Hold release keeps the editing menu open",findTag("workspace-menu"))
             compose.waitForIdle()
             val presentation = checkNotNull(host.workspaceInteraction?.contextPresentation)
             assertEquals("contact",presentation.getString("anchor"))
@@ -2657,7 +3176,9 @@ class AndroidPhoneAuditTest {
         val to = point("phone-tool-${tiles()[2].getInt("id")}")+if(host.snapshot!!.getJSONObject("layout").getJSONObject("phone").getString("edge") == "top")Offset(1f,0f) else Offset(0f,1f)
         event(MotionEvent.ACTION_DOWN,from)
         host.awaitFrame("Reorder pickup is armed") { host.workspaceInteraction?.phone?.held == true }
-        event(MotionEvent.ACTION_MOVE,to);state("customize-reorder-held") {}
+        event(MotionEvent.ACTION_MOVE,to)
+        host.awaitFrame("Dragging closes its held menu") { findTag("workspace-menu") == null }
+        state("customize-reorder-held") {}
         event(MotionEvent.ACTION_UP,to);host.drain()
         host.awaitFrame("Reorder moves the first tile after two peers") { tiles()[2].getInt("id") == first }
         invoke("undo_workspace");assertEquals(beforeMove,jsonValue(layout()))

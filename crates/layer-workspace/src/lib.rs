@@ -26,6 +26,8 @@ mod browser_tests;
 #[cfg(all(test, feature = "native"))]
 mod controller_tests;
 #[cfg(all(test, feature = "native"))]
+mod recovery_tests;
+#[cfg(all(test, feature = "native"))]
 mod test_support;
 pub use manager::*;
 pub use model::*;

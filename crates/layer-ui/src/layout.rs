@@ -109,6 +109,7 @@ pub const PANEL_MIN_WIDTH: f32 = 6.0 * TILE_SIZE + 5.0 * TILE_GAP + 2.0 * PANEL_
 /// A single icon/name row; labels may ellipsize at the minimum width.
 pub const BRUSH_SETS_MIN_WIDTH: f32 = 104.0;
 pub const TAB_BAR_HEIGHT: f32 = TILE_SIZE;
+pub const COLUMN_MAX_WIDTH: f32 = 800.;
 const PANEL_GRIP_HEIGHT: f32 = 20.0;
 const TOOLBAR_GRIP_SIZE: f32 = 20.0;
 /// The slot a divider takes along a strip of tiles.
@@ -854,13 +855,15 @@ impl Panel {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Edge {
-    Top,
-    Bottom,
-    Left,
-    Right,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Edge {
+        Top,
+        Bottom,
+        Left,
+        Right,
+    }
 }
 impl Edge {
     pub fn axis(self) -> Axis {
@@ -871,11 +874,13 @@ impl Edge {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Axis {
-    Horizontal,
-    Vertical,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Axis {
+        Horizontal,
+        Vertical,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -883,8 +888,10 @@ pub enum Axis {
 pub enum DockNode {
     Tabs {
         id: u32,
+        #[serde(default, deserialize_with = "crate::lenient::vec")]
         panels: Vec<Panel>,
         active: Panel,
+        #[serde(default, deserialize_with = "crate::lenient::or_default")]
         tab_style: crate::TabStyle,
     },
     Split {
@@ -982,7 +989,7 @@ impl DockNode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DockBand {
     /// Compact toolbar regions share a strip but align independently along it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::lenient::or_default")]
     pub alignment: Option<EdgeAlignment>,
     pub id: u32,
     pub edge: Edge,
@@ -997,21 +1004,26 @@ pub struct FloatingGroup {
     pub position: [f32; 2],
     pub width: f32,
     /// Width inherited on tear-off, retained when manually resizing.
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub default_width: Option<f32>,
     /// None sizes to active content; a preserved tear-off size or manual resize
     /// supplies an explicit height.
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub height: Option<f32>,
     /// Default-size cycle and flow direction for a standalone floating toolbar.
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub toolbar_layout: FloatingToolbarLayout,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FloatingToolbarLayout {
-    #[default]
-    Compact,
-    Vertical,
-    Horizontal,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum FloatingToolbarLayout {
+        #[default]
+        Compact,
+        Vertical,
+        Horizontal,
+    }
 }
 impl FloatingToolbarLayout {
     fn next(self) -> Self {
@@ -1073,24 +1085,33 @@ mod floating_drop_tests;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DockLayout {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::lenient::optional_vec")]
     pub phone: Option<Vec<ToolbarTile>>,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub header: crate::HeaderLayout,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub canvas_info: crate::CanvasInfoLayout,
     pub canvas_bar: bool,
     #[serde(skip)]
     pub header_presentation: crate::HeaderPresentation,
     /// Outermost first. Reordering changes corner ownership explicitly.
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub bands: Vec<DockBand>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub panels: Vec<PanelConfig>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub floating: Vec<FloatingGroup>,
     /// Collapsing preserves the underlying dock tree and its expanded width.
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub collapsed: Vec<CollapsedColumn>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub column_stacks: Vec<ColumnStack>,
     #[serde(skip)]
     pub column_scroll: Vec<(u32, f32)>,
     /// Adding tabs opts a group into natural width; manual width resize opts out.
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub fit_tab_groups: Vec<u32>,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub fit_height_groups: Vec<u32>,
     #[serde(skip)]
     pub measurements: Vec<PanelMeasurement>,
@@ -1102,7 +1123,7 @@ pub struct DockLayout {
     /// Runtime native window-control clearance; the canvas viewport stays full size.
     #[serde(skip)]
     pub bottom_inset: f32,
-    #[serde(default, skip_serializing_if = "BubbleLayout::is_empty")]
+    #[serde(default, skip_serializing_if = "BubbleLayout::is_empty", deserialize_with = "crate::lenient::fields")]
     pub bubbles: BubbleLayout,
     next_tile_id: u32,
     next_id: u32,
@@ -2004,6 +2025,24 @@ impl DockLayout {
             splice_toolbar(tiles, next, ToolbarSplice::Remove(tile), false, None)?;
             splice_toolbar(tiles, next, ToolbarSplice::Place(before, source), true, None)
         })
+    }
+    pub fn retain_admitted(&mut self) {
+        for config in &mut self.panels {
+            let panel = config.id;
+            match &mut config.content {
+                PanelContent::Controls { visible } => {
+                    let mut seen = Vec::new();
+                    visible.retain(|control| crate::PanelControl::available(panel).contains(control) && !seen.contains(control) && { seen.push(*control); true });
+                }
+                PanelContent::Toolbar { tiles, .. } => tiles.retain(|tile| tile.control.validate_admission().is_ok()),
+            }
+        }
+        if let Some(tiles) = &mut self.phone {
+            tiles.retain(|tile| tile.control.validate_admission().is_ok()
+                && !matches!(tile.control, ToolbarControl::BrushSizeSlider | ToolbarControl::BrushStrengthSlider | ToolbarControl::ToolOptions { .. }));
+        }
+        self.header.retain_admitted();
+        self.bubbles.retain_admitted();
     }
     /// Visible panels occur exactly once; hidden panels retain their registry entry.
     /// globally unique IDs, finite dimensions, and valid active tabs/ratios.
@@ -3485,7 +3524,7 @@ impl DockLayout {
             let delta = coordinate - center;
             let width = open.bounds.width + if open.direction == Edge::Right { delta } else { -delta };
             let minimum = self.open_column_minimum(column);
-            self.collapsed.iter_mut().find(|c| c.root == column).unwrap().expanded_width = width.clamp(minimum, 800.);
+            self.collapsed.iter_mut().find(|c| c.root == column).unwrap().expanded_width = width.clamp(minimum, COLUMN_MAX_WIDTH);
             return Ok(());
         }
         if self.fixed_stack_divider(d) {
@@ -4946,13 +4985,8 @@ fn resolve_node(
             } else {
                 let a = stacked_heights(first, layout);
                 let b = stacked_heights(second, layout);
-                if a[2] + b[2] > usable && a[1] + b[1] <= usable {
-                    a[1] + (usable - a[1] - b[1]) * (a[2] - a[1])
-                        / (a[2] + b[2] - a[1] - b[1])
-                } else {
-                    let tier = usize::from(a[1] + b[1] <= usable);
-                    split_size(usable, *fraction, a[tier], b[tier])
-                }
+                let tier = usize::from(a[1] + b[1] <= usable);
+                split_size(usable, *fraction, a[tier], b[tier])
             };
             if *axis == Axis::Horizontal {
                 if layout.is_collapsed(first.id()) && !(open_columns && layout.open_stack_column(first.id()).is_some()) {
@@ -4985,6 +5019,59 @@ fn resolve_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn measured_paint_stacks() -> DockLayout {
+        let mut layout = crate::WorkspacePreset::Illustrator.layout(crate::Platform::Windows);
+        layout.collapsed.clear();
+        layout.measurements = [
+            (Panel::Brushes, 400., Some(PanelScrollMeasurement { fixed_height: 0., unit_height: 40. })),
+            (Panel::ToolSettings, 500., Some(PanelScrollMeasurement { fixed_height: 0., unit_height: 0. })),
+            (Panel::Color, 300., None),
+            (Panel::Navigator, 180., Some(PanelScrollMeasurement { fixed_height: 44., unit_height: 0. })),
+            (Panel::Properties, 240., Some(PanelScrollMeasurement { fixed_height: 0., unit_height: 0. })),
+            (Panel::Layers, 500., Some(PanelScrollMeasurement { fixed_height: 92., unit_height: 40. })),
+        ].into_iter().map(|(panel, content_height, scroll)| PanelMeasurement {
+            panel, tab_widths: [0.; 2], content_height, scroll,
+        }).collect();
+        layout
+    }
+
+    #[test]
+    fn paint_stack_divider_tracks_pointer_when_preferred_heights_do_not_fit() {
+        let layout = measured_paint_stacks();
+        let viewport = [1280., 560.];
+        let before = layout.resolve(viewport[0], viewport[1]);
+        let divider = before.dividers.iter().find(|divider| divider.id == 13).unwrap();
+        let DockNode::Split { first, second, .. } = layout.node(13).unwrap() else { panic!("Properties/Layers split") };
+        let a = stacked_heights(first, &layout);
+        let b = stacked_heights(second, &layout);
+        let usable = divider.parent.height - divider.bounds.height;
+        assert!(a[1] + b[1] <= usable && usable < a[2] + b[2], "Properties {a:?}, Layers {b:?}, usable {usable}");
+        let center = [divider.bounds.x + divider.bounds.width * 0.5, divider.bounds.y + divider.bounds.height * 0.5];
+        for delta in [-40., 40.] {
+            let mut changed = layout.clone();
+            changed.resize(13, [center[0], center[1] + delta], viewport).unwrap();
+            let after = changed.resolve(viewport[0], viewport[1]);
+            let moved = group(&after, Panel::Properties).height - group(&before, Panel::Properties).height;
+            assert!((moved - delta).abs() < 0.001, "Properties divider moved {moved} for pointer delta {delta}");
+            assert!(group(&after, Panel::Properties).height >= a[1]);
+            assert!(group(&after, Panel::Layers).height >= b[1]);
+            for panel in [Panel::Color, Panel::Navigator] {
+                assert_eq!(group(&after, panel).height, group(&before, panel).height);
+            }
+            assert_eq!(changed.fit_height_groups, layout.fit_height_groups);
+        }
+    }
+
+    #[test]
+    fn paint_stack_fitted_heights_stay_unchanged() {
+        let layout = measured_paint_stacks();
+        let heights = [480., 560., 640., 720., 900., 1200.].map(|height| {
+            let resolved = layout.resolve(1280., height);
+            [group(&resolved, Panel::Color).height, group(&resolved, Panel::Navigator).height]
+        });
+        assert_eq!(heights, [[324., 116.], [336., 116.], [336., 160.], [336., 216.], [336., 216.], [336., 216.]]);
+    }
 
     #[test]
     fn reopened_panels_have_legal_docks_and_monitors_default_to_right() {

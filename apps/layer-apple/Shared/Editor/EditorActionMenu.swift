@@ -93,7 +93,7 @@ struct EditorActionMenu: View {
     private var menuHeight: CGFloat {
         let rows = entries.count * 36
         let separators = max(0, sections.count - 1) * 9
-        let heading = pages.isEmpty && model.title.isEmpty ? 0 : 40
+        let heading = !pages.isEmpty ? 37 : model.title.isEmpty ? 0 : 36
         return min(560, CGFloat(rows + separators + heading + 12))
     }
     @ViewBuilder private var header: some View {
@@ -104,7 +104,8 @@ struct EditorActionMenu: View {
             }.buttonStyle(.plain).padding(.horizontal, 10).accessibilityIdentifier("editor-menu-back")
             EditorLine(color: palette.panelBorder)
         } else if !model.title.isEmpty {
-            Text(model.title).foregroundStyle(.secondary).padding(10)
+            Text(model.title).foregroundStyle(.secondary).padding(.horizontal, 10).frame(minHeight: 36)
+                .accessibilityAddTraits(.isHeader).accessibilityIdentifier("editor-menu-title")
         }
     }
     @ViewBuilder private func sectionView(_ section: Int) -> some View {

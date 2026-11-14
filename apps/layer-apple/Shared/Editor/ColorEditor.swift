@@ -147,7 +147,12 @@ struct ColorEditor: View {
             HStack(spacing: 6) {
                 NumericTextField(label: copy["swatch_search"].string, text: $search, focused: $searchFocused,
                     fontSize: 14, color: palette["text"], identifier: "color-sheet-search",
-                    submit: { _ in true }, cancel: escapeSearch)
+                    submit: { done in
+                        #if os(iOS)
+                        if done { searchFocused = false }
+                        #endif
+                        return true
+                    }, cancel: escapeSearch)
                     .frame(height: 28).padding(.horizontal, 6)
                     .background(palette.field, in: SquircleShape.control)
                     .onChange(of: search) { _, text in if text != session.search { session.search(text) } }
@@ -198,7 +203,7 @@ struct ColorEditor: View {
     private func setSheet(_ open: Bool) {
         guard open != sheetOpen else { return }
         if open { search = session.search; session.refreshSwatches(sheetOpen: true) }
-        searchFocused = open
+        searchFocused = open && NativeTextContext.keyboardInput
         withAnimation(.easeOut(duration: 0.25)) { session.act(["op": open ? "toggle_swatches" : "back"]) }
     }
     private func useColor() { commitFocused(); if !session.blocked { session.close(apply: true) } }
@@ -400,6 +405,7 @@ private struct ColorClipboardKeys: UIViewRepresentable {
             guard let window, window.isKeyWindow, !editing, !isFirstResponder, copyColor != nil, !NativeTextContext.composing else { return }
             let responder = firstResponder(in: window)
             guard !(responder is UITextInput) else { return }
+            guard !((responder as? ControlInput.InputView)?.transacting ?? false) else { return }
             becomeFirstResponder()
         }
         override var keyCommands: [UIKeyCommand]? {

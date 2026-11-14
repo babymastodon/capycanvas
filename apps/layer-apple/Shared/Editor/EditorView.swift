@@ -1,5 +1,8 @@
 import SwiftUI
-#if os(iOS)
+import CoreText
+#if canImport(AppKit)
+import AppKit
+#else
 import UIKit
 #endif
 
@@ -51,7 +54,9 @@ struct EditorView<Canvas: View>: View {
                 if !store.snapshot["layout"]["phone"].isNull { PhoneMenu(store: store).zIndex(220) }
                 PenResponseCalibration(store: store)
             }
-            FillGestureOverlay(view: store.snapshot["color_preview"]["fill_gesture"], palette: palette)
+            if !store.snapshot["color_preview"]["fill_gesture"].isNull {
+                FillGestureOverlay(view: store.snapshot["color_preview"]["fill_gesture"], palette: palette)
+            }
             HStack {
                 ToneStatusLabel(store: store, palette: palette)
                 ProofIndicator(model: store.proof, palette: palette)
@@ -83,7 +88,7 @@ struct EditorView<Canvas: View>: View {
             #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(.easeOut(duration: 0.18), value: store.snapshot["launch"]["finished"].bool)
+        .animation(.easeOut(duration: store.bootstrap["launch_reveal_ms"].number / 1000), value: store.snapshot["launch"]["finished"].bool)
         .modifier(EditorPopoverHost())
         .coordinateSpace(name: "editor-workspace")
         .onKeyPress(keys: [.escape], phases: [.down, .repeat]) { [store] press in
@@ -201,14 +206,37 @@ private struct LaunchCover: View {
     @State private var shownAt: ContinuousClock.Instant?
     private var palette: EditorPalette { EditorPalette(source: store.state["palette"]) }
     private var captionDelay: UInt64 { store.bootstrap["launch_caption_delay_ms"].uint }
-    private var notice: String { store.snapshot["launch"]["notice"].string == "brush" ? "brush" : "canvas" }
+    private var captionSize: CGFloat { CGFloat(store.bootstrap["launch_caption_size"].number) }
+    private var captionInkAscent: CGFloat {
+        #if canImport(AppKit)
+        let font = NSFont.systemFont(ofSize: captionSize)
+        #else
+        let font = UIFont.systemFont(ofSize: captionSize)
+        #endif
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: store.bootstrap["launch_caption"].string,
+            attributes: [.font: font]) as CFAttributedString)
+        return CTLineGetImageBounds(line, nil).maxY
+    }
     var body: some View {
-        ZStack {
-            SharedIcon(name: "layer-zen-looking-up-symbolic", size: 96)
-            Text(store.bootstrap["preparing_\(notice)"].string)
-                .font(.callout).opacity(captionVisible ? 0.55 : 0)
-                .accessibilityHidden(!captionVisible)
-                .multilineTextAlignment(.center).padding(.horizontal, 24).offset(y: 76)
+        GeometryReader { geometry in
+            let size = CGFloat(capy_apple_launch_mark_size(Float(geometry.size.width), Float(geometry.size.height)))
+            let mark = store.bootstrap["launch_mark"]
+            ZStack(alignment: .topLeading) {
+                if !mark.isNull {
+                    SharedIcon(name: mark["icon"].string, size: size)
+                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                    Text(store.bootstrap["launch_caption"].string)
+                        .font(.system(size: captionSize)).opacity(captionVisible ? 1 : 0)
+                        .foregroundStyle(palette[store.bootstrap["launch_caption_color_role"].string])
+                        .accessibilityHidden(!captionVisible)
+                        .multilineTextAlignment(.center).padding(.horizontal, 24)
+                        .frame(width: geometry.size.width).fixedSize(horizontal: false, vertical: true)
+                        .alignmentGuide(.top) { $0[.firstTextBaseline] - captionInkAscent }
+                        .offset(y: geometry.size.height / 2 + size * (CGFloat(mark["ink_bottom"].number) - 0.5)
+                            + CGFloat(store.bootstrap["launch_caption_gap"].number))
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
         }
         .foregroundStyle(store.state.isNull ? Color.primary : palette["text"])
         .frame(maxWidth: .infinity, maxHeight: .infinity)

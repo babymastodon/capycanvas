@@ -29,6 +29,13 @@ patch when the pinned GTK release provides equivalent bounded reuse; the
 [allocation record](../../../docs/history/gtk-vulkan-allocation-reuse.md) covers
 the cause, alternatives and upstream status.
 
+`glib-launch-helper.patch` makes the bundled GLib run the `gio-launch-desktop`
+shipped beside `libgio` before its compiled-in path. That path names the build's
+libexec directory, which distributions place differently, so the relocated
+runtime could not open links or applications without a desktop portal.
+`test-runtime.py` launches a command through a marker helper beside copied
+libraries and through the shipped helper.
+
 ## Using system GTK
 
 Capy Canvas uses public GTK APIs and can link to system GTK. Direct Cargo
@@ -110,8 +117,9 @@ library using an executable-relative path that survives relocation and symlinks.
 Applications can replace the local library with a compatible rebuilt version.
 GLib and Pango are bundled so GTK 4.24 runs with the documented older system SDK,
 including Omarchy. Pango includes its Cairo and FreeType libraries and Thai
-dictionary support; the fonts, shaping, rasterization and Wayland SDK remain
-system dependencies with version requirements checked before the build.
+dictionary support; the fonts, shaping, rasterization, Wayland SDK and X11 client
+libraries remain system dependencies with version requirements checked before
+the build. The X11 backend only shows that the app needs a Wayland session.
 Each private library resolves its siblings through `$ORIGIN`; system GTK, GLib and Pango
 remain untouched. Libadwaita and GTK's remaining shared dependencies stay system
 requirements.

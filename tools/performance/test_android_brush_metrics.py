@@ -14,7 +14,7 @@ class ReportTests(unittest.TestCase):
         info = dict(preset=1, brush_size=1024, mode="object-affine", prediction=True,
                     speed=1, repeats=1)
         display = dict(submitted_frames=1, completed_frames=1)
-        renderer = dict(rows=[dict(label="Frames", value="1"), dict(label="Dabs", value="0")],
+        renderer = dict(frames=1, dabs=0,
                         gpu_samples=[], resident_bytes=0)
         report = dict(motion=dict(begin_ns=10, end_ns=100, begin_boot_ns=10, end_boot_ns=100,
                                   object_edits=[[11, 15, 2]], injected=[]),
@@ -48,7 +48,7 @@ class FeedbackTests(unittest.TestCase):
         report = dict(input_fields=["event_ns", "arrival_ns", "phase"],
                       inputs=[[0, 0, 1], [5*ms, 5*ms, 2], [10*ms, 10*ms, 3], [15*ms, 15*ms, 1]],
                       motion=dict(begin_ns=0, end_ns=20*ms),
-                      renderer_before=dict(rows=[dict(label="Frames", value=0)]),
+                      renderer_before=dict(frames=0),
                       completions=[[1, ms, 2*ms, 1, 0], [2, 6*ms, 7*ms, 2, 0],
                                    [3, 15*ms, 16*ms, 3, 5*ms]])
         feedback = input_feedback(report)
@@ -58,7 +58,7 @@ class FeedbackTests(unittest.TestCase):
     def test_completion_covers_new_input_and_zero_raster_work_does_not(self):
         ms = 1_000_000
         report = dict(input_fields=["event_ns", "arrival_ns", "phase"], inputs=[[0, 0, 1], [ms, ms, 2]],
-                      motion=dict(begin_ns=0, end_ns=5*ms), renderer_before=dict(rows=[dict(label="Frames", value=1)]),
+                      motion=dict(begin_ns=0, end_ns=5*ms), renderer_before=dict(frames=1),
                       completions=[[1, ms, 2*ms, 1, ms], [2, 2*ms, 3*ms, 2, ms]])
         feedback = input_feedback(report)
         self.assertEqual(feedback["age_ms"], [0, 1, 2, 0, 0])
@@ -327,7 +327,7 @@ class CompletionWindowTests(unittest.TestCase):
             "motion": {"begin_ns": 0, "end_ns": 100, "active_intervals_ns": [[10, 40], [60, 90]]},
             "input_fields": ["event_ns", "worker_start_ns", "cpu_input_ns", "phase"],
             "inputs": [[11, 9, 2, 1], [21, 19, 2, 2], [29, 28, 1, 0], [39, 38, 1, 3], [61, 58, 3, 1], [86, 84, 2, 2]],
-            "renderer_before": {"rows": [{"label": "Frames", "value": "0"}]},
+            "renderer_before": {"frames": 0},
             "completions": [[1, 12, 18, 1, 11], [2, 19, 20, 2, 11], [3, 22, 25, 2, 11],
                             [4, 26, 28, 3, 21], [5, 32, 38, 4, 21], [6, 39, 48, 5, 21],
                             [7, 62, 70, 6, 61], [8, 72, 78, 7, 61], [9, 87, 92, 8, 86]],
@@ -340,7 +340,7 @@ class CompletionWindowTests(unittest.TestCase):
             "motion": {"begin_ns": 0, "end_ns": 100},
             "input_fields": ["event_ns", "arrival_ns", "worker_start_ns", "cpu_input_ns", "phase"],
             "inputs": [[10, 10, 10, 1, 1], [40, 40, 40, 1, 1]],
-            "renderer_before": {"rows": [{"label": "Frames", "value": "0"}]},
+            "renderer_before": {"frames": 0},
             "completions": [[0, 8, 9, 1, 0], [1, 12, 18, 2, 0], [2, 20, 30, 3, 10],
                             [3, 42, 44, 4, 10], [4, 50, 60, 5, 40], [5, 70, 80, 6, 40]],
         }
@@ -363,7 +363,7 @@ class CompletionWindowTests(unittest.TestCase):
             "motion": {"begin_ns": 0, "end_ns": 100, "active_intervals_ns": [[10, 30], [60, 90]]},
             "display_before": {"submitted_frames": 0, "completed_frames": 0},
             "display_after_input": {"submitted_frames": 6, "completed_frames": 6},
-            "renderer_before": {"rows": [{"label": "Frames", "value": "0"}]},
+            "renderer_before": {"frames": 0},
             "completions": [[1, 10, 20, 1], [2, 25, 32, 2], [3, 35, 45, 3],
                             [4, 65, 75, 4], [5, 85, 90, 5], [6, 95, 99, 6]],
         }
@@ -381,7 +381,7 @@ class CompletionWindowTests(unittest.TestCase):
             "motion": {"begin_ns": 100, "end_ns": 200},
             "display_before": {"submitted_frames": 9, "completed_frames": 8},
             "display_after_input": {"submitted_frames": 14, "completed_frames": 13},
-            "renderer_before": {"rows": [{"label": "Frames", "value": "6"}]},
+            "renderer_before": {"frames": 6},
             "completions": [[9, 90, 110, 6], [10, 100, 130, 7],
                             [11, 140, 160, 7], [12, 150, 190, 8],
                             [13, 180, 200, 9], [14, 200, 220, 10]],

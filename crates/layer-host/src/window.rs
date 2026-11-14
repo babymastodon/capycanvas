@@ -1571,6 +1571,70 @@ mod tests {
     }
 
     #[test]
+    fn automatic_camera_revisions_publish_with_a_model_and_navigation_publishes_camera_only() {
+        use layer_ui::{ContactPhase, PointerButton, PointerKind};
+        fn automatic(host: &NativeHost) -> u64 { host.session.state().camera.revision - host.session.session_stamp().camera_navigation }
+        fn publish(host: &mut NativeHost, published: &mut u64) -> Value {
+            let packet = host.take_layout_update_bytes().unwrap().map_or(Value::Null, |bytes| serde_json::from_slice(&bytes).unwrap());
+            let current = automatic(host);
+            let model = ["state", "workspace_update", "layout", "command_search"].into_iter().any(|key| packet.get(key).is_some());
+            assert!(current == *published || model, "Automatic camera revisions {published} -> {current} published without a model: {packet}");
+            *published = current;
+            packet
+        }
+        fn navigation_only(host: &mut NativeHost, published: &mut u64, navigate: impl FnOnce(&mut NativeHost)) {
+            let navigation = host.session.session_stamp().camera_navigation;
+            navigate(host);
+            let packet = publish(host, published);
+            let keys: Vec<_> = packet.as_object().unwrap().keys().map(String::as_str).collect();
+            assert_eq!(keys, ["camera", "revision"], "{packet}");
+            assert!(host.session.session_stamp().camera_navigation > navigation);
+        }
+        let mut host = host_on(layer_ui::Platform::Windows);
+        let mut window = Window::default();
+        let mut published = automatic(&host);
+        publish(&mut host, &mut published);
+        let resized = published;
+        host.resize(1600, 1000, 1.).unwrap();
+        publish(&mut host, &mut published);
+        assert_ne!(published, resized);
+        let wheel = |host: &mut NativeHost| host.scroll([800., 500.], [0., 40.], 1., false, false).unwrap();
+        wheel(&mut host);
+        publish(&mut host, &mut published);
+        navigation_only(&mut host, &mut published, wheel);
+        let touch = |host: &mut NativeHost, phase: ContactPhase, step: f32| for (id, x) in [(1, 700.), (2, 900.)] {
+            host.input(UiInput::Pointer { id, phase, kind: PointerKind::Touch, button: PointerButton::Primary, position: [x + step * 40., 500. + step * 20.], time_ns: 1_000_000_000 + step as u64 * 16_000_000 }).unwrap();
+        };
+        touch(&mut host, ContactPhase::Down, 0.);
+        touch(&mut host, ContactPhase::Move, 1.);
+        publish(&mut host, &mut published);
+        navigation_only(&mut host, &mut published, |host| touch(host, ContactPhase::Move, 2.));
+        touch(&mut host, ContactPhase::Up, 2.);
+        publish(&mut host, &mut published);
+        for _ in 0..2 {
+            invoke(&mut host, CommandId::ZenMode);
+            publish(&mut host, &mut published);
+        }
+        open(&mut window, &mut host);
+        publish(&mut host, &mut published);
+        let mut activation = switch(&mut window, &mut host, 1);
+        publish(&mut host, &mut published);
+        activation.work().unwrap();
+        resume(&mut window, &mut host, &mut activation);
+        publish(&mut host, &mut published);
+        invoke(&mut host, CommandId::CloseDocument);
+        let prepared = window.prepare_close(&mut host, Default::default()).unwrap();
+        let (mut activation, closed) = window.commit_close(&mut host, prepared, |_| {}).unwrap();
+        publish(&mut host, &mut published);
+        drop(closed);
+        activation.work().unwrap();
+        resume(&mut window, &mut host, &mut activation);
+        publish(&mut host, &mut published);
+        navigation_only(&mut host, &mut published, wheel);
+        finish(host, window);
+    }
+
+    #[test]
     fn host_reports_reach_a_drawing_whose_close_is_prepared() {
         let mut host = host();
         let mut window = Window::default();

@@ -34,15 +34,53 @@ public static class TabFrames {
     for(int c=0;c<3;c++){lo[i+c]-=6;hi[i+c]+=6;}
    }
   }
+  bool Invalid(Bitmap image,int x,int y){
+   int i=(y*width+x)*3;var v=image.GetPixel(x,y);
+   return v.R<lo[i]||v.R>hi[i]||v.G<lo[i+1]||v.G>hi[i+1]||v.B<lo[i+2]||v.B>hi[i+2];
+  }
   public int Difference(Bitmap image){return Difference(image,Rectangle.Empty);}
   public int Difference(Bitmap image,Rectangle excluded){
    int count=0;
-   for(int y=0;y<height;y++)for(int x=0;x<width;x++){
-    if(excluded.Contains(x,y))continue;
-    int i=(y*width+x)*3;var v=image.GetPixel(x,y);
-    if(v.R<lo[i]||v.R>hi[i]||v.G<lo[i+1]||v.G>hi[i+1]||v.B<lo[i+2]||v.B>hi[i+2])count++;
-   }
+   for(int y=0;y<height;y++)for(int x=0;x<width;x++)if(!excluded.Contains(x,y)&&Invalid(image,x,y))count++;
    return count;
+  }
+  public bool ExtraTint(Bitmap image,Bitmap final,Rectangle strip,Rectangle excluded,Color tint){
+   strip=Rectangle.Intersect(strip,new Rectangle(0,0,width,height));
+   var band=Rectangle.Inflate(strip,2,2);var core=Rectangle.Inflate(strip,-4,-4);
+   if(core.Width<=0||core.Height<=0)return false;
+   double alpha=tint.A/255.0;
+   Func<Color,Color,int,bool> layered=(f,v,tolerance)=>Over(f.R,tint.R,alpha,v.R,tolerance,false)
+    &&Over(f.G,tint.G,alpha,v.G,tolerance,false)&&Over(f.B,tint.B,alpha,v.B,tolerance,false);
+   Func<Color,Color,bool> partial=(f,v)=>Over(f.R,tint.R,alpha,v.R,6,true)&&Over(f.G,tint.G,alpha,v.G,6,true)&&Over(f.B,tint.B,alpha,v.B,6,true);
+   if(!layered(Mode(final,core),Mode(image,core),3))return false;
+   int outside=0,unexplained=0;
+   for(int y=0;y<height;y++)for(int x=0;x<width;x++){
+    if(excluded.Contains(x,y)||!Invalid(image,x,y))continue;
+    if(!band.Contains(x,y)){outside++;continue;}
+    var f=final.GetPixel(x,y);var v=image.GetPixel(x,y);
+    if(Flat(final,x,y)?!layered(f,v,6):!partial(f,v))unexplained++;
+   }
+   return outside<=8&&unexplained<=8;
+  }
+  static bool Over(int final,int tint,double alpha,int value,int tolerance,bool partial){
+   double layered=final+alpha*(tint-final);
+   return partial?value>=Math.Min(final,layered)-tolerance&&value<=Math.Max(final,layered)+tolerance:Math.Abs(value-layered)<=tolerance;
+  }
+  bool Flat(Bitmap image,int x,int y){
+   var center=image.GetPixel(x,y);
+   for(int yy=Math.Max(0,y-1);yy<=Math.Min(height-1,y+1);yy++)
+    for(int xx=Math.Max(0,x-1);xx<=Math.Min(width-1,x+1);xx++)if(image.GetPixel(xx,yy)!=center)return false;
+   return true;
+  }
+  static Color Mode(Bitmap image,Rectangle area){
+   var keys=new int[area.Width*area.Height];int n=0,best=0,mode=0;
+   for(int y=area.Top;y<area.Bottom;y++)for(int x=area.Left;x<area.Right;x++)keys[n++]=image.GetPixel(x,y).ToArgb();
+   Array.Sort(keys);
+   for(int start=0,end=0;start<n;start=end){
+    while(end<n&&keys[end]==keys[start])end++;
+    if(end-start>best){best=end-start;mode=keys[start];}
+   }
+   return Color.FromArgb(mode);
   }
  }
  public static int[] Remaining(Bitmap image,Bitmap final,Rectangle overview){

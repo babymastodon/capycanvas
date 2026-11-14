@@ -36,10 +36,10 @@ fn hold(d: &mut Driver, tile: Option<u32>) {
             .expect("the phone bars have native empty space outside every control")
     }, |id| d.point(&d.named(&format!("phone-tool-{id}"))));
     d.input.perform(serde_json::json!([contact("touch", "down", point), { "wait_ms": 900 }]));
-    assert!(popup(d).is_none(), "holding lifts the tile without opening its release menu");
+    until(|| popup(d).is_some(), "touch hold opens the native editing menu before release");
+    let menu = popup(d).unwrap();
     d.input.perform(serde_json::json!([contact("touch", "up", point)]));
-    until(|| popup(d).is_some(), "hold release opens the native editing menu");
-    let menu=popup(d).unwrap();
+    assert!(menu.is_mapped(), "release keeps the held editing menu open");
     assert!(menu.has_arrow());
     crate::menu_presentation::assert_declared(&menu);
 }
@@ -136,12 +136,25 @@ fn restore(d: &mut Driver, phone: bool) {
 }
 
 #[test]
-#[ignore = "private compositor: --native-test=native_phone_customize --native-storage; 412x891 light / 891x412 dark"]
+#[ignore = "private compositor: --native-test=native_phone_customize --native-storage; 412x891 light / 891x412 dark; --tablet for pen"]
 fn native_phone_customize() {
     let mut d = setup("art.capycanvas.PhoneCustomize");
     let before = layout(&d);
     let undo = history(&d).history.undo.len();
     let removed = before.phone.as_ref().unwrap()[0].id;
+    let mouse_point = d.point(&d.named(&format!("phone-tool-{removed}")));
+    d.input.perform(serde_json::json!([contact("mouse", "down", mouse_point), { "wait_ms": 900 }]));
+    assert!(popup(&d).is_none(), "mouse hold only lifts the tile");
+    d.input.perform(serde_json::json!([contact("mouse", "up", mouse_point)]));
+    assert!(popup(&d).is_none(), "mouse release does not open the editing menu");
+    assert_eq!(layout(&d), before);
+    d.input.perform(serde_json::json!([contact("touch", "down", mouse_point), { "wait_ms": 900 }]));
+    until(|| popup(&d).is_some(), "held touch menu is open before Escape");
+    d.input.key(0xff1b);
+    until(|| popup(&d).is_none(), "Escape closes the held touch menu");
+    d.input.perform(serde_json::json!([contact("touch", "up", mouse_point)]));
+    assert!(popup(&d).is_none(), "cancelled contact release opens no menu");
+    assert_eq!(layout(&d), before);
     hold(&mut d, Some(removed));
     if std::env::var_os("LAYER_NATIVE_CAPTURE_DIR").is_some() { inventory_monitor(&mut d, "customize-tile-menu"); }
     menu_action(&mut d, "Remove Tool");
@@ -214,9 +227,13 @@ fn native_phone_customize() {
     let mut to = d.point(&d.named(&format!("phone-tool-{}", tiles[2].id)));
     to[usize::from(presentation(&d).edge != Edge::Top)] += 1.;
     let undo = history(&d).history.undo.len();
-    d.input.perform(serde_json::json!([contact("touch", "down", from), { "wait_ms": 900 }, contact("touch", "move", to)]));
+    d.input.perform(serde_json::json!([contact("touch", "down", from), { "wait_ms": 900 }]));
+    until(|| popup(&d).is_some(), "reorder hold opens its menu");
+    d.input.perform(serde_json::json!([contact("touch", "move", to)]));
+    until(|| popup(&d).is_none(), "drag dismisses the held menu");
     capture_current(&mut d, "customize-reorder-held");
     d.input.perform(serde_json::json!([contact("touch", "up", to)]));
+    assert!(popup(&d).is_none(), "reorder release does not reopen the menu");
     let mut expected = tiles.clone();
     expected[..3].rotate_left(1);
     assert_eq!(layout(&d).phone.unwrap(), expected);
@@ -225,8 +242,10 @@ fn native_phone_customize() {
     assert_eq!(layout(&d), before_move);
     let unchanged = history(&d);
     let outside = [d.w.surface.width() as f32 * 0.5, d.w.surface.height() as f32 * 0.5];
-    d.input.perform(serde_json::json!([contact("touch", "down", from), { "wait_ms": 900 },
-        contact("touch", "move", outside), contact("touch", "up", outside)]));
+    d.input.perform(serde_json::json!([contact("touch", "down", from), { "wait_ms": 900 }]));
+    until(|| popup(&d).is_some(), "off-bar hold opens its menu");
+    d.input.perform(serde_json::json!([contact("touch", "move", outside), contact("touch", "up", outside)]));
+    assert!(popup(&d).is_none(), "off-bar cancellation closes the held menu");
     assert_eq!(history(&d), unchanged, "off-bar release cancels without history");
     capture(&mut d, "customize-offbar-cancelled");
 
@@ -243,6 +262,32 @@ fn native_phone_customize() {
     d.input.key(0xff1b);
     until(|| d.w.visible_dialog().is_none() && !d.w.pages.root.is_transition_running(), "empty toolbar picker cancels");
     restore(&mut d, true);
+    if std::env::var("WAYLAND_DISPLAY").is_ok_and(|display| display.ends_with("-tablet")) {
+        let id = layout(&d).phone.as_ref().unwrap()[0].id;
+        let point = d.point(&d.named(&format!("phone-tool-{id}")));
+        d.input.perform(serde_json::json!([contact("pen", "down", point), { "wait_ms": 900 }]));
+        until(|| popup(&d).is_some(), "pen hold opens the editing menu before release");
+        let menu = popup(&d).unwrap();
+        d.input.perform(serde_json::json!([contact("pen", "up", point)]));
+        until(|| menu.is_autohide(), "pen release retires held menu capture");
+        d.w.dismiss_context();
+        until(|| popup(&d).is_none(), "the synthetic tablet menu closes");
+        d.input.perform(serde_json::json!([{ "pen": "leave" }]));
+        let before = layout(&d);
+        let tiles = before.phone.as_ref().unwrap();
+        let from = d.point(&d.named(&format!("phone-tool-{}", tiles[0].id)));
+        let mut to = d.point(&d.named(&format!("phone-tool-{}", tiles[2].id)));
+        to[usize::from(presentation(&d).edge != Edge::Top)] += 1.;
+        d.input.perform(serde_json::json!([contact("pen", "down", from), { "wait_ms": 900 }]));
+        until(|| popup(&d).is_some(), "pen reorder hold opens its menu");
+        d.input.perform(serde_json::json!([contact("pen", "move", to)]));
+        until(|| popup(&d).is_none(), "pen drag dismisses the held menu");
+        d.input.perform(serde_json::json!([contact("pen", "up", to), { "pen": "leave" }]));
+        let mut expected = tiles.clone();
+        expected[..3].rotate_left(1);
+        assert_eq!(layout(&d).phone.unwrap(), expected, "pen release reorders the original held tile");
+        assert!(popup(&d).is_none(), "pen reorder release does not reopen the menu");
+    }
     d.finish();
 }
 

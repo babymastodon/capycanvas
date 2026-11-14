@@ -1,8 +1,9 @@
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'session-identity.ps1')
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'run-fixtures.ps1'),[ref]$tokens,[ref]$errors)
 if(@($errors).Count){throw ($errors|Out-String)}
-foreach($name in 'Get-FixtureProcessArguments','Write-FixturePlan','Get-NextFixture','Select-Fixtures','Control-Fixture','Reviews','Get-FixtureTimeoutSeconds','Get-FixtureVariantArguments','Get-FixtureCompanionArguments','Write-FixtureResult','ConvertTo-FixtureCommandLine','Save-Evidence','Assert-FixtureFiles','Build-ControlFixture'){
+foreach($name in 'Get-FixtureGraphicsFailure','Write-FixtureSessionRecord','Write-FixtureGraphicsWithdrawal','Wait-FixtureGraphicsEvidence','Get-FixtureProcessArguments','Write-FixturePlan','Get-NextFixture','Select-Fixtures','Control-Fixture','Reviews','Get-FixtureTimeoutSeconds','Get-FixtureVariantArguments','Get-FixtureCompanionArguments','Write-FixtureResult','ConvertTo-FixtureCommandLine','Save-Evidence','Assert-FixtureFiles','Build-ControlFixture'){
     $function=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$false)
     . ([scriptblock]::Create($function.Extent.Text))
 }
@@ -20,6 +21,55 @@ foreach($name in 'Get-FixtureProcessArguments','Write-FixturePlan','Get-NextFixt
     Invoke-Expression $routed[1]
     $launch=$ast.Find({param($node)$node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$arguments' -and $node.Right.Extent.Text -like '*Get-FixtureProcessArguments*'},$true)
     if(!$launch){throw 'Fixture launch bypasses desktop routing'}
+}
+& {
+    foreach($value in 'MILERR_NO_HARDWARE_DEVICE','0x8898008D','2291662989','-2003304307'){
+        if((Get-FixtureGraphicsFailure $value '') -cne 'MILERR_NO_HARDWARE_DEVICE' -or (Get-FixtureGraphicsFailure 1 ("Owned review exited with code ${value}: Review did not start")) -cne 'MILERR_NO_HARDWARE_DEVICE'){throw "Graphics withdrawal missed $value in an exit or nested fixture error"}
+    }
+    foreach($message in 'DXGI_ERROR_DEVICE_REMOVED','MILERR_NO_HARDWARE_DEVICE -2003304307','0x887A0006 2289696775'){if(Get-FixtureGraphicsFailure 0 $message){throw 'A passing row logged a handled graphics failure and was withdrawn'}}
+    foreach($message in 'DeviceLost','Unknown GPU failure','122916629890','0x8898008D0','NOT_DXGI_ERROR_DEVICE_RESET','MILERR_NO_HARDWARE_DEVICE_EXTRA'){
+        if(Get-FixtureGraphicsFailure 1 $message){throw "Graphics withdrawal classified an unrelated error: $message"}
+    }
+    if((Get-FixtureGraphicsFailure 1 'failure 0x008898008d') -cne 'MILERR_NO_HARDWARE_DEVICE'){throw 'Padded lowercase HRESULT was not classified'}
+    $directory=Join-Path ([IO.Path]::GetTempPath()) ('capy-graphics-withdrawal-'+[Guid]::NewGuid().ToString('N'))
+    [IO.Directory]::CreateDirectory($directory)|Out-Null
+    $TimeoutMinutes=20;$HardwareGpu=$true
+    function Get-CapySessionIdentity{@{account='HOST\capy04';session_id=42;logon_sid='S-1-5-5-2-3';boot_utc='2026-11-11T09:00:00.0000000Z'}}
+    try{
+        Write-FixturePlan (Join-Path $directory 'plan.json') @('first')
+        $result=@{name='first';exit='evidence';message='Owned review exited with code -2003304307: Review did not start';infrastructure_cause='MILERR_NO_HARDWARE_DEVICE'}
+        $identity=Get-CapySessionIdentity
+        Write-FixtureGraphicsWithdrawal $directory $result $identity
+        $request=[IO.File]::ReadAllText((Join-Path $directory 'graphics-withdrawal.json'))|ConvertFrom-Json
+        if($request.name -cne $result.name -or $request.exit -cne $result.exit -or $request.error -cne $result.message -or $request.cause -cne $result.infrastructure_cause){throw 'Atomic graphics withdrawal lost the original fixture result'}
+        if($request.account -cne 'HOST\capy04' -or $request.session_id -ne 42 -or $request.logon_sid -cne 'S-1-5-5-2-3' -or $request.boot_utc -cne '2026-11-11T09:00:00.0000000Z' -or !$request.time_utc){throw 'Graphics withdrawal lost its worker boot/account/logon identity'}
+        if(Test-Path -LiteralPath (Join-Path $directory 'graphics-withdrawal.json.tmp')){throw 'Graphics withdrawal left an unpublished temporary request'}
+        Write-FixtureSessionRecord $directory 'graphics-identity.json' $identity
+        $header=[IO.File]::ReadAllText((Join-Path $directory 'graphics-identity.json'))|ConvertFrom-Json
+        if($header.account -cne $identity.account -or $header.session_id -ne $identity.session_id -or $header.logon_sid -cne $identity.logon_sid -or $header.boot_utc -cne $identity.boot_utc){throw 'Shared worker header lost the identity reused for withdrawal'}
+        foreach($entry in $identity.GetEnumerator()){if($entry.Key -in 'name','exit','cause','error','time_utc'){throw 'Withdrawal mutated the cached worker identity'}}
+        $startup=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text.StartsWith('$fixtureSessionIdentity=') -or $_.Extent.Text.StartsWith('if($fixtureSessionIdentity)')})
+        if($startup.Count -ne 2 -or @($startup|Where-Object {$_.Extent.Text.Contains('Get-CapySessionIdentity')}).Count -ne 1){throw 'Shared identity is not captured and published once outside the fixture loop'}
+    }finally{Remove-Item -LiteralPath $directory -Recurse -Force}
+}
+& {
+    $definition=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-FixtureGraphicsEvidence'},$false)
+    . ([scriptblock]::Create($definition.Extent.Text.Replace('[Diagnostics.Stopwatch]::StartNew()','$script:watch')))
+    function Test-Path($LiteralPath){$script:acknowledged}
+    function Start-Sleep($Milliseconds){
+        if($Milliseconds -lt 0 -or $Milliseconds -gt 1000){throw 'Graphics evidence wait exceeded its bounded polling interval'}
+        $script:watch.ElapsedMilliseconds=360000
+    }
+    function Write-FixtureSessionRecord($Directory,$Name,$Record){
+        if($Name -cne 'graphics-evidence-wait.json'){throw 'Graphics barrier lost its wait receipt'}
+        $script:waitReceipt=$Record
+    }
+    foreach($acknowledged in @($true,$false)){
+        $script:acknowledged=$acknowledged;$script:watch=[pscustomobject]@{ElapsedMilliseconds=0};$script:waitReceipt=$null
+        Wait-FixtureGraphicsEvidence 'C:\owned'
+        if(!$script:waitReceipt.started_utc -or !$script:waitReceipt.completed_utc -or $script:waitReceipt.timeout_seconds -ne 360 -or $script:waitReceipt.timeout -ne !$acknowledged){throw 'Graphics evidence barrier lost its bounded acknowledgement or timeout outcome'}
+        if(!$acknowledged -and $script:watch.ElapsedMilliseconds -ne 360000){throw 'Missing graphics evidence acknowledgement did not reach the bounded timeout'}
+    }
 }
 & {
     $helper=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/test-desktop.ps1'),[ref]$tokens,[ref]$errors)
@@ -93,7 +143,7 @@ foreach($name in 'Get-FixtureProcessArguments','Write-FixturePlan','Get-NextFixt
     $directory=Join-Path ([IO.Path]::GetTempPath()) ('capy-fixture-evidence-'+[guid]::NewGuid().ToString('N'))
     $HardwareGpu=$false
     function Reviews{$process=[pscustomobject]@{Id=42};$process|Add-Member ScriptMethod Dispose {};$process}
-    function Stop-Review{}
+    function Stop-Review{$script:evidenceStops++}
     function Get-ChildItem($LiteralPath,[switch]$File){
         $files=@(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -File:$File)
         if(!$publication.done){
@@ -104,7 +154,7 @@ foreach($name in 'Get-FixtureProcessArguments','Write-FixturePlan','Get-NextFixt
         $files
     }
     try{
-        foreach($mode in 'rename','unpublished','missing-final'){
+        foreach($mode in 'rename','unpublished','preserve','missing-final'){
             $trace=Join-Path $directory $mode
             [IO.Directory]::CreateDirectory($trace)|Out-Null
             $Executable=Join-Path $trace 'CapyCanvas.exe';$log=Join-Path $directory $mode
@@ -122,7 +172,9 @@ foreach($name in 'Get-FixtureProcessArguments','Write-FixturePlan','Get-NextFixt
             if($mode -eq 'rename'){[IO.File]::WriteAllText($final,'{"complete":false}')}
             foreach($name in 'ui-state-410-7.json','latency-43.csv'){[IO.File]::WriteAllText((Join-Path $trace $name),'foreign owner')}
             $publication=@{mode=$mode;done=$false};$failure=$null
-            try{Save-Evidence $log}catch{$failure=$_}
+            $script:evidenceStops=0
+            try{Save-Evidence $log -PreserveReviews:($mode -eq 'preserve')}catch{$failure=$_}
+            if($script:evidenceStops -ne $(if($mode -in 'preserve','missing-final'){0}else{1})){throw 'Evidence stopped a preserved review or failed ordinary review cleanup'}
             if($mode -eq 'missing-final'){
                 if(!$failure -or $failure.CategoryInfo.Category -ne 'ObjectNotFound' -or $failure.Exception.Message -notlike '*presentation-state-41-7.json*'){throw 'A disappearing final trace must fail evidence collection'}
                 continue
@@ -168,9 +220,45 @@ if(@($errors).Count){throw ($errors|Out-String)}
 $edgeRuns=& {
     $scripts=(Resolve-Path (Join-Path $PSScriptRoot '../../apps/layer-windows/scripts')).Path
     $runs=[ordered]@{};$debuggable=@()
-    $discovery=$ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.ForEachStatementAst] -and $_.Extent.Text -like 'foreach ($script in Get-ChildItem*'}
-    . ([scriptblock]::Create($discovery.Extent.Text))
+    $statements=@($ast.EndBlock.Statements)
+    $discovery=$statements|Where-Object {$_ -is [Management.Automation.Language.ForEachStatementAst] -and $_.Extent.Text -like 'foreach ($script in Get-ChildItem*'}
+    $hardware=$statements|Where-Object {$_ -is [Management.Automation.Language.ForEachStatementAst] -and $_.Variable.VariablePath.UserPath -eq 'hardwareSelector'}
+    $first=[array]::IndexOf($statements,$discovery);$last=[array]::IndexOf($statements,$hardware)
+    if($first -lt 0 -or $last -le $first){throw 'Missing actual fixture discovery/registration boundary'}
+    . ([scriptblock]::Create(($statements[$first..($last-1)]|ForEach-Object {$_.Extent.Text}) -join "`n"))
     $runs
+}
+& {
+    $expected=@('tool-bubbles:hdr-dark','tool-bubbles:hdr-light')
+    $leaves=@($edgeRuns.Keys|Where-Object {$_ -in $expected})
+    if($leaves.Count -ne 2 -or $edgeRuns.Contains('tool-bubbles:HdrOnly')){throw 'HDR matrix must split the two full themes without an aggregate duplicate'}
+    $selected=@(Select-Fixtures @($edgeRuns.Keys) @('tool-bubbles:HdrOnly'))
+    $deduplicated=@(Select-Fixtures @($edgeRuns.Keys) (@('tool-bubbles:HdrOnly')+$expected))
+    if(($selected -join ',') -cne ($expected -join ',') -or ($selected -join ',') -cne ($deduplicated -join ',')){throw 'HDR legacy selector lost or duplicated a theme'}
+    $hdrAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/exercise-tool-bubbles.ps1'),[ref]$tokens,[ref]$errors)
+    if(@($errors).Count){throw ($errors|Out-String)}
+    $prefix=@();foreach($statement in $hdrAst.EndBlock.Statements){if($statement.Extent.Text.StartsWith('. (Join-Path')){break};$prefix+=$statement.Extent.Text}
+    $probe=[scriptblock]::Create($hdrAst.ParamBlock.Extent.Text+"`n"+'$PSCommandPath="Invoke-HdrTheme"'+"`n"+($prefix -join "`n")+"`n"+'[pscustomobject]@{variant=$Variant;hdr=[bool]$HdrOnly;preview=[bool]$HdrPreviewOnly;retirement=[bool]$HdrRetirementOnly;contacts=[bool]$HdrContactsOnly;depth=$HdrDepth}')
+    function Invoke-HdrTheme($Executable,$Variant,[switch]$HdrOnly,[switch]$HdrRetirementOnly,[switch]$HdrPreviewOnly,[switch]$HdrContactsOnly,$HdrDepth){
+        [pscustomobject]@{variant=$Variant;hdr=[bool]$HdrOnly;preview=[bool]$HdrPreviewOnly;retirement=[bool]$HdrRetirementOnly;contacts=[bool]$HdrContactsOnly;depth=$HdrDepth}
+    }
+    $direct=@(& $probe -Executable 'C:\owned\CapyCanvas.exe' -HdrOnly)
+    $split=@(foreach($name in $expected){
+        $arguments=@($edgeRuns[$name].arguments)
+        if(($arguments -join ',') -cne ('-Variant,'+($name -replace '^tool-bubbles:',''))){throw 'HDR leaf lost its exact theme argument'}
+        & $probe -Executable 'C:\owned\CapyCanvas.exe' -Variant $arguments[1]
+    })
+    if($direct.Count -ne 2 -or $split.Count -ne 2 -or ($direct|ConvertTo-Json -Compress) -cne ($split|ConvertTo-Json -Compress)){throw 'HDR leaves changed the direct HdrOnly theme/check/depth union'}
+    $selection=@($ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -in '$selected','$planned'})
+    $list=$ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -eq '$List'}
+    $listBody=@($list.Clauses[0].Item2.Statements|Where-Object {$_ -isnot [Management.Automation.Language.ExitStatementAst]})
+    $listCode=(($selection+$listBody)|ForEach-Object {$_.Extent.Text}) -join "`n"
+    foreach($request in @($null,'tool-bubbles:HdrOnly')){
+        $plan=& {$runs=$edgeRuns;$Name=$request;. ([scriptblock]::Create($listCode))}|ConvertFrom-Json
+        $names=@($plan.runs|Where-Object {$_ -in $expected})
+        if($names.Count -ne 2 -or @($plan.runs|Where-Object {$_ -ceq 'tool-bubbles:HdrOnly'}).Count){throw 'Actual List lost a full HDR leaf or retained the aggregate'}
+        if($request -and @($plan.runs).Count -ne 2){throw 'Legacy HDR selector expanded beyond the two full themes'}
+    }
 }
 foreach($case in @(@{option='CanvasResetOnly';journey='Check-CanvasReset'},@{option='CancelOnly';journey='Check-NativeEdgeCancel'})){
     $journey=$edgeAst.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $case.journey},$false)
@@ -189,6 +277,153 @@ foreach($case in @(@{option='CanvasResetOnly';journey='Check-CanvasReset'},@{opt
     try{& $probe @bound|Out-Null}catch{$failure=$_.Exception.Message}
     if(!$failure -or $failure -notlike ($case.option+' requires *')){throw 'Explicit mouse must retain the native edge guard'}
     if($case.option -eq 'CancelOnly'){$bound.Device='pen';if((& $probe @bound) -ne 'pen'){throw 'Explicit pen cancellation changed'}}
+}
+& {
+    $scenarios=@('photo','photo-open','photo-collapsed','paint');$themes=@('dark','light')
+    $leaves=@($edgeRuns.Keys|Where-Object {$_ -like 'edge-reach:sweep-*'})
+    if($leaves.Count -ne 8){throw 'Sweep matrix must contain exactly eight scenario/theme leaves'}
+    $expected=@(foreach($scenario in $scenarios){foreach($theme in $themes){"edge-reach:sweep-$scenario-$theme"}})
+    if((($leaves|Sort-Object) -join ',') -cne (($expected|Sort-Object) -join ',')){throw 'Sweep matrix changed its exact scenario/theme pairs'}
+    $scoped=@($edgeRuns.Keys|Where-Object {'-SweepOnly' -in $edgeRuns[$_].arguments -or '-SweepScenario' -in $edgeRuns[$_].arguments})
+    if($scoped.Count -ne 8 -or (($scoped|Sort-Object) -join ',') -cne (($expected|Sort-Object) -join ',')){throw 'Sweep matrix retained an aggregate or raw scenario duplicate'}
+    foreach($name in @('edge-reach:SweepOnly')+@($scenarios|ForEach-Object {"edge-reach:$_"})){if($edgeRuns.Contains($name)){throw 'Sweep matrix retained a generic aggregate or raw scenario leaf'}}
+    foreach($scenario in $scenarios){foreach($theme in $themes){
+        $arguments=@($edgeRuns["edge-reach:sweep-$scenario-$theme"].arguments)
+        if(($arguments -join ',') -cne "-SweepOnly,-SweepScenario,$scenario,-Theme,$theme"){throw 'Sweep leaf lost its exact scenario/theme arguments or changed device routing'}
+    }}
+    $selection=@($ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -in '$selected','$planned'})
+    $list=@($ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -eq '$List'})
+    if($selection.Count -ne 2 -or $list.Count -ne 1){throw 'Missing actual fixture selection/List path'}
+    $listBody=@($list[0].Clauses[0].Item2.Statements|Where-Object {$_ -isnot [Management.Automation.Language.ExitStatementAst]})
+    $listCode=(($selection+$listBody)|ForEach-Object {$_.Extent.Text}) -join "`n"
+    foreach($request in @($null,'edge-reach:SweepOnly','edge-reach:SweepOnly,edge-reach:sweep-photo-dark,edge-reach:SweepOnly')){
+        $plan=& {$runs=$edgeRuns;$Name=$request;$List=$true;. ([scriptblock]::Create($listCode))}|ConvertFrom-Json
+        $plannedLeaves=@($plan.runs|Where-Object {$_ -like 'edge-reach:sweep-*'})
+        if($plannedLeaves.Count -ne 8 -or (($plannedLeaves|Sort-Object) -join ',') -cne (($expected|Sort-Object) -join ',')){throw 'Actual List plan lost or duplicated a sweep scenario/theme pair'}
+        if($request -and @($plan.runs).Count -ne 8){throw 'Legacy SweepOnly alias expanded beyond the exact eight leaves'}
+        foreach($name in $expected){if($null -eq $plan.requirements.$name){throw 'Actual List omitted a sweep requirement entry'}}
+    }
+    $selected=@(Select-Fixtures @($edgeRuns.Keys) @('edge-reach:SweepOnly'))
+    $deduplicated=@(Select-Fixtures @($edgeRuns.Keys) (@('edge-reach:SweepOnly')+$expected+@('edge-reach:SweepOnly')))
+    if(($selected -join ',') -cne ($deduplicated -join ',')){throw 'Legacy SweepOnly alias and explicit leaves did not deduplicate in inventory order'}
+    $scenarioParameter=@($edgeAst.ParamBlock.Parameters|Where-Object {$_.Name.VariablePath.UserPath -eq 'SweepScenario'})
+    $choices=@($scenarioParameter.Attributes|Where-Object {$_.TypeName.Name -eq 'ValidateSet'}|ForEach-Object {$_.PositionalArguments.Value})
+    if($scenarioParameter.Count -ne 1 -or ($choices -join ',') -cne ($scenarios -join ',')){throw 'SweepScenario must retain its four actual validated choices'}
+    $normalizers=@($edgeAst.EndBlock.Statements|Where-Object {
+        $_ -is [Management.Automation.Language.IfStatementAst] -and @($_.FindAll({param($n)$n -is [Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -in 'SweepScenario','Device'},$true)).Count
+    })
+    $sweep=$edgeAst.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Check-ReachSweep'},$false)
+    $scenarioInit=@($sweep.Body.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -eq '$scenarios'})
+    $themeInit=@($edgeAst.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$themes'},$true))
+    if($scenarioInit.Count -ne 1 -or $themeInit.Count -ne 1){throw 'Missing actual sweep scenario/theme initializer'}
+    $probeStatements=@($normalizers)+@($scenarioInit)+@($themeInit)
+    $probe=[scriptblock]::Create($edgeAst.ParamBlock.Extent.Text+"`n"+(($probeStatements|ForEach-Object {$_.Extent.Text}) -join "`n")+"`n"+'[pscustomobject]@{sweep=[bool]$SweepOnly;device=$Device;scenarios=@($scenarios);themes=@($themes)}')
+    $direct=& $probe -Executable 'C:\owned\CapyCanvas.exe' -SweepOnly
+    if(!$direct.sweep -or $direct.device -cne 'mouse' -or ($direct.scenarios -join ',') -cne ($scenarios -join ',') -or ($direct.themes -join ',') -cne ($themes -join ',')){throw 'Direct SweepOnly lost its original four scenarios/two-theme order or device default'}
+    foreach($scenario in $scenarios){
+        $implied=& $probe -Executable 'C:\owned\CapyCanvas.exe' -SweepScenario $scenario
+        if(!$implied.sweep -or ($implied.scenarios -join ',') -cne $scenario -or ($implied.themes -join ',') -cne ($themes -join ',')){throw 'Binding SweepScenario did not imply one-scenario SweepOnly with original default themes'}
+    }
+    $rejected=$false;try{& $probe -Executable 'C:\owned\CapyCanvas.exe' -SweepScenario 'unknown'|Out-Null}catch{$rejected=$true}
+    if(!$rejected){throw 'SweepScenario accepted an unregistered scenario'}
+    $reach=$edgeAst.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Reach-Samples'},$false)
+    if(!$reach){throw 'Missing actual Reach-Samples helper'}
+    . ([scriptblock]::Create($reach.Extent.Text))
+    function Layout{$coverageLayout}
+    $layouts=@{};$index=0
+    foreach($scenario in $scenarios){foreach($theme in $themes){
+        $offset=$index*3;$left=if($index -eq 0){18}else{42};$id=100+$index*10
+        $layouts["$theme/$scenario"]=[pscustomobject]@{viewport=@((300+$offset),200);dividers=@(
+            [pscustomobject]@{id=$id;axis='horizontal';owner_side='left';fixed=$false;bounds=@{x=$left;y=20;width=6;height=120}},
+            [pscustomobject]@{id=($id+1);axis='horizontal';owner_side='right';fixed=$false;bounds=@{x=(200+$offset);y=20;width=6;height=72}},
+            [pscustomobject]@{id=($id+2);axis='vertical';owner_side='top';fixed=$false;bounds=@{x=(12+$offset);y=40;width=120;height=6}},
+            [pscustomobject]@{id=($id+3);axis='horizontal';owner_side='left';fixed=$true;bounds=@{x=80;y=0;width=6;height=100}},
+            [pscustomobject]@{id=($id+4);axis='vertical';owner_side=$null;fixed=$false;bounds=@{x=0;y=80;width=120;height=6}}
+        )};$index++
+    }}
+    $legacy=@{};$legacyUnion=[Collections.Generic.List[string]]::new()
+    foreach($theme in $direct.themes){foreach($scenario in $direct.scenarios){
+        $key="$theme/$scenario";$coverageLayout=$layouts[$key]
+        $legacy[$key]=@(Reach-Samples|ForEach-Object {@($_.divider,$_.axis,$_.depth,$_.x,$_.y,$_.dx,$_.dy) -join '|'})
+        if($legacy[$key].Count -ne $(if($key -eq 'dark/photo'){21}else{27})){throw 'Synthetic sweep layout lost viewport-edge, axis, fixed or owner filtering coverage'}
+        foreach($tuple in $legacy[$key]){$legacyUnion.Add($key+'|'+$tuple)}
+    }}
+    $actualUnion=[Collections.Generic.List[string]]::new();$visited=[Collections.Generic.List[string]]::new()
+    foreach($name in $selected){
+        $bound=@{Executable='C:\owned\CapyCanvas.exe'};$arguments=@($edgeRuns[$name].arguments)
+        for($i=0;$i -lt $arguments.Count;$i++){
+            $parameter=$arguments[$i].TrimStart('-')
+            if($i+1 -lt $arguments.Count -and !$arguments[$i+1].StartsWith('-')){$i++;$bound[$parameter]=$arguments[$i]}else{$bound[$parameter]=$true}
+        }
+        $case=& $probe @bound
+        if(!$case.sweep -or $case.device -cne 'mouse' -or $case.scenarios.Count -ne 1 -or $case.themes.Count -ne 1){throw 'Registered sweep arguments did not bind exactly one original case'}
+        foreach($theme in $case.themes){foreach($scenario in $case.scenarios){
+            $key="$theme/$scenario"
+            if(!$legacy.ContainsKey($key) -or $visited.Contains($key)){throw 'Registered sweep path repeated or invented a scenario/theme case'}
+            $visited.Add($key);$coverageLayout=$layouts[$key]
+            $actual=@(Reach-Samples|ForEach-Object {@($_.divider,$_.axis,$_.depth,$_.x,$_.y,$_.dx,$_.dy) -join '|'})
+            if($actual.Count -ne $legacy[$key].Count -or ($actual -join "`n") -cne ($legacy[$key] -join "`n")){throw 'Registered sweep changed sample tuple order or multiplicity within a case'}
+            foreach($tuple in $actual){$actualUnion.Add($key+'|'+$tuple)}
+        }}
+    }
+    if($visited.Count -ne 8 -or $actualUnion.Count -ne $legacyUnion.Count -or (($actualUnion|Sort-Object) -join "`n") -cne (($legacyUnion|Sort-Object) -join "`n")){throw 'Sweep leaf union lost or repeated original theme/scenario sample identities'}
+    if(@($actualUnion|Select-Object -Unique).Count -ne $actualUnion.Count){throw 'Sweep leaf union duplicated a generated sample identity within one case'}
+    'Sweep leaves preserve exact eight-case routing, List/alias selection, manual defaults and actual generated sample coverage.'
+}
+& {
+    $popupPath=Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/exercise-popup.ps1'
+    $popup=[Management.Automation.Language.Parser]::ParseFile($popupPath,[ref]$tokens,[ref]$errors)
+    if(@($errors).Count){throw ($errors|Out-String)}
+    $groups=@('controls','text-layout');$dark=@($groups|ForEach-Object {'popup:'+$_});$light=@($dark|ForEach-Object {$_+'-light'});$leaves=$dark+$light
+    $actual=@($edgeRuns.Keys|Where-Object {($_ -split ':')[0] -eq 'popup'})
+    if(($actual -join ',') -cne ($leaves -join ',')){throw 'Popup matrix must contain only its exact four group/theme leaves'}
+    foreach($group in $groups){
+        if(($edgeRuns[('popup:'+$group)].arguments -join ',') -cne "-Group,$group" -or ($edgeRuns[('popup:'+$group+'-light')].arguments -join ',') -cne "-Group,$group,-Theme,light"){throw 'Popup leaf changed its group/theme arguments'}
+    }
+    $deduplicated=@(Select-Fixtures @($edgeRuns.Keys) (@('popup:default','popup:light')+$leaves+@('popup:default')))
+    if(($deduplicated -join ',') -cne ($leaves -join ',')){throw 'Popup parent aliases and explicit leaves repeated or lost a group/theme pair'}
+    $expected=@($popup.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -eq '$expected'})
+    $aggregate=@($popup.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -eq '!$Group'})
+    $driver=@($popup.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.TryStatementAst]})
+    if($expected.Count -ne 1 -or $aggregate.Count -ne 1 -or $driver.Count -ne 1){throw 'Popup split lost its actual group counts, direct invocation or child lifecycle'}
+    $validation=@($driver[0].Body.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -like '*$result.exit_code*'})
+    if($validation.Count -ne 1){throw 'Popup child lost its native result validation'}
+    $probe=[scriptblock]::Create($popup.ParamBlock.Extent.Text+"`n"+$expected[0].Extent.Text+"`n"+'[pscustomobject]@{group=$Group;theme=$Theme;counts=$expected}')
+    $counts=@{controls=@(19,0);'text-layout'=@(7,16)};$popupTotal=0;$imeTotal=0
+    foreach($group in $groups){
+        $bound=& $probe -Executable 'C:\owned\Popup.exe' -Group $group
+        if(($bound.counts -join ',') -cne ($counts[$group] -join ',')){throw 'Popup group no longer requires its exact original assertion counts'}
+        $popupTotal+=$bound.counts[0];$imeTotal+=$bound.counts[1]
+        foreach($fault in 'none','group','popup','ime','exit'){
+            $result=[pscustomobject]@{group=$group;passed=$counts[$group][0];ime_passed=$counts[$group][1];exit_code=0};$expected=$counts[$group];$Group=$group;$run='owned-test'
+            switch($fault){'group'{$result.group='wrong'} 'popup'{$result.passed--} 'ime'{$result.ime_passed--} 'exit'{$result.exit_code=1}}
+            $failed=$false;try{. ([scriptblock]::Create($validation[0].Extent.Text))}catch{$failed=$true}
+            if($failed -ne ($fault -ne 'none')){throw 'Popup native result accepted another group or incomplete counts, or rejected its exact result'}
+        }
+    }
+    if($popupTotal -ne 26 -or $imeTotal -ne 16){throw 'Popup split lost the 26 popup and 16 IME assertion union'}
+    $manual=Join-Path ([IO.Path]::GetTempPath()) ('capy-popup-groups-'+[guid]::NewGuid().ToString('N')+'.ps1')
+    try{
+        'param([string]$Executable,[string]$Theme,[string]$Group);[pscustomobject]@{executable=$Executable;theme=$Theme;group=$Group}'|Set-Content -LiteralPath $manual
+        $dispatch=@($aggregate[0].Clauses[0].Item2.Statements|Where-Object {$_ -isnot [Management.Automation.Language.ReturnStatementAst]})
+        foreach($theme in 'dark','light'){
+            $command=($dispatch.Extent.Text -join "`n").Replace('$PSCommandPath',("'"+$manual.Replace("'","''")+"'"))
+            $visited=@(& {$Executable='C:\owned\Popup.exe';$Theme=$theme;. ([scriptblock]::Create($command))})
+            if(($visited.group -join ',') -cne ($groups -join ',') -or @($visited|Where-Object {$_.theme -cne $theme -or $_.executable -cne 'C:\owned\Popup.exe'}).Count){throw 'Direct Popup invocation must visit each original group exactly once with its chosen theme and executable'}
+        }
+    }finally{Remove-Item -LiteralPath $manual}
+    . (Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/CapyEnvironment.ps1')
+    $before=@($popup.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -in '$beforeTrace','$beforePath','$beforeTheme','$beforeGroup','$process'})
+    if($before.Count -ne 5 -or @($driver[0].Finally.Statements|Where-Object {$_.Extent.Text -like "Restore-CapyEnvironmentValue 'CAPY_POPUP_GROUP'*"}).Count -ne 1){throw 'Popup child must save and restore its group environment through the existing helper'}
+    & {
+        . ([scriptblock]::Create(($before.Extent.Text -join "`n")))
+        try{$env:CAPY_TRACE_UI='child';$env:CAPY_POPUP_FIXTURE='child';$env:CAPY_POPUP_THEME='child';$env:CAPY_POPUP_GROUP='child'}
+        finally{. ([scriptblock]::Create(($driver[0].Finally.Statements.Extent.Text -join "`n")))}
+        foreach($entry in @(@('CAPY_TRACE_UI',$beforeTrace),@('CAPY_POPUP_FIXTURE',$beforePath),@('CAPY_POPUP_THEME',$beforeTheme),@('CAPY_POPUP_GROUP',$beforeGroup))){
+            if([Environment]::GetEnvironmentVariable($entry[0]) -cne $entry[1]){throw 'Popup child environment escaped its finally restoration'}
+        }
+    }
+    'Popup leaves preserve exact counts, aliases, direct invocation and environment restoration.'
 }
 & {
     $localization=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/exercise-localization.ps1'),[ref]$tokens,[ref]$errors)
@@ -228,23 +463,26 @@ $smoke=@(
     'drawers','drawers:light','editor','effects:light',
     'header','header:light','image-rows','layer-pickup',
     'layers','layers:PaperLight','localization-smoke:light','navigator',
-    'navigator:light','persistence','popup','popup:light',
+    'navigator:light','persistence','popup:controls','popup:text-layout',
+    'popup:controls-light','popup:text-layout-light',
     'saved-data:light','scopes','selection:light','startup-close',
     'switcher-drag:mouse','switcher','tab-drag','tab-drag:light',
     'tool-bubbles:light-pen','toolbar-components','window','window:light',
     'workspace-layout','workspace-layout:light','workspace-pickup','zoom-readout:touch'
 )
 $smokePlan=@(Select-Fixtures @($edgeRuns.Keys) @('smoke'))
-if($smokePlan.Count -ne 40 -or ($smokePlan -join ',') -ne ($smoke -join ',')){throw 'Smoke must select its exact forty inventory entries'}
+if($smokePlan.Count -ne 42 -or ($smokePlan -join ',') -ne ($smoke -join ',')){throw 'Smoke must select its exact forty-two inventory entries'}
 if(((Select-Fixtures @($edgeRuns.Keys) @('smoke','popup:default')) -join ',') -ne ($smoke -join ',')){throw 'An explicit smoke entry must not duplicate or expand variants'}
 $smokeExtended=@($edgeRuns.Keys|Where-Object {$_ -in $smoke -or $_ -eq 'navigator:PixelsOnly'})
 if(((Select-Fixtures @($edgeRuns.Keys) @('smoke','navigator:PixelsOnly')) -join ',') -ne ($smokeExtended -join ',')){throw 'Smoke must preserve an explicitly requested extra variant'}
-$available=@('header','header:catalog-only','header:catalog-only-light','popup','popup:light','effects')
+$popupDark=@('popup:controls','popup:text-layout');$popupLight=@($popupDark|ForEach-Object {$_+'-light'});$popupLeaves=$popupDark+$popupLight
+$available=@('header','header:catalog-only','header:catalog-only-light')+$popupLeaves+@('effects')
 if(((Select-Fixtures $available @()) -join ',') -ne ($available -join ',')){throw 'An empty fixture request must select every available selector'}
 if(((Select-Fixtures $available $null) -join ',') -ne ($available -join ',')){throw 'A null fixture request must select every available selector'}
 if(((Select-Fixtures $available @('header-settings')) -join ',') -ne 'header:catalog-only,header:catalog-only-light'){throw 'Header settings must exercise both catalog themes'}
-if(((Select-Fixtures $available @('popup:default')) -join ',') -ne 'popup'){throw 'Default selection expanded variants'}
-if(((Select-Fixtures $available @('popup')) -join ',') -ne 'popup,popup:light'){throw 'Fixture selection lost theme variants'}
+if(((Select-Fixtures $available @('popup:default')) -join ',') -cne ($popupDark -join ',')){throw 'Popup default alias lost its two dark leaves'}
+if(((Select-Fixtures $available @('popup:light')) -join ',') -cne ($popupLight -join ',')){throw 'Popup light alias lost its two light leaves'}
+if(((Select-Fixtures $available @('popup')) -join ',') -cne ($popupLeaves -join ',')){throw 'Popup family selection lost its four group/theme leaves'}
 foreach($name in 'button-feedback','sdk-feedback','scroll-indicators','navigator-allocation'){if((Control-Fixture $name) -ne 'Feedback'){throw "Wrong feedback entry point: $name"}}
 if((Control-Fixture 'popup') -ne 'Popup' -or $null -ne (Control-Fixture 'effects') -or $null -ne (Control-Fixture 'compact-color')){throw 'Control routing changed the editor entry point'}
 if((Control-Fixture 'layer-pickup' @('-PendingDropOnly')) -ne 'LayerDrop' -or $null -ne (Control-Fixture 'layer-pickup') -or $null -ne (Control-Fixture 'layer-pickup' @('-ClippedEdgesOnly'))){throw 'Layer drop overlap must use its separate control executable'}
@@ -305,9 +543,11 @@ function Get-Process([int]$Id,[string]$ErrorAction){
 try{
     $resultsFile=Join-Path $Output 'results.jsonl'
     $source=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'windows-vm.py'))
-    $command=[regex]::Match($source,'(?s)def fixture_status_command\(output\):\s+return r"""(?<script>.*?)"""\.replace\("\{output\}", output\)')
-    if(!$command.Success){throw 'Cannot extract the actual fixture progress command'}
-    $status=[scriptblock]::Create($command.Groups['script'].Value.Replace('{output}',$Output))
+    $runner=[regex]::Match($source,'(?s)FIXTURE_RUNNER = r"""(?<script>.*?)"""')
+    $command=[regex]::Match($source,'(?s)def fixture_status_command\(output\):\s+return \(r"""(?<prefix>.*?)""" \+ FIXTURE_RUNNER \+ r"""(?<suffix>.*?)"""\)\.replace\("\{output\}", output\)')
+    if(!$runner.Success -or !$command.Success){throw 'Cannot extract the actual fixture progress command'}
+    $commandText=$command.Groups['prefix'].Value+$runner.Groups['script'].Value+$command.Groups['suffix'].Value
+    $status=[scriptblock]::Create($commandText.Replace('{output}',$Output))
     $writer=[IO.File]::Open($resultsFile,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::Write,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
     try{
         Write-FixtureResult $resultsFile '{"name":"first","exit":0}'
@@ -320,7 +560,7 @@ try{
     }finally{$writer.Dispose()}
     $message='Result '+[char]0xec+[char]0x65e5
     Write-FixtureResult $resultsFile (@{name='unicode';exit=1;message=$message}|ConvertTo-Json -Compress)
-    $script="[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(437);`n"+$command.Groups['script'].Value.Replace('{output}',$Output)
+    $script="[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(437);`n"+$commandText.Replace('{output}',$Output)
     $start=[Diagnostics.ProcessStartInfo]::new()
     $start.FileName=$powershell
     $start.Arguments=ConvertTo-FixtureCommandLine @('-NoProfile','-NonInteractive','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script)))
@@ -364,14 +604,8 @@ try{
     if(!$rejected){throw 'A stale shipped resource silently rebuilt or passed'}
     $priorityAssignments=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -like '*PriorityClass'},$true))
     if($priorityAssignments.Count -ne 1 -or $priorityAssignments[0].Left.Extent.Text -ne '$process.PriorityClass'){throw 'Only the fixture input driver process should receive High priority'}
-    $all=@(& {
-        $scripts=(Resolve-Path (Join-Path $PSScriptRoot '../../apps/layer-windows/scripts')).Path
-        $runs=[ordered]@{shortcuts=$null};$debuggable=@()
-        $discovery=$ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.ForEachStatementAst] -and $_.Extent.Text -like 'foreach ($script in Get-ChildItem*'}
-        . ([scriptblock]::Create($discovery.Extent.Text))
-        $runs.Keys
-    })
-    foreach($case in @(@{names=$null;controls='Feedback,LayerDrop,Popup'},@{names='navigator:default';controls='';runs=@('navigator')},@{names='button-feedback:default,popup:default';controls='Feedback,Popup'},@{names='layer-pickup:default';controls='LayerDrop'},@{names='smoke';controls='LayerDrop,Popup';runs=$smoke},@{names='smoke,popup:default';controls='LayerDrop,Popup';runs=$smoke},@{names='smoke,navigator:PixelsOnly';controls='LayerDrop,Popup';runs=$smokeExtended})){
+    $all=@('shortcuts')+@($edgeRuns.Keys)
+    foreach($case in @(@{names=$null;controls='Feedback,LayerDrop,Popup'},@{names='navigator:default';controls='';runs=@('navigator')},@{names='popup:default';controls='Popup';runs=$popupDark},@{names='popup:light';controls='Popup';runs=$popupLight},@{names='popup';controls='Popup';runs=$popupLeaves},@{names='button-feedback:default,popup:default';controls='Feedback,Popup'},@{names='layer-pickup:default';controls='LayerDrop'},@{names='smoke';controls='LayerDrop,Popup';runs=$smoke},@{names='smoke,popup:default';controls='LayerDrop,Popup';runs=$smoke},@{names='smoke,navigator:PixelsOnly';controls='LayerDrop,Popup';runs=$smokeExtended})){
         $selection=@{};if($case.names){$selection.Name=$case.names}
         $json=& (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'run-fixtures.ps1') -Executable 'C:\not-built\CapyCanvas.exe' -Output $cacheRun @selection -List
         if($LASTEXITCODE){throw 'Listing fixture controls required a build or desktop'}
@@ -431,6 +665,7 @@ try{
         if($script:claims -eq 1){'fixture'}
     }
     function Stop-Review{}
+    function Remove-FixtureJapaneseInput{}
     function Wait-FixtureReviews{}
     function Control-Fixture{}
     function Get-FixtureCompanionArguments{}
@@ -492,6 +727,70 @@ try{
                 if($failure -notlike 'Session retired after timeout:*' -or $script:rowResults.Count -ne 1 -or $script:rowResults[0].message -notlike '*Session retired after timeout:*'){throw 'Lingering review did not write its timeout result and retirement reason before stopping'}
                 if($script:events[-1] -ne 'result'){throw 'Retired session touched the queue after writing its result'}
             }elseif($failure -or $script:claims -ne 3 -or $script:rowResults.Count -ne 2 -or $script:rowResults[1].exit -ne 0){throw 'An exited review did not let the next selector run once'}
+        }
+    }
+    & {
+        function Get-NextFixture($Planned,$Queue,$Claimed){$script:events.Add('claim');$script:claims++;if($script:claims -le 2){'fixture'}}
+        function Get-Content{if($script:graphicsText){$script:graphicsText}}
+        function Start-Process{
+            $script:events.Add('child')
+            $child=[pscustomobject]@{Id=123;Handle=1;PriorityClass='Normal';ExitCode=$script:graphicsExit}
+            $child|Add-Member ScriptMethod WaitForExit {param($timeout)$true};$child
+        }
+        function Save-Evidence($Log,$Renders,[switch]$PreserveReviews){
+            $script:events.Add('evidence');$script:preserved=$PreserveReviews.IsPresent
+            if($script:evidenceFails){throw 'Hardware fixture runtime scale differs from the round display'}
+        }
+        function Write-FixtureResult($Path,$Json){$script:events.Add('result');$script:rowResults.Add(($Json|ConvertFrom-Json))}
+        function Write-FixtureGraphicsWithdrawal($Directory,$Result,$Identity){$script:events.Add('withdrawal');$script:withdrawal=$Result}
+        function Wait-FixtureGraphicsEvidence($Directory){$script:events.Add('barrier')}
+        foreach($case in @(
+            @{exit=-2003304307;text='';cause='MILERR_NO_HARDWARE_DEVICE'},
+            @{exit=-2005270523;text='';cause=$null},
+            @{exit=-2005270522;text='';cause=$null},
+            @{exit=-2005270521;text='';cause=$null},
+            @{exit=1;text='Owned review exited with code 2289696773: failed';cause=$null},
+            @{exit=1;text='DXGI_ERROR_DEVICE_RESET';cause=$null},
+            @{exit=1;text='Error 0x887A0006';cause=$null},
+            @{exit=1;text='ordinary assertion';cause=$null},
+            @{exit=0;text='Handled DXGI_ERROR_DEVICE_REMOVED and MILERR_NO_HARDWARE_DEVICE';cause=$null}
+        )){
+          foreach($shared in @($false,$true)){
+            foreach($evidenceFails in @($false,$true)){
+                $SharedSession=$shared;$script:graphicsExit=$case.exit;$script:graphicsText=$case.text;$script:evidenceFails=$evidenceFails
+                $script:scale=[pscustomobject]@{exists=$false;kind=$null;value=$null};$script:runtimeScale=1.0
+                $script:mode='unchanged';$script:restoreFails=$false;$script:readFails=$false;$script:pendingReads=0
+                $script:events=[Collections.Generic.List[string]]::new();$script:claims=0;$script:reads=0
+                $script:rowResults=[Collections.Generic.List[object]]::new();$script:withdrawal=$null;$script:preserved=$false
+                & $execute
+                $withdraw=$shared -and $case.cause
+                if($script:claims -ne $(if($withdraw){1}else{3}) -or $script:rowResults.Count -ne $(if($withdraw){1}else{2})){throw "Graphics classification changed queue progress: exit=$($case.exit), message=$($case.text), shared=$shared, cause=$($case.cause), claims=$($script:claims), rows=$($script:rowResults.Count)"}
+                $row=$script:rowResults[0]
+                if($row.exit -cne $(if($evidenceFails -and !$case.cause){'evidence'}else{$case.exit}) -or $row.message -cne ($case.text+$(if($evidenceFails){' Hardware fixture runtime scale differs from the round display'}else{''}))){throw 'Graphics failure changed the original row exit or error evidence'}
+                if($case.cause){
+                    if(!$row.infrastructure_invalid -or $row.infrastructure_cause -cne $case.cause){throw 'Graphics failure lost its infrastructure-invalid result when evidence collection failed'}
+                }elseif($row.infrastructure_invalid -or $row.infrastructure_cause){throw 'An ordinary assertion was marked infrastructure-invalid'}
+                if([bool]$script:withdrawal -ne [bool]$withdraw -or $script:preserved -ne [bool]$withdraw){throw 'Withdrawal or live review preservation escaped the failing shared worker'}
+                if($withdraw -and ((($script:events|Where-Object {$_ -ne 'read'}) -join ',') -cne 'claim,child,evidence,result,withdrawal,barrier' -or $script:withdrawal.name -cne $row.name)){throw 'Withdrawal did not follow exactly one result before the next claim'}
+            }
+          }
+        }
+        foreach($case in @(
+            @('DXGI_ERROR_DEVICE_REMOVED','0x887A0005','2289696773','-2005270523'),
+            @('DXGI_ERROR_DEVICE_HUNG','0x887A0006','2289696774','-2005270522'),
+            @('DXGI_ERROR_DEVICE_RESET','0x887A0007','2289696775','-2005270521')
+        )){
+            foreach($value in $case){
+                if((Get-FixtureGraphicsFailure $value '') -or (Get-FixtureGraphicsFailure 1 ("Owned review exited with code ${value}: failed"))){throw "Product graphics failure was classified as infrastructure: $value"}
+            }
+        }
+        $tail=@($ast.EndBlock.Statements|Where-Object {$_.Extent.StartOffset -gt $loop.Extent.EndOffset})
+        function Stop-Review{$script:events.Add('stop')}
+        function Set-Content($Path,$Value){$script:events.Add('complete')}
+        foreach($bad in @($false,$true)){
+            $SharedSession=$true;$graphicsCause=if($bad){'MILERR_NO_HARDWARE_DEVICE'}else{$null};$script:events=[Collections.Generic.List[string]]::new()
+            . ([scriptblock]::Create(($tail.Extent.Text -join "`n")))
+            if(($script:events -join ',') -cne 'stop,complete'){throw 'Withdrawal lost cleanup after its evidence barrier or lost its completion marker'}
         }
     }
     foreach($leaked in 150,130){
@@ -905,7 +1204,8 @@ namespace CapyLocalDumpsTest {
         $globalFault=$Case -in 'snapshot-query-error','snapshot-pid-invalid' -or ($Action -eq 'wait' -and $Case -in 'bad-json','empty')
         $fault=$Case -in 'live-denied','initial-session-unknown','initial-birth-unknown','bad-precision','fresh-session-unknown','fresh-birth-unknown','fresh-query-error','process-query-error','pin-start-unavailable','same-us-alias','missing-birth','malformed-birth','bad-json','snapshot-query-error','snapshot-pid-invalid','stop-error','dispose-error','wait-lingering','empty'
         $open41=$Case -notin 'gone-before-snapshot','foreign-reuse','birth-reuse','initial-session-unknown','initial-birth-unknown','bad-precision','missing-birth','malformed-birth','close-exact','bad-json','snapshot-query-error','snapshot-pid-invalid','empty'
-        $fresh=$Case -in 'snapshot-open-exit','live-denied','fresh-foreign','fresh-birth','fresh-session-unknown','fresh-birth-unknown','fresh-query-error','process-query-error','pin-start-unavailable','pin-start-exit','same-us-alias'
+        $fresh=$Case -in 'live-denied','fresh-foreign','fresh-birth','fresh-session-unknown','fresh-birth-unknown','fresh-query-error','process-query-error','pin-start-unavailable','pin-start-exit','same-us-alias'
+        $kernelExitCheck=$Case -eq 'snapshot-open-exit' -or ($fresh -and $Case -ne 'process-query-error')
         $matches41=$Case -in 'live-match','close-other-birth','close-window','close-failed','close-missing-birth','stop-error','dispose-error','wait-lingering'
         $script:snapTargets=if($globalFault -or ($Action -eq 'wait' -and $fault -and $Case -ne 'wait-lingering')){@()}elseif($matches41){@(41,42)}else{@(42)}
         $script:snapInitial=0;$script:snapFresh=0;$script:snapQueries=@{41=0;42=0};$script:snapHandleReads=@{41=0;42=0};$script:snapBirthReads=@{41=0;42=0};$script:snapLive=@{41=($Case -ne 'gone-before-snapshot');42=$true};$script:snapProcesses=@{}
@@ -914,7 +1214,7 @@ namespace CapyLocalDumpsTest {
         $failure=$null;try{if($Action -eq 'stop'){Stop-Review}else{Wait-FixtureReviews 'row'}}catch{$failure=$_}
         if(!$fault -and $failure){throw "Snapshot case $Case ($Action): $($failure.Exception.Message)"}
         if($fault -and !$failure){throw "An unknown or denied snapshot identity was accepted: $Case ($Action)"}
-        if($script:snapMetadataHandles -or $script:snapMetadataWaits -or $script:snapMetadataStops -or $script:snapProcessSessions -or $script:snapProcessExits){throw "Snapshot cleanup retained a superseded getter or acted on metadata: $Case ($Action)"}
+        if($script:snapMetadataHandles -or $script:snapMetadataWaits -or $script:snapMetadataStops -or $script:snapProcessSessions -or $script:snapProcessExits -ne [int]$kernelExitCheck){throw "Snapshot cleanup escaped its catch-only kernel exit check or acted on metadata: $Case ($Action)"}
         if((($script:snapReturned|Sort-Object) -join ',') -cne (($script:snapDisposed|Sort-Object) -join ',')){throw "Snapshot cleanup did not dispose every returned process exactly once: $Case ($Action)"}
         $initial=if($Action -eq 'wait' -and $Case -in 'bad-json','empty'){0}else{1}
         $q42=if($globalFault -or ($Action -eq 'wait' -and $fault -and $Case -ne 'wait-lingering')){0}else{1}
@@ -943,8 +1243,9 @@ namespace CapyLocalDumpsTest {
     }
     $helper=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/CapyUia.ps1'),[ref]$tokens,[ref]$errors)
     if($errors.Count){throw 'Fixture context helper did not parse'}
-    foreach($name in 'Update-CapyFixtureContext','Record-CapyFixtureClose'){
+    foreach($name in 'Read-Snapshot','Read-CapyFixtureContext','Update-CapyFixtureContext','Record-CapyFixtureClose'){
         $node=$helper.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$false)
+        if(!$node){throw "Missing actual fixture context helper: $name"}
         . ([scriptblock]::Create($node.Extent.Text))
     }
     Add-Type -TypeDefinition @'
@@ -1013,15 +1314,16 @@ public static class CapyReviewOwnershipTest {
                 if($subject.SessionId -ne [Diagnostics.Process]::GetCurrentProcess().SessionId){throw 'The real open-race subject lost its original session'}
                 @{process_id=$entry.id;process_start_utc=$entry.start.ToString('o');windows=@();closes=@()}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath ($log+'-context.json')
                 $script:realSnapshotCalls=0;$script:realOpenCalls=0
+                $script:realOpenRaceRows=@(CimCmdlets\Get-CimInstance Win32_Process -Filter ("ProcessId="+$entry.id) -Property ProcessId,SessionId,CreationDate -ErrorAction Stop)
+                if($script:realOpenRaceRows.Count -ne 1){throw 'The real live child was absent before the open race'}
                 function Get-CimInstance{
                     [CmdletBinding()]param($ClassName,$Filter,$Property)
                     $script:realSnapshotCalls++
-                    $rows=@(CimCmdlets\Get-CimInstance Win32_Process -Filter ("ProcessId="+$entry.id) -Property ProcessId,SessionId,CreationDate -ErrorAction Stop)
-                    if($script:realSnapshotCalls -eq 1){if($rows.Count -ne 1){throw 'The real live child was absent before the open race'};Finish-OwnershipChild $entry}
-                    $rows
+                    if($script:realSnapshotCalls -eq 1){Finish-OwnershipChild $entry}
+                    $script:realOpenRaceRows
                 }
                 function Get-Process([int]$Id){if($Id -ne $entry.id){throw 'Open-race lookup escaped its exact child'};$script:realOpenCalls++;$subject}
-                if(@(Reviews ($log+'-context.json')).Count -or $script:realSnapshotCalls -ne 2 -or $script:realOpenCalls -ne 1){throw 'A real retired primed subject was retained without one fresh atomic absence observation'}
+                if(@(Reviews ($log+'-context.json')).Count -or $script:realSnapshotCalls -ne 1 -or $script:realOpenCalls -ne 1){throw 'A real kernel-confirmed retired subject required fresh CIM absence or remained owned'}
                 if(!$entry.process.HasExited -or $entry.process.ExitCode -ne 0){throw 'The real open-race child did not finish normally'}
             }finally{$subject.Dispose()}
         }
@@ -1075,7 +1377,7 @@ public static class CapyReviewOwnershipTest {
         @{windows=@();closes=@()}|ConvertTo-Json|Set-Content -LiteralPath $env:CAPY_FIXTURE_CONTEXT
         Finish-OwnershipChild $entry
         Record-CapyFixtureClose $entry.id 7 $false -ProcessStartUtc $entry.start
-        $close=(Get-Content -LiteralPath $env:CAPY_FIXTURE_CONTEXT -Raw|ConvertFrom-Json).closes[0]
+        $close=(Read-CapyFixtureContext).closes[0]
         if($close.process_id -ne $entry.id -or ([DateTime]$close.process_start_utc).ToUniversalTime() -ne $entry.start -or $close.window_only -ne $false -or $close.result -cne 'pass'){throw 'Terminal close receipt lost the original process creation identity'}
         & {
             $Output=Join-Path $directory 'natural-exit';[IO.Directory]::CreateDirectory($Output)|Out-Null
@@ -1158,3 +1460,5 @@ public static class CapyReviewOwnershipTest {
         if($failure -ne 'Hardware fixture runtime scale differs from the round display'){throw 'A helper-only row supplied editor scale evidence'}
     }finally{Remove-Item -LiteralPath $directory -Recurse -Force}
 }
+
+& (Join-Path $PSScriptRoot 'test-session-graphics.ps1')

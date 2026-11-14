@@ -41,6 +41,9 @@ impl EditableResponse for TiltResponse {
 
 pub(super) struct PointDrag<R> { baseline: R, index: Option<usize>, press: [f32; 2], extent: [f32; 2] }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ResponseArea { pub bounds: Bounds, pub caption_buttons: [Bounds; 2] }
+
 pub(crate) struct Calibration<R: EditableResponse> {
     pub(super) draft: Option<R>,
     pub(super) compiled: R::Compiled,
@@ -59,8 +62,8 @@ impl<R: EditableResponse> Calibration<R> {
     pub fn sensitivity(&mut self,more:bool) {
         if let Some(draft)=&mut self.draft { self.selected=Some(draft.sensitivity(more));self.compile(); }
     }
-    pub fn drag(&mut self,phase:ContactPhase,position:[f32;2],area:Bounds) {
-        if position.iter().chain(&[area.x,area.y,area.width,area.height]).any(|v|!v.is_finite()) { return; }
+    pub fn drag(&mut self,phase:ContactPhase,position:[f32;2],area:ResponseArea) {
+        if position.iter().chain(&[area.bounds.x,area.bounds.y,area.bounds.width,area.bounds.height]).any(|v|!v.is_finite()) { return; }
         match phase {
             ContactPhase::Down=>self.frame_drag=self.placement.map(|b|(b,position)),
             ContactPhase::Move|ContactPhase::Up=>if let Some((mut b,press))=self.frame_drag {
@@ -76,6 +79,7 @@ impl<R: EditableResponse> Calibration<R> {
         let axis=|id|CurveAxisView {label:l.text(id).to_string(),minimum:domain.axis_text(0.),maximum:domain.axis_text(1.),white:None};
         Some(PressureCalibrationView {dialog:crate::DialogIntent::canvas_panel(false),bounds:self.placement.unwrap_or(Bounds{x:500.,y:64.,width:384.,height:360.}),
             axis_gutter:CurveDomain::Percent.axis_text(1.),
+            graph_minimum:[CurveEditorView::MINIMUM[0].max(CurveEditorView::MINIMUM[1]);2],
             title:l.text(title).to_string(),close:l.text(MessageId::COMMON_CLOSE).to_string(),firmer:l.text(less).to_string(),lighter:l.text(more).to_string(),
             reset:l.text(MessageId::COMMON_RESET).to_string(),cancel:l.text(MessageId::COMMON_CANCEL).to_string(),apply:l.text(MessageId::COMMON_APPLY).to_string(),
             firmer_enabled:draft.sensitivity_enabled(false),lighter_enabled:draft.sensitivity_enabled(true),
@@ -102,12 +106,20 @@ impl<R: EditableResponse> Calibration<R> {
         if let Some((bounds,_))=self.frame_drag.take() { self.placement=Some(bounds); }
         self.draft.take()
     }
-    pub fn fit(&mut self, extent: [f32; 2], area: Bounds) {
+    pub fn fit(&mut self, extent: [f32; 2], area: ResponseArea) {
+        let ResponseArea { bounds: area, caption_buttons } = area;
         if extent.iter().chain(&[area.width,area.height]).any(|v| !v.is_finite() || *v <= 0.) { return; }
         let mut b = self.placement.unwrap_or_default();
         b.width = extent[0].min(area.width); b.height = extent[1].min(area.height);
-        b.x = b.x.clamp(area.x, area.x + (area.width - b.width)); b.y = b.y.clamp(area.y, area.y + (area.height - b.height));
-        self.placement = Some(b);
+        let inside = |b: Bounds| Bounds { x: b.x.clamp(area.x, area.x + (area.width - b.width)), y: b.y.clamp(area.y, area.y + (area.height - b.height)), ..b };
+        let clear = |b: Bounds| caption_buttons.iter().all(|c| b.intersection(*c).is_none());
+        let placed = inside(b);
+        let distance = |m: &Bounds| (m.x - placed.x).abs() + (m.y - placed.y).abs();
+        self.placement = Some(if clear(placed) { placed } else {
+            caption_buttons.iter().filter(|c| c.width > 0. && c.height > 0.)
+                .flat_map(|c| [Bounds { y: c.y + c.height, ..placed }, Bounds { x: c.x - placed.width, ..placed }, Bounds { x: c.x + c.width, ..placed }])
+                .filter(|m| inside(*m) == *m && clear(*m)).min_by(|m, n| distance(m).total_cmp(&distance(n))).unwrap_or(placed)
+        });
     }
     pub fn action(&mut self, action: CurveEditorAction) -> bool {
         let Some(draft) = &mut self.draft else { return false; };
@@ -174,8 +186,10 @@ impl<R: EditableResponse> Calibration<R> {
 }
 
 impl<R: layer_render::CanvasRenderer> UiSession<R> {
-    pub(crate) fn response_calibration_area(&self, viewport: [f32; 2]) -> Bounds {
-        self.phone_layout().map_or(Bounds { x: 0., y: 0., width: viewport[0], height: viewport[1] }, |phone| phone.work_area)
+    pub(crate) fn response_calibration_area(&self, viewport: [f32; 2]) -> ResponseArea {
+        let [left, right, height] = self.state.workspace.layout.titlebar_insets;
+        ResponseArea { bounds: self.phone_layout().map_or(Bounds { x: 0., y: 0., width: viewport[0], height: viewport[1] }, |phone| phone.work_area),
+            caption_buttons: [Bounds { x: 0., y: 0., width: left, height }, Bounds { x: viewport[0] - right, y: 0., width: right, height }] }
     }
     pub(crate) fn response_calibration_placement(&self,extent:[f32;2],viewport:[f32;2])->Option<Bounds> {
         if extent.iter().chain(&viewport).any(|v|!v.is_finite() || *v<=0.) {return None;}
@@ -222,13 +236,13 @@ mod placement_tests {
     use super::*;
     #[test]
     fn measured_response_panels_fill_fractional_work_areas_without_inverting_clamp_bounds() {
-        fn fills<R:EditableResponse>(area:Bounds) {
-            let mut calibration=Calibration::<R>::default();
+        fn fills<R:EditableResponse>(bounds:Bounds) {
+            let mut calibration=Calibration::<R>::default();let area=ResponseArea{bounds,..Default::default()};
             calibration.fit([384.,360.],area);
-            assert_eq!(calibration.placement,Some(area));
+            assert_eq!(calibration.placement,Some(bounds));
             calibration.drag(ContactPhase::Down,[0.,0.],area);
             calibration.drag(ContactPhase::Up,[100.,100.],area);
-            assert_eq!(calibration.placement,Some(area));
+            assert_eq!(calibration.placement,Some(bounds));
         }
         for area in [Bounds{x:0.,y:47.333336,width:320.,height:225.33333},Bounds{x:47.333336,y:0.,width:225.33333,height:320.}] {
             fills::<PressureResponse>(area);

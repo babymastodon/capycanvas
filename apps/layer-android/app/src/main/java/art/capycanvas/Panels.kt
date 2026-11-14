@@ -23,6 +23,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import org.json.JSONArray
 import org.json.JSONObject
@@ -51,9 +52,9 @@ import kotlin.math.roundToInt
                     return@forEachIndexed
                 }
                 val colors = LocalPalette.current
-                val source = dock.tileDrawerSource(panel.getString("id"), tile.getInt("id"))
-                val shape = drawerButtonShape(source?.direction)
                 val anchor = obj("kind" to "tile", "panel" to panel.getString("id"), "tile" to tile.getInt("id"))
+                val source = dock.anchorSource(anchor)
+                val shape = drawerButtonShape(source?.direction)
                 val activation=pickerClick(host,tile.getJSONObject("resolved_control"),anchor) {
                     host.dispatch(obj("type" to "activate_tile","panel" to panel.getString("id"),"tile" to tile.getInt("id")))
                 }
@@ -65,6 +66,7 @@ import kotlin.math.roundToInt
                 Row(Modifier.fillMaxSize().clip(shape).alpha(if (enabled) 1f else .4f)
                     .background(when {
                         tile.optBoolean("selected") -> colors.active
+                        source != null -> colors.joinedPanelFill(source.presented)
                         else -> Color.Transparent
                     })
                     .then(activation.modifier).combinedClickable(enabled = enabled || reason != null,
@@ -212,9 +214,17 @@ internal val DividerLength = 18.dp
 @Composable private fun SizePresets(host: CanvasHost, current: Float) {
     val colors = LocalPalette.current
     val style = toolbarUi(host.languageTag, obj("type" to "style", "style" to "small"))
-    val tile = host.catalog.array("brush_size_tile")
     val gap = style.number("gap")
     val presets = remember(host.catalog) { host.catalog.array("brush_sizes").objects() }
+    val labelStyle = LocalTextStyle.current.copy(fontWeight = FontWeight.Normal)
+    val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    val tile = remember(presets, labelStyle, density, measurer, host.languageTag) {
+        val labels = presets.map { measurer.measure(it.getString("label"), labelStyle, softWrap = false, maxLines = 1).size }
+        JSONArray(Native.toolbarUi(obj("type" to "brush_size_tile", "label" to JSONArray(listOf(
+            labels.maxOf { it.width } / density.density, labels.maxOf { it.height } / density.density))).toString(), host.languageTag))
+    }
+    val preview = host.catalog.array("brush_size_tile").getDouble(0).dp
     FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap.dp), verticalArrangement = Arrangement.spacedBy(gap.dp)) {
         presets.forEach { preset ->
             val value = preset.number("value")
@@ -224,9 +234,9 @@ internal val DividerLength = 18.dp
                 .clickable { host.dispatch(obj("type" to "set_brush_size", "value" to value)) }) {
                 Canvas(Modifier.fillMaxSize()) {
                     drawCircle(androidx.compose.ui.graphics.Brush.verticalGradient(.4f to colors.text, .65f to colors.text.copy(alpha = .2f),
-                        1f to Color.Transparent, endY = size.height), preset.number("preview_diameter").dp.toPx() / 2, Offset(size.width / 2, size.width / 2))
+                        1f to Color.Transparent, endY = size.height), preset.number("preview_diameter").dp.toPx() / 2, Offset(size.width / 2, preview.toPx() / 2))
                 }
-                Text(label, Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp), fontWeight = FontWeight.Normal, maxLines = 1)
+                Text(label, Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp), style = labelStyle, softWrap = false, maxLines = 1)
               }
             }
         }

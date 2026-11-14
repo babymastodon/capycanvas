@@ -35,6 +35,7 @@ native-input-gate Shared/Bridge/NativeInputGate.swift
 frame-driver Shared/Bridge/CanvasFrameDriver.swift
 process-termination Shared/Bridge/ProcessTermination.swift
 numeric-edit Shared/Editor/NumericEditState.swift
+slider-input Shared/Bridge/LatestOwnerInput.swift Shared/Bridge/RenderOwnerQueue.swift
 native-menu-titles macOS/Platform/NativeMenuTitles.swift
 system-status Shared/Bridge/SystemStatus.swift macOS/Platform/BatterySource.swift
 FIXTURES

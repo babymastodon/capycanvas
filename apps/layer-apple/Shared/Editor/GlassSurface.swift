@@ -296,8 +296,12 @@ extension View {
 }
 
 enum DrawerShadow {
-    static func cuts(placement: JSON, connection: JSON) -> [CGRect] {
-        connection.isNull ? [] : [connection["bounds"].rect, placement["anchor"].rect]
+    static func bridge(_ connection: JSON) -> Path {
+        let bounds = connection["bounds"].rect
+        return DrawerBridge(connection: connection).path(in: .zero).offsetBy(dx: bounds.minX, dy: bounds.minY)
+    }
+    static func cuts(placement: JSON, connection: JSON) -> [Path] {
+        connection.isNull ? [] : [bridge(connection), Path(placement["anchor"].rect)]
     }
 }
 
@@ -306,7 +310,7 @@ struct OutsideShadow<S: Shape>: View {
     let opacity: Double
     let radius: CGFloat
     let y: CGFloat
-    var cuts: [CGRect] = []
+    var cuts: [Path] = []
     var body: some View {
         GeometryReader { geometry in
             let margin = ceil(radius * 3 + abs(y))
@@ -319,7 +323,7 @@ struct OutsideShadow<S: Shape>: View {
                 }
                 context.blendMode = .clear
                 context.fill(path, with: .color(.black))
-                for cut in cuts { context.fill(Path(cut.offsetBy(dx: margin, dy: margin)), with: .color(.black)) }
+                for cut in cuts { context.fill(cut.offsetBy(dx: margin, dy: margin), with: .color(.black)) }
             }.frame(width: geometry.size.width + margin * 2, height: geometry.size.height + margin * 2)
                 .offset(x: -margin, y: -margin)
         }.allowsHitTesting(false).accessibilityHidden(true)

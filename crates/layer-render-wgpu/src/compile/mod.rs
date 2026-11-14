@@ -13,7 +13,7 @@ pub(crate) use native::Coordinator;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::{retire, retire_device_services};
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{Activity, finish_shader_compiler_shutdown};
+pub use native::{Activity, finish_shader_compiler_shutdown, stop_shader_compilers};
 #[cfg(target_arch = "wasm32")]
 use web as platform;
 #[cfg(target_arch = "wasm32")]
@@ -299,6 +299,10 @@ impl Needs {
     pub fn require(&self, scope: &Scope, class: Class) -> bool {
         scope.require(&self.render, class) & scope.require(&self.compute, class)
     }
+    pub fn warm(&self, scope: &Scope, class: Class, generation: u64) {
+        for recipe in &self.render { scope.warm(recipe, class, generation); }
+        for recipe in &self.compute { scope.warm(recipe, class, generation); }
+    }
     pub async fn prepare(&self, scope: &Scope) -> Result<(), String> {
         scope.prepare_all(&self.render).await?;
         scope.prepare_all(&self.compute).await
@@ -569,7 +573,7 @@ impl<W> Queue<W> {
                 if let Some(error) = &error {
                     owner.error.get_or_insert(error.clone());
                 }
-                if demand.class <= Class::Visible
+                if demand.generation.is_none()
                     && let Some(wake) = &owner.wake
                 {
                     wakes.push((demand.owner, wake.clone()));
@@ -586,7 +590,12 @@ impl<W> Queue<W> {
                 (e.work.is_some() || e.running)
                     && e.demands
                         .iter()
-                        .any(|d| d.owner == owner && d.class.required() && self.live(d))
+                        .any(|d| {
+                            d.owner == owner
+                                && d.generation.is_none()
+                                && d.class.required()
+                                && self.live(d)
+                        })
             })
             .count()
     }

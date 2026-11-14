@@ -43,6 +43,7 @@ fn paper_without_texture_keeps_its_color_with_raised_lighting_values() {
     let mut presenter = ViewportPresenter::for_surface(&r, wgpu::TextureFormat::Rgba8UnormSrgb, SdrSurfaceColor::Srgb).unwrap();
     let mut render = |r: &mut WgpuRasterizer, document: &Document| {
         crate::test_support::submit_settled(r, packet(document.scene(), [128; 2]));
+        crate::test_support::prepare_lit_presenter(r, &mut presenter);
         presenter.present(r, &texture.create_view(&Default::default()), view(), [0.2, 0.3, 0.4, 1.]).unwrap();
         let canvas = page_bytes(r, &texture);
         let mut snapshot = r.snapshot_gpu().capture_scene(document.snapshot(), layer_core::authored::SceneScope::All, Default::default()).unwrap();
@@ -62,107 +63,85 @@ fn paper_without_texture_keeps_its_color_with_raised_lighting_values() {
 }
 
 #[test]
-fn paper_lighting_waiting_for_optional_shaders_does_not_keep_frames_busy() {
+fn visible_paper_slope_prepares_while_optional_work_is_parked() {
     use std::time::{Duration, Instant};
     let reference = WgpuRasterizer::new_native_headless(Default::default()).unwrap();
     let mut document = rough_gray_paper();
     set_paper(&mut document, &[(paper::RELIEF, EffectValue::Number(150.))]);
     let mut r = crate::test_support::staged_renderer(&reference, document.composition().color);
     r.shader_idle(false, false);
+    let batch = r.compilation.batch();
     r.update_paper_lighting(document.scene()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !r.ui_readback_ready() {
-        r.poll_startup().unwrap();
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(1));
-    }
     assert!(r.paper_lighting.is_some() && r.paper_shade().is_none());
-    assert!(r.next_frame()!=layer_render::FrameDemand::Work, "waiting for optional lighting cannot prevent UI readbacks");
-    r.shader_idle(true, true);
+    drop(batch);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while r.paper_shade().is_none() {
         r.poll_startup().unwrap();
-        assert!(Instant::now() < deadline);
+        assert!(Instant::now() < deadline, "visible slope must prepare without optional admission");
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert!(r.next_frame()!=layer_render::FrameDemand::Work);
+    assert!(!r.paper_shade_work_pending());
 }
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
-fn viewport_paper_compilation_stays_optional_after_startup() {
-    use std::{sync::mpsc, time::{Duration, Instant}};
-    let mut document = rough_gray_paper();
-    set_paper(&mut document, &[(paper::RELIEF, EffectValue::Number(150.))]);
-    let mut reference = WgpuRasterizer::new_native_headless(document.composition().color).unwrap();
-    crate::test_support::submit_settled(&mut reference,packet(document.scene(), [128; 2]));
-    assert!(reference.paper_shade().is_some());
+fn first_ready_paper_frame_matches_eager_pixels_without_lighting_unused_surfaces() {
+    use std::time::{Duration, Instant};
+    let mut reference = WgpuRasterizer::new_native_headless(Default::default()).unwrap();
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    for overview in [false, true] {
+    for (overview, raised) in [(false, true), (false, false), (true, true)] {
+        let mut document = rough_gray_paper();
+        set_paper(&mut document, &[(paper::RELIEF, EffectValue::Number(if raised {150.} else {0.}))]);
+        crate::test_support::submit_settled(&mut reference, packet(document.scene(), [128; 2]));
+        assert_eq!(reference.paper_shade().is_some(), raised);
         let mut r = crate::test_support::staged_renderer(&reference, document.composition().color);
-        let mut presenter = if overview { ViewportPresenter::for_overview_surface } else { ViewportPresenter::for_surface }(
-            &r, format, SdrSurfaceColor::Srgb).unwrap();
-        let mut expected = if overview { ViewportPresenter::for_overview_surface } else { ViewportPresenter::for_surface }(
-            &reference, format, SdrSurfaceColor::Srgb).unwrap();
+        r.shader_idle(false, false);
+        r.prepare_startup(&document, &layer_core::default_brush(layer_core::DefaultBrushPreset::GPen), false).unwrap();
+        crate::test_support::submit_settled(&mut r, packet(document.scene(), [128; 2]));
+        let batch = r.compilation.batch();
+        let create = if overview {ViewportPresenter::for_overview_surface} else {ViewportPresenter::for_surface};
+        let mut presenter = create(&r, format, SdrSurfaceColor::Srgb).unwrap();
         if overview {
             let placement = crate::OverviewPlacement {
                 bounds: [0., 0., 128., 128.], clip: None, work_area: [[-1000.; 2]; 4],
                 outline_linear: [0.; 3], scale: 1., opacity: 1.,
             };
             presenter.set_overviews(&r, &[placement]);
-            expected.set_overviews(&reference, &[placement]);
         }
-        let draw = |presenter: &mut ViewportPresenter, renderer: &WgpuRasterizer, target: &wgpu::TextureView| {
-            if overview { presenter.present_overviews(renderer, target, [128; 2]) }
-            else { presenter.present(renderer, target, view(), [0.2, 0.3, 0.4, 1.]).map(|_| ()) }.unwrap();
-        };
-        r.prepare_startup(&document, &layer_core::default_brush(layer_core::DefaultBrushPreset::GPen), false).unwrap();
-        presenter.pipelines_ready(&r);
-        r.ui_readback_ready();
-        r.update_paper_lighting(document.scene()).unwrap();
+        let lit = raised && !overview;
+        drop(batch);
         let deadline = Instant::now() + Duration::from_secs(60);
-        crate::test_support::wait_startup(&mut r, deadline, |progress| progress.complete,
-            format_args!("viewport dependencies, overview={overview}"));
-        while r.paper_shade().is_none() {
-            r.poll_startup().unwrap();
-            assert!(Instant::now() < deadline, "paper slope prepares, overview={overview}");
+        loop {
+            let ready = presenter.pipelines_ready(&r);
+            if r.poll_startup().unwrap().complete && ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "first frame readiness, overview={overview}, raised={raised}");
             std::thread::sleep(Duration::from_millis(1));
         }
-        crate::test_support::submit_settled(&mut r,packet(document.scene(), [128; 2]));
-        r.wait_idle().unwrap();
         let composited = r.metrics.composited_pixels;
-        let (texture, target) = crate::create_target(&r.device, [128; 2], format, "optional viewport lighting");
-        r.shader_idle(false, false);
-        draw(&mut presenter, &r, &target);
-        let (finished, completion) = mpsc::channel();
-        r.startup.as_ref().unwrap().compiler.enqueue(crate::startup::BRUSH, move || {
-            let _ = finished.send(());
-            Ok(())
-        });
-        completion.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or_else(|error| panic!("required work drains before optional lighting, overview={overview}: {error}"));
-        draw(&mut presenter, &r, &target);
-        assert!(!presenter.paper_lighting_drawn(), "active input parks optional viewport lighting, overview={overview}");
-        let plain = page_bytes(&r, &texture);
-        let progress = r.poll_startup().unwrap();
-        assert!(progress.canvas_ready && progress.brush_ready, "{progress:?}, overview={overview}");
-        assert!(r.ui_readback_ready());
-        assert!(r.next_frame()!=layer_render::FrameDemand::Work);
-        r.shader_idle(true, false);
-        while !presenter.paper_lighting_drawn() {
-            r.poll_startup().unwrap();
-            draw(&mut presenter,&r,&target);
-            assert!(Instant::now()<deadline,"optional viewport lighting never drew, overview={overview}");
-            std::thread::sleep(Duration::from_millis(1));
+        let (texture, target) = crate::create_target(&r.device, [128; 2], format, "first ready paper frame");
+        let draw = |presenter: &mut ViewportPresenter, renderer: &WgpuRasterizer| {
+            if overview { presenter.present_overviews(renderer, &target, [128; 2]) }
+            else { presenter.present(renderer, &target, view(), [0.2, 0.3, 0.4, 1.]).map(|_| ()) }.unwrap();
+        };
+        draw(&mut presenter, &r);
+        assert_eq!(presenter.paper_lighting_drawn(), lit);
+        let first = page_bytes(&r, &texture);
+        let mut expected = create(&reference, format, SdrSurfaceColor::Srgb).unwrap();
+        if overview {
+            expected.set_overviews(&reference, &[crate::OverviewPlacement {
+                bounds: [0., 0., 128., 128.], clip: None, work_area: [[-1000.; 2]; 4],
+                outline_linear: [0.; 3], scale: 1., opacity: 1.,
+            }]);
         }
-        assert!(presenter.paper_lighting_drawn(), "idle admits viewport lighting, overview={overview}");
-        let lit = page_bytes(&r, &texture);
-        crate::test_support::prepare_lit_presenter(&reference,&mut expected);
-        draw(&mut expected, &reference, &target);
-        assert!(expected.paper_lighting_drawn());
-        assert_eq!(lit, page_bytes(&reference, &texture), "staged and eager presentation agree, overview={overview}");
-        if overview { assert_eq!(lit, plain, "Navigator pixels remain unchanged"); }
-        else { assert_ne!(lit, plain, "prepared relief changes visible canvas pixels"); }
-        assert_eq!(r.metrics.composited_pixels, composited, "viewport lighting changes no composite, overview={overview}");
+        expected.prepare_paper_lighting(&reference);
+        pollster::block_on(expected.prepare(&reference)).unwrap();
+        draw(&mut expected, &reference);
+        assert_eq!(expected.paper_lighting_drawn(), lit);
+        assert_eq!(first, page_bytes(&reference, &texture),
+            "first staged and eager pixels agree, overview={overview}, raised={raised}");
+        assert_eq!(r.metrics.composited_pixels, composited, "presentation lighting does not recompose artwork");
     }
 }
 

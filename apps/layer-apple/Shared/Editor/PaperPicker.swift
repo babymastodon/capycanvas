@@ -109,7 +109,7 @@ struct PaperTexture: Identifiable {
     private var importRequest: JSON?
     private var importEpoch: UInt64 = 0
     private var jobs: [UInt64:NativePaperTask] = [:]
-    private var active = Set<UInt64>()
+    @Published private var active = Set<UInt64>()
     private var cancelled = Set<UInt64>()
     private var reloadPending = false
     private var afterTexture: JSON?
@@ -117,7 +117,8 @@ struct PaperTexture: Identifiable {
     @Published var rename: PaperRename?
     @Published var texture: PaperTexture?
     @Published private(set) var generation: UInt64 = 0
-    @Published private(set) var busy = false
+    var busy: Bool { !active.isEmpty }
+    var requestBusy: Bool { active.contains { $0 != 0 } }
     init(store: EditorStore, directory: URL?) { self.store = store; self.directory = directory; previews = PaperPreviewCache(store:store) }
     var common: JSON { store?.bootstrap["common"] ?? JSON() }
     var copy: JSON { store?.catalog["native_copy"]["paper"] ?? JSON() }
@@ -141,12 +142,12 @@ struct PaperTexture: Identifiable {
         guard let store, let native = store.native, let directory else { return }
         let id = request?["id"].uint ?? 0
         if active.contains(id) { if id == 0 { reloadPending = true }; return }
-        active.insert(id); cancelled.remove(id); busy = true
+        active.insert(id); cancelled.remove(id)
         let complete: @Sendable (String?) -> Void = { [weak self, weak store] error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.jobs.removeValue(forKey:id); self.active.remove(id); self.cancelled.remove(id)
-                self.busy = !self.active.isEmpty; self.generation &+= 1
+                self.generation &+= 1
                 if let error { store?.failure = error }
                 if let request, ["import","add","rename","delete"].contains(request["kind"]["request"]["type"].string), error == nil {
                     store?.paperLibraryChanged()
@@ -226,7 +227,7 @@ struct PaperFiles: ViewModifier {
                 TextureDialog(store:store,controller:controller,request:request).modifier(EditorDialogPresentation(identifier:"texture-dialog",idealHeight:600))
             }
             .overlay(alignment:.top) {
-                if controller.busy {
+                if controller.requestBusy {
                     HStack { ProgressView(); Button(controller.common["cancel"].string) { controller.cancelWork() } }
                         .padding(8).background(.regularMaterial)
                         .accessibilityElement(children:.contain).accessibilityIdentifier("paper-library-progress")
@@ -243,6 +244,7 @@ private struct PaperNameForm: View {
     @State private var name: String
     @State private var error: String?
     @State private var saving = false
+    @FocusState private var focused: Bool
     init(controller:PaperController,draft:PaperRename) {
         self.controller = controller; self.draft = draft; _name = State(initialValue:draft.action["name"].string)
     }
@@ -254,7 +256,8 @@ private struct PaperNameForm: View {
                     cancel: { controller.rename = nil }, primary: save)
             } else { Text(copy["paper"]["rename_title"].string).font(.headline) }
             TextField(controller.common["name"].string,text:$name).textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("paper-library-name").onNativeTextSubmit(name) { name = $0; save() }
+                .focused($focused).onAppear { focused = page }.accessibilityIdentifier("paper-library-name")
+                .onNativeTextSubmit(name) { name = $0; if page { focused = false } else { save() } }
             if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("paper-name-error") }
             if !page { HStack {
                 Spacer()

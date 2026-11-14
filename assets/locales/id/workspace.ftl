@@ -75,7 +75,6 @@ workspace-history-current = Tata letak saat ini · { $date }
 
 workspace-toolbar-in = Bilah alat dalam { $name }. Perubahan disimpan bersama ruang kerja ini dan dapat dipulihkan melalui Riwayat Tata Letak.
 
-workspace-unavailable = Tidak tersedia: { $error }
 
 workspace-included-description = { $description }
         Disertakan bersama { common-app-name }.
@@ -1088,7 +1087,6 @@ workspace-refusal-workspace-preferences-changed-in-another-window = Preferensi r
 
 workspace-refusal-workspace-save-is-already-in-progress = Penyimpanan ruang kerja sedang berlangsung.
 
-workspace-refusal-workspace-storage-was-written-by-an-earlier-version-of-capy-canvas = Penyimpanan ruang kerja ditulis oleh versi { common-app-name } yang lebih lama.
 
 workspace-refusal-customization-choose-a-built-in-panel = Pilih panel bawaan
 
@@ -1171,7 +1169,6 @@ workspace-storage-full = Penyimpanan ruang kerja penuh. Kosongkan ruang disk dan
 
 workspace-storage-unavailable = Penyimpanan ruang kerja tidak dapat dibuka. Coba lagi.
 
-workspace-unreadable-name = Ruang kerja tidak dapat dibaca
 
 workspace-backup-saved = Cadangan ruang kerja disimpan.
 workspace-tool-description-waveform = Periksa warna dan kecerahan dari kiri ke kanan
@@ -1205,52 +1202,53 @@ workspace-show-in-zen = Tampilkan di Mode Zen
 workspace-bubble-edit-palettes = Edit palet…
 
 diagnostics-fps = FPS
-diagnostics-fps-description = Tampilan kanvas dalam satu detik terakhir, termasuk geser dan zoom dari cache. Bukan latensi input.
 diagnostics-submitted-fps = FPS dikirim
-diagnostics-submitted-fps-description = Bingkai kanvas yang dikirim dalam satu detik terakhir. Waktu penayangan di layar tidak tersedia.
+diagnostics-cpu-tip = Waktu yang dibutuhkan Capy untuk menyiapkan setiap bingkai kanvas.
+diagnostics-gpu-tip = Waktu yang dibutuhkan kartu grafis untuk menggambar setiap bingkai kanvas.
+diagnostics-gpu-unavailable-tip = Kartu grafis ini tidak melaporkan waktu.
+diagnostics-gpu-browser-tip = Browser ini tidak melaporkan waktu GPU.
+diagnostics-typical = Umumnya
+diagnostics-slowest-5 = 5% paling lambat
+diagnostics-slowest-1 = 1% paling lambat
+diagnostics-budget = Anggaran
+diagnostics-milliseconds = { $value } ms
+diagnostics-budget-value = { $value } ms ({ $fps } fps)
+diagnostics-fps-tip = Bingkai kanvas yang ditampilkan dalam satu detik terakhir. 0 selama tidak ada perubahan di kanvas.
+diagnostics-submitted-fps-tip = Bingkai kanvas yang dikirim ke layar dalam satu detik terakhir. Sistem ini tidak melaporkan kapan bingkai muncul.
+diagnostics-chart-tip = Waktu CPU untuk 120 bingkai terakhir. Garis putus-putus adalah anggaran { $value } ms.
 
 workspace-slider-show-value = Tampilkan nilai
 workspace-slider-expand = Perluas untuk mengisi
 workspace-storage-newer-notice = Ruang kerja Anda disimpan oleh versi { common-app-name } yang lebih baru. Perbarui { common-app-name } untuk menyimpan perubahan pada ruang kerja, palet, dan pengaturan kuas.
 workspace-storage-unavailable-notice = { common-app-name } tidak dapat membuka ruang kerja tersimpan Anda. Mulai ulang { common-app-name } untuk menyimpan perubahan pada ruang kerja, palet, dan pengaturan kuas.
 workspace-storage-damaged-notice = Ruang kerja tersimpan Anda rusak. { common-app-name } memulai ruang kerja baru.
-workspace-editing-unreadable-notice = Beberapa palet atau pengaturan kuas tidak dapat dibuka dalam versi { common-app-name } ini. Perbarui { common-app-name } untuk membukanya.
-workspace-created-unreadable-notice = Versi { common-app-name } ini tidak dapat membuka ruang kerja tersimpan Anda. Perbarui { common-app-name } untuk membukanya.
+workspace-storage-restored-notice = Ruang kerja tersimpan Anda rusak. { common-app-name } memulihkan salinan sebelumnya.
 
-workspace-restore-workspaces-title = Pulihkan Ruang Kerja?
-workspace-restore-workspaces-message = Versi lama { common-app-name } mengatur ulang ruang kerja, palet, dan pengaturan kuas Anda. Pemulihan mengganti perubahan yang Anda buat setelah pengaturan ulang.
-workspace-keep-current = Pertahankan Saat Ini
 
-diagnostics-memory-process = Memori proses
-diagnostics-memory-peak = Puncak proses
-diagnostics-memory-gpu = Memori GPU
-diagnostics-memory-unavailable = Tidak tersedia
-diagnostics-memory-no-sample = Tidak ada sampel tersedia.
-diagnostics-memory-age = Usia sampel: { $seconds } s.
-diagnostics-memory-resident = Memori residen proses ini, termasuk halaman bersama.
-diagnostics-memory-private-commit = Memori privat yang dikomit untuk proses ini, termasuk halaman di luar RAM.
-diagnostics-memory-footprint = Memori yang dibebankan sistem operasi pada proses ini, termasuk memori terkompresi.
-diagnostics-memory-process-unavailable = Pembacaan memori proses tidak tersedia.
-diagnostics-memory-peak-unavailable = Puncak proses tidak tersedia.
-diagnostics-memory-lifetime-peak = Puncak sejak proses dimulai yang dicatat sistem operasi: { $metric }.
-diagnostics-memory-sampled-peak = Nilai tertinggi yang diamati untuk { $metric }; pengambilan sampel dapat melewatkan puncak sebelumnya.
-diagnostics-memory-gpu-unavailable = Pembacaan memori pengandar tidak tersedia.
-diagnostics-memory-vulkan = Perkiraan pengandar atas penggunaan proses / anggaran pada heap Vulkan lokal perangkat dengan ruang tersisa terbanyak. Bukan seluruh memori GPU.
-diagnostics-memory-dxgi = Penggunaan proses / anggaran DXGI pada segmen memori lokal adaptor terpilih.
-diagnostics-memory-metal = Alokasi sumber daya Metal / himpunan kerja yang disarankan pada perangkat ini. Saran ini bukan memori bebas atau batas mutlak.
-diagnostics-memory-gpu-description = { $scope } Pembacaan proses dan GPU dapat tumpang tindih pada memori bersama; jangan dijumlahkan. — berarti tidak tersedia. { $age }
-diagnostics-memory-mib = { $value } MiB
-diagnostics-memory-budget = { $used } / { $budget } MiB
-diagnostics-memory-no-budget = { $used } / — MiB
-diagnostics-memory-description = { $scope } { $age }
-diagnostics-memory-resident-label = RSS proses
-diagnostics-memory-private-commit-label = Komit privat
-diagnostics-memory-footprint-label = Jejak proses
-diagnostics-memory-lifetime-label = Puncak sejak mulai
-diagnostics-memory-sampled-label = Puncak sampel
-diagnostics-memory-vulkan-label = Heap Vulkan
-diagnostics-memory-dxgi-label = DXGI lokal
-diagnostics-memory-metal-label = Alokasi Metal
+diagnostics-memory-title = Memori
+diagnostics-memory-ram-label = RAM
+diagnostics-memory-gpu-fallback = GPU
+diagnostics-memory-shared-chip = bersama
+diagnostics-memory-cache = Cache
+diagnostics-memory-allowance = Jatah
+diagnostics-memory-driver = Driver
+diagnostics-memory-refused = Impor ditolak
+diagnostics-memory-of = { $used } dari { $total }
+diagnostics-memory-over = Lebih { $amount }
+diagnostics-memory-low = Memori rendah
+diagnostics-memory-stale = { $seconds } dtk lalu
+diagnostics-memory-drawing = Gambar
+diagnostics-memory-rest = Sisa aplikasi
+diagnostics-memory-peak-label = Puncak
+diagnostics-memory-available = Tersedia untuk Capy
+diagnostics-memory-key-drawing = Penuh. Gambar yang terbuka dan pekerjaan yang berjalan
+diagnostics-memory-key-cache = Terang. Disimpan agar cepat; dilepas saat memori menipis
+diagnostics-memory-key-rest = Abu-abu. Aplikasi itu sendiri dan driver grafis
+diagnostics-memory-key-allowance = Tanda. Titik Capy mulai melepas cache
+diagnostics-memory-shared-with = Dibagi dengan { $gpu }.
+diagnostics-memory-in-ram = Memakai RAM, jadi dihitung di bilah RAM.
+diagnostics-memory-browser-gpu = Browser tidak memberi tahu apakah GPU ini punya memori sendiri, jadi dihitung di bilah RAM.
+diagnostics-memory-tracked-only = Total sistem tidak tersedia, jadi bilah menampilkan pemakaian Capy sendiri.
 
 workspace-phone-swap-sides = Tukar Sisi
 workspace-phone-title-bar-unavailable = Bilah judul tidak dapat diedit dalam tata letak ponsel
@@ -1259,13 +1257,3 @@ workspace-launch-window-size = Ukuran awal jendela
 workspace-phone-tool-limit = Bilah alat ponsel dapat memuat hingga sepuluh alat.
 
 workspace-reset-phone-confirm = Pulihkan bilah alat ponsel awal ruang kerja ini. Anda dapat mengurungkan pemulihan dengan { $menu } → { $undo }.
-
-diagnostics-budget-limit = Batas memori
-diagnostics-budget-physical = Memori tercatat
-diagnostics-budget-pinned = Memori tertahan
-diagnostics-budget-debt = Kelebihan memori
-diagnostics-budget-pair = RAM { $ram } MiB · GPU { $gpu } MiB
-diagnostics-budget-limit-description = Alokasi RAM proses dan gabungan alokasi perangkat. Memori GPU bersama dapat tumpang tindih dengan RAM; jangan dijumlahkan.
-diagnostics-budget-physical-description = Byte fisik yang dilaporkan pemilik besar, bukan total penggunaan sistem operasi atau driver. Memori GPU bersama dapat tumpang tindih dengan RAM.
-diagnostics-budget-pinned-description = Byte yang tidak dapat dibebaskan, termasuk pekerjaan aktif dan reservasi impor. Memori GPU bersama dapat tumpang tindih dengan RAM.
-diagnostics-budget-debt-description = Byte tertahan di atas alokasi RAM dan jumlah kelebihan setiap perangkat. Gambar yang ada tetap disimpan.

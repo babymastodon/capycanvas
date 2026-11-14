@@ -77,7 +77,7 @@ function Start-App {
     Wait-Until {
         $review.Refresh()
         if($review.HasExited){throw 'Review app exited during startup'}
-        $script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Model).brush_ready
+        $script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Review-Ready)
     } 'Review startup did not complete' 45
     if(!(Model).windows_isolated_settings){throw 'Refusing to change a non-isolated settings profile'}
     [CapyWindowApi]::ShowWindow($registeredWindow.Handle,3)|Out-Null

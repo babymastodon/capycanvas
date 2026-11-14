@@ -60,7 +60,7 @@ impl CurveEditor {
         let curve = &control.controls;
         let histogram=Rc::new(RefCell::new(layer_ui::HistogramView::default()));
         let histogram_colors=Rc::new(Cell::new([[0;3];4]));
-        let area = gtk::DrawingArea::builder().content_width(64).content_height(200)
+        let area = gtk::DrawingArea::builder().content_width(layer_ui::CurveEditorView::MINIMUM[0] as i32).content_height(layer_ui::CurveEditorView::MINIMUM[1] as i32)
             .hexpand(true).focusable(true).build();
         area.set_widget_name(&format!("{name}-graph"));
         area.add_css_class("customizable-target");

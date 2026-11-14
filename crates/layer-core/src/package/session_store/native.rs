@@ -60,9 +60,6 @@ impl Drop for OwnerLock {
 pub struct SessionLease { _owner: OwnerLock }
 pub fn packed_sessions(root: &Path) -> Result<PathBuf, String> {
     let packed = root.join("packed");
-    if metadata_optional(&packed.join(".lock"))?.is_some() || metadata_optional(&packed.join("owner.lock"))?.is_some() {
-        return Err("The packed session directory conflicts with an existing session; its files were kept".into());
-    }
     create_directory(&packed)?;
     Ok(packed)
 }
@@ -76,9 +73,8 @@ pub(super) fn relocate_session<Owner>(source: &Path, destination: &Path, _owner:
         let entry = entry.map_err(|e| e.to_string())?;
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
         let lock = entry.path().join(".lock");
-        let Some(metadata) = metadata_optional(&lock)? else { continue; };
-        if !metadata.is_file() { return Err("Invalid recovery drawing lock".into()); }
-        let owner = OwnerLock::claim(&lock)?.ok_or("Recovery drawing is already open")?;
+        if !metadata_optional(&lock)?.is_some_and(|metadata| metadata.is_file()) { continue; }
+        let Some(owner) = OwnerLock::claim(&lock)? else { return Ok(()) };
         stores.push(owner);
     }
     #[cfg(windows)] drop((stores, _owner));
@@ -113,8 +109,7 @@ pub(super) fn import_with_owner_using<Owner>(root: &Path, manifest: &str, lock: 
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir()
             || !metadata_optional(&source.join(manifest))?.is_some_and(|metadata| metadata.is_file()) { continue; }
         let Some(owner) = claim(&source.join(lock))? else { continue; };
-        let destination = packed.join(entry.file_name());
-        relocate_session(&source, &destination, owner)?;
+        relocate_session(&source, &unused(packed.join(entry.file_name()), "")?, owner)?;
     }
     Ok(packed)
 }
@@ -123,24 +118,16 @@ pub(super) fn relocate_flat_sessions(root: &Path, packed: &Path, boundary: &mut 
         let entry = entry.map_err(|e| e.to_string())?; let source = entry.path();
         if source.extension().is_none_or(|extension| extension != "json") || !entry.file_type().map_err(|e| e.to_string())?.is_file() { continue; }
         let Some(_owner) = OwnerLock::claim(&source.with_extension("lock"))? else { continue; };
-        let destination = packed.join(entry.file_name());
-        if metadata_optional(&destination)?.is_some() { return Err("The saved session exists in both versions; both copies were kept".into()); }
-        let bytes = read_bounded(&source, 1024 * 1024)?;
-        let value = super::super::parse_json(&bytes, 1024 * 1024)?;
-        let drawings = value["drawings"].as_array().ok_or("Invalid saved drawing list")?;
-        if drawings.len() > 1024 { return Err("Too many saved drawings".into()); }
-        let mut keys = BTreeSet::new(); let mut moves = Vec::new(); let mut owners = Vec::new(); let mut busy = false;
-        for drawing in drawings {
-            let key = drawing["key"].as_str().ok_or("Invalid saved drawing key")?;
-            if key.is_empty() || key.len() > 128 || !key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') || !keys.insert(key) {
-                return Err("Invalid saved drawing key".into());
-            }
+        let destination = unused(packed.join(entry.file_name()), ".json")?;
+        let value = super::super::parse_json(&read_bounded(&source, 1024 * 1024)?, 1024 * 1024).unwrap_or_default();
+        let drawings = value["drawings"].as_array().filter(|drawings| drawings.len() <= 1024).cloned().unwrap_or_default();
+        let mut keys = BTreeSet::new(); let mut moves = Vec::new(); let mut kept = Vec::new(); let mut owners = Vec::new(); let mut busy = false;
+        for key in drawings.iter().filter_map(|drawing| drawing["key"].as_str()).filter(|key| check_store_key(key).is_ok()) {
+            if !keys.insert(key) { continue; }
             let from = root.join(key); let to = packed.join(key);
             let original = metadata_optional(&from)?; let moved = metadata_optional(&to)?;
-            if original.as_ref().is_some_and(|metadata| !metadata.is_dir()) || moved.as_ref().is_some_and(|metadata| !metadata.is_dir()) { return Err("Invalid saved drawing directory".into()); }
-            if original.is_some() && moved.is_some() && metadata_optional(&from.join("head.json"))?.is_some() {
-                return Err("The saved drawing exists in both versions; both copies were kept".into());
-            }
+            if original.as_ref().is_some_and(|metadata| !metadata.is_dir()) || moved.as_ref().is_some_and(|metadata| !metadata.is_dir()) { continue; }
+            if original.is_some() && moved.is_some() && metadata_optional(&from.join("head.json"))?.is_some() { kept.push(from.clone()); }
             for path in [original.as_ref().map(|_| &from), moved.as_ref().map(|_| &to)].into_iter().flatten() {
                 let Some(owner) = OwnerLock::claim(&path.join(".lock"))? else { busy = true; break; };
                 owners.push(owner);
@@ -150,6 +137,7 @@ pub(super) fn relocate_flat_sessions(root: &Path, packed: &Path, boundary: &mut 
         }
         if busy { continue; }
         #[cfg(windows)] drop(owners);
+        for from in kept { preserve(&from)?; }
         for (from, to) in moves { relocate_session(&from, &to, ())?; boundary("store")?; }
         relocate_entry(&source, &destination)?; boundary("manifest")?;
         relocate_entry(&source.with_extension("lock"), &destination.with_extension("lock"))?; boundary("lock")?;
@@ -167,12 +155,16 @@ pub(super) fn relocate_flat_sessions(root: &Path, packed: &Path, boundary: &mut 
     }
     Ok(())
 }
+fn unused(path: PathBuf, extension: &str) -> Result<PathBuf, String> {
+    if metadata_optional(&path)?.is_none() { return Ok(path); }
+    Ok(path.with_file_name(format!("{}{extension}", PortableId::random())))
+}
 pub(super) fn relocate_entry(source: &Path, destination: &Path) -> Result<(), String> {
     fs::rename(source, destination).map_err(|e| e.to_string())?;
     sync_directory(destination.parent().ok_or("Session has no destination directory")?)?;
     sync_directory(source.parent().ok_or("Session has no parent directory")?)
 }
-pub fn preserve_directory(path: &Path) -> Result<PathBuf, String> {
+pub fn preserve(path: &Path) -> Result<PathBuf, String> {
     let parent = path.parent().ok_or("Session has no parent directory")?;
     let preserved = parent.join(format!("preserved-{}", PortableId::random()));
     fs::rename(path, &preserved).map_err(|e| e.to_string())?;
@@ -228,7 +220,6 @@ impl SessionStore {
         let path = &fs::canonicalize(path).map_err(|e| e.to_string())?;
         let Some((owner, writer)) = claim_store(path)? else { return Ok(None) };
         if retired_store(path)? { return Err("This drawing's session copy was retired".into()); }
-        retiring_store(path)?;
         sync_directory(path)?;
         create_directory(&path.join("resources"))?;
         create_directory(&path.join("generations"))?;
@@ -247,34 +238,22 @@ pub(super) fn store_layout_with(path: &Path, terminal: bool) -> Result<bool, Str
         && metadata_optional(&path.join("packs"))?.is_none_or(|metadata| metadata.is_dir())
         && metadata_optional(&path.join("generations"))?.map_or(terminal, |metadata| metadata.is_dir()))
 }
-pub async fn collect_unreferenced_stores(root: &Path, reachable: &BTreeSet<String>, cancelled: &AtomicBool) -> Result<usize, String> {
+pub async fn collect_unreferenced_stores(root: &Path, reachable: &BTreeSet<String>, cancelled: &AtomicBool) -> usize {
     let mut retired = 0;
-    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
-        check_cancelled(cancelled)?;
-        let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
-        let Some(key) = entry.file_name().to_str().map(str::to_owned) else { continue };
-        let path = entry.path();
-        if reachable.contains(&key) || !metadata_optional(&path.join(".lock"))?.is_some_and(|metadata|metadata.is_file()) { continue; }
-        let terminal=retired_store(&path)?;
-        if !store_layout_with(&path,terminal)? {continue;}
-        let path=fs::canonicalize(&path).map_err(|error|error.to_string())?;
-        let Some((owner,writer))=claim_store(&path)? else {continue;};
-        if SessionStore::collect_unreferenced_claim(path,owner,writer).await? {retired+=1;}
-
+    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        if cancelled.load(Ordering::Acquire) { break; }
+        if entry.file_name().to_str().is_some_and(|key| !reachable.contains(key)) && collect_unreferenced_store(&entry.path()).await.unwrap_or(false) { retired += 1; }
     }
-    Ok(retired)
+    retired
+}
+async fn collect_unreferenced_store(path: &Path) -> Result<bool, String> {
+    if !store_layout_with(path, retired_store(path)?)? { return Ok(false); }
+    let path = fs::canonicalize(path).map_err(|error| error.to_string())?;
+    let Some((owner, writer)) = claim_store(&path)? else { return Ok(false) };
+    SessionStore::collect_unreferenced_claim(path, owner, writer).await
 }
 pub(super) fn retired_store(path: &Path) -> Result<bool, String> {
-    let marker = path.join(".retired");
-    let Some(bytes) = read_optional(&marker, 16)? else { return Ok(false) };
-    if !bytes.is_empty() { return Err("Invalid drawing retirement marker".into()); }
-    Ok(true)
-}
-pub(super) fn retiring_store(path: &Path) -> Result<bool, String> {
-    let Some(bytes) = read_optional(&path.join(".retiring"), 16)? else { return Ok(false) };
-    if bytes != b"retiring\n" { return Err("Invalid drawing retirement intent".into()); }
-    Ok(true)
+    Ok(metadata_optional(&path.join(".retired"))?.is_some())
 }
 
 pub(crate) fn sync_file(file: &File) -> std::io::Result<()> {
@@ -296,15 +275,6 @@ pub(crate) fn sync_file(file: &File) -> std::io::Result<()> {
 pub fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     read_file_bounded(file, limit)
-}
-pub(super) fn read_optional(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
-    let Some(metadata) = metadata_optional(path)? else { return Ok(None) };
-    if !metadata.is_file() { return Err("Invalid recovery metadata file".into()); }
-    match File::open(path) {
-        Ok(file) => read_file_bounded(file, limit).map(Some),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.to_string()),
-    }
 }
 pub(super) fn metadata_optional(path: &Path) -> Result<Option<fs::Metadata>, String> {
     match fs::symlink_metadata(path) {
@@ -393,11 +363,7 @@ impl StoreOpener for NativeStoreOpener {
     fn open<'a>(&'a self,path:&'a Path,retirement:bool)->super::super::store_io::FileFuture<'a,Option<SessionStore>> {
         Box::pin(async move {
             if !retirement {return SessionStore::open(path).await.map(Some);}
-            if metadata_optional(path)?.is_none() {return Ok(None);}
-            if retired_store(path)? {
-                return if store_layout_with(path,true)? {Ok(None)}else {Err("Invalid drawing session directory".into())};
-            }
-            if !store_layout(path)? {return Err("Invalid drawing session directory".into());}
+            if retired_store(path)? || !store_layout(path)? {return Ok(None);}
             let path=fs::canonicalize(path).map_err(|error|error.to_string())?;
             let Some((owner,claim))=claim_store(&path)? else {return Err("Recovery drawing is already open".into())};
             Ok(Some(SessionStore::for_retirement(path,owner,claim)))

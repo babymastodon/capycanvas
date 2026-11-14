@@ -12,6 +12,8 @@ pub struct ZoomMenu {
     pub buttons: Vec<CommandState>,
 }
 
+pub const X11_SUPPORT_LINK: &str = "https://github.com/babymastodon/capycanvas/issues/24#issuecomment-6842681386";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationLink {
@@ -31,13 +33,13 @@ impl ApplicationLink {
     pub fn display(self) -> &'static str {
         match self {
             Self::Website => "capycanvas.art",
-            Self::SourceCode => "github.com/capyatelier/capycanvas",
+            Self::SourceCode => "github.com/babymastodon/capycanvas",
         }
     }
     pub fn url(self) -> &'static str {
         match self {
             Self::Website => "https://capycanvas.art/",
-            Self::SourceCode => "https://github.com/capyatelier/capycanvas",
+            Self::SourceCode => "https://github.com/babymastodon/capycanvas",
         }
     }
 }
@@ -163,24 +165,15 @@ impl<R: CanvasRenderer> UiSession<R> {
         vec![self.filter_category_items(), vec![self.menu_command(CommandId::FrequencySeparation)]]
     }
     pub fn application_menu(&self, menu: ApplicationMenu) -> ContextMenu {
+        self.application_menu_from(menu, |id| self.application_menu(id).sections)
+    }
+    pub fn application_menu_from(&self, menu: ApplicationMenu, sections: impl Fn(ApplicationMenu) -> Vec<Vec<ContextMenuItem>>) -> ContextMenu {
         use ApplicationMenu as M;
         let command = |id: CommandId| self.menu_command(id);
         let mut model = match menu {
             M::Primary => ContextMenu {
                 title: menu.localized_label(self.localization()).to_string(),
-                sections: vec![
-                    M::ALL
-                        .into_iter()
-                        .map(|id| {
-                            let mut item = ContextMenuItem::submenu(&id.localized_label(self.localization()), if id == M::Layer && self.selection_masks.quick() { self.quick_mask_menu().sections } else if id == M::Layer {
-                                self.application_layer_sections()
-                            } else { self.application_menu(id).sections });
-                            item.page = Some(MenuPageId::Application(id));
-                            item
-                        })
-                        .collect(),
-                    vec![command(CommandId::Settings)],
-                ],
+                sections: vec![vec![command(CommandId::Settings)]],
             },
             M::Layer if self.selection_masks.quick() => self.quick_mask_menu(),
             M::Edit => ContextMenu { title: menu.localized_label(self.localization()).to_string(), sections: vec![
@@ -281,7 +274,17 @@ impl<R: CanvasRenderer> UiSession<R> {
             model.sections.insert(1, vec![finger, command(CommandId::ZenMode), swap]);
         }
         model.title = menu.localized_label(self.localization()).to_string();
-        model.with_shortcuts_localized(&self.state.settings, self.state.platform, self.localization())
+        let mut model = model.with_shortcuts_localized(&self.state.settings, self.state.platform, self.localization());
+        if menu == M::Primary {
+            let submenus = M::ALL.into_iter().map(|id| {
+                let mut item = ContextMenuItem::submenu(&id.localized_label(self.localization()), sections(id));
+                item.page = Some(MenuPageId::Application(id));
+                item
+            }).collect();
+            let at = if self.phone_layout().is_some() { model.sections.len() } else { 0 };
+            model.sections.insert(at, submenus);
+        }
+        model
     }
 
     pub fn zoom_menu(&self) -> ZoomMenu {
@@ -346,6 +349,18 @@ mod tests {
             assert!(!names.is_empty(), "{platform:?}: the application menus contain icons");
             let missing = names.iter().filter(|name| !bank.join(format!("{name}.svg")).is_file()).collect::<Vec<_>>();
             assert!(missing.is_empty(), "{platform:?}: missing canonical menu assets: {missing:?}");
+        }
+    }
+
+    #[test]
+    fn primary_submenus_match_their_application_menus() {
+        for platform in Platform::ALL {
+            let session = session(platform);
+            let primary = session.application_menu(ApplicationMenu::Primary);
+            let submenus = primary.sections.iter().find(|section| section.iter().any(|item| item.page.is_some())).unwrap();
+            for (item, menu) in submenus.iter().zip(ApplicationMenu::ALL) {
+                assert_eq!(item.sections, session.application_menu(menu).sections, "{platform:?} {menu:?}");
+            }
         }
     }
 

@@ -53,7 +53,7 @@ private struct PaletteNameForm: View {
                     primaryIdentifier: "palette-name-save", cancel: { controller.dialog = nil }, primary: save)
             } else { Text(dialog.kind == .rename ? controller.copy["rename_title"].string : controller.copy["new_title"].string).font(.headline) }
             TextField(controller.copy["palette_name"].string, text: Binding(get: { name }, set: { name = String($0.prefix(64)) }))
-                .textFieldStyle(.roundedBorder).focused($focused).onNativeTextSubmit(name) { name = String($0.prefix(64)); save() }
+                .textFieldStyle(.roundedBorder).focused($focused).onNativeTextSubmit(name) { name = String($0.prefix(64)); if page { focused = false } else { save() } }
                 .accessibilityIdentifier("palette-library-name")
             if let error { Text(error).foregroundStyle(.red).font(.callout).accessibilityIdentifier("palette-name-error") }
             if !page { HStack {

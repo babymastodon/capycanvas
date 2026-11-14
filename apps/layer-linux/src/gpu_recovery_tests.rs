@@ -110,16 +110,11 @@ fn check_gpu_failure_recovery(app: &adw::Application, color: layer_core::color::
         "renderer statistics",
     );
     let fps_title = w.localization().text(layer_ui::MessageId::DIAGNOSTICS_FPS).to_string();
-    let displayed_fps = || {
-        let mut child = w.effects.stats.first_child();
-        while let Some(row) = child {
-            if row.first_child().and_downcast::<gtk::Label>().is_some_and(|label| label.text().as_str() == fps_title) {
-                return row.last_child().and_downcast::<gtk::Label>().and_then(|label| label.text().parse::<f32>().ok());
-            }
-            child = row.next_sibling();
-        }
-        None
-    };
+    let stat_rows = || widgets(w.effects.stats.upcast_ref()).filter(|row| row.has_css_class("meter-row")).collect::<Vec<_>>();
+    let caption = |row: &gtk::Widget| row.first_child().and_then(|line| line.first_child()).and_then(|lead| lead.first_child())
+        .and_downcast::<gtk::Label>().map(|label| label.text().to_string());
+    let displayed_fps = || stat_rows().into_iter().find(|row| caption(row).as_deref() == Some(fps_title.as_str()))
+        .and_then(|row| row.first_child()?.last_child().and_downcast::<gtk::Label>()).and_then(|label| label.text().parse::<f32>().ok());
     until(|| displayed_fps().is_some_and(|fps| fps > 0.), "FPS shows canvas presentation feedback");
     assert!(ui_session(&w).engine().backend().stats.lock().unwrap().presented.iter().any(|frame| frame[3] == 1));
     until(|| displayed_fps() == Some(0.) && w.frame_timer.borrow().is_none(), "idle FPS falls to zero");
@@ -139,18 +134,46 @@ fn check_gpu_failure_recovery(app: &adw::Application, color: layer_core::color::
     let sampled_at = idle_memory().unwrap().sampled_at;
     until(|| idle_memory().is_some_and(|sample| sample.sampled_at > sampled_at && sample.process.is_some_and(|process| process.bytes > 0)), "memory sample refreshes without canvas frames");
     let metrics = ui_session(&w).renderer_stats();
-    let mut captions = Vec::new();
-    let mut child = w.effects.stats.first_child();
-    while let Some(row) = child {
-        if let Some(label) = row.first_child().and_downcast::<gtk::Label>() { captions.push(label.text().to_string()); }
-        child = row.next_sibling();
-    }
+    let captions: Vec<_> = stat_rows().iter().filter_map(caption).collect();
     assert_eq!(&captions[..metrics.rows.len()], metrics.rows.iter().map(|row| row.label.clone()).collect::<Vec<_>>());
+    assert_eq!(metrics.memory.rows.first().map(|row| (row.label.as_str(), row.meter.is_some())), Some(("RAM", true)), "{:?}", metrics.memory);
+    until(|| descendants::<crate::meter::Meter>(w.effects.stats.upcast_ref()).iter().any(|meter| meter.is_mapped() && meter.width() > 0), "the RAM bar is drawn");
     assert_eq!(displayed_fps(), Some(0.));
     assert_eq!(ui_session(&w).engine().backend().stats.lock().unwrap().cpu.len(), idle_frames, "Diagnostics does not keep the canvas rendering");
     assert!(w.frame_timer.borrow().is_none());
-    if let Some(output) = std::env::var_os("LAYER_TEST_ARTIFACTS") {
-        crate::capture(&w, std::path::Path::new(&output).join("stats-memory.png").to_str().unwrap());
+    if let Some(scroller) = w.effects.stats.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>() {
+        let rows = scroller.vadjustment();
+        rows.set_value(rows.upper() - rows.page_size());
+    }
+    pump(60);
+    let artifacts = std::env::var_os("LAYER_TEST_ARTIFACTS").map(std::path::PathBuf::from);
+    if let Some(output) = &artifacts {
+        crate::capture(&w, output.join("stats-memory.png").to_str().unwrap());
+    }
+    let section = widgets(w.effects.stats.upcast_ref()).find(|widget| widget.has_css_class("meter-section")).expect("memory section");
+    let heading = section.first_child().expect("memory heading");
+    for (index, row) in stat_rows().into_iter().chain([heading.clone()]).enumerate() {
+        if let Some(scroller) = row.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>() {
+            let bounds = row.compute_bounds(&scroller).unwrap();
+            let rows = scroller.vadjustment();
+            rows.set_value(rows.value() + f64::from(bounds.y()) - 8.);
+            pump(60);
+        }
+        let bounds = row.compute_bounds(&w.window).unwrap();
+        w.tooltips.hover(w.window.upcast_ref(), [f64::from(bounds.x() + bounds.width() / 2.), f64::from(bounds.y() + bounds.height() / 2.)]);
+        pump(620);
+        let tip = find_named(w.window.upcast_ref(), "pen-tooltip").and_downcast::<gtk::Popover>().expect("Diagnostics tooltip");
+        let text: Vec<_> = descendants::<gtk::Label>(tip.upcast_ref()).iter().map(|label| label.text().to_string()).collect();
+        let expected = if row == heading { Some("Rest of app") } else if row.is_ancestor(&section) { Some("Drawing") }
+            else if caption(&row).as_deref() == Some("CPU · ms") { Some("Typical") } else { None };
+        assert!(text.iter().any(|line| !line.is_empty() && expected.is_none_or(|expected| line == expected)), "{:?} tooltip: {text:?}", caption(&row));
+        if let Some(output) = &artifacts {
+            let picture = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(&tip)).snapshot(&picture, f64::from(tip.width()), f64::from(tip.height()));
+            w.window.renderer().unwrap().render_texture(picture.to_node().unwrap(), None)
+                .save_to_png(output.join(format!("stats-tip-{index}.png"))).unwrap();
+        }
+        w.tooltips.hide();
     }
     let navigation_document = ui_session(&w).engine().document().clone();
     let navigation_checkpoint = ui_session(&w).engine().checkpoint();

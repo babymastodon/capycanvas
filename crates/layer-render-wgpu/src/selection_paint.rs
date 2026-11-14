@@ -169,10 +169,9 @@ impl SelectionPainter {
         }
         {
             r.compilation.check()?;
-            if !r.compilation.require(
-                self.pipelines.iter().chain(r.selection_clip.pipelines()),
-                startup::BRUSH,
-            ) {
+            let mut required = compile::Needs::default();
+            required.selection_paint(r);
+            if !required.require(&r.compilation, startup::BRUSH) {
                 return Ok(false);
             }
         }

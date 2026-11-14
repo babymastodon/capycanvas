@@ -84,7 +84,7 @@ internal data class DialogResponse(val label: String, val tag: String, val accen
     search: SearchState? = null, onCancel: () -> Unit, onBack: () -> Unit = onCancel, onPrimary: () -> Unit = {},
     primaryEnabled: Boolean = true, primaryLabel: String = "", tag: String = "dialog-shell", naturalWidth: Dp = 720.dp,
     responses: List<DialogResponse> = emptyList(), shown: Boolean = true, page: Any? = null, scrollBody: Boolean = true, header: Boolean = true, windowed: Boolean = true, primaryTag: String? = null, cancelTag: String? = null,
-    secondary: (@Composable () -> Unit)? = null, navigation: (@Composable () -> Unit)? = null, keys: ((KeyEvent) -> Boolean)? = null, overlay: (@Composable BoxScope.() -> Unit)? = null, body: @Composable (PaddingValues) -> Unit, actions: (@Composable RowScope.() -> Unit)? = null) {
+    secondary: (@Composable () -> Unit)? = null, footer: (@Composable () -> Unit)? = null, navigation: (@Composable () -> Unit)? = null, keys: ((KeyEvent) -> Boolean)? = null, overlay: (@Composable BoxScope.() -> Unit)? = null, body: @Composable (PaddingValues) -> Unit, actions: (@Composable RowScope.() -> Unit)? = null) {
     val dialogs = LocalDialogLayer.current
     val environment = rememberUpdatedState(currentCompositionLocalContext)
     val content = rememberUpdatedState<@Composable () -> Unit>(shell@{
@@ -165,9 +165,14 @@ internal data class DialogResponse(val label: String, val tag: String, val accen
         }
         val mode = presentation?.getString("kind") ?: return@BoxWithConstraints
         if (!shown && mode != "page") return@BoxWithConstraints
+        DisposableEffect(host,shown) {
+            val dialog = Any()
+            if(shown)host.dialogPresented(dialog,true)
+            onDispose { host.dialogPresented(dialog,false) }
+        }
         val hosting = mode to (phone != null)
         val restoreSearch = remember(hosting) { search?.focused == true }
-        LaunchedEffect(hosting,shown) { if(shown) { if (restoreSearch) currentSearch?.focus?.requestFocus() else focus.requestFocus() } }
+        LaunchedEffect(hosting,shown) { if(shown && (phone == null || host.dialogFocus.lastOrNull() === focus)) { if (restoreSearch) currentSearch?.focus?.requestFocus() else if (!focus.saveFocusedChild()) focus.requestFocus() } }
         val frame = intent.getJSONObject("frame")
         val alert = frame.getString("kind") == "alert"
         val canvas = mode == "canvas_panel"
@@ -179,7 +184,7 @@ internal data class DialogResponse(val label: String, val tag: String, val accen
                 Column {
                     DialogHeader(host,headerView,title,tag,onCancel,onBack,onPrimary,primaryEnabled,primaryLabel,primaryTag,cancelTag)
                     HorizontalDivider(color = colors.dialogSeparator)
-                    content(PaddingValues(16.dp))
+                    Box(Modifier.weight(1f,fill = false).then(if(scrollBody)Modifier.verticalScroll(scroll) else Modifier)) { content(PaddingValues(16.dp)) }
                 }
             }
             else if (alert) AlertShell(host,title,tag,frame.optBoolean("prefer_wide"),visible,responses,
@@ -208,7 +213,7 @@ internal data class DialogResponse(val label: String, val tag: String, val accen
             if (intent.getBoolean("modal")) DialogCapture(Color.Transparent)
             Surface(Modifier.placedAbsolute(presentation!!.getJSONObject("bounds"),density.density).testTag(tag)
                 .graphicsLayer { translationY = slide*size.height }
-                .focusRequester(focus).focusProperties { onExit = { if(shown && intent.getBoolean("modal"))cancelFocusChange() } }.focusGroup()
+                .focusRequester(focus).focusProperties { onExit = { if(shown && intent.getBoolean("modal") && host.dialogFocus.lastOrNull() === focus)cancelFocusChange() } }.focusGroup()
                 .onPreviewKeyEvent { event ->
                     val key = event.nativeKeyEvent
                     if(intent.getBoolean("modal") && key.keyCode == KeyEvent.KEYCODE_TAB) {
@@ -226,6 +231,7 @@ internal data class DialogResponse(val label: String, val tag: String, val accen
                         Box(if(scrollBody)Modifier else Modifier.weight(1f)) { content(PaddingValues(16.dp)) }
                         secondary?.invoke()
                     }
+                    footer?.invoke()
                 }
             }
             if(!shown)DialogCapture(Color.Transparent)

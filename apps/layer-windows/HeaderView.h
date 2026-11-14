@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "NativeHandles.h"
 #include "CanvasQueryQueue.h"
+#include "CanvasModelInputs.h"
 #include <functional>
 #include <memory>
 #include <vector>
@@ -14,8 +15,8 @@ public:
         std::function<void()> layout,std::function<void()> fullscreen,std::function<void()> newWindow,PreviewTransport queries,Dispatch input,Dispatch documents);
     ~HeaderView();
     winrt::Microsoft::UI::Xaml::Controls::Grid Root()const;
-    void Apply(Json const& snapshot);
-    void SetInsets(float left,float right);
+    void Apply(Json const& snapshot,CanvasModelChanges const& changes={true});
+    void SetInsets(float left,float right,float height);
     void SetFullscreen(bool active);
     void SetBlocked(bool blocked);
     void SetCommit(std::function<void(std::string,bool,std::function<void()>)> commit);

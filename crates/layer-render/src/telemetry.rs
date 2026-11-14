@@ -89,37 +89,51 @@ pub struct RendererTelemetry {
     pub dirty_pixels: u64,
     pub resident_bytes: u64,
     pub effect_passes: u64,
-    pub compiled_effects: u64,
     pub gpu_timestamps: bool,
     pub memory: Option<MemorySnapshot>,
     pub memory_budget: Option<std::sync::Arc<MemoryBudgetSummary>>,
+    pub adapter: Option<std::sync::Arc<GpuAdapter>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemoryPool {
+    pub total_bytes: Option<u64>,
+    pub limit_bytes: u64,
+    pub physical_bytes: u64,
+    pub pinned_bytes: u64,
+}
+impl MemoryPool {
+    pub fn over_bytes(&self) -> u64 { self.pinned_bytes.saturating_sub(self.limit_bytes) }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryBudgetSummary {
     pub sampled_at: web_time::Instant,
-    pub ram_limit_bytes: u64,
-    pub ram_physical_bytes: u64,
-    pub ram_pinned_bytes: u64,
-    pub ram_debt_bytes: u64,
-    pub gpu_limit_bytes: u64,
-    pub gpu_physical_bytes: u64,
-    pub gpu_pinned_bytes: u64,
-    pub gpu_debt_bytes: u64,
+    pub ram: MemoryPool,
+    pub gpu: Option<MemoryPool>,
+    pub gpu_shares_ram: bool,
+    pub pressure: bool,
+    pub refusals: u64,
 }
 impl MemoryBudgetSummary {
-    pub fn new(snapshot: &layer_core::MemoryBudgetSnapshot) -> Self {
+    pub fn new(snapshot: &layer_core::MemoryBudgetSnapshot, device: layer_core::MemoryDevice) -> Self {
+        let own = snapshot.devices.iter().find(|entry| entry.device == device);
         Self {
-            sampled_at: web_time::Instant::now(), ram_limit_bytes: snapshot.ram_limit_bytes,
-            ram_physical_bytes: snapshot.ram_physical_bytes,
-            ram_pinned_bytes: snapshot.ram_pinned_bytes,
-            ram_debt_bytes: snapshot.ram_pinned_bytes.saturating_sub(snapshot.ram_limit_bytes),
-            gpu_limit_bytes: snapshot.devices.iter().fold(0u64, |n, device| n.saturating_add(device.limit_bytes)),
-            gpu_physical_bytes: snapshot.devices.iter().fold(0u64, |n, device| n.saturating_add(device.physical_bytes)),
-            gpu_pinned_bytes: snapshot.devices.iter().fold(0u64, |n, device| n.saturating_add(device.pinned_bytes)),
-            gpu_debt_bytes: snapshot.devices.iter().fold(0u64, |n, device| n.saturating_add(device.pinned_debt_bytes)),
+            sampled_at: web_time::Instant::now(),
+            ram: MemoryPool { total_bytes: snapshot.ram_total_bytes, limit_bytes: snapshot.ram_limit_bytes, physical_bytes: snapshot.ram_physical_bytes, pinned_bytes: snapshot.ram_pinned_bytes },
+            gpu: own.map(|entry| MemoryPool { total_bytes: entry.heap_bytes, limit_bytes: entry.limit_bytes, physical_bytes: entry.physical_bytes, pinned_bytes: entry.pinned_bytes }),
+            gpu_shares_ram: own.is_some_and(|entry| entry.unified),
+            pressure: snapshot.pressure,
+            refusals: snapshot.refusals,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GpuAdapter {
+    pub name: String,
+    pub api: &'static str,
+    pub driver: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

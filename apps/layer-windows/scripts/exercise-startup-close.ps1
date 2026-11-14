@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)][string]$Executable,
     [ValidateNotNullOrEmpty()][int[]]$Delays = @(0, 1000, 2500, 5000),
     [ValidateSet('dark','light')][string]$Theme = 'dark',
+    [string]$Capy = 'bathing',
     [switch]$FailSettings
 )
 $ErrorActionPreference = 'Stop'
@@ -21,7 +22,18 @@ function Launch-Profile([string]$Directory) {
     $env:CAPY_STORAGE_DIR = Join-Path $Directory 'profile'
     $config = Join-Path $env:CAPY_STORAGE_DIR 'config'
     [IO.Directory]::CreateDirectory($config) | Out-Null
-    [IO.File]::WriteAllText((Join-Path $config 'settings.json'),(@{theme=$Theme}|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $config 'settings.json'),(@{theme=$Theme;zen_icon=$Capy}|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+}
+function Launch-Mark([string]$Pose) { 'launch-mark-zen-' + ($Pose -replace '_','-') }
+function Check-LaunchCover {
+    $cover = Find 'launch-splash' -Within $root -NoPopups
+    if (!$cover -or $cover.Current.IsOffscreen) { return }
+    $others = @('looking_up','facing_forward','bathing','sleeping') | Where-Object { $_ -ne $Capy } | ForEach-Object { Launch-Mark $_ }
+    $shown = @(foreach ($id in @('canvas-status','workspace-storage-status') + $others) {
+        $element = Find $id -Within $root -NoPopups
+        if ($element -and !$element.Current.IsOffscreen) { $id }
+    })
+    if ($shown -and !$cover.Current.IsOffscreen) { throw "The launch splash showed $($shown -join ', ') over the saved $Capy capy." }
 }
 function Launch-Capture([string]$Name) {
     & (Join-Path $PSScriptRoot 'inspect-window.ps1') -ProcessId $review.Id -WindowHandle $drawing.Handle.ToInt64() -TraceDirectory $directory -Output (Join-Path $launch "$Name.png") -ClientOnly -Composed -CaptureOnly
@@ -42,7 +54,8 @@ try {
     Wait-Until { $script:drawing = Owned-DrawingWindow $review; $null -ne $drawing } 'Latency-only tracing did not publish the owned drawing window.' 60
     $script:root = $drawing.Root
     $launchAge=[Diagnostics.Stopwatch]::StartNew()
-    $captionDelay=(Read-Snapshot (Join-Path $directory "bootstrap-$($review.Id)-$($drawing.Handle.ToInt64()).json")).launch_caption_delay_ms
+    $bootstrap=Read-Snapshot (Join-Path $directory "bootstrap-$($review.Id)-$($drawing.Handle.ToInt64()).json")
+    $captionDelay=$bootstrap.launch_caption_delay_ms
     if(!$captionDelay){throw 'The launch bootstrap has no caption delay'}
     if($splash=Find 'launch-splash' -Within $root -NoPopups){Launch-Capture 'launch'}
     if($FailSettings){
@@ -58,8 +71,15 @@ try {
         Write-Output 'Startup settings failure bypassed the splash and closed cleanly.'
         return
     }
+    if(('launch-mark-' + $bootstrap.launch_mark.icon) -ne (Launch-Mark $Capy)){throw "The launch bootstrap chose $($bootstrap.launch_mark.icon) instead of the saved $Capy capy"}
+    Wait-Until {
+        Check-LaunchCover
+        $cover=Find 'launch-splash' -Within $root -NoPopups;$mark=Find (Launch-Mark $Capy) -Within $root -NoPopups
+        !$cover -or $cover.Current.IsOffscreen -or ($mark -and !$mark.Current.IsOffscreen)
+    } "The launch splash did not show the saved $Capy capy."
     $captionCapture=@{done=$false}
     Wait-Until {
+        Check-LaunchCover
         if(!$captionCapture.done -and $launchAge.ElapsedMilliseconds -ge ($captionDelay+200)){
             if($cover=Find 'launch-splash' -Within $root -NoPopups){if(!$cover.Current.IsOffscreen){Launch-Capture 'caption';$captionCapture.done=$true}}
         }

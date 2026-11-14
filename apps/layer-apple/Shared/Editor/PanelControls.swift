@@ -138,19 +138,24 @@ struct BrushSizeGrid: View {
     let identifier: String
     var body: some View {
         let style = ToolbarUI.cached(["type": "style", "style": "small"], language: store.interfaceLanguage)
-        let tile = store.catalog["brush_size_tile"], width = tile[0].number, height = tile[1].number
+        let presets = store.catalog["brush_sizes"].array, textSize = store.catalog["text_size_pt"].number * 4 / 3
+        let label = [presets.map { EditorTextMetrics.width($0["label"].string, size: textSize, weight: .regular) }.max() ?? 0,
+            EditorTextMetrics.lineHeight(size: textSize)]
+        let tile = ToolbarUI.cached(["type": "brush_size_tile", "label": label], language: store.interfaceLanguage)
+        let width = tile[0].number, height = tile[1].number, preview = store.catalog["brush_size_tile"][0].number
         let shape = SquircleShape(style["size"][0].number / 2)
         BrushSizeLayout(tile: CGSize(width: width, height: height), gap: style["gap"].number) {
-            ForEach(store.catalog["brush_sizes"].array.indices, id: \.self) { index in
-                let preset = store.catalog["brush_sizes"][index], value = preset["value"].number
+            ForEach(presets.indices, id: \.self) { index in
+                let preset = presets[index], value = preset["value"].number
                 Button { store.dispatch(["type": "set_brush_size", "value": value]) } label: {
                     ZStack(alignment: .top) {
                         Circle().fill(.foreground).frame(width: preset["preview_diameter"].number, height: preset["preview_diameter"].number)
-                            .frame(width: width, height: width)
+                            .frame(width: preview, height: preview)
                             .frame(maxHeight: .infinity, alignment: .top)
                             .mask(LinearGradient(stops: [.init(color: .black, location: 0.4), .init(color: .black.opacity(0.2), location: 0.65),
                                 .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
-                        Text(preset["label"].string).lineLimit(1).frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 2)
+                        Text(preset["label"].string).font(.system(size: textSize)).lineLimit(1).fixedSize()
+                            .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 2)
                     }.frame(width: width, height: height).contentShape(shape)
                 }.buttonStyle(EditorControlButtonStyle(selected: value == store.state["brush"]["diameter"].number,
                     corner: .radius(style["size"][0].number / 2)))

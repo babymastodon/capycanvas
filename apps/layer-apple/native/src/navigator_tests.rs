@@ -31,9 +31,9 @@ fn diagnostics_restored_before_gpu_attachment_collects_actual_drawing_samples() 
             Some(native_renderer());
         host.host.session.sync_renderer_telemetry();
         });
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         // Querying the visible panel must eventually deliver real GPU samples,
         // including the final stroke after drawing has gone idle.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -48,40 +48,23 @@ fn diagnostics_restored_before_gpu_attachment_collects_actual_drawing_samples() 
             assert!(std::time::Instant::now() < deadline, "GPU diagnostics did not deliver drawing samples: {stats}");
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
-        assert_eq!(stats["rows"].as_array().unwrap().len(), 15);
+        assert_eq!(stats["rows"].as_array().unwrap().len(), 3);
         assert_eq!(metric(&stats, "FPS")["value"], "—");
         assert!(!stats["samples"].as_array().unwrap().is_empty());
         assert!(stats["samples"].as_array().unwrap().len() <= 120);
         assert_ne!(metric(&stats, "CPU · ms")["value"], "—");
-        assert!(
-            metric(&stats, "Frames")["value"]
-                .as_str()
-                .unwrap()
-                .parse::<u64>()
-                .unwrap()
-                > 0
-        );
-        assert!(
-            metric(&stats, "Dabs")["value"]
-                .as_str()
-                .unwrap()
-                .parse::<u64>()
-                .unwrap()
-                > 0
-        );
+        assert!(stats["frames"].as_u64().unwrap() > 0);
+        assert!(stats["dabs"].as_u64().unwrap() > 0);
         assert!(
             metric(&stats, "GPU · ms")["description"]
                 .as_str()
                 .unwrap()
-                .contains("Excludes presentation")
+                .starts_with(&*layer_ui::Localizer::shared(layer_ui::UiLanguage::English).text(layer_ui::MessageId::DIAGNOSTICS_GPU_TIP))
         );
         app.invoke("zoom_in");
         app.draw_frame();
         let navigated = app.request(2, json!({"type":"renderer_stats"})).unwrap();
-        assert_eq!(
-            metric(&navigated, "Dabs")["value"],
-            metric(&stats, "Dabs")["value"]
-        );
+        assert_eq!(navigated["dabs"], stats["dabs"]);
         let samples = navigated["samples"].clone();
         app.action(json!({"type":"customize","action":{"type":"set_panel_visible","panel":"stats","visible":false}}));
         app.stroke();

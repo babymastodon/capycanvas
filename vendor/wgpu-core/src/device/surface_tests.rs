@@ -154,7 +154,7 @@ fn rejected_live_output_and_invalid_configuration_preserve_presentation_and_call
         view_formats: vec![],
     });
     *surface.presentation.lock() = Some(crate::present::Presentation {
-        device: device.clone(), config: configuration(), acquired_texture: Some(texture.clone()),
+        device: device.clone(), config: configuration(), acquired_texture: Some(texture.clone()), prepared: false,
     });
     for invalid_size in [false, true] {
         let called = Arc::new(AtomicBool::new(false));
@@ -305,6 +305,8 @@ fn presentation_retains_live_output_through_preparation_and_serializes_hal_hando
 
 #[derive(Default)]
 struct PresentationProbe {
+    nonblocking: AtomicBool,
+    backpressured: AtomicBool,
     hold_submissions: AtomicBool,
     fail_submission: AtomicBool,
     fail_present: AtomicBool,
@@ -431,6 +433,18 @@ impl hal::DynQueue for PresentationQueue {
         if let Some(action) = self.probe.before_submit.lock().unwrap().take() { action(); }
         if self.probe.hold_submissions.load(Ordering::Acquire) { return Ok(()); }
         unsafe { self.inner.submit(commands, textures, fence) }
+    }
+    fn supports_nonblocking_present(&self, _: &dyn hal::DynSurface) -> bool {
+        self.probe.nonblocking.load(Ordering::Acquire)
+    }
+    unsafe fn try_present(&self, surface: &dyn hal::DynSurface, _: &dyn hal::DynSurfaceTexture) -> Result<hal::PresentAttempt, hal::SurfaceError> {
+        let device = self.probe.device.lock().unwrap().as_ref().unwrap().upgrade().unwrap();
+        assert!(!std::thread::spawn(move || device.command_indices.try_write().is_some()).join().unwrap());
+        if self.probe.backpressured.load(Ordering::Acquire) { return Ok(hal::PresentAttempt::Pending); }
+        if self.probe.fail_present.swap(false, Ordering::AcqRel) { return Err(hal::SurfaceError::Device(hal::DeviceError::Lost)); }
+        let _ = surface;
+        self.probe.presents.fetch_add(1, Ordering::AcqRel);
+        Ok(hal::PresentAttempt::Presented)
     }
     unsafe fn present(&self, _: &dyn hal::DynSurface, _: Box<dyn hal::DynSurfaceTexture>) -> Result<(), hal::SurfaceError> {
         let device = self.probe.device.lock().unwrap().as_ref().unwrap().upgrade().unwrap();
@@ -780,4 +794,51 @@ fn concurrent_waits_sample_completion_with_the_lifetime_tracker() {
         f.assert_retained();
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+#[test]
+fn nonblocking_present_backpressure_retains_one_image_and_submission() {
+    let f = PresentationFixture::new();
+    f.probe.nonblocking.store(true, Ordering::Release);
+    f.probe.backpressured.store(true, Ordering::Release);
+    assert!(f.queue.try_present(&f.surface).unwrap().is_none());
+    let submission = f.device.last_successful_submission_index.load(Ordering::Acquire);
+    for _ in 0..3 {
+        assert!(f.queue.try_present(&f.surface).unwrap().is_none());
+        f.assert_retained();
+        assert_eq!(f.probe.presents.load(Ordering::Acquire), 0);
+        assert_eq!(f.probe.discards.load(Ordering::Acquire), 0);
+        assert_eq!(f.device.last_successful_submission_index.load(Ordering::Acquire), submission);
+    }
+    f.probe.backpressured.store(false, Ordering::Release);
+    assert!(matches!(f.queue.try_present(&f.surface), Ok(Some(wgt::SurfaceStatus::Good))));
+    assert_eq!(f.probe.presents.load(Ordering::Acquire), 1);
+    assert_eq!(f.probe.discards.load(Ordering::Acquire), 0);
+    assert!(f.surface.presentation.lock().as_ref().unwrap().acquired_texture.is_none());
+}
+
+#[test]
+fn nonblocking_present_failure_discards_exactly_once() {
+    let f = PresentationFixture::new();
+    f.probe.nonblocking.store(true, Ordering::Release);
+    f.probe.fail_present.store(true, Ordering::Release);
+    assert!(f.queue.try_present(&f.surface).is_err());
+    assert_eq!(f.probe.presents.load(Ordering::Acquire), 0);
+    assert_eq!(f.probe.discards.load(Ordering::Acquire), 1);
+    assert!(f.surface.presentation.lock().as_ref().unwrap().acquired_texture.is_none());
+}
+
+#[test]
+fn nonblocking_backpressured_image_can_be_discarded_and_reacquired() {
+    let f = PresentationFixture::new();
+    f.probe.nonblocking.store(true, Ordering::Release);
+    f.probe.backpressured.store(true, Ordering::Release);
+    assert!(f.queue.try_present(&f.surface).unwrap().is_none());
+    f.surface.discard().unwrap();
+    assert_eq!(f.probe.discards.load(Ordering::Acquire), 1);
+    let reacquired = f.surface.get_current_texture().unwrap().texture.unwrap();
+    assert!(f.queue.try_present(&f.surface).unwrap().is_none());
+    assert_eq!(f.probe.presents.load(Ordering::Acquire), 0);
+    f.surface.discard().unwrap();
+    drop(reacquired);
 }

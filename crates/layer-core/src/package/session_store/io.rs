@@ -27,9 +27,8 @@ pub(super) async fn create(io:&dyn FileTransport,name:&str,bytes:&[u8],cancelled
     }
     file.flush().await?;check_cancelled(cancelled)
 }
-pub(super) async fn marker(io:&dyn FileTransport,name:&str,expected:&[u8])->Result<bool,String> {
-    let Some(bytes)=read_optional(io,name,16).await? else {return Ok(false);};
-    if bytes!=expected {return Err("Invalid drawing retirement marker".into());}Ok(true)
+pub(super) async fn marker(io:&dyn FileTransport,name:&str)->Result<bool,String> {
+    Ok(io.list("").await?.iter().any(|entry|entry.name==name))
 }
 pub(super) async fn clean(io:&dyn FileTransport,directory:&str,retained:&BTreeSet<PortableId>,suffix:&str)->Result<(),String> {
     for entry in io.list(directory).await? {

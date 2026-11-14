@@ -161,6 +161,7 @@ struct ControlInput: UIViewRepresentable {
         fileprivate var keyboardFocus = false
         private let pointer = Pointer()
         private var scroll: UIPanGestureRecognizer!
+        var transacting: Bool { keyActive || pointer.state == .began || pointer.state == .changed }
         override var canBecomeFirstResponder: Bool { key != nil }
         override init(frame: CGRect) {
             super.init(frame: frame); isOpaque = false; backgroundColor = .clear

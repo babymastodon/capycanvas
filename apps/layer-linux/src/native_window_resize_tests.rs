@@ -249,6 +249,74 @@ fn native_window_scene_pixels() {
     let report=serde_json::json!({"theme":std::env::var("CAPY_NATIVE_TEST_THEME").unwrap(),"surface_scale":scale,"dimensions":[child.width(),child.height()],"targets":reports,"comparison":"same raw native workspace node; legacy/current conversion; includes managed canvas snapshot; test-only"});std::fs::write(output.join("comparison.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();eprintln!("{report}");input.finish();w.window.close();pump(100);assert!(accepted,"visible canvas pixels stay within the existing one-byte bound; chrome corner differences require visual review; see comparison.json");
 }
 
+#[test]
+#[ignore = "private Mutter with a floating window: LAYER_MOTION_VIEWPORT=2400x1500 at LAYER_MOTION_SCALE=1.5 or 1.25, 3200x2000 at 2"]
+fn native_fractional_chrome_seams() {
+    let app=native_test_app("art.capycanvas.FractionalChromeSeams");let w=Workspace::new(&app);apply_fixture_theme(&w);
+    w.window.set_default_size(1100,760);w.window.present();pump(1800);wait_workspaces(&w);until(||w.gpu.borrow().is_some(),"seam canvas ready");pump(1000);
+    assert!(!w.window.is_maximized()&&!w.window.is_fullscreen(),"a floating window keeps its shadow margin");
+    let scale=w.window.surface().unwrap().scale() as f32;let (dx,dy)=w.window.surface_transform();
+    let content=w.window.content().unwrap();assert!(content.is::<crate::squircle::Squircles>());
+    let local=content.compute_point(&w.window,&gtk::graphene::Point::zero()).unwrap();
+    let origin=[(local.x()+dx as f32)*scale,(local.y()+dy as f32)*scale];
+    assert!(scale.fract()==0.||origin.iter().any(|o|o.fract()!=0.),"content must start between device pixels to exercise the surface offset: {origin:?} at scale {scale}");
+    let paintable=gtk::WidgetPaintable::new(Some(&content));let renderer=w.window.renderer().unwrap();
+    let output=std::env::var_os("LAYER_TEST_ARTIFACTS").map(std::path::PathBuf::from);if let Some(o)=&output{std::fs::create_dir_all(o).unwrap();}
+    let mut failures=Vec::new();let mut reports=Vec::new();
+    let mut measure=|name:String,level:layer_ui::Transparency|{
+        let viewport=gtk::graphene::Rect::new(origin[0].floor(),origin[1].floor(),(content.width() as f32*scale).ceil()+2.,(content.height() as f32*scale).ceil()+2.);
+        let snapshot=gtk::Snapshot::new();snapshot.scale(scale,scale);snapshot.translate(&gtk::graphene::Point::new(origin[0]/scale,origin[1]/scale));
+        paintable.snapshot(&snapshot,content.width() as f64,content.height() as f64);
+        let node=snapshot.to_node().unwrap();
+        let texture=renderer.render_texture(&node,Some(&viewport));
+        let mut downloader=gdk::TextureDownloader::new(&texture);downloader.set_format(gdk::MemoryFormat::R8g8b8a8);let (pixels,stride)=downloader.download_bytes();
+        let [width,height]=[texture.width() as isize,texture.height() as isize];
+        let alpha=|x:isize,y:isize|i32::from(pixels[y as usize*stride+x as usize*4+3]);
+        let opaque=if level==layer_ui::Transparency::Off{255}else{254};
+        let dip=|x:isize,y:isize,[dx,dy]:[isize;2]|{
+            let n=|k:isize|alpha(x+k*dx,y+k*dy);
+            let plain=(n(-1)-n(-2)).abs()<=2&&(n(1)-n(2)).abs()<=2&&n(-1).max(n(1))<=opaque&&n(-1).min(n(1))>=64;
+            if plain {n(-1).min(n(1))-alpha(x,y)} else {0}
+        };
+        let mut dips=Vec::new();
+        for (across,along) in [([1,0],[0,1]),([0,1],[1,0])] {
+            let lines=if along[0]==1{height}else{width};let length=if along[0]==1{width}else{height};
+            for line in 2..lines-2 {
+                let mut run=Vec::new();
+                for step in 2..=length-2 {
+                    let [x,y]=if along[0]==1{[step,line]}else{[line,step]};
+                    let depth=if step<length-2{dip(x,y,across)}else{0};
+                    if depth>=3 {run.push((depth,x as usize,y as usize));continue;}
+                    if run.len()>=6 {dips.append(&mut run);} else {run.clear();}
+                }
+            }
+        }
+        dips.sort_unstable_by(|a,b|b.cmp(a));
+        let samples=dips.iter().step_by(dips.len().div_ceil(24).max(1)).map(|&(dip,x,y)|{
+            let at=[(viewport.x()+x as f32+0.5)/scale-origin[0]/scale,(viewport.y()+y as f32+0.5)/scale-origin[1]/scale];
+            let widget=content.pick(f64::from(at[0]),f64::from(at[1]),gtk::PickFlags::DEFAULT);
+            serde_json::json!({"dip":dip,"device":[x,y],"logical":at,"alpha":alpha(x as isize,y as isize),"widget":widget.map(|w|format!("{}#{} {:?}",w.type_().name(),w.widget_name(),w.css_classes().iter().map(|c|c.to_string()).collect::<Vec<_>>()))})
+        }).collect::<Vec<_>>();
+        reports.push(serde_json::json!({"case":name,"dip_pixels":dips.len(),"deepest":dips.first().map(|d|d.0),"samples":samples}));
+        if let Some(o)=&output {texture.save_to_png(o.join(format!("{name}.png"))).unwrap();}
+        if !dips.is_empty() {failures.push(format!("{name}: {} pixels, deepest {}",dips.len(),dips[0].0));}
+    };
+    measure("startup".into(),state(&w).settings.transparency);
+    for theme in [Theme::Dark,Theme::Light] {
+        w.dispatch(UiAction::SetTheme{theme:Some(theme)});
+        for level in [layer_ui::Transparency::Off,layer_ui::Transparency::Low,layer_ui::Transparency::High] {
+            use_transparency(&w,level);pump(400);
+            measure(format!("{theme:?}-{level:?}").to_lowercase(),level);
+        }
+    }
+    w.window.set_default_size(1101,760);pump(600);assert_eq!(w.window.width(),1101,"the window moves the right column by one logical pixel");
+    measure("light-high-moved".into(),layer_ui::Transparency::High);
+    let report=serde_json::json!({"surface_scale":scale,"surface_transform":[dx,dy],"content_origin_device":origin,"cases":reports});
+    if let Some(o)=&output {std::fs::write(o.join("seams.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();}
+    eprintln!("{report}");w.window.close();pump(100);
+    assert!(failures.is_empty(),"chrome seams let the canvas through: {}",failures.join("; "));
+}
+
 fn resize_texture_metadata(texture:&gdk::Texture)->serde_json::Value {
     let state=texture.color_state();let cicp=state.create_cicp_params().map(|p|serde_json::json!({"primaries":p.color_primaries(),"transfer":p.transfer_function(),"matrix":p.matrix_coefficients(),"range":format!("{:?}",p.range())}));
     serde_json::json!({"format":format!("{:?}",texture.format()),"dimensions":[texture.width(),texture.height()],"color_state":format!("{state:?}"),"srgb":state.equivalent(&gdk::ColorState::srgb()),"srgb_linear":state.equivalent(&gdk::ColorState::srgb_linear()),"rec2100_pq":state.equivalent(&gdk::ColorState::rec2100_pq()),"rec2100_linear":state.equivalent(&gdk::ColorState::rec2100_linear()),"cicp":cicp})

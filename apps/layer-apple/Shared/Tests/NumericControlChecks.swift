@@ -45,7 +45,7 @@ extension XCTestCase {
         #if os(iOS)
         let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
-        revealEditorControl(original, in: app.scrollViews["layer-rows"])
+        revealEditorControl(original, identifier: original.identifier, type: .button, in: app.scrollViews["layer-rows"])
         XCTAssertTrue(keyboard.exists, "Revealing a layer preserves the editing keyboard")
         XCTAssertFalse(keyboard.frame.intersects(entry.frame), "Layer opacity must stay above the keyboard")
         attachEditor(in: app, name: "layer-opacity-draft-switch")
@@ -55,7 +55,7 @@ extension XCTestCase {
         workspaceActivate(original); expect("42")
         XCTAssertFalse(entry.exists, "An unfinished draft must not move to another layer")
         #if os(iOS)
-        revealEditorControl(added, in: app.scrollViews["layer-rows"])
+        revealEditorControl(added, identifier: added.identifier, type: .button, in: app.scrollViews["layer-rows"])
         #endif
         workspaceActivate(added); expect("100")
         let track = app.descendants(matching: .any)["number-track-layer-opacity"].firstMatch
@@ -72,7 +72,7 @@ extension XCTestCase {
         command("Undo"); expect("100")
         command("Redo"); expect(dragged)
         #if os(iOS)
-        revealEditorControl(original, in: app.scrollViews["layer-rows"])
+        revealEditorControl(original, identifier: original.identifier, type: .button, in: app.scrollViews["layer-rows"])
         #endif
         workspaceActivate(original); expect("42")
         let propertyEntry = app.textFields["number-entry-property-opacity"]

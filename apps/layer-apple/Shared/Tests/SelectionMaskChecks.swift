@@ -74,7 +74,11 @@ extension XCTestCase {
         waitForExpectations(timeout: 10)
         let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "layer-row-"))
         let count = rows.count
-        workspaceActivate(app.buttons["layer-New Selection Layer"])
+        let footer = app.buttons["layer-New Selection Layer"]
+        if footer.exists { workspaceActivate(footer) } else {
+            workspaceActivate(app.buttons["layer-Layer actions"])
+            workspaceActivate(app.buttons["command-new_selection_layer"])
+        }
         #if os(iOS)
         dismissEditorKeyboard(in: app)
         #endif

@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::test_support::{Recorder, assert_live_artwork_eq, event, invoke, key, pen_at, select, rectangle};
+use crate::session::test_support::{Recorder, assert_live_artwork_eq, launched, event, invoke, key, pen_at, select, rectangle};
 use layer_core::{Document, DocumentNames, ImageObject, PortableId, SceneScope, color::source::rgba8_source};
 
 fn translate(x: f64, y: f64) -> Affine64 { Affine64([1., 0., 0., 1., x, y]) }
@@ -7,8 +7,8 @@ fn session() -> UiSession<Recorder> {
     session_for(Platform::Gtk)
 }
 fn session_for(platform: Platform) -> UiSession<Recorder> {
-    UiSession::new(Recorder { tiled_sources: true, ..Default::default() },
-        Document::new(PortableId::random(), 1000, 1000, DocumentNames { paint: "Current ink".into(), paper: "Paper".into() }), [1000, 1000], platform).unwrap()
+    launched(UiSession::new(Recorder { tiled_sources: true, ..Default::default() },
+        Document::new(PortableId::random(), 1000, 1000, DocumentNames { paint: "Current ink".into(), paper: "Paper".into() }), [1000, 1000], platform).unwrap())
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn imported_placement_keeps_its_reservation_until_apply_or_cancel() {
         });
         let document=Document::new(PortableId::random(),1000,1000,DocumentNames {paint:"Ink".into(),paper:"Paper".into()})
             .with_memory(layer_core::DocumentMemory::new(budget.clone(),None));
-        let mut s=UiSession::new(Recorder {tiled_sources:true,..Default::default()},document,[1000,1000],Platform::Gtk).unwrap();
+        let mut s=launched(UiSession::new(Recorder {tiled_sources:true,..Default::default()},document,[1000,1000],Platform::Gtk).unwrap());
         let reservation=budget.admit_import(1024*1024).unwrap();
         let source=std::sync::Arc::unwrap_or_clone(rgba8_source([32;2],|x,y|[x as u8,y as u8,7,255]));
         let prepared=crate::PreparedImages::from_parts(vec![("Photo".into(),source)],Some(reservation.clone()),budget.clone(),None);

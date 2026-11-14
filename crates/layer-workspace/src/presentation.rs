@@ -31,7 +31,6 @@ pub enum ManagerAction {
     SaveAsNew,
     RetryStorage,
     RecoverInterrupted,
-    RestoreWorkspaces(String),
     Switch(String),
     SwitchToWindow(String),
     Rename(String),
@@ -56,7 +55,6 @@ impl ManagerAction {
             Self::SaveAsNew => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_SAVE_AS_NEW_WORKSPACE).to_string(),
             Self::RetryStorage => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_RETRY_STORAGE).to_string(),
             Self::RecoverInterrupted => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_RECOVER_INTERRUPTED_CHANGES).to_string(),
-            Self::RestoreWorkspaces(_) => localization.text(layer_ui::MessageId::WORKSPACE_RESTORE).to_string(),
             Self::Switch(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_SWITCH).to_string(),
             Self::SwitchToWindow(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_SWITCH_TO_WINDOW).to_string(),
             Self::Rename(_) | Self::RenameToolbar(_) => localization.text(layer_ui::MessageId::WORKSPACE_ACTION_RENAME).to_string(),
@@ -79,7 +77,7 @@ impl ManagerAction {
         matches!(self, Self::Delete(_) | Self::DeleteToolbar(_))
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ManagerButton {
     pub action: ManagerAction,
     pub label: String,
@@ -206,9 +204,7 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
                     .contains(&layer_ui::normalize_search(query))
             })
             .map(|i| {
-                let subtitle = if let Some(error) = &i.error {
-                    message(&self.localization(), layer_ui::MessageId::WORKSPACE_UNAVAILABLE, &[("error", error.localized_message(&self.localization()))])
-                } else if active.as_ref() == Some(&i.id) {
+                let subtitle = if active.as_ref() == Some(&i.id) {
                     self.localization().text(layer_ui::MessageId::WORKSPACE_CURRENT_WORKSPACE).to_string()
                 } else if i
                     .claim

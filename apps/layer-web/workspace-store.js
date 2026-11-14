@@ -32,17 +32,17 @@ export function createWorkspaceStore(reduce, { name = "capycanvas.workspaces", i
     const db = await open(), command = JSON.parse(request), [live, liveAt] = await liveOwners();
     return new Promise((resolve, reject) => {
       let tx, response, failure;
-      const protect = !withoutCopies && (!versionChecked || ["reopen","adopted","restore_snapshot"].includes(command.type));
+      const protect = !withoutCopies && (!versionChecked || ["reopen","adopted","set_aside"].includes(command.type));
       const readonly = !protect && !pending && readOnly.has(command.type);
       try {
         tx = db.transaction("workspace", readonly ? "readonly" : "readwrite", { durability: "strict" });
         const store = tx.objectStore("workspace"), read = store.get("database");
         const marker = protect ? store.get("version") : null, unreadable = protect ? store.get("unreadable") : null;
-        const restoring = command.type === "restore_snapshot" ? store.get(command.id) : null;
-        (restoring || unreadable || read).onsuccess = () => {
+        const copies = command.type === "set_aside" ? store.getAll(IDBKeyRange.bound("snapshot:", "snapshot:\uffff")) : null;
+        (copies || unreadable || read).onsuccess = () => {
           try {
             const result = reduce(read.result?.snapshot, request, pending, Date.now(), live, liveAt,
-              protect ? {marker:marker.result?.value,unreadable:unreadable.result?.snapshot,restoring:restoring?.result?.snapshot} : undefined);
+              protect ? {marker:marker.result?.value,unreadable:unreadable.result?.snapshot,copies:copies?.result ?? []} : undefined);
             response = result.response;
             if (protect) {
               const plan = result.compatibility;
@@ -51,14 +51,13 @@ export function createWorkspaceStore(reduce, { name = "capycanvas.workspaces", i
               for (const id of plan.remove) store.delete(id);
               store.put({id:"version",value:plan.marker});
             }
-            if (command.type === "reset" && read.result) store.put({ id: "unreadable", snapshot: read.result.snapshot });
             if (result.snapshot != null) store.put({ id: "database", snapshot: result.snapshot });
           } catch (e) { failure = typeof e === "string" ? e : error(e); tx.abort(); }
         };
         tx.oncomplete = () => { if (protect || withoutCopies) versionChecked = true; resolve(response); };
         tx.onabort = () => {
           const reason = failure || error(tx.error || new Error("The workspace transaction was interrupted. Your changes have been kept."));
-          if (protect && command.type !== "restore_snapshot" && JSON.parse(reason).kind === "storage_full") transaction(request, pending, true).then(resolve, reject);
+          if (protect && command.type !== "set_aside" && JSON.parse(reason).kind === "storage_full") transaction(request, pending, true).then(resolve, reject);
           else reject(reason);
         };
         tx.onerror = () => {}; // onabort reports the complete transaction's result.
@@ -96,7 +95,7 @@ export function createWorkspaceClient(url, { onSettled = () => {}, module, prelo
     execute(request) {
       return new Promise((resolve,reject) => {
         try {
-          if (failed && !["reopen", "reset"].includes(JSON.parse(request).type)) { reject(failed); return; }
+          if (failed && JSON.parse(request).type !== "reopen") { reject(failed); return; }
           if (!worker) start();
           const id = ++sequence; pending.set(id,{resolve,reject}); worker.postMessage({id,request});
         } catch(e) { reject(JSON.stringify({kind:"unavailable",message:String(e)})); }

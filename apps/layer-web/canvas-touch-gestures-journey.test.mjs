@@ -74,11 +74,12 @@ export async function checkCanvasTouchGestures({call,evaluate,settle}) {
     await invoke('new_document');await evaluate(createDrawing({width:1000,height:700}));
     await wait('layerApp.app.brush_ready()&&!layerApp.documents.busy()');
     await invoke('reset_view');
+    await invoke('flip_horizontal');
     center=await evaluate('(()=>{const c=layerApp.app.camera(),r=layerApp.canvas.getBoundingClientRect(),a=c.work_area;return{x:r.x+(a[0]+a[2]/2)*r.width/c.viewport[0],y:r.y+(a[1]+a[3]/2)*r.height/c.viewport[1]}})()');
     const fitted=await camera();
+    assert.deepEqual(fitted.flipped,[true,false],'quick fit baseline is mirrored');
     await send({type:'set_zoom',zoom:fitted.zoom*1.8});
     await send({type:'set_rotation',rotation:.7});
-    await invoke('flip_horizontal');
     const previous=await camera();
     const layers=await layerIds();
     await pinch(false);

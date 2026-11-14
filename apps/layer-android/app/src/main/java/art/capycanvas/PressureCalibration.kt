@@ -121,7 +121,8 @@ import kotlin.math.roundToInt
                     }
                     Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SharedCurveControl(host, state, view.getJSONObject("editor"), view.getString("title"), obj("kind" to kind), gutterLabel = view.getString("axis_gutter")) {
+                        SharedCurveControl(host, state, view.getJSONObject("editor"), view.getString("title"), obj("kind" to kind), gutterLabel = view.getString("axis_gutter"),
+                            minimumSize = view.getJSONArray("graph_minimum").let { androidx.compose.ui.unit.DpSize(it.getDouble(0).dp,it.getDouble(1).dp) }) {
                             if (tilt != null) {
                                 Canvas(Modifier.align(Alignment.BottomEnd).padding(8.dp).size(72.dp)
                                     .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } } }.testTag("pen-tilt-direction").semantics { contentDescription = current.getString("direction") }) {

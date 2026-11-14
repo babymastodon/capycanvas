@@ -623,7 +623,7 @@ struct ShortcutPage::Impl:std::enable_shared_from_this<Impl>{
         });
     }
     void requests(){
-        auto list=array(object(model,L"state"),L"requests");std::set<uint32_t> present;
+        auto list=array(branch(model,L"state"),L"requests");std::set<uint32_t> present;
         for(auto value:list)present.insert(uint32_t(num(value.GetObject(),L"id")));
         std::erase_if(handledRequests,[&](uint32_t id){return !present.contains(id);});
         for(auto value:list){

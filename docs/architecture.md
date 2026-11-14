@@ -163,7 +163,9 @@ which controls need refreshing.
 
 Shader startup is staged. A launch cover stays above the mounted workspace until
 workspace, canvas, selected brush and chrome are ready and the matching canvas
-frame has been presented. The cover belongs to the window and does not restart
+frame has been presented. Hosts must paint the ready controls and canvas under the
+cover before starting its reveal from a native paint or presentation boundary.
+The cover belongs to the window and does not restart
 on document switches or renderer replacement. Errors and required dialogs take
 precedence; optional warming does not delay reveal. Other tools
 prepare on first use and reuse their compiled recipes. A prepared drawing uses its renderer's readiness for its first

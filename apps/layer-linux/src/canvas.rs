@@ -4,7 +4,7 @@ use crate::{
     wayland::Geometry,
 };
 use gtk::prelude::*;
-use layer_render::{CanvasRenderer, ReadbackImage};
+use layer_render::CanvasRenderer;
 use layer_ui::{CanvasCursor, UiChange, UiSession};
 
 pub struct GpuCanvas {
@@ -156,19 +156,22 @@ impl GpuCanvas {
             } else { std::task::Poll::Pending }).await;
         }
     }
-    pub(crate) fn launch_view(&mut self) -> Result<layer_ui::LaunchView, String> {
+    pub(crate) fn launch_view(&mut self, interaction: bool) -> Result<layer_ui::LaunchView, String> {
         self.session.renderer_mut().ready()?;
+        self.pending_regions |= self.session.set_host_attention(interaction).regions;
         let readiness = layer_ui::LaunchReadiness {
             canvas: self.session.engine().backend().startup.canvas_ready,
             brush: self.session.paint_ready(),
             chrome: matches!(self.session.engine().backend().chrome_status().state(), crate::glass::ChromeState::Visible(..)),
             failed: self.session.rendering_suspended() || self.session.state().host_error.is_some(),
-            interaction: false,
         };
         let view = self.session.launch_state(readiness);
         self.needs_present |= self.session.renderer_mut().invalidate_launch_frame(view.frame)?;
         for frame in self.session.renderer_mut().take_launch_presented() {
-            self.session.launch_presented(frame, readiness);
+            if self.session.launch_presented(frame, readiness) {
+                self.pending_regions |= layer_ui::regions::HOST;
+                self.needs_present = true;
+            }
         }
         let view = self.session.launch_state(readiness);
         Ok(view)
@@ -196,7 +199,7 @@ impl GpuCanvas {
             && !engine.has_pending_document_edits()
             && engine.transform_preview().is_none()
     }
-    pub fn render(&mut self, area: &gtk::Picture, now_ns: u64, paced: bool) -> Result<UiChange, String> {
+    pub fn render(&mut self, area: &gtk::Picture, now_ns: u64, paced: bool, interaction: bool) -> Result<UiChange, String> {
         #[cfg(test)]
         let start = std::time::Instant::now();
         self.session.engine().backend().resize_transition(extent(area));
@@ -233,7 +236,7 @@ impl GpuCanvas {
         self.session.renderer_mut().stroke_target = target;
         let mut changed = self.session.frame(now_ns, presentation_ns)?;
         self.session.renderer_mut().present_chrome().map_err(|error| error.to_string())?;
-        let launch = self.launch_view()?;
+        let launch = self.launch_view(interaction)?;
         let owner = self.session.engine().document().scene().owner();
         self.session.renderer_mut().request_launch_frame(launch.frame, owner)?;
         changed.regions |= resized.regions | std::mem::take(&mut self.pending_regions);
@@ -255,9 +258,6 @@ impl GpuCanvas {
                 .push(start.elapsed().as_secs_f64() * 1000.0);
         }
         Ok(changed)
-    }
-    pub fn capture(&mut self) -> Result<ReadbackImage, String> {
-        self.session.renderer_mut().capture()
     }
 }
 

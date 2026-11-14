@@ -92,7 +92,7 @@ impl<R: CanvasRenderer> UiSession<R> {
                 self.sync_camera();
             } else {
                 let previous = super::navigation::ViewPosition::capture(&self.state.camera);
-                self.navigate_command(CommandId::ResetView)?;
+                self.fit_upright();
                 self.navigation.quick_fit = Some((previous, self.state.camera.view()));
             }
             reply.change = merge_change(reply.change, self.changed(regions::CAMERA, true));

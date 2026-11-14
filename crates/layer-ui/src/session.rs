@@ -44,7 +44,9 @@ use held_actions::{ERASER_END, merge_change};
 #[path = "canvas_transition.rs"]
 mod canvas_transition;
 use canvas_transition::CanvasTransition;
-pub use renderer_lifecycle::{CanvasNotice, LaunchReadiness, LaunchView, LAUNCH_CAPTION_DELAY_MS};
+pub use renderer_lifecycle::{CanvasNotice, LaunchMark, LaunchReadiness, LaunchView, LAUNCH_CAPTION_DELAY_MS, LAUNCH_REVEAL_MS,
+    LAUNCH_MARK_SIZE, LAUNCH_MARK_MAX_FRACTION, LAUNCH_CAPTION_GAP, LAUNCH_CAPTION_SIZE, LAUNCH_CAPTION_COLOR_ROLE,
+    launch_mark_size};
 #[path = "session_bubbles.rs"]
 mod session_bubbles;
 #[path = "zen_peek.rs"]
@@ -66,7 +68,7 @@ mod document_color_edit;
 pub use document_color_edit::ProofMode;
 #[path = "screen_status.rs"]
 mod screen_status;
-pub use screen_status::{ScreenChip, ScreenDetails, ScreenState};
+pub use screen_status::{ScreenDetails, ScreenState};
 pub(crate) use screen_status::screen_headroom_text;
 #[path = "figures.rs"]
 pub(crate) mod figures;
@@ -166,7 +168,7 @@ pub mod session_recovery;
 pub mod session_destination;
 #[path = "workspace_session.rs"]
 mod workspace_session;
-pub use application_menu::{ApplicationLink, ApplicationMenu, MenuPageId, ZoomMenu, NAVIGATOR_COMMANDS};
+pub use application_menu::{ApplicationLink, ApplicationMenu, MenuPageId, ZoomMenu, NAVIGATOR_COMMANDS, X11_SUPPORT_LINK};
 pub use workspace_session::PreparedWorkspace;
 #[path = "effects.rs"]
 pub(crate) mod effects;
@@ -297,6 +299,8 @@ pub struct UiSession<R: CanvasRenderer> {
     storage_activity:layer_core::package::session_store::CompactionActivity,
     drawing_switch_pending: bool,
     launch_finished: bool,
+    workspace_attention: bool,
+    host_attention: bool,
     touch: TouchGesture,
     navigation: navigation::Navigation,
     navigator_drag: Option<[f32; 2]>,
@@ -340,7 +344,8 @@ pub struct UiSession<R: CanvasRenderer> {
     logical_viewport: Option<[f32; 2]>,
     initial_fit: bool,
     restored_view: Option<(session_recovery::SessionCamera, u64)>,
-    preparation_context: layer_render::PreparationContext,
+    preparation_context: Option<layer_render::PreparationContext>,
+    toolbar_brushes: Vec<layer_core::BrushSnapshot>,
     automatic_camera_revision: u64,
     workspace_view_revision: Option<u64>,
     divider_drag: Option<(u32, ResizeDrag)>,
@@ -582,6 +587,8 @@ impl<R: CanvasRenderer> UiSession<R> {
             storage_activity:Default::default(),
             drawing_switch_pending: false,
             launch_finished: false,
+            workspace_attention: false,
+            host_attention: false,
             touch: TouchGesture::default(),
             navigation: Default::default(),
             navigator_drag: None,
@@ -625,7 +632,8 @@ impl<R: CanvasRenderer> UiSession<R> {
             logical_viewport: None,
             initial_fit: true,
             restored_view: None,
-            preparation_context: Default::default(),
+            preparation_context: None,
+            toolbar_brushes: Vec::new(),
             automatic_camera_revision: 0,
             workspace_view_revision: None,
             divider_drag: None,
@@ -3289,6 +3297,7 @@ impl<R: CanvasRenderer> UiSession<R> {
         let host_report=action.is_host_report();
         let (mut changed, mut wake) = match action {
             UiAction::Phone { action } => {
+                let mut cancelled = 0;
                 match action {
                     PhoneAction::MenuActivate { .. } => unreachable!(),
                     PhoneAction::MenuSelect { route } => {
@@ -3378,21 +3387,26 @@ impl<R: CanvasRenderer> UiSession<R> {
                         self.state.customization.drawer = None;
                         save_settings = true;
                     }
-                    PhoneAction::Metrics { native, native_counts, insets, corners, movable } => {
-                        if native.iter().chain(&insets).chain(&corners).any(|v| !v.is_finite() || *v < 0.) || native_counts.iter().any(|n| *n > 4) {
+                    PhoneAction::Metrics { native, native_counts, insets, corners, movable, keyboard } => {
+                        if native.iter().chain(&insets).chain(&corners).chain([&keyboard]).any(|v| !v.is_finite() || *v < 0.) || native_counts.iter().any(|n| *n > 4) {
                             return Err("Invalid native control metrics".into());
                         }
+                        let before = self.phone_layout().map(|p| p.edge);
+                        let viewport = self.workspace_viewport();
                         let state = &mut self.state.phone;
-                        if (state.native, state.native_counts, state.insets, state.corners, state.movable) == (native, native_counts, insets, corners, movable) { return Ok(UiChange::default()); }
+                        if (state.native, state.native_counts, state.insets, state.corners, state.movable, state.keyboard) == (native, native_counts, insets, corners, movable, keyboard) { return Ok(UiChange::default()); }
+                        state.keyboard_phone = (keyboard > 0.).then(|| state.keyboard_phone.unwrap_or_else(|| crate::phone_window(viewport)));
                         state.native = native;
                         state.native_counts = native_counts;
                         state.insets = insets;
                         state.corners = corners;
                         state.movable = movable;
+                        state.keyboard = keyboard;
+                        if self.phone_layout().map(|p| p.edge) != before { cancelled = self.cancel_phone_presentation()?; }
                     }
                 }
                 self.refresh_chrome();
-                (LAYOUT | CUSTOMIZATION | COMMANDS, false)
+                (LAYOUT | CUSTOMIZATION | COMMANDS | cancelled, false)
             }
             UiAction::ColorSlotMenu { slot, library } => {
                 self.color_slot_menu(slot)?;
@@ -4505,6 +4519,9 @@ impl<R: CanvasRenderer> UiSession<R> {
                 self.cancel_tonal();
             }
         }
+        if was_filter_drawer != self.filter_drawer_open() {
+            self.filter_previews.visible.clear();
+        }
         if !was_filter_drawer && self.filter_drawer_open() {
             self.open_filter_picker();
             changed |= DOCUMENT;
@@ -4729,6 +4746,9 @@ impl<R: CanvasRenderer> UiSession<R> {
         result
     }
 
+    fn paints_selection(&self) -> bool {
+        self.selection_stroke_active() || (self.selection_masks.target().is_some() && self.layer_interaction.tool == LayerCanvasTool::Paint)
+    }
     fn pen_inner(&mut self, event: PenEvent) -> Result<(), PenEvent> {
         // Future points belong only to the engine's replaceable brush tail.
         // They must not pick colors or enter selection/shape gesture paths.
@@ -4744,7 +4764,7 @@ impl<R: CanvasRenderer> UiSession<R> {
         {
             return Ok(());
         }
-        if self.selection_stroke_active() || (self.selection_masks.target().is_some() && self.layer_interaction.tool == LayerCanvasTool::Paint) {
+        if self.paints_selection() {
             if let Err(error) = self.selection_brush_pen(event) { self.notify(error); }
             return Ok(());
         }
@@ -4935,21 +4955,7 @@ impl<R: CanvasRenderer> UiSession<R> {
         }
         let before = self.phone_layout().map(|p| p.edge);
         let after = self.state.phone_presentation(logical).map(|p| p.edge);
-        let transition = before != after;
-        if transition {
-            self.cancel_phone_slider()?;
-            self.state.phone.capy_drag = false;
-            self.state.toolbar_context_generation += 1;
-            self.workspace_history.cancel(&mut self.state.workspace);
-            self.workspace_drag = None;
-            self.workspace_tab_drag = None;
-            self.divider_drag = None;
-            self.floating_resize = None;
-            self.state.customization.cancel_header(&mut self.state.workspace.layout);
-            self.state.customization.drawer = None;
-            self.state.customization.column_drawers.clear();
-            self.state.phone.menu = false;
-        }
+        let transition = if before != after { self.cancel_phone_presentation()? } else { 0 };
         let old_scale = self
             .logical_viewport
             .map_or(1.0, |v| self.state.camera.viewport[0] as f32 / v[0]);
@@ -4975,10 +4981,25 @@ impl<R: CanvasRenderer> UiSession<R> {
         }
         self.automatic_camera_revision=self.state.camera.revision.checked_sub(navigation).ok_or("Camera revision moved backwards")?;
         Ok(self.changed(
-            (if resized || fit || bounds_changed { regions::CAMERA } else { 0 })
-                | if transition { regions::LAYOUT | regions::CUSTOMIZATION | regions::COMMANDS | regions::BUBBLES | regions::BRUSH } else { 0 },
+            (if resized || fit || bounds_changed { regions::CAMERA } else { 0 }) | transition,
             resized || fit || followed,
         ))
+    }
+
+    fn cancel_phone_presentation(&mut self) -> Result<u32, String> {
+        self.cancel_phone_slider()?;
+        self.state.phone.capy_drag = false;
+        self.state.toolbar_context_generation += 1;
+        self.workspace_history.cancel(&mut self.state.workspace);
+        self.workspace_drag = None;
+        self.workspace_tab_drag = None;
+        self.divider_drag = None;
+        self.floating_resize = None;
+        self.state.customization.cancel_header(&mut self.state.workspace.layout);
+        self.state.customization.drawer = None;
+        self.state.customization.column_drawers.clear();
+        self.state.phone.menu = false;
+        Ok(regions::LAYOUT | regions::CUSTOMIZATION | regions::COMMANDS | regions::BUBBLES | regions::BRUSH)
     }
 
     fn fit_initial_view(&mut self) -> bool {
@@ -6622,9 +6643,10 @@ impl<R: CanvasRenderer> UiSession<R> {
                 self.workspace_content_revision = self.state.revision;
             }
         }
-        let selecting = self.layer_interaction.tool.selection_tool().is_some() && self.engine.document().working.selection.is_none();
-        let context = layer_render::PreparationContext { selection: selecting };
-        if context != self.preparation_context { self.engine.prepare_context(context); self.preparation_context = context; }
+        if regions & (regions::LAYOUT | regions::CUSTOMIZATION | regions::BRUSH | regions::DOCUMENT | regions::SETTINGS) != 0 {
+            self.toolbar_brushes = self.visible_toolbar_brushes();
+        }
+        self.prepare_shader_context();
         UiChange {
             revision: self.state.revision,
             regions,
@@ -6632,6 +6654,68 @@ impl<R: CanvasRenderer> UiSession<R> {
                 self.engine.document(), self.engine.brush(), self.engine.transform_preview().is_some()),
             presentation_wake,
         }
+    }
+    pub(crate) fn prepare_shader_context(&mut self) {
+        let filters = self.filter_previews.visible.as_slice();
+        let tool = self.layer_interaction.tool;
+        let selected = self.engine.document().working.selection.is_some();
+        let next = layer_render::PreparationUses {
+            selection_strokes: tool.selection_tool().is_some() && !selected,
+            selection_paint: self.paints_selection(),
+            fill: selected || tool == LayerCanvasTool::LassoFill || tool.region().is_some_and(|(fill, _, _)| fill),
+            transform: selected,
+            operation: match tool {
+                LayerCanvasTool::Gradient { .. } => Some(layer_render::OperationUse::Gradient),
+                LayerCanvasTool::Figure { .. } => Some(layer_render::OperationUse::Figure),
+                _ => None,
+            },
+        };
+        if self.preparation_context.as_ref().is_none_or(|c| c.next != next || c.brushes != self.toolbar_brushes || c.regions != self.region_tools.refinement || c.filters.len() != filters.len() || c.filters.iter().zip(filters).any(|(filter, program)| filter.program != *program || !filter.matches(self.engine.document()))) {
+            let filters = if filters.is_empty() { Vec::new() } else {
+                let key = self.preparation_context.as_ref().and_then(|context| context.filters.first())
+                    .filter(|filter| filter.matches(self.engine.document())).map(|filter| filter.key.clone())
+                    .unwrap_or_else(|| self.engine.backend().preparation_key(self.engine.document()));
+                filters.iter().map(|program| self.preparation_context.as_ref()
+                    .and_then(|context| context.filters.iter().find(|filter|
+                        filter.program == *program && filter.key == key)).cloned()
+                    .unwrap_or_else(|| self.prepare_visible_filter(program.clone(), key.clone()))).collect()
+            };
+            let context = layer_render::PreparationContext { next, brushes: self.toolbar_brushes.clone(), regions: self.region_tools.refinement, filters };
+            self.engine.prepare_context(context.clone());
+            self.preparation_context = Some(context);
+        }
+    }
+    fn visible_toolbar_brushes(&self) -> Vec<layer_core::BrushSnapshot> {
+        let mut controls = Vec::new();
+        if self.phone_layout().is_some() {
+            if !self.state.phone.hidden {
+                controls.extend(self.state.workspace.layout.phone.iter().flatten().map(|tile| tile.control));
+            }
+        } else {
+            let layout = self.layout(self.workspace_viewport());
+            for group in layout.groups.iter().filter(|g| !self.state.workspace.zen_mode || g.zen_kept) {
+                if let Ok(panel) = self.state.workspace.layout.panel(group.active) {
+                    controls.extend(panel.tiles().iter().map(|tile| tile.control));
+                }
+            }
+            if !self.interaction.hidden {
+                controls.extend(self.state.workspace.layout.header.projected_for(self.state.platform).entries().filter_map(|entry| match entry.item {
+                    HeaderItem::Tool {control} => Some(control), _ => None,
+                }));
+            }
+        }
+        let mut presets = Vec::new();
+        controls.into_iter().filter_map(|control| {
+            let resolved = self.state.resolve_group(control).map_or(control, |(_, _, _, resolved)| resolved);
+            let id = match resolved {
+                ToolbarControl::Brush {id} => id,
+                ToolbarControl::Command {command} => self.tools.command_preset_in(command, &self.state.brush, self.layer_interaction.tool)?,
+                _ => return None,
+            };
+            if id == self.state.brush.preset || presets.contains(&id) { return None; }
+            presets.push(id);
+            Some(self.tools.brush_in(tools::preset(id).ok()?, self.engine.document().composition().color.space))
+        }).collect()
     }
     fn update_toolbar_context(&mut self) {
         let mut target = self.state.toolbar_context();
@@ -7012,6 +7096,10 @@ fn pen_phase(phase: ContactPhase) -> PenPhase {
 pub(crate) mod test_support;
 
 #[cfg(test)]
+#[path = "preparation_tests.rs"]
+mod preparation_tests;
+
+#[cfg(test)]
 #[path = "pressure_calibration_tests.rs"]
 mod pressure_calibration_tests;
 
@@ -7202,7 +7290,7 @@ mod tests {
         for control in [ToolbarControl::Brush { id: s.state.brush.preset }, ToolbarControl::Size { tenths: 80 }, ToolbarControl::Panel { panel: Panel::Brushes }] {
             s.dispatch(HeaderAction::Add { zone: HeaderZone::Right, before: None, item: HeaderItem::Tool { control } }.action()).unwrap();
         }
-        let view = s.header_view_with(false);
+        let view = s.header_view_with(None);
         let settings = view.model.entries().find(|entry| entry.item == HeaderItem::Settings).unwrap().id;
         assert_eq!(view.items.iter().find(|item| item.id == settings).unwrap().label, "設定");
         assert_eq!(view.sizes[0].label.as_ref(), "小");
@@ -7213,7 +7301,7 @@ mod tests {
             s.dispatch(UiAction::SetBrushSize { value: size }).unwrap();
             s.dispatch(UiAction::SetZoom { zoom: size / 8. }).unwrap();
             s.set_viewport([640. + size, 480.], [640 + size as u32, 480]).unwrap();
-            let next = s.header_view_with(false);
+            let next = s.header_view_with(None);
             assert!(std::sync::Arc::ptr_eq(&view.sizes[0].label, &next.sizes[0].label));
             assert!(std::sync::Arc::ptr_eq(&picker_caption, &s.color_picker_button_label(picker_control)));
             assert_eq!(s.customization_copy.borrow().header_tools.iter().map(|(control, label)| (*control, label.as_ptr())).collect::<Vec<_>>(), retained);
@@ -18393,8 +18481,8 @@ mod tests {
                     ("Website", "capycanvas.art", "https://capycanvas.art/"),
                     (
                         "Source code",
-                        "github.com/capyatelier/capycanvas",
-                        "https://github.com/capyatelier/capycanvas"
+                        "github.com/babymastodon/capycanvas",
+                        "https://github.com/babymastodon/capycanvas"
                     ),
                 ]
             );

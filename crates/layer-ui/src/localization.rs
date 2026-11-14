@@ -70,6 +70,14 @@ pub fn launch_localization(saved: &str, preferred_tags: &[&str]) -> Arc<Localize
 #[derive(Clone, Debug, Serialize)]
 pub struct BootstrapView {
     pub launch_caption_delay_ms: u64,
+    pub launch_reveal_ms: u64,
+    pub launch_mark_size: f32,
+    pub launch_mark_max_fraction: f32,
+    pub launch_caption_gap: f32,
+    pub launch_caption: Arc<str>,
+    pub launch_caption_size: f32,
+    pub launch_caption_color_role: &'static str,
+    pub launch_mark: Option<crate::LaunchMark>,
     pub active_tag: &'static str,
     pub app_name: &'static str,
     pub common: crate::CommonCopy,
@@ -108,9 +116,21 @@ pub struct BootstrapView {
     pub copy_failure_details: Arc<str>,
 }
 
+pub fn launch_bootstrap_view(l: &Localizer, icon: crate::ZenIcon) -> BootstrapView {
+    BootstrapView { launch_mark: Some(icon.launch_mark()), ..bootstrap_view(l) }
+}
+
 pub fn bootstrap_view(l: &Localizer) -> BootstrapView {
     BootstrapView {
         launch_caption_delay_ms: crate::LAUNCH_CAPTION_DELAY_MS,
+        launch_reveal_ms: crate::LAUNCH_REVEAL_MS,
+        launch_mark_size: crate::LAUNCH_MARK_SIZE,
+        launch_mark_max_fraction: crate::LAUNCH_MARK_MAX_FRACTION,
+        launch_caption_gap: crate::LAUNCH_CAPTION_GAP,
+        launch_caption: l.text(MessageId::COMMON_COMPILING_GPU_SHADERS),
+        launch_caption_size: crate::LAUNCH_CAPTION_SIZE,
+        launch_caption_color_role: crate::LAUNCH_CAPTION_COLOR_ROLE,
+        launch_mark: None,
         active_tag: l.language().tag(),
         app_name: l.language().app_name(),
         common: crate::CommonCopy::new(l),
@@ -147,6 +167,27 @@ pub fn bootstrap_view(l: &Localizer) -> BootstrapView {
         painting_unavailable_save: l.text(MessageId::COMMON_PAINTING_UNAVAILABLE_SAVE),
         failure_details: l.text(MessageId::COMMON_FAILURE_DETAILS),
         copy_failure_details: l.text(MessageId::COMMON_COPY_FAILURE_DETAILS),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UnsupportedSessionView {
+    pub app_name: &'static str,
+    pub title: Arc<str>,
+    pub body: Arc<str>,
+    pub learn_more: Arc<str>,
+    pub quit: Arc<str>,
+    pub link: &'static str,
+}
+
+pub fn unsupported_session_view(l: &Localizer) -> UnsupportedSessionView {
+    UnsupportedSessionView {
+        app_name: l.language().app_name(),
+        title: l.text(MessageId::COMMON_X11_UNSUPPORTED_TITLE),
+        body: l.text(MessageId::COMMON_X11_UNSUPPORTED_BODY),
+        learn_more: l.text(MessageId::COMMON_LEARN_MORE),
+        quit: l.text(MessageId::COMMON_QUIT),
+        link: crate::session::X11_SUPPORT_LINK,
     }
 }
 
@@ -501,7 +542,25 @@ mod tests {
         let first = bootstrap_view(&localization);
         let second = bootstrap_view(&localization);
         assert_eq!(serde_json::to_value(&first).unwrap()["launch_caption_delay_ms"], 5000);
-        assert!(Arc::ptr_eq(&first.preparing_canvas, &second.preparing_canvas));
+        assert_eq!(serde_json::to_value(&first).unwrap()["launch_reveal_ms"], 500);
+        assert_eq!(first.launch_mark_size, 7. * crate::layout::TILE_SIZE);
+        assert_eq!(crate::launch_mark_size([1300., 900.]), first.launch_mark_size);
+        assert_eq!(crate::launch_mark_size([400., 300.]), 120.);
+        assert_eq!(crate::launch_mark_size([844., 390.]), 156.);
+        assert_eq!(crate::launch_mark_size([0., 390.]), 0.);
+        assert!(Arc::ptr_eq(&first.launch_caption, &second.launch_caption));
+        assert_eq!(&*first.launch_caption, "Compiling GPU shaders…");
+        assert_eq!(first.launch_caption_size, crate::UI_TEXT_PT as f32 * 96. / 72.);
+        assert_eq!(first.launch_caption_gap, 18.);
+        assert_eq!(first.launch_caption_color_role, "settings_secondary");
+        assert!(first.launch_mark.is_none());
+        for (icon, _) in crate::ZenIcon::CHOICES {
+            let mark = launch_bootstrap_view(&localization, icon).launch_mark.unwrap();
+            assert_eq!(mark, icon.launch_mark());
+            assert_eq!(mark.icon, icon.icon());
+            assert!(0.5 < mark.ink_bottom && mark.ink_bottom < 1.);
+        }
+        assert_eq!(serde_json::to_value(launch_bootstrap_view(&localization, crate::ZenIcon::Bathing)).unwrap()["launch_mark"]["icon"], "zen-bathing");
         assert_eq!(first.active_tag, "en");
         assert_eq!(first.shipped_tags, SHIPPED_LANGUAGES.iter().map(|language| language.tag()).collect::<Vec<_>>());
         let name = "作品{draft}\"🎨\u{2068}literal\u{2069}";

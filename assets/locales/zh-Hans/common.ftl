@@ -7,14 +7,20 @@ common-save = 保存
 
 common-preparing-brush = 正在准备画笔…
 
+common-compiling-gpu-shaders = 正在编译 GPU 着色器…
 common-preparing-canvas = 正在准备画布…
 
 common-canvas-init-failed = 无法初始化画布
 common-gpu-unsupported = 此设备的图形处理器（GPU）无法运行 { common-app-name }。更新系统或显卡驱动程序可能会有帮助。
 
 common-restart-canvas = 重新启动画布
+common-x11-unsupported-title = { common-app-name } 暂时无法在 X11 上运行
+common-x11-unsupported-body = 要使用 { common-app-name }，请注销，在登录界面选择 Wayland 会话，然后重新打开。
+common-learn-more = 了解详情
+common-quit = 退出
 
 common-action-failed = 无法完成此操作
+common-clipboard-failed = 无法使用剪贴板。请重试。
 
 common-editor-closed = 编辑器已关闭
 

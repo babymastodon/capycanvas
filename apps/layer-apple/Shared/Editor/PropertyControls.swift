@@ -198,6 +198,7 @@ struct CurveEditor: View {
     let label: String
     var histogram = false
     var axisGutter: String?
+    var graphMinimum = CGSize.zero
     var plotOverlay: AnyView?
     @Environment(\.isEnabled) private var enabled
     @FocusState private var focused: Bool
@@ -318,6 +319,7 @@ struct CurveEditor: View {
     @ViewBuilder private var plot: some View {
         if axisGutter != nil {
             plotContent.aspectRatio(1, contentMode: .fit)
+                .frame(minWidth: graphMinimum.width, minHeight: graphMinimum.height)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { plotHeight = $0 }
         } else { plotContent.frame(height: 200) }
     }

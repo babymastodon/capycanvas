@@ -289,7 +289,8 @@ impl NativeHost {
             self.chrome_ready = ready;
             self.invalidate_snapshot();
         }
-        self.dirty|=!ready;
+        self.dirty|=!ready || self.session.engine().backend().0.as_ref()
+            .is_some_and(|gpu|!presenter.prepare_color_picker(gpu));
         ready
     }
     pub fn poll_canvas_presentation(&mut self, presenter: &mut ViewportPresenter) -> Result<(), String> {

@@ -59,7 +59,9 @@ private data class PanelMeasurement(val tab: MeasuredTab? = null, val body: Meas
  * docking, sizing, undo transactions and Zen visibility on every platform. */
 internal class DockInteraction(val host: CanvasHost) {
     private companion object { var panelMetricGeneration = 0L }
-    data class DrawerSource(val direction: String, val bounds: Rect, val anchor: JSONObject? = null)
+    data class DrawerSource(val direction: String, val bounds: Rect, val anchor: JSONObject? = null, val glass: DrawerGlass? = null) {
+        val presented get() = glass?.presented == true
+    }
     data class Region(val token: Any, val action: JSONObject?, val bounds: Rect, val z: Int, val priority: Int,
         val context: JSONObject?, val cursor: Int, val holdToDrag: Boolean, val depth: Int = 0)
     val regions = mutableMapOf<Any, Region>()
@@ -72,8 +74,10 @@ internal class DockInteraction(val host: CanvasHost) {
     val drawerSources = mutableStateMapOf<String, DrawerSource>()
     var drawerTileRevision by mutableIntStateOf(0)
         private set
-    fun tileDrawerSource(panel: String, tile: Int) =
-        drawerSources["tool"]?.takeIf { it.anchor?.optString("panel") == panel && it.anchor.optInt("tile") == tile }
+    fun anchorSource(anchor: JSONObject): DrawerSource? {
+        val key=anchor.toString()
+        return drawerSources.values.firstOrNull { it.anchor?.toString()==key }
+    }
     private val drawerTiles = mutableMapOf<String, JSONObject>()
     private var drawerMeasurementsRevision by mutableIntStateOf(0)
     private var lastDrawerReport = "[]"
@@ -355,7 +359,7 @@ internal class DockInteraction(val host: CanvasHost) {
         contextGeneration++
         if (contextMenu == null) { contextTarget = null; contextOwner = null }
     }
-    fun closeContext() { retireContextRequest(); contextTarget = null; contextOwner = null; contextMenu = null; contextRequest = null; contextPresentation = null; refresh() }
+    fun closeContext() { if(phone?.heldContext == true) { phone?.cancel(); return }; retireContextRequest(); contextTarget = null; contextOwner = null; contextMenu = null; contextRequest = null; contextPresentation = null; refresh() }
     fun doubleClickHandle(item: JSONObject) {
         host.query(obj("type" to "panel_handle_target", "item" to item)) { group ->
             if (group is Number) host.dispatch(obj("type" to "double_click_panel_handle", "group" to group, "viewport" to viewport))
@@ -706,7 +710,6 @@ private suspend fun AwaitPointerEventScope.followEdge(dock: DockInteraction, dow
     return onGloballyPositioned { dock.anchors[token] = DockInteraction.Anchor(key, it.boundsInRoot().translate(-dock.origin)) }
 }
 internal val LocalDrawerColumn = staticCompositionLocalOf<Int?> { null }
-internal val LocalDrawerClip = staticCompositionLocalOf { Rect.Zero }
 
 @Composable internal fun Modifier.columnDrawerBounds(dock: DockInteraction, column: Int, group: Int?): Modifier {
     if(!LocalWorkspaceVisible.current) return this

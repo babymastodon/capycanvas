@@ -391,7 +391,7 @@ impl Header {
         w.window.add_controller(keys);
     }
     pub fn refresh(&self, w: &Rc<Workspace>, state: &UiState) {
-        let Some(view) = w.gpu.borrow().as_ref().map(|g| g.session.header_view_with(false)) else { return; };
+        let Some(view) = w.gpu.borrow().as_ref().map(|g| g.session.header_view_with(None)) else { return; };
         let projected = state.workspace.layout.header.projected_for(Platform::Gtk);
         let model = &projected;
         let editing = state.customization.header_editing;
@@ -1105,6 +1105,10 @@ impl Header {
             .find(|i| i.entry.id == id && i.root.is_child_visible())
             .and_then(|i| i.button.clone())
     }
+    pub fn bar_holding(&self, id: u32) -> Option<gtk::Widget> {
+        let index = self.geometry.borrow().bars.iter().position(|bar| bar.items.contains(&id))?;
+        self.bars.borrow().get(index).map(|bar| bar.clone().upcast())
+    }
     pub fn mark_drawer_origin(&self, origin: Option<(u32, Edge)>) {
         for item in self.items.borrow().iter() {
             if let Some(button) = &item.button {
@@ -1163,7 +1167,7 @@ impl Header {
         let popover = gtk::Popover::new();
         popover.set_widget_name("header-overflow-popup");
         let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        let Some(view) = w.gpu.borrow().as_ref().map(|g| g.session.header_view_with(false)) else { return popover; };
+        let Some(view) = w.gpu.borrow().as_ref().map(|g| g.session.header_view_with(None)) else { return popover; };
         if let Some(model) = self.model.borrow().as_ref() {
             for id in &self.geometry.borrow().hidden[zone] {
                 let Ok(entry) = model.entry(*id) else {

@@ -1,5 +1,6 @@
 //! Our child surface only. GTK retains its connection, parent, input and chrome.
 mod color;
+mod device;
 mod feedback;
 mod hdr;
 mod pacing;
@@ -342,6 +343,7 @@ pub struct Child {
     geometry: Option<Geometry>,
     presentation: Option<wp_presentation::WpPresentation>,
     color: Option<color::ColorSurface>,
+    dmabuf: Option<device::dmabuf::ZwpLinuxDmabufV1>,
 }
 
 #[derive(Default)]
@@ -349,6 +351,7 @@ struct Events {
     color: color::State,
     hdr: hdr::HdrState,
     display: feedback::DisplayFeedback,
+    compositor_device: Option<Vec<u8>>,
     clock: Arc<FrameClock>,
     monotonic: bool,
     feedback_pending: usize,
@@ -390,6 +393,7 @@ impl Child {
         subcompositor.destroy();
         let presentation = globals.bind(&qh, 1..=1, ()).ok();
         let color = color::ColorSurface::bind(&globals, &qh);
+        let dmabuf = globals.bind(&qh, 4..=5, ()).ok();
         Ok(Self {
             surface,
             parent,
@@ -403,6 +407,7 @@ impl Child {
             geometry: None,
             presentation,
             color,
+            dmabuf,
         })
     }
 
@@ -527,6 +532,9 @@ impl Drop for Child {
     fn drop(&mut self) {
         // The caller drops the Vulkan surface/swapchain BEFORE this object.
         self.color.take();
+        if let Some(dmabuf) = self.dmabuf.take() {
+            dmabuf.destroy();
+        }
         self.subsurface.destroy();
         self.surface.destroy();
         if let Some(presentation) = &self.presentation {
@@ -632,7 +640,7 @@ mod launch_tests {
         let child_id = surface.id().protocol_id();
         let subsurface = subcompositor.get_subsurface(&surface, &parent, &handle, ());
         let child = Child {surface, parent, subsurface, connection, events,
-            state: Events::default(), geometry: None, presentation: None, color: None};
+            state: Events::default(), geometry: None, presentation: None, color: None, dmabuf: None};
         child.initial_commit();
         child.launch_frame(Arc::default());
         child.connection.flush().unwrap();

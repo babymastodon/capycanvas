@@ -1462,6 +1462,7 @@ class AndroidInteractionTest {
                 assertNull(host.actionError)
                 val before = workspace()
                 if (panel == "sizes") {
+                    if (pointer == MotionEvent.TOOL_TYPE_MOUSE) assertBrushSizeLabelsAtFontScales(activity, host)
                     assertEquals(bounds("size-preset-0.7").top, bounds("size-preset-3").top, 1.1f)
                     assertEquals(44 * density, bounds("size-preset-0.7").height, 1.1f)
                     tap(bounds("size-preset-1.5").center); settle(); assertEquals(1.5f, state().getJSONObject("brush").number("diameter"), .001f)
@@ -2641,7 +2642,7 @@ class AndroidInteractionTest {
                 tap(bounds("tile-toolbar-$id").center)
                 waitFor("$theme tile $id opens its nested content drawer") {
                     state().getJSONObject("customization").objectOrNull("drawer")?.getJSONObject("anchor")?.optInt("tile") == id &&
-                        shown("tool-drawer") && host.workspaceInteraction?.tileDrawerSource("toolbar", id) != null
+                        shown("tool-drawer") && host.workspaceInteraction?.anchorSource(obj("kind" to "tile","panel" to "toolbar","tile" to id)) != null
                 }
                 val source = bounds("tile-toolbar-$id").intersect(bounds("column-drawer-41"))
                 lateinit var expected: Rect

@@ -362,19 +362,38 @@ fn native_now_ms()->u64 {
     }
 
 #[cfg(not(target_arch="wasm32"))]
+static NATIVE_WORK:(Mutex<usize>,std::sync::Condvar)=(Mutex::new(0),std::sync::Condvar::new());
+#[cfg(not(target_arch="wasm32"))]
+struct NativeWorkDone;
+#[cfg(not(target_arch="wasm32"))]
+impl Drop for NativeWorkDone {
+    fn drop(&mut self) {
+        let mut pending=NATIVE_WORK.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *pending-=1;if *pending==0 {NATIVE_WORK.1.notify_all();}
+    }
+}
+#[cfg(not(target_arch="wasm32"))]
 fn native_worker(work:StoreWork) {
-    static WORKER:std::sync::OnceLock<Result<std::sync::mpsc::Sender<StoreWork>,String>>=std::sync::OnceLock::new();
+    static WORKER:std::sync::OnceLock<Result<std::sync::mpsc::Sender<(StoreWork,NativeWorkDone)>,String>>=std::sync::OnceLock::new();
     let worker=WORKER.get_or_init(|| {
-        let (send,receive)=std::sync::mpsc::channel::<StoreWork>();let receive=Arc::new(Mutex::new(receive));
+        let (send,receive)=std::sync::mpsc::channel::<(StoreWork,NativeWorkDone)>();let receive=Arc::new(Mutex::new(receive));
         for index in 0..2 {
             let receive=receive.clone();
             std::thread::Builder::new().name(format!("session-store-{index}")).stack_size(8*1024*1024).spawn(move ||loop {
                 let work=receive.lock().unwrap().recv();
-                let Ok(work)=work else {break;};work.run();
+                let Ok((work,_done))=work else {break;};let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||work.run()));
             }).map_err(|error|error.to_string())?;
         }Ok(send)
     });
-    if let Ok(worker)=worker {let _=worker.send(work);}
+    if let Ok(worker)=worker {
+        *NATIVE_WORK.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)+=1;
+        let _=worker.send((work,NativeWorkDone));
+    }
+}
+#[cfg(not(target_arch="wasm32"))]
+pub fn drain_native_work() {
+    let mut pending=NATIVE_WORK.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    while *pending>0 {pending=NATIVE_WORK.1.wait(pending).unwrap_or_else(std::sync::PoisonError::into_inner);}
 }
 fn same_checkpoint(a:&SessionStamp,b:&SessionStamp)->bool {
     let mut current=a.clone();current.epoch=b.epoch;
@@ -565,3 +584,5 @@ impl PressureTrim {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test,not(target_arch="wasm32")))]
+mod recovery_tests;

@@ -30,8 +30,8 @@ private func toolbarItem(_ panel: JSON, _ tile: JSON) -> JSON {
 }
 
 extension EditorStore {
-    func toolbarEdit(_ component: JSON, _ action: Any, completion: @escaping @MainActor (String?) -> Void = { _ in }) {
-        edit(["type": "toolbar_edit", "context": component["context"].raw, "action": action], completion: completion)
+    func toolbarEdit(_ component: JSON, _ action: Any, moving: Bool = false, completion: @escaping @MainActor (String?) -> Void = { _ in }) {
+        edit(["type": "toolbar_edit", "context": component["context"].raw, "action": action], moving: moving, completion: completion)
     }
 }
 
@@ -69,12 +69,13 @@ private struct BrushSliderComponent: View {
     var phone = JSON()
     @StateObject private var session = SliderPreviewSession()
     @State private var frame = CGRect.zero
+    @State private var dragValue: Double?
     private var model: JSON { tile["component"] }
     private var field: JSON { model["numeric"] }
     private var spec: JSON {
         field.isNull ? ToolbarUI.cached(["type": "slider_spec", "control": tile["control"].raw], language: store.interfaceLanguage) : field["numeric"]
     }
-    private var value: Double { field.isNull ? spec["min"].number : field["value"].number }
+    private var value: Double { dragValue ?? (field.isNull ? spec["min"].number : field["value"].number) }
     private var label: String { field.isNull ? tile["label"].string : field["label"].string }
     private var setting: String {
         field.isNull ? (tile["control"]["kind"].string == "brush_size_slider" ? "size" : "strength") : field["id"].string
@@ -114,7 +115,13 @@ private struct BrushSliderComponent: View {
                 contact: { down, moved in
                     if down { openPreview() } else if moved { session.close(store.workspace.sliderPreview) }
                 }, change: pick, step: step, phase: { phase in
-                    if !phone.isNull { store.dispatch(["type": "phone", "action": ["kind": "slider", "control": tile["control"].raw, "phase": phase]]) }
+                    if phase == "down" {
+                        if !phone.isNull { store.dispatch(["type": "phone", "action": ["kind": "slider", "control": tile["control"].raw, "phase": phase]]) }
+                    } else if !phone.isNull {
+                        store.dispatch(["type": "phone", "action": ["kind": "slider", "control": tile["control"].raw, "phase": phase]]) { _ in dragValue = nil }
+                    } else if let dragValue {
+                        store.toolbarEdit(model, ["type": "set_tool_setting", "id": setting, "value": dragValue]) { _ in self.dragValue = nil }
+                    }
                 })
                 .modifier(WorkspaceDrag(workspace: store.workspace, item: item, surface: .control, context: item, canDrag: false))
                 .accessibilityIdentifier("component-slider-\(tile["id"].uint)")
@@ -138,7 +145,8 @@ private struct BrushSliderComponent: View {
             guard let resolved = try? store.resolveNumber(spec, value: value, operation: ["type": "position", "position": fill]) else { return }
             next = resolved["value"].number
         }
-        store.toolbarEdit(model, ["type": "set_tool_setting", "id": setting, "value": next])
+        dragValue = next
+        store.toolbarEdit(model, ["type": "set_tool_setting", "id": setting, "value": next], moving: !snap)
     }
     private func step(_ direction: Int) {
         guard !field.isNull,
@@ -153,18 +161,16 @@ private struct BrushSliderComponent: View {
         let request = UUID(); session.request = request
         session.task = Task { @MainActor in
             while !Task.isCancelled && session.open && session.request == request {
-                var query: [String: Any] = ["type": "toolbar_stamp", "context": context.raw]
-                if let known = session.knownRequest { query["known_request"] = known }
-                let reply: JSON = await withCheckedContinuation { continuation in
-                    store.query(query) { continuation.resume(returning: $0) }
+                let reply: NativeBrushStamp? = await withCheckedContinuation { continuation in
+                    store.toolbarStamp(context, knownRequest: session.knownRequest) { continuation.resume(returning: $0) }
                 }
                 guard !Task.isCancelled && session.request == request else { return }
-                if !reply["alpha"][0].isNull {
-                    let image = await Task.detached(priority: .utility) { SliderStampImage(image: SliderPreviewSession.image(reply)) }.value.image
+                if let reply, reply.count > 0 {
+                    let image = await Task.detached(priority: .utility) { SliderStampImage(image: reply.image()) }.value.image
                     guard !Task.isCancelled && session.request == request else { return }
                     if let image {
-                        session.stamp = (image, reply["extent"].number)
-                        session.knownRequest = reply["request_id"].uint
+                        session.stamp = (image, reply.metadata["extent"].number)
+                        session.knownRequest = reply.metadata["request_id"].uint
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(16))
@@ -250,15 +256,6 @@ struct SliderStampImage: @unchecked Sendable { let image: CGImage? }
         request = nil; task?.cancel(); task = nil
         if open { open = false; preview.close(id) }
     }
-    nonisolated static func image(_ reply: JSON) -> CGImage? {
-        let side = Int(reply["size"].uint), alpha = reply["alpha"].array
-        guard side > 0, alpha.count == side * side else { return nil }
-        let bytes = alpha.flatMap { value -> [UInt8] in [0, 0, 0, UInt8(clamping: Int(value.uint))] }
-        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
-        return CGImage(width: side, height: side, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: side * 4,
-            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-    }
 }
 
 private struct ToolbarSliderTrack: View {
@@ -311,7 +308,7 @@ private struct ToolbarSliderTrack: View {
                     case "move":
                         guard let origin, ToolbarUI.resolve(["type": "slider_dragging", "moved": moved,
                             "delta": [(position.x - origin.x) / presentation.scale, (position.y - origin.y) / presentation.scale]], language: language).bool else { return }
-                        moved = true; self.phase("move")
+                        moved = true
                         pick(position, track, snap: false)
                     case "up", "cancel":
                         guard origin != nil else { return }

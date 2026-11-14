@@ -115,7 +115,7 @@ private struct WorkspaceCollapsedColumnContent: View {
                 surface: .tile, context: JSON(["kind": "column", "column": column["id"].raw]), canDrag: false, priority: -1))
             .environment(\.editorPalette, palette.glassy)
             .modifier(DrawerContainerSurface(drawers: store.contentDrawers, bounds: column["bounds"].rect,
-                cuts: column["open"]["connections"].array.map { $0[1]["bounds"].rect }, fill: palette.glassPanel,
+                cuts: column["open"]["connections"].array.map { DrawerShadow.bridge($0[1]) }, fill: palette.glassPanel,
                 shadow: 4, shadowOpacity: 0.16, extra: openSources,
                 sharedRadii: store.glass.panelColumnRadii(column["id"].uint),
                 gpuSurface: store.glass.panelColumnConnected(column["id"].uint), identifier: "collapsed-column-\(column["id"].uint)"))
@@ -178,9 +178,9 @@ private struct WorkspaceContentDrawer: View {
     }
     private func columns(_ placement: JSON, together: Bool) -> some View {
         ZStack(alignment: .topLeading) {
-            ForEach(0..<min(placement["columns"].array.count, drawer.model["columns"].array.count), id: \.self) { index in
-                let bounds = placement["columns"][index]
-                Group {
+            ForEach(drawer.model["columns"].array.indices, id: \.self) { index in
+                let bounds = placement["columns"][index].isNull ? drawer.measurement["measure"]["placement"]["columns"][index] : placement["columns"][index]
+                if !bounds.isNull {
                     if together {
                         column(index, bounds: bounds, placement: placement, together: true)
                             .frame(width: bounds.rect.width).offset(x: bounds.rect.minX, y: bounds.rect.minY)
@@ -353,7 +353,7 @@ private struct DrawerHeights: PreferenceKey {
 struct DrawerContainerSurface: ViewModifier {
     @ObservedObject var drawers: ContentDrawersPresentation
     let bounds: CGRect
-    var cuts: [CGRect] = []
+    var cuts: [Path] = []
     let fill: Color
     let shadow: CGFloat
     var shadowOpacity = 0.22

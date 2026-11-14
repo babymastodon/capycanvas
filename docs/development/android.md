@@ -43,7 +43,8 @@ when their job ends. The latest copied image keeps its name in `temp/clipboard`
 so other apps can paste it until Capy Canvas starts again.
 
 Auto Backup and device transfer copy the settings and `filesDir`, except the
-workspace database's `-shm` index and `-locks` folder. Android never backs up
+workspace database's `-shm` index and `-locks` folder and the
+`capy-launch-splash` record of which capy the system splash shows. Android never backs up
 `noBackupFilesDir` or `cacheDir`, so sessions, caches and temporary files stay on
 the device. `hasFragileUserData` lets the user keep the data when uninstalling.
 
@@ -177,6 +178,8 @@ test arguments with `-e name value`. Gradle can run the same selection with
 and `ANDROID_SERIAL` set, but it uninstalls the APKs afterwards, so combine it
 with an isolated application ID on a tablet.
 
+Run `AndroidDrawerCompositionTest` with `-e theme light` and `-e theme dark`.
+
 Read the instrumentation result: `OK (N tests)` or `FAILURES!!!`. `am instrument`
 can exit 0 when tests fail, so the exit status proves nothing. Opt-in tests skip
 through JUnit assumptions when their `-e` argument is missing, so confirm that
@@ -213,9 +216,11 @@ These tests need other arguments:
 | --- | --- |
 | `AndroidFirstUiTest#unsupportedGpuExplainsTheDeviceInTheCanvasArea` | `-e unsupportedGpu true`, on an emulator started with `-gpu host -feature -Vulkan` |
 | `AndroidPhoneAuditTest#admission` / `#frame` | `-e case NAME -e size WxH -e density DPI -e theme light\|dark`, optionally `-e fontScale -e cutout corner -e textSize`; frame accepts `-e states LIST`; admission uses a recorded emulator, and visitors pin only their fixture Activity to the requested viewport orientation (reserved phones are supported) |
+| `AndroidPhoneAuditTest#phoneDrawerFieldsAndPaletteResultsStayAboveTheKeyboard` | All three phone rotations and both themes; `-e phoneRotation portrait\|landscape\|reverse-landscape` selects one rotation |
 | `AndroidToolBubblesTest#sketchEraserBubbleKeepsItsHaloChooserAndSettingsAcrossThemesAndDevices` | `-e bubbleTheme light\|dark -e bubbleInput mouse\|touch\|pen` for one variant |
 | `AndroidInteractionTest`, `AndroidColorPanelTest` | `-e systemInput true` uses OS input injection where the device allows it |
 | `AndroidFeatureParityTest#paperLibraryImportsRenamesAndDeletesWithoutChangingTheDrawing` | `-e theme light` or `dark` |
+| `AndroidSavedStateTest#releasedWorkspacesOpenWithoutAsking`, `#damagedWorkspaceStoreInstallsItsNewestCopy` | `-e theme light` or `dark` |
 | `AndroidRasterTest#sharedImageObjectsKeepPosePixelsAndIdentityAcrossFilesAndRecovery` | `-e objectArchive /data/local/tmp/capy-object-ga-functional.capy`, made from a small photo by `object_fixture` ([brush benchmark](#brush-workload-benchmark)); `-e theme light` and `dark` |
 | `AndroidRasterTest#hdrDisplayNegotiation` | `-e hdrFile <device path of a PQ PNG>`; `-e requireHdr true` fails instead of passing on an SDR-only display |
 | `AndroidRasterTest#portablePhotoGainmapDelivery` | `-e photoDirectory /data/local/tmp/capy-portable-photo`, holding the shared `p3-grid-8bit.heic`, `p3-gray-10bit.heic` and `p3-12bit.avif` fixtures and the `web-hdr.jpg` and `web-hdr.avif` that Web's `--portable-photo` test produces |
@@ -320,6 +325,26 @@ adb -s "$CAPY_ANDROID_SERIAL" install -r apps/layer-android/app/build/outputs/ap
 self-instrumenting runners in `app/src/benchmark` (`BrushBenchmarkInstrumentation`
 and `UiStartupInstrumentation`). R8 can remove methods that only a separate test
 APK calls, so test-APK benchmarks use the unminified build.
+
+### Minified class verification
+
+R8 can emit DEX that ART rejects even when the source compiles, and the app then
+crashes before `MainActivity` starts. After changing Kotlin or the R8 version,
+install an `-PcapyOptimize` benchmark or release build under an isolated ID on a
+tablet or emulator, and verify every class:
+
+```bash
+adb shell am force-stop "$CAPY_APPLICATION_ID"
+adb shell cmd package uninstall -k "$CAPY_APPLICATION_ID"
+adb logcat -b all -c
+adb install --no-incremental "$APK"
+adb shell cmd package compile -m verify -f "$CAPY_APPLICATION_ID"
+adb logcat -b all -d | grep -E 'Verification error|failed to verify|Rejecting class'
+```
+
+No output means every class verified. Reinstalling makes ART verify every class
+again on every Android version, and `-k` keeps the app's data. Then confirm a
+launch with `adb shell am start -W -n "$CAPY_APPLICATION_ID/art.capycanvas.MainActivity"`.
 
 Each benchmark skips unless its opt-in argument is set. Use the tier photo and
 follow the [measurement rules](../performance/measuring.md) for gesture counts

@@ -226,7 +226,7 @@ class RunnerVmTests(unittest.TestCase):
             yield queue
             if cleanup_failed:
                 raise RuntimeError("queue config cleanup failed")
-        def execute(machine, args, directory, provenance, names, queue=None):
+        def execute(machine, args, directory, provenance, names, queue=None, drain=None):
             self.assertEqual(names, ["popup:default", "header:pen"])
             claims = []
             while True:
@@ -299,6 +299,105 @@ class RunnerVmTests(unittest.TestCase):
         self.assertIn(path, cleanup.args[1])
         self.assertIn("-LiteralPath", cleanup.args[1])
 
+    def failed_runner_round(self):
+        from contextlib import ExitStack, nullcontext
+        from threading import Event
+        self.primary.directory.mkdir()
+        artifacts = self.root / "evidence"
+        selectors = ["a", "b", "c", "d"]
+        record = self.build_record()
+        guests, stop_claims, queues = {}, [], []
+        stopped = Event()
+        def claim(name):
+            queue = queues[0]
+            request = Request(f"http://127.0.0.1:{queue.server.server_port}/{name}", method="POST",
+                              headers={"Authorization": "Bearer " + queue.tokens[name]})
+            with urlopen(request, timeout=5) as response:
+                return json.load(response)["selector"]
+        def progress(state):
+            return subprocess.CompletedProcess([], 0, json.dumps({
+                "plan": {"runs": state["claimed"], "timeout_minutes": 20}, "error": None, "complete": state["complete"],
+                "log": "\n".join(json.dumps({"name": name, "exit": 0, "seconds": 1}) for name in state["finished"]),
+                "runner": state["alive"]}), "")
+        def guest(machine, command, **options):
+            state = guests.setdefault(machine.name, {"claimed": [], "finished": [], "alive": True, "complete": False})
+            failed = guests.setdefault("owner-r1", {"claimed": [], "finished": [], "alive": True, "complete": False})
+            if "taskkill" in command:
+                stop_claims.append(claim(machine.name))
+                state["alive"] = False
+                stopped.set()
+                return subprocess.CompletedProcess([], 0, "", "")
+            if machine.name == "owner-r1":
+                if state["claimed"]:
+                    raise subprocess.CalledProcessError(255, "status", output="", stderr="Connection reset by guest")
+                state["claimed"].append(claim(machine.name))
+                return progress(state)
+            stopped.wait(5)
+            if failed["alive"] and (selector := claim("owner-r1")):
+                failed["claimed"].append(selector)
+            selector = claim(machine.name)
+            if selector:
+                state["claimed"].append(selector)
+                state["finished"].append(selector)
+            else:
+                state["complete"] = True
+            return progress(state)
+        def retrieve(machine, root, name, local=None):
+            path = artifacts / machine.name / name
+            path.mkdir(parents=True, exist_ok=True)
+            if guests[machine.name]["complete"]:
+                (path / "complete").touch()
+            return path
+        @contextmanager
+        def configuration(machine, queue):
+            queues.append(queue)
+            yield "C:\\capycanvas\\artifacts\\windows\\fixture-queue.json"
+        args = SimpleNamespace(vm="owner", names=selectors, runners=2, keep_runners=False, hardware_gpu=False,
+                               no_build=True, profile="release", timeout_minutes=20)
+        with ExitStack() as stack:
+            for name, options in {
+                "selected": {"return_value": self.primary}, "running": {"return_value": False}, "boot": {},
+                "sync_machine": {"return_value": record["inputs"]},
+                "fixture_build": {"return_value": (vm.SOFTWARE_BUILD, record)},
+                "planned_fixtures": {"return_value": {"runs": selectors, "controls": [], "requirements": {
+                    name: {"hardware_gpu": False, "controls": []} for name in selectors}}},
+                "export_fixture_build": {"return_value": self.root / "archive"}, "import_fixture_build": {},
+                "fixture_durations": {"return_value": {}}, "fixture_memory_admission": {},
+                "fixture_queue_config": {"side_effect": configuration},
+                "fixture_local_dumps": {"side_effect": lambda machine, output, cleanup: nullcontext()},
+                "desktop": {}, "guest": {"side_effect": guest}, "retrieve": {"side_effect": retrieve},
+                "run": {"return_value": SimpleNamespace(stdout="revision\n")}, "stop_machine": {},
+            }.items():
+                stack.enter_context(patch.object(vm, name, **options))
+            stack.enter_context(patch.object(vm, "ARTIFACTS", artifacts))
+            stack.enter_context(patch.object(vm.time, "sleep"))
+            stack.enter_context(patch("builtins.print"))
+            stack.enter_context(patch.object(vm.cpu_pool, "describe", return_value=(
+                {"per_owner_limit": 2, "runner_memory_gib": 8}, [{"status": "free", "owner": None}] * 2)))
+            with self.assertRaisesRegex(RuntimeError, "Connection reset by guest"):
+                vm.sharded_fixtures(args)
+        output = next((artifacts / "owner").glob("shards-*"))
+        return {"stop_claims": stop_claims,
+                "shards": {row["vm"]: row for row in json.loads((output / "shards.json").read_text())},
+                "results": {row["name"]: row for row in map(json.loads, (output / "results.jsonl").read_text().splitlines())},
+                "errors": json.loads((output / "summary.json").read_text())["errors"]}
+
+    def test_failed_runner_is_drained_before_it_is_stopped(self):
+        self.assertEqual(self.failed_runner_round()["stop_claims"], [None])
+
+    def test_unclaimed_selectors_run_on_the_remaining_runner(self):
+        round = self.failed_runner_round()
+        self.assertEqual(round["shards"]["owner-r2"]["selectors"], ["b", "c", "d"])
+        self.assertEqual([round["results"][name]["exit"] for name in "bcd"], [0, 0, 0])
+
+    def test_failed_runner_reports_only_the_selector_it_claimed(self):
+        round = self.failed_runner_round()
+        self.assertEqual(round["shards"]["owner-r1"]["selectors"], ["a"])
+        self.assertEqual(round["results"]["a"]["exit"], "missing")
+        self.assertIn("Connection reset by guest", round["results"]["a"]["message"])
+        self.assertNotIn("did not return", round["results"]["a"]["message"])
+        self.assertEqual([error for error in round["errors"] if error.startswith(("b:", "c:", "d:"))], [])
+
     def test_mixed_round_partitions_controls_preserves_full_plan_and_always_stops_gpu(self):
         from contextlib import ExitStack
         for cpu, gpu, failure in ((True, True, None), (True, False, None), (False, True, None),
@@ -319,7 +418,7 @@ class RunnerVmTests(unittest.TestCase):
                               "hardware_gpu": hardware, "controls": {kind: {"exe": "hash"} for kind in controls}}
                     records[hardware] = record
                     return vm.fixture_directory(hardware, profile), record
-                def execute(machine, args, directory, provenance, names, queue=None):
+                def execute(machine, args, directory, provenance, names, queue=None, drain=None):
                     executed.append(machine.name)
                     hardware = machine is self.primary
                     self.assertEqual(names, ["paint:light"] if hardware else ["popup:default"])
@@ -429,7 +528,7 @@ class RunnerVmTests(unittest.TestCase):
                     stopped_under_claim.append(False)
                 resources.update(card=False, slots=0)
                 gpu_stopped.set()
-        def execute(machine, args, directory, provenance, names, queue=None):
+        def execute(machine, args, directory, provenance, names, queue=None, drain=None):
             if machine is self.primary:
                 if not cpu_started.wait(3):
                     raise RuntimeError("CPU did not reach its controlled fixture barrier")

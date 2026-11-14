@@ -169,6 +169,13 @@ impl<R: CanvasRenderer> UiSession<R> {
         reply.navigation_cursor = Some(NavigationMode::Pan);
         Ok(true)
     }
+    pub(super) fn fit_upright(&mut self) {
+        self.remember_view();
+        self.state.camera.rotation = 0.;
+        self.state.camera.fit(self.engine.document().composition().size);
+        self.initial_fit = false;
+        self.sync_camera();
+    }
     pub(super) fn navigate_command(&mut self, command: CommandId) -> Result<(), String> {
         use CommandId as C;
         let position = ViewPosition::capture(&self.state.camera);

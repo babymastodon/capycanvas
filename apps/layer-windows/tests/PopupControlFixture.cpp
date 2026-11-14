@@ -4,8 +4,12 @@
 #include "NativeMenus.h"
 #include "ChromeVisibility.h"
 #include "WorkspaceManagerView.h"
+#include "RowSwipePresenter.h"
+#include "WorkspaceRowDrag.h"
+#include "SelectableRows.h"
 #include "WorkspaceDialogs.h"
 #include "WorkspaceView.h"
+#include "CanvasModelUpdate.h"
 #include "BubblePresentation.h"
 #include "PressureCalibration.h"
 #include "CanvasActionBar.h"
@@ -18,15 +22,40 @@
 #include "HeaderInput.h"
 #include "ColorStrip.h"
 #include <future>
+#include <winrt/Windows.Storage.Streams.h>
+#include "DrawingTabs.h"
 #include <msctf.h>
 #pragma comment(lib,"uuid.lib")
+#pragma comment(lib,"ole32.lib")
+#pragma comment(lib,"oleaut32.lib")
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <microsoft.ui.xaml.window.h>
 #include <exception>
 #include <fstream>
+#include <limits>
+#include <UIAutomation.h>
 using namespace CapyUi;
 namespace {
+struct NativeContact{
+    POINTER_INPUT_TYPE type;HSYNTHETICPOINTERDEVICE device=nullptr;POINT position{};bool active=false;std::function<void(hresult_error const&)> failed;
+    NativeContact(POINTER_INPUT_TYPE value,std::function<void(hresult_error const&)> error):type(value),failed(std::move(error)){
+        if(type==PT_TOUCH)check_bool(InitializeTouchInjection(1,TOUCH_FEEDBACK_NONE));
+        else{device=CreateSyntheticPointerDevice(PT_PEN,1,POINTER_FEEDBACK_NONE);check_bool(device!=nullptr);}
+    }
+    void send(POINT point,POINTER_FLAGS flags){
+        POINTER_INFO info{};info.pointerType=type;info.pointerId=0;info.pointerFlags=flags;info.ptPixelLocation=point;
+        if(type==PT_TOUCH){POINTER_TOUCH_INFO touch{};touch.pointerInfo=info;touch.touchMask=TOUCH_MASK_CONTACTAREA|TOUCH_MASK_ORIENTATION|TOUCH_MASK_PRESSURE;
+            touch.rcContact={point.x-2,point.y-2,point.x+2,point.y+2};touch.orientation=90;touch.pressure=512;check_bool(InjectTouchInput(1,&touch));
+        }else{POINTER_TYPE_INFO pen{};pen.type=PT_PEN;pen.penInfo.pointerInfo=info;pen.penInfo.penMask=PEN_MASK_PRESSURE;pen.penInfo.pressure=512;check_bool(InjectSyntheticPointerInput(device,&pen,1));}
+        position=point;
+    }
+    void down(POINT point){send(point,POINTER_FLAG_DOWN|POINTER_FLAG_INRANGE|POINTER_FLAG_INCONTACT);active=true;}
+    void move(POINT point){send(point,POINTER_FLAG_UPDATE|POINTER_FLAG_INRANGE|POINTER_FLAG_INCONTACT);}
+    void up(){if(active){send(position,POINTER_FLAG_UP);active=false;}}
+    void cancel(){if(active){send(position,POINTER_FLAG_UP|POINTER_FLAG_CANCELED);active=false;}}
+    ~NativeContact(){try{cancel();}catch(hresult_error const& error){failed(error);}if(device)DestroySyntheticPointerDevice(device);}
+};
 struct TextServicesLibrary{
     using Current=HRESULT(WINAPI*)(ITfThreadMgr**);
     HMODULE module=nullptr;Current current=nullptr;DWORD loadError=0,lookupError=0,worker=0;std::wstring path;
@@ -126,7 +155,7 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
     std::shared_ptr<WorkspaceData> data=std::make_shared<WorkspaceData>();
     ControlContext context;std::shared_ptr<TextServicesLibrary> textServices;unsigned imeChecks=0;std::shared_ptr<std::vector<J>> imeTrace=std::make_shared<std::vector<J>>();
     bool windowClosed=false;OwnedPopup owner;std::optional<OwnedPopup::Ticket> origin;std::vector<MenuFlyout> popups;HWND hwnd=nullptr;unsigned checks=0,keys=0,presses=0,blurs=0,opened=0,closedCount=0,originPresses=0;
-    std::filesystem::path output;hstring phase;
+    std::filesystem::path output;hstring phase,group;std::wstring nativeSetupFailures;
     winrt::apartment_context apartment;
     static void require(bool value,wchar_t const* text){if(!value)throw hresult_error(E_FAIL,text);}
     static HWND handle(Window const& value){HWND result=nullptr;check_hresult(value.as<IWindowNative>()->get_WindowHandle(&result));return result;}
@@ -140,14 +169,44 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         require(pid==GetCurrentProcessId()&&GetForegroundWindow()==hwnd,L"Fixture does not own foreground input");
     }
     void nativePress(FrameworkElement const& target,bool right=false,std::optional<Point> local={}){
-        privacy();auto position=target.TransformToVisual(nullptr).TransformPoint(local.value_or(Point{float(target.ActualWidth()/2),float(target.ActualHeight()/2)}));
-        bool hit=false;for(auto const& element:VisualTreeHelper::FindElementsInHostCoordinates(position,root))if(element==target)hit=true;
-        require(hit,L"Native point does not hit the intended XAML source");
-        auto scale=root.XamlRoot().RasterizationScale();POINT point{LONG(position.X*scale),LONG(position.Y*scale)};check_bool(ClientToScreen(hwnd,&point));
-        require(GetAncestor(WindowFromPoint(point),GA_ROOT)==hwnd,L"Native press target is outside owned window");
+        auto point=nativePoint(target,local.value_or(Point{float(target.ActualWidth()/2),float(target.ActualHeight()/2)}));
         check_bool(SetCursorPos(point.x,point.y));INPUT input[2]{};input[0].type=input[1].type=INPUT_MOUSE;
         input[0].mi.dwFlags=right?MOUSEEVENTF_RIGHTDOWN:MOUSEEVENTF_LEFTDOWN;input[1].mi.dwFlags=right?MOUSEEVENTF_RIGHTUP:MOUSEEVENTF_LEFTUP;
         require(SendInput(2,input,sizeof(INPUT))==2,L"Native pointer injection failed");
+    }
+    POINT nativePoint(FrameworkElement const& target,Point local){
+        privacy();auto position=target.TransformToVisual(nullptr).TransformPoint(local);
+        bool hit=false;for(auto const& element:VisualTreeHelper::FindElementsInHostCoordinates(position,target))if(descendantOf(element,target))hit=true;
+        require(hit,L"Native gesture does not hit its intended body");
+        auto scale=target.XamlRoot().RasterizationScale();POINT point{LONG(position.X*scale),LONG(position.Y*scale)};check_bool(ClientToScreen(hwnd,&point));
+        DWORD targetProcess=0;auto targetWindow=WindowFromPoint(point);GetWindowThreadProcessId(targetWindow,&targetProcess);
+        require(targetProcess==GetCurrentProcessId()&&GetAncestor(targetWindow,GA_ROOTOWNER)==GetAncestor(hwnd,GA_ROOTOWNER),L"Native gesture leaves owned window");return point;
+    }
+    winrt::Windows::Foundation::IAsyncAction nativeScrollIntoView(hstring id){
+        auto owner=hwnd;std::exception_ptr failure;bool initialized=false;
+        co_await resume_background();
+        try{
+            check_hresult(CoInitializeEx(nullptr,COINIT_MULTITHREADED));initialized=true;
+            winrt::com_ptr<::IUIAutomation> client;check_hresult(CoCreateInstance(CLSID_CUIAutomation8,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(client.put())));
+            winrt::com_ptr<::IUIAutomationElement> window;check_hresult(client->ElementFromHandle(owner,window.put()));
+            VARIANT value{};value.vt=VT_BSTR;value.bstrVal=SysAllocString(id.c_str());if(!value.bstrVal)throw std::bad_alloc();
+            winrt::com_ptr<::IUIAutomationCondition> condition;auto result=client->CreatePropertyCondition(UIA_AutomationIdPropertyId,value,condition.put());SysFreeString(value.bstrVal);check_hresult(result);
+            winrt::com_ptr<::IUIAutomationElement> item;check_hresult(window->FindFirst(TreeScope_Descendants,condition.get(),item.put()));
+            require(bool(item),L"Native ScrollItem row is absent from the actual UIA tree");
+            int process=0;check_hresult(item->get_CurrentProcessId(&process));require(process==int(GetCurrentProcessId()),L"Native ScrollItem belongs to another process");
+            winrt::com_ptr<::IUnknown> pattern;check_hresult(item->GetCurrentPattern(UIA_ScrollItemPatternId,pattern.put()));
+            require(bool(pattern),L"Native ItemContainer does not expose ScrollItem to its UIA client");
+            check_hresult(pattern.as<::IUIAutomationScrollItemPattern>()->ScrollIntoView());
+        }catch(...){failure=std::current_exception();}
+        if(initialized)CoUninitialize();co_await apartment;if(failure)std::rethrow_exception(failure);
+    }
+    winrt::Windows::Foundation::IAsyncOperation<bool> contactWait(NativeContact& contact,std::function<bool()> ready){
+        auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(!ready()){
+            if(std::chrono::steady_clock::now()>=deadline)co_return false;
+            co_await winrt::resume_after(std::chrono::milliseconds(25));co_await apartment;privacy();contact.move(contact.position);
+        }
+        co_return true;
     }
     winrt::Windows::Foundation::IAsyncAction settle(){co_await winrt::resume_after(std::chrono::milliseconds(120));co_await apartment;}
     winrt::Windows::Foundation::IAsyncAction wait(std::function<bool()> ready,wchar_t const* message){
@@ -156,6 +215,15 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
     }
     MenuFlyout menu(){MenuFlyout popup;MenuFlyoutItem item;item.Text(L"Fixture action");popup.Items().Append(item);popup.Opened([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())++self->opened;});popup.Closed([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())++self->closedCount;});popups.push_back(popup);return popup;}
     bool visiblePopup(){for(auto const& popup:VisualTreeHelper::GetOpenPopupsForXamlRoot(root.XamlRoot()))if(popup.IsOpen())return true;return false;}
+    HWND popupWindow(){
+        struct Search{HWND owner,found;}search{hwnd,nullptr};
+        EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM value)->BOOL{
+            auto search=reinterpret_cast<Search*>(value);wchar_t name[64]{};GetClassNameW(window,name,64);
+            if(IsWindowVisible(window)&&!wcscmp(name,L"Microsoft.UI.Content.PopupWindowSiteBridge")&&GetAncestor(window,GA_ROOTOWNER)==search->owner){search->found=window;return FALSE;}
+            return TRUE;
+        },reinterpret_cast<LPARAM>(&search));
+        return search.found;
+    }
     void pending(){require(owner.Pending()&&!owner.Open()&&data->transients.size()==1,L"Pending popup lacks immediate unique cancellation registration");}
     void empty(){require(!owner.Active()&&!owner.Pending()&&!owner.Open()&&data->transients.empty()&&data->popupCount==0,L"Popup cancellation left retained state or registrations");}
     winrt::Windows::Foundation::IAsyncAction colorStripPresentation(){
@@ -310,6 +378,23 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         if(!parent)return nullptr;
         if(auto node=parent.try_as<FrameworkElement>();node&&(AutomationProperties::GetAutomationId(node)==id||node.Name()==id))return node;
         for(int i=0;i<VisualTreeHelper::GetChildrenCount(parent);++i)if(auto node=findElement(VisualTreeHelper::GetChild(parent,i),id))return node;
+        return nullptr;
+    }
+    static ScrollView nativeScrollView(DependencyObject const& parent){
+        if(auto scroll=parent.try_as<ScrollView>())return scroll;
+        for(int i=0;i<VisualTreeHelper::GetChildrenCount(parent);++i)if(auto scroll=nativeScrollView(VisualTreeHelper::GetChild(parent,i)))return scroll;
+        return nullptr;
+    }
+    static bool hasSwipeControl(DependencyObject const& parent){
+        if(!parent)return false;
+        if(parent.try_as<SwipeControl>())return true;
+        for(int i=0;i<VisualTreeHelper::GetChildrenCount(parent);++i)if(hasSwipeControl(VisualTreeHelper::GetChild(parent,i)))return true;
+        return false;
+    }
+    static FrameworkElement findText(DependencyObject const& parent,hstring const& text){
+        if(!parent)return nullptr;
+        if(auto node=parent.try_as<TextBlock>();node&&node.Text()==text)return node;
+        for(int i=0;i<VisualTreeHelper::GetChildrenCount(parent);++i)if(auto node=findText(VisualTreeHelper::GetChild(parent,i),text))return node;
         return nullptr;
     }
     FrameworkElement workspaceElement(hstring const& id){
@@ -478,6 +563,52 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         settings->Hide();co_await wait([&]{return !settings->IsOpen()&&!workspaceElement(L"preference-choice-language");},L"Preferences Hide did not finish native dialog close");
         settings.reset();window.AppWindow().Resize(previous);++checks;
     }
+    winrt::Windows::Foundation::IAsyncAction backgroundAfterPartial(J original,J catalog,NativeLayoutInput layout){
+        auto model=J::Parse(original.Stringify());std::unique_ptr<WorkspaceView> view;Canvas surface{nullptr};bool attached=false;
+        try{
+            {
+                struct TraceSetting {
+                    std::wstring previous;DWORD length=GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0);
+                    TraceSetting(){if(length){previous.resize(length);previous.resize(GetEnvironmentVariableW(L"CAPY_TRACE_UI",previous.data(),length));}check_bool(SetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr));}
+                    ~TraceSetting(){SetEnvironmentVariableW(L"CAPY_TRACE_UI",length?previous.c_str():nullptr);}
+                } tracing;
+                auto send=[](std::string){};
+                view=std::make_unique<WorkspaceView>(send,catalog,context.localization,[](CanvasQueryKind,std::string,PreviewReply){return false;},[](bool){},send,send,[](std::string,std::function<void(int32_t)>){ });
+                surface=view->Root();surface.Width(1000);surface.Height(700);root.Children().InsertAt(0,surface);attached=true;
+                require(view->Apply(model,layout),L"Background fixture initial model was rejected");view->Resize(1000,700);
+            }
+            auto group=find(array(object(model,L"layout"),L"groups"),L"active",L"layers");
+            require(group.Size()!=0,L"Background fixture floating Layers group is missing");
+            auto groupId=L"workspace-group-"+to_hstring(uint32_t(num(group,L"id")));
+            co_await wait([&]{auto frame=findElement(surface,groupId);return frame&&frame.IsLoaded()&&frame.ActualWidth()>0;},L"Background fixture group did not arrange");
+            require(view->Apply(model,layout),L"Background fixture measured model was rejected");
+            group=find(array(object(model,L"layout"),L"groups"),L"active",L"layers");
+            auto frame=findElement(surface,groupId).as<Border>();
+            A connections,arcs,colors,panels;
+            view->Glass(surface,connections,arcs,colors,panels);auto document=view->ChromeDocument();
+            auto revision=uint64_t(std::max(0.,num(object(model,L"windows_glass"),L"chrome_revision")))+1;
+            auto ack=[&](uint64_t value){A extent;extent.Append(N(num(document,L"width")));extent.Append(N(num(document,L"height")));return O({{L"chrome_revision",N(double(value))},{L"document",extent}});};
+            view->ChromeSent(revision);require(view->Apply(O({{L"windows_glass",ack(revision)}})),L"Initial background fixture ACK was rejected");
+            auto before=frame.CornerRadius(),expected=before;bool right=before.TopRight>0||before.BottomRight>0;
+            require(right||before.TopLeft>0||before.BottomLeft>0,L"Background fixture lacks a rounded source corner");
+            if(right)expected.TopRight=expected.BottomRight=0;else expected.TopLeft=expected.BottomLeft=0;
+            auto sources=view->DrawerSources();auto saved=A::Parse(sources.Stringify());
+            sources.Append(O({{L"anchor",O({{L"kind",S(L"tile")},{L"panel",S(str(group,L"active"))}})},{L"direction",S(right?L"right":L"left")},{L"bounds",object(group,L"bounds")}}));
+            CanvasModelUpdate pending;pending.Read(model);view->ChromeSent(revision+1);
+            A path,pair,updates;path.Append(S(L"windows_glass"));pair.Append(path);pair.Append(ack(revision+1));updates.Append(pair);
+            pending.Read(O({{L"model_update",updates}}));
+            auto applyTracked=[&]<class Update>(Update const& packet){
+                if constexpr(requires{packet.changes;})return view->Apply(packet.Model(),layout,packet.changes);
+                else return view->Apply(packet.Model(),layout);
+            };
+            require(applyTracked(pending),L"Equal-frame background fixture full model was rejected");
+            require(frame.CornerRadius()==expected,L"Equal-frame ACK skipped backgrounds after an out-of-band drawer-source change");
+            sources.Clear();for(auto source:saved)sources.Append(source);
+            require(view->Apply(model,layout),L"Background fixture restoration was rejected");
+            require(frame.CornerRadius()==before,L"Background fixture did not restore its source corners");
+            root.Children().RemoveAt(0);attached=false;view.reset();
+        }catch(...){if(attached)root.Children().RemoveAt(0);view.reset();throw;}
+    }
     winrt::fire_and_forget measureFixtureHeader(std::string snapshot,std::string catalog,double id,std::shared_ptr<std::promise<std::string>> result){
         auto self=shared_from_this();std::shared_ptr<HeaderView> header;bool attached=false;auto previousSize=window.AppWindow().Size();auto previousWidth=root.Width();
         try{
@@ -607,6 +738,13 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         auto groupId=L"workspace-group-"+to_hstring(uint32_t(num(group,L"id"))),entryId=L"layer-"+to_hstring(uint64_t(id))+L"-rename";
         auto entry=[&]{return findElement(findElement(surface,groupId),entryId).try_as<TextBox>();};
         co_await wait([&]{auto field=entry();return field&&field.IsLoaded()&&field.ActualWidth()>0&&field.Visibility()==Visibility::Visible;},L"Real WorkspaceView layer editor did not become arranged");
+        auto resizeHandles=array(group,L"resize_handles");require(resizeHandles.Size()>0,L"Floating layer fixture lacks a resize handle");
+        auto handleId=L"floating-"+to_hstring(uint32_t(num(group,L"id")))+L"-"+str(resizeHandles.GetObjectAt(0),L"edge");
+        auto resizeControl=findElement(surface,handleId).as<FrameworkElement>();auto tag=resizeControl.Tag();
+        auto cursor=resizeControl.as<IUIElementProtected>().ProtectedCursor();require(bool(cursor),L"Floating resize cursor is absent");
+        require(view->Apply(model,layout),L"Repeated full workspace model was rejected");
+        require(resizeControl.Tag()==tag&&resizeControl.as<IUIElementProtected>().ProtectedCursor()==cursor,L"Unchanged resize handle replaced its action or cursor");
+        co_await backgroundAfterPartial(model,copy,layout);
         auto field=entry();auto originalName=AutomationProperties::GetName(field);require(originalName==L"Layer name"&&localizedName==L"\u30ec\u30a4\u30e4\u30fc\u540d",L"Layer fixture needs English and Japanese accessibility text");captureTextComposition(field);require(field.Focus(FocusState::Keyboard),L"Layer draft focus failed");
         co_await wait([&]{return FocusManager::GetFocusedElement(root.XamlRoot())==field;},L"Real layer editor did not own focus");
         field.Text(L"\u65e5\u672c");field.Select(2,0);require(field.Text()==L"\u65e5\u672c"&&field.SelectionStart()==2&&field.SelectionLength()==0&&FocusManager::GetFocusedElement(root.XamlRoot())==field&&!textComposing(field),L"Layer draft must be focused, exact and unmarked before language publication");actions->clear();
@@ -619,6 +757,28 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         for(auto const& command:*actions){auto action=command.HasKey(L"windows_epoch")?object(command,L"action"):command;if(str(action,L"type")==L"layer"){
             auto operation=str(object(action,L"action"),L"op");require(operation!=L"rename"&&operation!=L"cancel_rename",L"Language publication dispatched an authored rename or cancellation");
         }}
+        phase=L"workspace-surface-eligibility";
+        {
+            auto counters=[&]{view->MeasureChrome();return object(J::Parse(AutomationProperties::GetItemStatus(surface)),L"surface_frames");};
+            co_await wait([&]{return num(counters(),L"groups")>0;},L"Surface eligibility fixture did not observe visible native groups");
+            auto host=surface.Parent().as<UIElement>();auto opacity=host.Opacity();auto visibility=host.Visibility();
+            auto frames=std::make_shared<uint32_t>(0);
+            auto rendered=CompositionTarget::Rendering(auto_revoke,[frames](auto&&,auto&&){++*frames;});
+            for(bool collapsed:{false,true}){
+                if(collapsed)host.Visibility(Visibility::Collapsed);else host.Opacity(0);
+                auto before=counters();auto frame=*frames;
+                co_await wait([frames,frame]{return *frames>frame;},L"Surface eligibility fixture did not receive native Rendering");
+                auto after=counters();
+                require(num(after,L"frames")>num(before,L"frames"),L"Hidden surface eligibility did not sample an actual Rendering tick");
+                require(num(after,L"groups")==num(before,L"groups"),L"Native panel fill counter admitted an effectively hidden ancestor");
+                require(num(after,L"mismatched_frames")==num(before,L"mismatched_frames")&&num(after,L"maximum_offset_px")==num(before,L"maximum_offset_px")&&num(after,L"tab_frames")==num(before,L"tab_frames")&&num(after,L"escaped_label_frames")==num(before,L"escaped_label_frames"),L"Hidden native panels changed visible fill or tab evidence");
+                host.Visibility(visibility);host.Opacity(opacity);
+            }
+            auto before=counters();auto frame=*frames;
+            co_await wait([frames,frame]{return *frames>frame;},L"Revealed surface eligibility fixture did not receive native Rendering");
+            require(num(counters(),L"groups")>num(before,L"groups"),L"Native panel fill counter omitted revealed groups");
+            rendered.revoke();++checks;
+        }
         root.Children().RemoveAt(0);view.reset();root.Width(400);root.Height(240);++imeChecks;
         phase=L"canvas-bar-language";co_await canvasBarLanguage(model,locale);
         phase=L"palette-name-draft";co_await paletteNameDraft(model,locale,J::Parse(to_hstring(paletteChanged)),J::Parse(to_hstring(paletteRemoved)),J::Parse(to_hstring(paletteSwitched)));
@@ -816,6 +976,7 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         auto invoke=[](FrameworkElement const& element){auto peer=Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(element);
             peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();};
         ChooseTexture(source,anchor,1);
+        co_await wait([source]{return flag(TextureDialogState(source),L"ready");},L"Paper native chooser did not acknowledge Opened and initial focus");
         co_await wait([this]{auto tile=workspaceElement(L"texture-tile-0").try_as<Button>();return tile&&tile.IsLoaded()&&tile.ActualWidth()>0;},L"Paper fixture tile did not arrange");
         auto tile=workspaceElement(L"texture-tile-0").as<Button>();auto menu=tile.ContextFlyout().as<MenuFlyout>();auto command=menu.Items().GetAt(0).as<MenuFlyoutItem>();
         auto opened=std::make_shared<bool>(false);menu.Opened([opened](auto&&,auto&&){*opened=true;});menu.ShowAt(tile);
@@ -932,6 +1093,382 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         co_await apartment;
         auto value=J::Parse(to_hstring(catalog));value.Insert(L"bootstrap",object(data->catalog,L"bootstrap"));co_return value.Stringify();
     }
+    winrt::Windows::Foundation::IAsyncAction workspaceSwipeAdmission(){
+        phase=L"workspace-swipe-admission";
+        auto list=selectableRows(data);auto item=selectableRow();Grid surface,body;Button grip,remove;MenuFlyout menu;
+        surface.Width(320);surface.Height(56);body.Width(320);body.Height(56);body.Background(clear());
+        grip.Width(16);grip.HorizontalAlignment(HorizontalAlignment::Right);body.Children().Append(grip);
+        auto presenter=std::make_shared<RowSwipePresenter>();presenter->Attach(body,grip);presenter->Actions().Children().Append(remove);presenter->Configure(0,64,64);
+        auto selected=std::make_shared<unsigned>(0),deleted=std::make_shared<unsigned>(0),contactId=std::make_shared<unsigned>(0),releasedId=std::make_shared<unsigned>(0);
+        surface.AddHandler(UIElement::PointerPressedEvent(),box_value(Input::PointerEventHandler([contactId](auto&&,Input::PointerRoutedEventArgs const& e){*contactId=e.Pointer().PointerId();})),true);
+        surface.AddHandler(UIElement::PointerReleasedEvent(),box_value(Input::PointerEventHandler([releasedId](auto&&,Input::PointerRoutedEventArgs const& e){*releasedId=e.Pointer().PointerId();})),true);
+        remove.Content(box_value(L"Delete"));remove.Click([deleted](auto&&,auto&&){++*deleted;});
+        item.Child(presenter->Frame());rowItems(list).Append(item);surface.Children().Append(list);root.Children().InsertAt(0,surface);
+        auto controller=std::make_shared<WorkspaceRowDrag>(list,surface,data,[]{return true;},[](hstring,std::optional<hstring>,std::function<void()>){},[]{});
+        controller->Attach(item,grip,remove,nullptr,menu,L"fixture-swipe",nullptr,WorkspaceRowDrag::Swipe{presenter,remove,64,.5});controller->Refresh({L"fixture-swipe"});
+        rowTap(item,[owner=std::weak_ptr(controller),selected]{if(auto current=owner.lock();current&&!current->SuppressClick())++*selected;});
+        auto cleanup=[&]{controller->Cancel();uint32_t index=0;if(root.Children().IndexOf(surface,index))root.Children().RemoveAt(index);};
+        try{
+            co_await wait([&]{return body.IsLoaded()&&body.ActualWidth()==320&&list.ScrollView();},L"Workspace swipe admission fixture did not arrange its real native row");
+            presenter->SetOffset(64,false);co_await wait([&]{return presenter->Offset()==64;},L"Workspace tap-to-close fixture did not reveal its real presenter");
+            nativePress(body,false,Point{160,28});co_await wait([&]{return presenter->AtRest();},L"Native workspace body tap did not close its revealed swipe");
+            require(*selected==0,L"Closing a workspace swipe selected its row");
+            NativeContact contact(PT_TOUCH,[trace=imeTrace](hresult_error const& error){wchar_t hex[11]{};swprintf_s(hex,L"0x%08X",uint32_t(error.code().value));trace->push_back(O({{L"case",S(L"workspace-swipe-admission")},{L"cleanup_error",S(error.message())},{L"hresult",S(hex)}}));});
+            auto point=nativePoint(body,{240,28});contact.down(point);
+            co_await wait([&]{auto value=AutomationProperties::GetItemStatus(list);return !value.empty()&&str(J::Parse(value),L"phase")==L"pressed";},L"Workspace swipe admission did not receive its native body Down");
+            auto scale=body.XamlRoot().RasterizationScale();
+            for(int step=1;step<=6;++step){co_await resume_after(std::chrono::milliseconds(10));co_await apartment;auto moved=point;moved.x-=LONG(step*16*scale);contact.move(moved);}
+            co_await wait([&]{return presenter->Offset()==64;},L"Workspace preview/reorder availability blocked an enabled native body swipe");contact.up();
+            co_await wait([&]{return *releasedId==*contactId&&J::Parse(AutomationProperties::GetItemStatus(list)).GetNamedString(L"phase")==L"idle";},L"Workspace body swipe did not finish its native contact");
+            require(presenter->Offset()==64&&!*selected,L"Workspace body swipe did not retain its revealed strip and preview");
+            nativePress(remove);co_await wait([deleted]{return *deleted==1;},L"Revealed native Delete did not invoke its shared action");
+            presenter->SetOffset(32,false);body.Width(360);surface.Width(360);surface.Height(64);
+            co_await wait([&]{return surface.ActualWidth()==360&&surface.ActualHeight()==64;},L"Workspace row resize did not arrange");
+            require(presenter->Offset()==32,L"Unchanged reveal width lost its presentation during native resize");++checks;
+        }catch(...){imeTrace->push_back(O({{L"case",S(L"workspace-swipe-admission")},{L"status",S(AutomationProperties::GetItemStatus(list))},{L"down_id",N(*contactId)},{L"released_id",N(*releasedId)},{L"offset",N(presenter->Offset())},{L"at_rest",B(presenter->AtRest())},{L"selected",N(*selected)},{L"deleted",N(*deleted)}}));cleanup();throw;}
+        cleanup();co_await wait([&]{return !list.IsLoaded();},L"Workspace swipe admission did not unload its real row");
+    }
+    winrt::Windows::Foundation::IAsyncAction selectableRowsContract(){
+        phase=L"selectable-rows-contract";
+        auto list=selectableRows(data);list.Width(280);list.Height(112);std::vector<ItemContainer> rows;
+        for(int i=0;i<9;++i){auto row=selectableRow();row.MinHeight(40);AutomationProperties::SetAutomationId(row,L"fixture-scroll-row-"+to_hstring(i));TextBlock text;text.Text(to_hstring(i));row.Child(text);rowItems(list).Append(row);rows.push_back(row);}
+        root.Children().InsertAt(0,list);
+        auto cleanup=[&]{uint32_t index=0;if(root.Children().IndexOf(list,index))root.Children().RemoveAt(index);};
+        try{
+            co_await wait([&]{auto scroll=nativeScrollView(list);return list.IsLoaded()&&scroll&&scroll.ScrollableHeight()>0;},L"Selectable rows did not arrange their native ScrollView");
+            auto peer=Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(list);
+            auto selection=peer.GetPattern(Automation::Peers::PatternInterface::Selection).as<Automation::Provider::ISelectionProvider>();
+            auto scrollPeer=Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(nativeScrollView(list).ScrollPresenter());
+            auto scroll=scrollPeer.GetPattern(Automation::Peers::PatternInterface::Scroll).as<Automation::Provider::IScrollProvider>();
+            require(!selection.CanSelectMultiple()&&scroll.VerticallyScrollable(),L"Selectable host lost single selection or its native ScrollPresenter provider");
+            ItemContainer target{nullptr};
+            for(auto const& row:rows)if(row.IsLoaded()&&row.ActualWidth()>0&&row.ActualHeight()>0){
+                auto box=row.TransformToVisual(nativeScrollView(list)).TransformBounds({0,0,float(row.ActualWidth()),float(row.ActualHeight())});
+                if(box.Y>=nativeScrollView(list).ViewportHeight()){target=row;break;}
+            }
+            require(bool(target),L"Native ScrollItem fixture has no arranged offscreen row");
+            auto lastPeer=Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(target);
+            co_await nativeScrollIntoView(AutomationProperties::GetAutomationId(target));
+            try{co_await wait([&]{return nativeScrollView(list).VerticalOffset()>0&&target.IsLoaded()&&!lastPeer.IsOffscreen();},L"Native scrolling did not reveal its retained row through the host ScrollView");}
+            catch(hresult_error const&){
+                auto scrollView=nativeScrollView(list);auto row=target;auto slot=Microsoft::UI::Xaml::Controls::Primitives::LayoutInformation::GetLayoutSlot(row);
+                imeTrace->push_back(O({{L"case",S(L"native-scroll-item")},{L"offset",N(scrollView.VerticalOffset())},{L"extent",N(scrollView.ScrollableHeight())},{L"viewport",N(scrollView.ViewportHeight())},
+                    {L"loaded",B(row.IsLoaded())},{L"parent",B(bool(VisualTreeHelper::GetParent(row)))},{L"width",N(row.ActualWidth())},{L"height",N(row.ActualHeight())},
+                    {L"offscreen",row.IsLoaded()?B(lastPeer.IsOffscreen()):JsonValue::CreateNullValue()},
+                    {L"layout_slot",O({{L"x",N(slot.X)},{L"y",N(slot.Y)},{L"width",N(slot.Width)},{L"height",N(slot.Height)}})}}));throw;
+            }
+            scroll.SetScrollPercent(-1,100);co_await wait([&]{return nativeScrollView(list).VerticalOffset()==nativeScrollView(list).ScrollableHeight();},L"Direct host Scroll provider did not move its native ScrollView");
+            scroll.SetScrollPercent(-1,0);co_await wait([&]{return nativeScrollView(list).VerticalOffset()==0;},L"Direct host Scroll provider did not restore its native ScrollView");
+            auto rowPeer=Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(rows[1]);
+            auto selected=rowPeer.GetPattern(Automation::Peers::PatternInterface::SelectionItem).as<Automation::Provider::ISelectionItemProvider>();
+            selected.Select();co_await wait([&]{return selected.IsSelected()&&rows[1].IsSelected();},L"Native SelectionItem did not select its ItemContainer");
+            auto chosen=selection.GetSelection();require(chosen.size()==1&&peer.as<Automation::Peers::IAutomationPeerProtected>().PeerFromProvider(chosen[0])==rowPeer,L"Host Selection provider did not return its selected native row");
+            require(peer.as<Automation::Peers::IAutomationPeerProtected>().PeerFromProvider(selected.SelectionContainer())==peer,L"Native row SelectionContainer is not its selectable host");
+            selectRow(list,rows[0]);require(!selected.IsSelected()&&rows[0].IsSelected(),L"Programmatic selection did not clear the previous native row");
+            auto content=nativeScrollView(list).Content().as<UIElement>();auto idle=content.ManipulationMode();auto canonical=ManipulationModes::TranslateRailsY|ManipulationModes::TranslateInertia;
+            auto contactId=std::make_shared<uint32_t>(0),releasedId=std::make_shared<uint32_t>(0);
+            list.AddHandler(UIElement::PointerPressedEvent(),box_value(Input::PointerEventHandler([contactId](auto&&,Input::PointerRoutedEventArgs const& e){if(e.GetCurrentPoint(nullptr).IsInContact())*contactId=e.Pointer().PointerId();})),true);
+            list.AddHandler(UIElement::PointerReleasedEvent(),box_value(Input::PointerEventHandler([releasedId](auto&&,Input::PointerRoutedEventArgs const& e){*releasedId=e.Pointer().PointerId();})),true);
+            NativeContact contact(PT_TOUCH,[trace=imeTrace](hresult_error const& error){wchar_t hex[11]{};swprintf_s(hex,L"0x%08X",uint32_t(error.code().value));trace->push_back(O({{L"case",S(L"panel-scroll-idle")},{L"cleanup_error",S(error.message())},{L"hresult",S(hex)}}));});
+            contact.down(nativePoint(list,{140,56}));
+            require(co_await contactWait(contact,[contactId]{return *contactId!=0;}),L"Panel scroll idle contract did not receive its native contact");
+            data->pointerCancels.Cancel(*contactId);auto canceled=content.ManipulationMode();contact.up();
+            co_await wait([contactId,releasedId]{return *releasedId==*contactId;},L"Panel scroll idle contract did not receive its native Up before teardown");
+            imeTrace->push_back(O({{L"case",S(L"panel-scroll-cancel")},{L"after",N(uint32_t(canceled))},{L"expected",N(uint32_t(canonical))},{L"passed",B(canceled==canonical)}}));
+            if(canceled!=canonical)nativeSetupFailures+=L"PanelScroll changed its canonical idle manipulation mode on contact cancellation\n";
+            cleanup();co_await wait([&]{return !list.IsLoaded();},L"Panel scroll idle contract did not unload its real content");
+            auto after=content.ManipulationMode();
+            imeTrace->push_back(O({{L"case",S(L"panel-scroll-idle")},{L"before",N(uint32_t(idle))},{L"after",N(uint32_t(after))},{L"expected",N(uint32_t(canonical))},{L"passed",B(idle==canonical&&after==canonical)}}));
+            if(idle!=canonical||after!=canonical)nativeSetupFailures+=L"PanelScroll changed its canonical idle manipulation mode on unload\n";
+            imeTrace->push_back(O({{L"case",S(L"selectable-rows-contract")},{L"passed",B(true)}}));
+        }catch(...){cleanup();throw;}
+        cleanup();
+    }
+    winrt::Windows::Foundation::IAsyncAction rowSwipePresentation(){
+        co_await selectableRowsContract();phase=L"row-swipe-presentation";
+        std::weak_ptr<RowSwipePresenter> releasedPresenter;
+        {
+            auto list=selectableRows(data);auto item=selectableRow();Grid surface,body;Button grip,remove;MenuFlyout menu;
+            auto ownedPresenter=std::make_shared<RowSwipePresenter>();releasedPresenter=ownedPresenter;
+            body.Children().Append(grip);ownedPresenter->Attach(body,grip);ownedPresenter->Actions().Children().Append(remove);
+            item.Child(ownedPresenter->Frame());rowItems(list).Append(item);surface.Children().Append(list);
+            WorkspaceRowDrag drag(list,surface,data,[]{return true;},[](hstring,std::optional<hstring>,std::function<void()> ready){if(ready)ready();},[]{});
+            drag.Attach(item,grip,nullptr,nullptr,menu,L"fixture-ownership",nullptr,WorkspaceRowDrag::Swipe{ownedPresenter,remove,64,.5});
+        }
+        require(releasedPresenter.expired(),L"Unloaded workspace row callbacks retained their swipe presenter after controller destruction");
+        RowSwipePresenter presenter;Grid body;Button grip,remove,duplicate;auto frame=presenter.Frame(),actions=presenter.Actions();
+        frame.Width(320);frame.Height(56);body.Width(320);body.Height(56);body.Background(SolidColorBrush(Windows::UI::Color{255,32,64,96}));
+        grip.Width(16);grip.MinWidth(0);grip.Height(34);grip.HorizontalAlignment(HorizontalAlignment::Right);body.Children().Append(grip);
+        auto clicks=std::make_shared<unsigned>(0),releases=std::make_shared<unsigned>(0);
+        remove.Content(box_value(L"Delete"));duplicate.Content(box_value(L"Duplicate"));
+        for(auto control:{duplicate,remove}){control.MinWidth(0);control.Width(64);control.Height(56);ColumnDefinition column;column.Width({64,GridUnitType::Pixel});actions.ColumnDefinitions().Append(column);actions.Children().Append(control);}
+        Grid::SetColumn(remove,1);remove.Click([clicks](auto&&,auto&&){++*clicks;});
+        frame.AddHandler(UIElement::PointerReleasedEvent(),box_value(Input::PointerEventHandler([releases](auto&&,auto&&){++*releases;})),true);
+        presenter.Attach(body,grip,.55);presenter.Configure(-64,128,64);root.Children().InsertAt(0,frame);
+        auto cleanup=[&]{uint32_t index=0;if(root.Children().IndexOf(frame,index))root.Children().RemoveAt(index);};
+        auto pose=[&]{return -double(body.TransformToVisual(frame).TransformPoint({0,0}).X);};
+        auto poseMatches=[frame](double first,double second){
+            auto devicePixel=1./frame.XamlRoot().RasterizationScale();
+            auto floatResolution=std::numeric_limits<float>::epsilon()*frame.Width();
+            return std::abs(first-second)<=devicePixel+floatResolution;
+        };
+        auto hitsRemove=[&](float x){
+            auto at=frame.TransformToVisual(nullptr).TransformPoint({x,28});
+            for(auto const& hit:VisualTreeHelper::FindElementsInHostCoordinates(at,frame))return descendantOf(hit,remove);
+            return false;
+        };
+        auto tap=[&](float x)->winrt::Windows::Foundation::IAsyncAction{
+            auto before=*releases;nativePress(frame,false,Point{x,28});
+            co_await wait([releases,before]{return *releases>before;},L"Swipe presentation native tap did not release on its owned frame");
+        };
+        try{
+            co_await wait([&]{return frame.IsLoaded()&&body.ActualWidth()==320&&frame.ActualHeight()==56;},L"Swipe presentation contract did not arrange");
+            auto deletePeer=Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(remove);
+            require(presenter.AtRest()&&poseMatches(pose(),0)&&!hitsRemove(316),L"Closed swipe presentation exposed a Delete hit region");
+            co_await tap(316);require(!*clicks,L"Closed swipe presentation accepted Delete");
+            presenter.SetOffset(32,false);
+            co_await wait([&]{return poseMatches(pose(),32)&&hitsRemove(316)&&!hitsRemove(264);},L"Partial swipe did not match native geometry and its clipped Delete region");
+            require(poseMatches(presenter.Offset(),32)&&!presenter.AtRest(),L"Partial swipe lost its actual presented offset");
+            co_await tap(264);require(!*clicks,L"Clipped portion of partially revealed Delete accepted input");
+            co_await tap(316);require(*clicks==1,L"Revealed portion of Delete did not accept exactly one native click");
+            presenter.SetOffset(-32,false);
+            co_await wait([&]{return poseMatches(pose(),-32)&&!hitsRemove(316);},L"Layer negative swipe did not move right while hiding Delete");
+            co_await tap(316);require(*clicks==1,L"Layer negative swipe exposed a Delete click region");
+            presenter.Configure(0,128,64);
+            require(presenter.AtRest()&&poseMatches(pose(),0)&&poseMatches(presenter.Offset(),0),L"Removing the negative swipe bound did not immediately close the actual native pose");
+            presenter.SetOffset(0,false);co_await wait([&]{return presenter.AtRest()&&poseMatches(pose(),0);},L"Swipe Reset did not close its actual native pose");
+            require(Windows::UI::ViewManagement::UISettings().AnimationsEnabled(),L"Native swipe animation contract requires enabled Windows animations");
+            auto compositor=CompositionTarget::GetCompositorForCurrentThread();
+            auto complete=std::make_shared<bool>(false);auto interrupted=compositor.CreateScopedBatch(Microsoft::UI::Composition::CompositionBatchTypes::Animation);
+            interrupted.Completed([complete](auto&&,auto&&){*complete=true;});presenter.SetOffset(128,true);interrupted.End();
+            co_await wait([&]{auto value=pose();return value>0&&value<128;},L"Swipe animation did not expose an intermediate native TransformToVisual pose");
+            auto animatedOffset=presenter.Offset();require(animatedOffset>0&&animatedOffset<128&&!presenter.AtRest(),L"Animated swipe offset did not follow its actual native pose");
+            imeTrace->push_back(O({{L"case",S(L"row-swipe-presentation")},{L"stage",S(L"animated-pose")},{L"offset",N(animatedOffset)},{L"transform_offset",N(pose())}}));
+            presenter.SetOffset(64,false);
+            co_await wait([complete]{return *complete;},L"Interrupted actual swipe animation did not complete its native batch");
+            require(poseMatches(pose(),64)&&poseMatches(presenter.Offset(),64)&&!presenter.AtRest(),L"Stale swipe completion replaced a newer partial offset");
+            auto reopened=std::make_shared<bool>(false);auto closeBatch=compositor.CreateScopedBatch(Microsoft::UI::Composition::CompositionBatchTypes::Animation);
+            closeBatch.Completed([reopened](auto&&,auto&&){*reopened=true;});presenter.SetOffset(0,true);closeBatch.End();
+            require(deletePeer.IsOffscreen()&&!hitsRemove(316),L"Accepted close retained native Delete before its visual settle");
+            co_await wait([&]{auto value=pose();return value>0&&value<64;},L"Closing swipe snapped instead of presenting an intermediate body pose");
+            presenter.SetOffset(64,false);
+            co_await wait([&]{return poseMatches(pose(),64)&&!deletePeer.IsOffscreen()&&hitsRemove(316);},L"Reopened partial swipe did not restore native Delete");
+            co_await wait([reopened]{return *reopened;},L"Reopened swipe did not retire its obsolete native close batch");
+            require(poseMatches(pose(),64)&&!deletePeer.IsOffscreen()&&hitsRemove(316),L"Obsolete close completion hid a newer native reveal");
+            auto resetComplete=std::make_shared<bool>(false);auto resetBatch=compositor.CreateScopedBatch(Microsoft::UI::Composition::CompositionBatchTypes::Animation);
+            resetBatch.Completed([resetComplete](auto&&,auto&&){*resetComplete=true;});presenter.SetOffset(128,true);resetBatch.End();
+            co_await wait([&]{auto value=pose();return value>64&&value<128;},L"Swipe Reset fixture did not observe its actual running animation");presenter.SetOffset(0,false);
+            co_await wait([resetComplete]{return *resetComplete;},L"Reset actual swipe animation did not complete its native batch");
+            require(presenter.AtRest()&&poseMatches(pose(),0)&&!hitsRemove(316),L"Stale swipe completion reopened a reset row or its Delete region");
+            presenter.SetOffset(128,false);co_await wait([&]{return poseMatches(pose(),128)&&!deletePeer.IsOffscreen()&&hitsRemove(316);},L"Disabling swipe fixture did not expose its actual native Delete and open pose");
+            auto disabledComplete=std::make_shared<bool>(false);auto disabledBatch=compositor.CreateScopedBatch(Microsoft::UI::Composition::CompositionBatchTypes::Animation);
+            disabledBatch.Completed([disabledComplete](auto&&,auto&&){*disabledComplete=true;});presenter.SetOffset(0,true);disabledBatch.End();
+            require(deletePeer.IsOffscreen()&&!hitsRemove(316),L"Accepted close retained native Delete before its limit changed");
+            co_await wait([&]{auto value=pose();return value>0&&value<128;},L"Disabling swipe fixture did not observe the actual closing animation");
+            presenter.Configure(0,0,64);
+            require(presenter.AtRest()&&poseMatches(pose(),0)&&poseMatches(presenter.Offset(),0),L"Disabling swipe while its target was closed retained the actual positive native pose");
+            co_await wait([disabledComplete]{return *disabledComplete;},L"Disabled actual swipe animation did not complete its native batch");
+            require(presenter.AtRest()&&poseMatches(pose(),0)&&!hitsRemove(316),L"Stale swipe completion reopened a disabled row or its Delete region");
+            co_await tap(316);require(*clicks==1,L"Reset swipe presentation retained a Delete click region");
+            imeTrace->push_back(O({{L"case",S(L"row-swipe-presentation")},{L"passed",B(true)}}));++checks;
+        }catch(...){cleanup();throw;}
+        cleanup();
+    }
+    DependencyObject workspaceCaseRoot(hstring const& marker){
+        DependencyObject result{nullptr};uint32_t matches=0;
+        for(auto const& popup:VisualTreeHelper::GetOpenPopupsForXamlRoot(root.XamlRoot()))if(popup.IsOpen()&&findText(popup.Child(),marker)){result=popup.Child();++matches;}
+        require(matches<=1,L"Workspace fixture marker identifies multiple native popups");return result;
+    }
+    winrt::Windows::Foundation::IAsyncAction workspaceRowAppearance(ItemContainer row,hstring id,hstring title,bool selectedRow,winrt::Windows::UI::Color background){
+        auto pin=findElement(row,L"workspace-manager-pin-"+id).as<Primitives::ToggleButton>();
+        auto grip=findElement(row,L"workspace-manager-grip-"+id).as<Button>();
+        std::array<FrameworkElement,3> parts{findText(row,title),pin.Content().as<FrameworkElement>(),grip.Content().as<FrameworkElement>()};
+        std::array<Windows::Foundation::Rect,3> boxes;
+        require(row.IsSelected()==selectedRow,L"Workspace appearance fixture has the wrong native selection");
+        for(size_t i=0;i<parts.size();++i){
+            auto node=parts[i];require(node&&node.IsLoaded()&&node.ActualWidth()>0&&node.ActualHeight()>0,L"Workspace appearance fixture lacks its caption, pin or grip");
+            for(DependencyObject parent=node;parent&&parent!=row;parent=VisualTreeHelper::GetParent(parent))if(auto view=parent.try_as<UIElement>())
+                require(view.Visibility()==Visibility::Visible&&view.Opacity()>0,L"Workspace appearance fixture has a hidden caption, pin or grip");
+            boxes[i]=node.TransformToVisual(row).TransformBounds({0,0,float(node.ActualWidth()),float(node.ActualHeight())});
+        }
+        auto rowWidth=row.ActualWidth(),rowHeight=row.ActualHeight();
+        require(background.A==255,L"Workspace appearance fixture needs its opaque card background");
+        std::array<int,3> backdrop{background.B,background.G,background.R};
+        Imaging::RenderTargetBitmap image;co_await image.RenderAsync(row);auto pixels=co_await image.GetPixelsAsync();
+        auto width=image.PixelWidth(),height=image.PixelHeight();std::array<int,3> contrast{};std::exception_ptr failure;
+        auto sample=output.parent_path()/(selectedRow?L"workspace-selected-row.bgra":L"workspace-unselected-row.bgra");
+        co_await resume_background();
+        try{
+            require(width>0&&height>0&&pixels.Length()==size_t(width)*height*4,L"Workspace appearance readback has invalid dimensions");
+            std::vector<uint8_t> bytes(pixels.Length());
+            winrt::Windows::Storage::Streams::DataReader::FromBuffer(pixels).ReadBytes(bytes);
+            for(size_t i=0;i<boxes.size();++i){
+                auto box=boxes[i];int left=int(std::floor(box.X*width/rowWidth)),top=int(std::floor(box.Y*height/rowHeight));
+                int right=int(std::ceil((box.X+box.Width)*width/rowWidth)),bottom=int(std::ceil((box.Y+box.Height)*height/rowHeight));
+                require(left>=0&&top>=0&&right<=width&&bottom<=height&&right>left&&bottom>top,L"Workspace caption, pin or grip left its row readback");
+                std::array<int,3> low{255,255,255},high{};
+                for(int y=top;y<bottom;++y)for(int x=left;x<right;++x)for(size_t channel=0;channel<3;++channel){
+                    auto at=(size_t(y)*width+x)*4;auto value=int(bytes[at+channel])+(backdrop[channel]*(255-int(bytes[at+3]))+127)/255;
+                    low[channel]=std::min(low[channel],value);high[channel]=std::max(high[channel],value);
+                }
+                for(size_t channel=0;channel<3;++channel)contrast[i]=std::max(contrast[i],high[channel]-low[channel]);
+            }
+            std::ofstream file(sample,std::ios::binary);file.write(reinterpret_cast<char const*>(bytes.data()),bytes.size());
+            require(bool(file),L"Workspace appearance readback was not saved");
+        }catch(...){failure=std::current_exception();}
+        co_await apartment;if(failure)std::rethrow_exception(failure);
+        bool visible=std::all_of(contrast.begin(),contrast.end(),[](int value){return value>=32;});
+        imeTrace->push_back(O({{L"case",S(L"workspace-row-appearance")},{L"selected",B(selectedRow)},{L"passed",B(visible)},
+            {L"caption_contrast",N(contrast[0])},{L"pin_contrast",N(contrast[1])},{L"grip_contrast",N(contrast[2])},
+            {L"width",N(width)},{L"height",N(height)}}));
+        auto message=hstring(selectedRow?L"Selected workspace row obscured caption, pin or grip":L"Workspace appearance control has no caption, pin or grip")+
+            L": "+to_hstring(contrast[0])+L","+to_hstring(contrast[1])+L","+to_hstring(contrast[2]);require(visible,message.c_str());
+    }
+    winrt::Windows::Foundation::IAsyncAction workspaceListContract(J catalog,J state,J model){
+        phase=L"workspace-list-contract";model=J::Parse(model.Stringify());
+        auto marker=hstring(L"Fixture list");model.Insert(L"title",S(marker));
+        DependencyObject caseRoot{nullptr};auto element=[&](hstring const& id){return caseRoot?findElement(caseRoot,id):FrameworkElement{nullptr};};
+        auto rows=array(model,L"rows"),order=array(model,L"order");auto last=J::Parse(rows.GetObjectAt(0).Stringify());
+        last.Insert(L"id",S(L"fixture-last"));last.Insert(L"title",S(L"Last workspace"));last.Insert(L"current",B(false));rows.Append(last);order.Append(S(L"fixture-last"));model.Insert(L"enabled",B(true));
+        auto inputs=std::make_shared<std::vector<J>>();auto nativeReady=std::make_shared<bool>(false);
+        WorkspaceManagerView manager([inputs](std::string value,std::function<void()> ready){inputs->push_back(J::Parse(to_hstring(value)));if(ready)ready();},catalog,context.localization,root.XamlRoot(),[nativeReady]{*nativeReady=true;},
+            [](CanvasQueryKind,std::string,PreviewReply reply){reply(PreviewPacket{});return true;});
+        try{
+            manager.Apply(O({{L"state",state},{L"windows_workspace",model}}),false);
+            auto reserved=manager.IsOpen();
+            imeTrace->push_back(O({{L"case",S(L"workspace-modal-reservation")},{L"passed",B(reserved)}}));
+            if(!reserved)nativeSetupFailures+=L"Opening workspace manager did not reserve its native modal slot\n";
+            co_await wait([&]{
+                if(!manager.IsOpen()||!*nativeReady)return false;
+                auto candidate=workspaceCaseRoot(marker);if(!candidate)return false;
+                auto row=findElement(candidate,L"workspace-manager-row-fixture-last"),list=findElement(candidate,L"workspace-manager-items");
+                bool ready=row&&list&&row.IsLoaded()&&list.IsLoaded()&&row.ActualHeight()>0&&descendantOf(row,list);
+                if(ready)caseRoot=candidate;return ready;
+            },L"Workspace keyboard contract did not arrange two native rows");
+            auto list=element(L"workspace-manager-items").as<ItemsView>();auto lastRow=element(L"workspace-manager-row-fixture-last").as<ItemContainer>();
+            auto identity=[](DependencyObject const& node){return S(to_hstring(uint64_t(reinterpret_cast<uintptr_t>(node.as<::IUnknown>().get()))));};
+            imeTrace->push_back(O({{L"case",S(L"workspace-list-contract")},{L"stage",S(L"owned-popup-identities")},{L"popup",identity(caseRoot)},{L"list",identity(list)},{L"row",identity(lastRow)}}));
+            auto peer=Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(lastRow);
+            co_await workspaceRowAppearance(lastRow,L"fixture-last",L"Last workspace",false,color(str(object(state,L"palette"),L"card")));
+            auto selectedAt=inputs->size();peer.GetPattern(Automation::Peers::PatternInterface::SelectionItem).as<Automation::Provider::ISelectionItemProvider>().Select();
+            co_await wait([&,selectedAt]{
+                for(size_t i=selectedAt;i<inputs->size();++i){auto input=object(inputs->at(i),L"input");if(str(input,L"type")==L"select"&&str(input,L"id")==L"fixture-last")return lastRow.IsSelected();}return false;
+            },L"Production workspace UIA selection did not select its native row and request its shared preview");
+            co_await workspaceRowAppearance(lastRow,L"fixture-last",L"Last workspace",true,color(str(object(state,L"palette"),L"card")));
+            require(lastRow.Focus(FocusState::Keyboard),L"Production workspace row could not receive native keyboard focus");
+            for(auto [key,id]:{std::pair<WORD,hstring>{VK_HOME,L"fixture-custom"},{VK_DOWN,L"fixture-last"},{VK_UP,L"fixture-custom"},{VK_END,L"fixture-last"}}){
+                auto begin=inputs->size();nativeKey(key,false);nativeKey(key,true);
+                co_await wait([&,begin,id]{
+                    bool dispatched=false;for(size_t i=begin;i<inputs->size();++i){auto input=object(inputs->at(i),L"input");if(str(input,L"type")==L"select"&&str(input,L"id")==id)dispatched=true;}
+                    auto row=element(L"workspace-manager-row-"+id).as<ItemContainer>();return dispatched&&row.IsSelected()&&descendantOf(FocusManager::GetFocusedElement(root.XamlRoot()).try_as<DependencyObject>(),row);
+                },L"Workspace arrow/Home/End did not focus, select and request its shared preview");
+            }
+            phase=L"workspace-inline-rename-focus";
+            auto renameStart=inputs->size();
+            model.Insert(L"selected",S(L"fixture-last"));
+            model.Insert(L"prompt_action",O({{L"type",S(L"rename")},{L"value",S(L"fixture-custom")}}));
+            model.Insert(L"prompt",O({{L"title",S(L"Workspace name")},{L"name",S(L"Fixture draft")},{L"confirm",S(L"Rename")},{L"message",S(L"")},{L"destructive",B(false)}}));
+            manager.Apply(O({{L"state",state},{L"windows_workspace",model}}),false);
+            auto entry=element(L"workspace-manager-rename-fixture-custom").as<TextBox>();
+            co_await wait([&,entry]{return entry.IsLoaded()&&entry.ActualWidth()>0&&FocusManager::GetFocusedElement(root.XamlRoot())==entry;},L"Inline workspace rename did not retain its intended native TextBox focus");
+            auto renamedFocus=std::make_shared<bool>(false);
+            require(list.DispatcherQueue().TryEnqueue(Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,[renamedFocus]{*renamedFocus=true;}),L"Inline workspace focus callbacks were not queued");
+            co_await wait([renamedFocus]{return *renamedFocus;},L"Inline workspace focus callbacks did not finish");
+            A unsolicited;for(size_t i=renameStart;i<inputs->size();++i)unsolicited.Append(inputs->at(i));
+            auto renamePreserved=list.SelectedItem()==lastRow&&unsolicited.Size()==0;
+            imeTrace->push_back(O({{L"case",S(L"workspace-inline-rename-focus")},{L"passed",B(renamePreserved)},{L"requests",unsolicited},{L"focused_type",S(get_class_name(FocusManager::GetFocusedElement(root.XamlRoot())))},{L"selected_id",S(AutomationProperties::GetAutomationId(list.SelectedItem().as<DependencyObject>()))}}));
+            require(renamePreserved,L"Inline workspace name focus selected its row or submitted the rename");
+            auto inlineKeys=std::make_shared<std::vector<J>>();
+            list.AddHandler(UIElement::KeyDownEvent(),box_value(KeyEventHandler([inlineKeys](auto&&,KeyRoutedEventArgs const& e){
+                inlineKeys->push_back(O({{L"key",N(uint32_t(e.Key()))},{L"source_type",S(get_class_name(e.OriginalSource()))},{L"handled",B(e.Handled())}}));
+            })),true);
+            entry.Text(L"Inline");auto editingStart=inputs->size();
+            for(auto [key,expected]:{std::pair<WORD,hstring>{VK_END,L"Inline"},{VK_SPACE,L"Inline "}}){
+                auto seen=inlineKeys->size();nativeKey(key,false);nativeKey(key,true);
+                co_await wait([inlineKeys,seen]{return inlineKeys->size()>seen;},L"Inline workspace editor did not receive its native End or Space key");
+                auto drained=std::make_shared<bool>(false);
+                require(list.DispatcherQueue().TryEnqueue(Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,[drained]{*drained=true;}),L"Inline workspace editor did not queue its key completion");
+                co_await wait([drained]{return *drained;},L"Inline workspace editor did not finish its key completion");
+                auto focused=FocusManager::GetFocusedElement(root.XamlRoot()).try_as<FrameworkElement>();
+                bool retained=focused==entry&&entry.Text()==expected&&list.SelectedItem()==lastRow&&inputs->size()==editingStart;
+                A requests;for(size_t i=editingStart;i<inputs->size();++i)requests.Append(inputs->at(i));
+                imeTrace->push_back(O({{L"case",S(L"workspace-inline-editing-keys")},{L"key",N(key)},{L"passed",B(retained)},
+                    {L"text",S(entry.Text())},{L"expected",S(expected)},{L"focused_type",focused?S(get_class_name(focused)):JsonValue::CreateNullValue()},
+                    {L"focused_id",focused?S(AutomationProperties::GetAutomationId(focused)):JsonValue::CreateNullValue()},{L"event",inlineKeys->back()},{L"requests",requests}}));
+                require(retained,key==VK_END?L"Native workspace inline End moved focus or submitted the draft":L"Native workspace inline Space did not edit the exact draft");
+            }
+            model.Insert(L"prompt_action",JsonValue::CreateNullValue());model.Insert(L"prompt",JsonValue::CreateNullValue());
+            manager.Apply(O({{L"state",state},{L"windows_workspace",model}}),false);
+            phase=L"workspace-native-pin-double-tap";
+            auto pin=element(L"workspace-manager-pin-fixture-custom").as<Primitives::ToggleButton>();
+            co_await wait([pin]{return pin.IsLoaded()&&pin.IsEnabled()&&pin.ActualWidth()>0&&pin.ActualHeight()>0;},L"Native pin double-click needs its arranged enabled ToggleButton");
+            auto pinAt=pin.TransformToVisual(nullptr).TransformPoint({float(pin.ActualWidth()/2),float(pin.ActualHeight()/2)});bool pinHit=false;
+            for(auto const& hit:VisualTreeHelper::FindElementsInHostCoordinates(pinAt,caseRoot.as<UIElement>())){pinHit=descendantOf(hit,pin);break;}
+            require(pinHit,L"Native pin double-click does not hit its owned ToggleButton");
+            auto pinDoubles=std::make_shared<unsigned>(0),pinSaveDoubles=std::make_shared<unsigned>(0);
+            pin.AddHandler(UIElement::DoubleTappedEvent(),box_value(DoubleTappedEventHandler([trace=imeTrace,pinDoubles,pinSaveDoubles,inputs,model](auto&&,DoubleTappedRoutedEventArgs const& e){
+                ++*pinDoubles;auto saving=flag(model,L"switcher_busy");if(saving)++*pinSaveDoubles;trace->push_back(O({{L"case",S(L"workspace-native-pin-double-tap")},{L"saving",B(saving)},{L"stage",S(L"delivered-double-tap")},{L"source_type",S(get_class_name(e.OriginalSource()))},{L"handled",B(e.Handled())},{L"requests_seen",N(inputs->size())}}));
+            })),true);
+            auto pinRow=rows.GetObjectAt(0);auto pinState=object(pinRow,L"pin");
+            require(str(pinRow,L"id")==L"fixture-custom"&&str(object(pinState,L"edit"),L"type")==L"toggle",L"Native pin fixture needs its shared toggle presentation");
+            auto publishPinSave=[&](bool saving){
+                pinState.Insert(L"selected",B(pin.IsChecked().Value()));model.Insert(L"switcher_busy",B(saving));
+                manager.Apply(O({{L"state",state},{L"windows_workspace",model}}),false);
+            };
+            for(bool saving:{false,true}){
+                require(list.SelectedItem()==lastRow,L"Native pin double-click needs its accepted preview selected");
+                auto pinStart=inputs->size();auto wasPinned=pin.IsChecked().Value();auto doublesBefore=*pinDoubles,saveDoublesBefore=*pinSaveDoubles;
+                auto pinEdits=[&]{unsigned count=0;for(size_t i=pinStart;i<inputs->size();++i)if(str(object(inputs->at(i),L"input"),L"type")==L"edit_switcher")++count;return count;};
+                nativePress(pin);co_await wait([&]{return pinEdits()>=1;},L"Native pin double-click did not acknowledge its first activation");
+                if(saving)publishPinSave(true);
+                require(pin.IsEnabled()&&element(L"workspace-manager-pin-fixture-custom")==pin&&list.SelectedItem()==lastRow,L"Pin save publication disabled the native pin or changed its accepted preview");
+                nativePress(pin);co_await wait([&]{return pinEdits()>=2;},L"Native pin double-click did not acknowledge both activations");
+                require(*pinDoubles>doublesBefore&&(!saving||*pinSaveDoubles>saveDoublesBefore),L"Native pin double-click did not deliver its DoubleTapped event in the intended save state");
+                auto pinDrained=std::make_shared<bool>(false);
+                require(list.DispatcherQueue().TryEnqueue(Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,[pinDrained]{*pinDrained=true;}),L"Native pin double-click did not queue its completion");
+                co_await wait([pinDrained]{return *pinDrained;},L"Native pin double-click did not finish its completion");
+                A pinRequests;bool changedPreview=false;for(size_t i=pinStart;i<inputs->size();++i){pinRequests.Append(inputs->at(i));if(str(object(inputs->at(i),L"input"),L"type")==L"select")changedPreview=true;}
+                bool selectionRetained=list.SelectedItem()==lastRow,parityRetained=pin.IsChecked().Value()==wasPinned;
+                bool pinRetained=!changedPreview&&selectionRetained&&parityRetained;
+                imeTrace->push_back(O({{L"case",S(L"workspace-native-pin-double-tap")},{L"saving",B(saving)},{L"passed",B(pinRetained)},{L"pin_edits",N(pinEdits())},{L"double_taps",N(*pinDoubles-doublesBefore)},
+                    {L"requests_start",N(pinStart)},{L"selection_retained",B(selectionRetained)},{L"parity_retained",B(parityRetained)},{L"requests",pinRequests}}));
+                require(pinRetained,L"Rapid native pin input changed the selected preview");
+                if(saving)publishPinSave(false);
+            }
+            ++checks;
+        }catch(...){manager.Hide();throw;}
+        manager.Hide();co_await wait([&]{return !manager.IsOpen();},L"Workspace keyboard contract did not close its owned dialog");
+    }
+    winrt::Windows::Foundation::IAsyncAction drawingListKeyboard(J catalog,J state){
+        phase=L"drawing-list-space";
+        auto drawing=std::make_shared<WorkspaceData>();context.apply(drawing,catalog);drawing->state=state;
+        A tabs;for(int id:{1,2})tabs.Append(O({{L"id",N(id)},{L"title",S(id==1?L"First drawing":L"Second drawing")},{L"location",S(L"")}}));
+        drawing->model=O({{L"windows_tabs",O({{L"available",B(true)},{L"selected",N(1)},{L"tabs",tabs}})}});
+        auto requests=std::make_shared<std::vector<J>>();drawing->document=[requests](std::string value){requests->push_back(J::Parse(to_hstring(value)));};
+        auto view=std::make_shared<DrawingTabs>();view->data=drawing;view->init();view->root.Width(360);view->root.Height(48);root.Children().InsertAt(0,view->root);
+        auto cleanup=[&]{view->popup.Hide();uint32_t index=0;if(root.Children().IndexOf(view->root,index))root.Children().RemoveAt(index);};
+        try{
+            co_await wait([&]{return view->selector.IsLoaded()&&view->selector.ActualWidth()>0;},L"Drawing keyboard fixture did not arrange its production selector");
+            view->show();co_await wait([&]{return view->showing&&view->rows.at(2).item.IsLoaded()&&view->rows.at(2).item.ActualHeight()>0;},L"Drawing keyboard fixture did not open its real list");
+            auto chosen=view->rows.at(1).item;require(chosen.IsSelected(),L"Drawing list lost its shared selected row");
+            Imaging::RenderTargetBitmap image;co_await image.RenderAsync(chosen);auto pixels=co_await image.GetPixelsAsync();auto width=image.PixelWidth(),height=image.PixelHeight();
+            auto path=output.parent_path()/L"drawing-selected-row.bgra";co_await resume_background();
+            std::vector<uint8_t> bytes(pixels.Length());winrt::Windows::Storage::Streams::DataReader::FromBuffer(pixels).ReadBytes(bytes);
+            {std::ofstream file(path,std::ios::binary);file.write(reinterpret_cast<char const*>(bytes.data()),bytes.size());require(bool(file),L"Drawing selected row capture was not saved");}
+            co_await apartment;imeTrace->push_back(O({{L"case",S(L"drawing-list-selected-row")},{L"width",N(width)},{L"height",N(height)}}));
+            auto row=view->rows.at(2).item;require(row.Focus(FocusState::Keyboard),L"Drawing list could not focus its second native row");
+            co_await wait([&]{return FocusManager::GetFocusedElement(root.XamlRoot())==row;},L"Drawing list focus moved before its Space input");
+            nativeKey(VK_SPACE,false);nativeKey(VK_SPACE,true);co_await wait([requests]{return !requests->empty();},L"Drawing list Space did not activate its focused native row");
+            auto drained=std::make_shared<bool>(false);require(view->list.DispatcherQueue().TryEnqueue(Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,[drained]{*drained=true;}),L"Drawing list did not queue its native key completion");
+            co_await wait([drained]{return *drained;},L"Drawing list native Space did not complete");
+            bool selected=requests->size()==1&&str(requests->front(),L"operation")==L"tabs"&&str(object(requests->front(),L"action"),L"op")==L"select"&&num(object(requests->front(),L"action"),L"id")==2;
+            imeTrace->push_back(O({{L"case",S(L"drawing-list-space")},{L"passed",B(selected)},{L"requests",N(requests->size())}}));
+            if(!selected)nativeSetupFailures+=L"Drawing list Space did not activate exactly its focused native row\n";
+            else co_await wait([&]{return !view->showing;},L"Drawing list Space did not close its native popup");
+            ++checks;
+        }catch(...){cleanup();throw;}
+        cleanup();co_await wait([&]{return !view->showing;},L"Drawing keyboard fixture did not close its native popup");
+    }
     winrt::Windows::Foundation::IAsyncAction workspaceIme(){
         auto dark=root.RequestedTheme()!=ElementTheme::Light;
         auto header=O({{L"this_workspace",S(L"This workspace")},{L"saved_toolbars",S(L"Saved toolbars")},{L"toolbar_actions",S(L"Actions")},
@@ -941,7 +1478,7 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         require(catalog.HasKey(L"panel_metrics"),L"Workspace fixture production panel metrics missing");
         require(num(object(catalog,L"panel_metrics"),L"layer_swipe_action_width")>0,L"Workspace fixture production swipe width must be non-zero");
         auto threshold=num(object(catalog,L"panel_metrics"),L"layer_swipe_threshold");require(threshold>0&&threshold<1,L"Workspace fixture production swipe threshold is invalid");
-        auto palette=O({{L"text",S(dark?L"#eeeeee":L"#111111")},{L"card",S(dark?L"#343434":L"#eeeeee")},{L"accent",S(L"#4488cc")},{L"accent_foreground",S(L"#ffffff")}});
+        auto palette=O({{L"text",S(dark?L"#eeeeee":L"#111111")},{L"card",S(dark?L"#343434":L"#eeeeee")},{L"selection",S(dark?L"#3d546d":L"#bed8f6")},{L"accent",S(L"#4488cc")},{L"accent_foreground",S(L"#ffffff")}});
         auto state=O({{L"theme",S(dark?L"dark":L"light")},{L"palette",palette}});
         A options;for(auto type:{L"rename",L"delete"})options.Append(O({{L"label",S(type)},{L"enabled",B(true)},{L"action",O({{L"type",S(type)},{L"value",S(L"fixture-custom")}})}}));
         A rows;rows.Append(O({{L"id",S(L"fixture-custom")},{L"title",S(L"Fixture workspace")},{L"subtitle",S(L"")},{L"current",B(true)},
@@ -950,10 +1487,35 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         A order;order.Append(S(L"fixture-custom"));
         auto model=O({{L"id",S(L"fixture-custom")},{L"name",S(L"Fixture workspace")},{L"ready",B(true)},{L"busy",B(false)},{L"loading",B(false)},
             {L"page",S(L"workspaces")},{L"selected",S(L"fixture-custom")},{L"rows",rows},{L"order",order},{L"title",S(L"Workspaces")},{L"primary",S(L"Switch to Workspace")},{L"enabled",B(false)}});
+        co_await drawingListKeyboard(catalog,state);
+        co_await workspaceListContract(catalog,state,model);
         auto trace=imeTrace;
         auto close=[this](WorkspaceManagerView& manager)->winrt::Windows::Foundation::IAsyncAction{
             manager.Hide();co_await wait([&manager]{return !manager.IsOpen();},L"Workspace IME dialog did not close");
         };
+        {
+            phase=L"workspace-grip-route";
+            WorkspaceManagerView manager([](std::string,std::function<void()> complete){if(complete)complete();},catalog,context.localization,root.XamlRoot(),[]{},
+                [](CanvasQueryKind,std::string,PreviewReply reply){reply(PreviewPacket{});return true;});
+            try{
+                manager.Apply(O({{L"state",state},{L"windows_workspace",model}}),false);
+                co_await wait([this,&manager]{auto grip=workspaceElement(L"workspace-manager-grip-fixture-custom").try_as<Button>();return manager.IsOpen()&&grip&&grip.IsLoaded()&&grip.ActualWidth()>0;},L"Workspace reorder grip did not arrange");
+                auto grip=workspaceElement(L"workspace-manager-grip-fixture-custom").as<Button>();
+                auto swipe=workspaceElement(L"workspace-manager-swipe-fixture-custom");
+                auto remove=workspaceElement(L"workspace-manager-swipe-delete-fixture-custom").as<Button>();
+                auto row=workspaceElement(L"workspace-manager-row-fixture-custom").as<ItemContainer>();
+                require(!hasSwipeControl(workspaceElement(L"workspace-manager")),L"Workspace manager retained a native SwipeControl input redirect route");
+                require(descendantOf(grip,row)&&descendantOf(swipe,row)&&descendantOf(remove,row),L"Workspace grip, swipe presentation and Delete do not belong to their row");
+                auto slot=workspaceElement(L"workspace-name-slot-fixture-custom");auto pin=workspaceElement(L"workspace-manager-pin-fixture-custom");
+                require(descendantOf(slot,swipe)&&descendantOf(pin,swipe),L"Workspace body controls left their swipe presentation");
+                require(AutomationProperties::GetName(remove)==L"delete"||unbox_value_or<hstring>(remove.Content(),L"")==L"delete"||bool(findText(remove,L"delete")),L"Workspace body lost its native Reveal Delete action");
+                manager.Apply(O({{L"state",state},{L"windows_workspace",model}}),false);
+                require(workspaceElement(L"workspace-manager-row-fixture-custom")==row&&workspaceElement(L"workspace-manager-swipe-fixture-custom")==swipe&&workspaceElement(L"workspace-manager-grip-fixture-custom")==grip&&workspaceElement(L"workspace-manager-swipe-delete-fixture-custom")==remove,L"Workspace refresh replaced its native row or swipe controls");
+                ++checks;co_await close(manager);
+            }catch(...){manager.Hide();throw;}
+            phase=L"workspace-ime";
+        }
+        require(nativeSetupFailures.empty(),nativeSetupFailures.c_str());
         for(auto [key,label]:{std::pair<WORD,wchar_t const*>{WORD(VK_RETURN),L"inline-enter"},{WORD(VK_ESCAPE),L"inline-escape"},{WORD(VK_F2),L"inline-f2"},{WORD(VK_ESCAPE),L"form-escape"},{WORD(0),L"form-primary"},{WORD(VK_RETURN),L"retired-ordinary-korean-enter"},{WORD(VK_ESCAPE),L"retired-ordinary-inline-escape"},{WORD(VK_ESCAPE),L"retired-ordinary-form-escape"}}){
             bool retired=label[0]==L'r',heldKey=false,inlineName=label[0]==L'i'||hstring(label)==L"retired-ordinary-inline-escape";auto inputs=std::make_shared<std::vector<J>>();auto events=std::make_shared<unsigned>(0);
             auto activeModel=J::Parse(model.Stringify());
@@ -964,7 +1526,7 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
             try{
                 manager.Apply(O({{L"state",state},{L"windows_workspace",activeModel}}),false);
                 auto id=inlineName?L"workspace-manager-rename-fixture-custom":L"workspace-manager-name";
-                co_await wait([this,id]{auto entry=workspaceElement(id).try_as<TextBox>();return entry&&entry.IsLoaded()&&entry.ActualWidth()>0;},L"Workspace IME TextBox did not become arranged");
+                co_await wait([this,id,&manager]{auto entry=workspaceElement(id).try_as<TextBox>();return manager.IsOpen()&&entry&&entry.IsLoaded()&&entry.ActualWidth()>0;},L"Workspace IME TextBox did not become arranged");
                 auto entry=workspaceElement(id).as<TextBox>();auto busy=std::make_shared<bool>(false);captureTextComposition(entry,[busy](bool value){*busy=value;});entry.Focus(FocusState::Keyboard);
                 co_await wait([this,entry]{return FocusManager::GetFocusedElement(root.XamlRoot())==entry;},L"Workspace IME TextBox did not own focus");privacy();
                 entry.AddHandler(UIElement::KeyDownEvent(),box_value(KeyEventHandler([trace,events,label,editor=make_weak(entry)](auto&&,KeyRoutedEventArgs const& e){auto entry=editor.get();
@@ -1056,7 +1618,7 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         for(auto hit:{hstring(L"ring"),hstring(L"intensity")}){
             auto downMode=hit==L"ring"?L"ring":L"intensity";
             auto resetType=hit==L"ring"?L"reset_ring":L"set_intensity";
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             press(hit,1000000);
             co_await winrt::resume_after(std::chrono::milliseconds(GetDoubleClickTime()+50));co_await apartment;
             auto repeated=press(hit,1000000+threshold/2);
@@ -1065,23 +1627,23 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
             require(repeated->mode==L"reset",L"Delayed handling lost the bubble event double tap");
             require(str(action,L"type")==resetType,L"Bubble event double tap dispatched the wrong reset");
             if(hit==L"intensity")require(num(action,L"stops",-1)==0,L"Intensity double tap did not reset stops");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             press(hit,2000000);auto separate=press(hit,2000000+threshold+1000);
             action=object(actions->back(),L"action");
             require(actions->size()==2&&separate->mode==downMode&&str(action,L"type")==hit&&str(action,L"phase")==L"down",L"Compressed handling invented a bubble event double tap");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             press(hit,3000000);record->id=18;auto another=press(hit,3000000+threshold/2);record->id=17;
             action=object(actions->back(),L"action");
             require(another->mode==downMode&&str(action,L"type")==hit&&str(action,L"phase")==L"down",L"Bubble double tap crossed record identity");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             auto slop=std::max(8.,double(std::max(GetSystemMetrics(SM_CXDOUBLECLK),GetSystemMetrics(SM_CYDOUBLECLK))));
             press(hit,4000000);auto distant=press(hit,4000000+threshold/2,{float(slop+1),0});
             action=object(actions->back(),L"action");
             require(distant->mode==downMode&&str(action,L"type")==hit&&str(action,L"phase")==L"down",L"Bubble double tap crossed its existing slop");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             press(hit,5000000,{},Device::Mouse);auto pen=press(hit,5000000+threshold/2,{},Device::Pen);
             require(pen->mode==L"reset"&&str(object(actions->back(),L"action"),L"type")==resetType,L"Bubble event timing changed cross-device pairing");
-            bubbles->lastRing.reset();actions->clear();
+            bubbles->lastRing.Reset();actions->clear();
             auto resumed=press(hit,6000000);bubbles->restore(resumed);
             bubbles->begin(resumed,{},6000000+threshold+1000);
             action=object(actions->back(),L"action");
@@ -1089,106 +1651,154 @@ struct Fixture:std::enable_shared_from_this<Fixture> {
         }
     }
 
+    winrt::Windows::Foundation::IAsyncAction controlCases(){
+        phase=L"color-strip-presentation";co_await colorStripPresentation();
+        phase=L"bubble-press-timestamps";co_await bubblePressTimestamps();
+        phase=L"tooltip-help";
+        Border semantic,owned;TranslateTransform metadata;
+        AutomationProperties::SetHelpText(semantic,L"Selected texture");tooltip(semantic,L"Texture");tooltip(semantic,L"Texture updated");
+        require(AutomationProperties::GetHelpText(semantic)==L"Selected texture",L"Tooltip replaced pre-existing semantic help");
+        tooltip(semantic,L"");require(AutomationProperties::GetHelpText(semantic)==L"Selected texture",L"Clearing a tooltip cleared semantic help");
+        tooltip(owned,L"First tooltip");tooltip(owned,L"Second tooltip");
+        require(AutomationProperties::GetHelpText(owned)==L"Second tooltip",L"Tooltip-owned help did not update");
+        AutomationProperties::SetHelpText(owned,L"Graph counts");tooltip(owned,L"Third tooltip");tooltip(owned,L"Fourth tooltip");
+        require(AutomationProperties::GetHelpText(owned)==L"Graph counts",L"Repeated tooltip updates replaced explicit caller help");
+        AutomationProperties::SetHelpText(owned,L"Fourth tooltip");tooltip(owned,L"Fifth tooltip");
+        require(AutomationProperties::GetHelpText(owned)==L"Fourth tooltip",L"Tooltip claimed a caption it had never written as help");
+        AutomationProperties::SetHelpText(owned,L"");tooltip(owned,L"Reclaimed tooltip");
+        require(AutomationProperties::GetHelpText(owned)==L"Reclaimed tooltip",L"Tooltip did not acquire empty help");
+        tooltip(owned,L"");require(AutomationProperties::GetHelpText(owned).empty(),L"Clearing tooltip-owned help retained its caption");
+        tooltip(metadata,L"First metadata tooltip");tooltip(metadata,L"Second metadata tooltip");tooltip(metadata,L"");
+        require(AutomationProperties::GetHelpText(metadata).empty(),L"Nonvisual tooltip-owned help did not update and clear");
+        phase=L"primitives";
+        {
+            Button tab;tab.Content(box_value(L"Retained tab"));tab.Width(100);tab.Height(30);
+            auto shell=panelTabShell(tab,nullptr);root.Children().Append(shell);
+            co_await wait([tab]{return tab.IsLoaded()&&tab.ActualWidth()>0;},L"Retained tab did not arrange");
+            selectPanelTabShell(shell,true);
+            auto path=shell.Children().GetAt(0).as<Canvas>().Children().GetAt(0).as<Microsoft::UI::Xaml::Shapes::Path>();
+            auto selectedGeometry=path.Data();selectPanelTabShell(shell,true);
+            require(path.Data()==selectedGeometry,L"Unchanged tab presentation replaced its path geometry");
+            selectPanelTabShell(shell,false);auto unselectedGeometry=path.Data();
+            require(unselectedGeometry!=selectedGeometry,L"Changed tab corners retained the old path geometry");
+            selectPanelTabShell(shell,false);
+            require(path.Data()==unselectedGeometry,L"Unchanged unselected tab replaced its path geometry");
+            tab.Width(120);co_await wait([tab]{return tab.ActualWidth()==120;},L"Retained tab did not resize");
+            require(path.Data()!=unselectedGeometry,L"Resized tab retained the old path geometry");
+            root.Children().RemoveAtEnd();++checks;
+        }
+        {
+            Border element,extra;auto id=ChromeFrames::Id(element);ChromeFrames frames;
+            auto frame=[id]{ChromeFrames::Frame next;next.groups.insert(1);next.columns.insert(2);next.elements.insert(id);return next;};
+            auto document=O({{L"width",N(100)},{L"height",N(80)}});bool retired=false;
+            frames.current=frame();frames.Sent(1);
+            require(frames.Present(1,document),L"Initial chrome frame was unchanged");
+            frames.retiring.emplace(&retired,[&]{retired=true;});frames.current=frame();frames.Sent(2);
+            require(!frames.Present(2,document)&&frames.revision==2&&retired,L"Equal chrome did not acknowledge, retire and preserve presentation");
+            frames.Sent(5);document=O({{L"width",N(120)},{L"height",N(80)}});
+            require(frames.Present(5,document),L"Changed chrome document was ignored");
+            frames.current.groups.insert(3);frames.Sent(6);require(frames.Present(6,document),L"Changed chrome group was ignored");
+            frames.current.columns.insert(4);frames.Sent(7);require(frames.Present(7,document),L"Changed chrome column was ignored");
+            frames.current.elements.insert(ChromeFrames::Id(extra));frames.Sent(8);require(frames.Present(8,document),L"Changed chrome element was ignored");
+            require(!frames.Present(1,document)&&frames.revision==8,L"Stale chrome frame changed the acknowledgement");
+            frames.Close();++checks;
+        }
+        ComboBox choice;comboOption(choice,L"One");auto selected=comboOption(choice,L"Two");choiceColors(data,choice,ControlSurface::Settings,ChoiceFeedbackMode::Field,Windows::UI::Text::FontWeights::Bold());
+        require(choice.Background().as<SolidColorBrush>().Color()!=data->brush(L"settings").Color(),L"Settings choice has no visible face");
+        selectIndex(choice,1);require(choice.SelectedIndex()==1,L"Valid choice was rejected");
+        selectIndex(choice,99);require(choice.SelectedIndex()==-1,L"Out-of-range choice was accepted");
+        require(selected.Content().as<Windows::Foundation::IPropertyValue>().Type()==Windows::Foundation::PropertyType::String&&selected.ContentTemplate(),L"Native choice retained a visual as item data");
+        selectIndex(choice,1);root.Children().Append(choice);co_await wait([choice]{return choice.IsLoaded()&&choice.ActualWidth()>0;},L"Native choice did not load");
+        std::function<TextBlock(DependencyObject const&)> caption;caption=[&](DependencyObject const& node)->TextBlock{if(auto text=node.try_as<TextBlock>();text&&text.Text()==L"Two")return text;for(int i=0;i<VisualTreeHelper::GetChildrenCount(node);++i)if(auto text=caption(VisualTreeHelper::GetChild(node,i)))return text;return nullptr;};
+        co_await wait([&]{return bool(caption(choice));},L"Selected native choice caption did not arrange");auto face=caption(choice);
+        require(face.FontWeight().Weight==700&&face.FontFamily().Source()==L"Segoe UI"&&face.TextTrimming()==TextTrimming::CharacterEllipsis&&face.FontSize()==choice.FontSize()&&std::abs(face.RenderTransform().as<TranslateTransform>().Y()+TextBlock().FontSize()*262/4096)<.001,L"Selected choice lost its native font or optical metrics");
+        choice.IsDropDownOpen(true);co_await wait([this,&selected,&caption]{return data->popupCount==1&&bool(caption(selected));},L"Native choice did not block workspace popup routing");
+        auto popupCaption=caption(selected);require(popupCaption!=face&&popupCaption.FontWeight().Weight==400,L"Popup choice reused the selected visual or bold caption");
+        choice.IsDropDownOpen(false);co_await wait([this]{return data->popupCount==0;},L"Native choice did not release workspace popup routing");
+        require(caption(choice)&&caption(choice).FontWeight().Weight==700,L"Closing popup changed the selected choice caption weight");
+        root.Children().RemoveAtEnd();++checks;
+        phase=L"chrome-replacement";auto fade=std::make_shared<ChromeVisibility>();Border previous,replacement,decoration;
+        fade->apply(previous,true,true);fade->apply(replacement,true,true);
+        require(replacement.Visibility()==Visibility::Collapsed&&replacement.Opacity()==0&&!replacement.IsHitTestVisible(),L"Replacement chrome became visible while Zen remained hidden");
+        fade->apply(replacement,true,false);
+        require(replacement.Visibility()==Visibility::Visible&&replacement.Opacity()==1&&replacement.IsHitTestVisible(),L"Replacement chrome did not return from Zen");
+        decoration.IsHitTestVisible(false);fade->apply(decoration,true,false);
+        require(!decoration.IsHitTestVisible(),L"Replacement decorative chrome accepted input");++checks;
+        phase=L"registry";auto popup=menu();auto ticket=owner.Begin(data,anchor,popup);pending();
+        require(data->dismissTransients(),L"Pending popup ignored window cancellation registry");
+        require(!ticket.Current()&&!ticket.Show(anchor,{}),L"Registry-canceled reply reopened popup");empty();++checks;
+        phase=L"replacement";auto reused=menu();auto old=owner.Begin(data,anchor,reused);auto current=owner.Begin(data,anchor,reused);pending();
+        require(!old.Cancel()&&!old.Current()&&!old.Show(anchor,{})&&current.Current(),L"Superseded query canceled or replaced current popup lifetime");
+        require(current.Cancel(),L"Current query cancellation was refused");empty();++checks;
+        phase=L"unload";auto unloaded=owner.Begin(data,anchor,menu());root.Children().RemoveAt(0);co_await settle();
+        require(!unloaded.Current()&&!unloaded.Show(untagged,{}),L"Unloaded source query opened on replacement anchor");empty();
+        root.Children().InsertAt(0,anchor);co_await settle();++checks;
+        phase=L"escape";auto escaped=owner.Begin(data,anchor,menu());pending();anchor.Focus(FocusState::Programmatic);privacy();
+        INPUT keyboard[2]{};keyboard[0].type=keyboard[1].type=INPUT_KEYBOARD;keyboard[0].ki.wVk=keyboard[1].ki.wVk=VK_ESCAPE;keyboard[1].ki.dwFlags=KEYEVENTF_KEYUP;
+        require(SendInput(2,keyboard,sizeof(INPUT))==2,L"Native Escape injection failed");co_await wait([this]{return keys==1&&!owner.Active();},L"Native Escape cancellation timed out");
+        require(keys==1&&!escaped.Current()&&!escaped.Show(anchor,{}),L"Native Escape did not cancel delayed popup");empty();++checks;
+        phase=L"originating-press";nativePress(anchor,true);
+        co_await wait([this]{return originPresses==1;},L"Originating native press did not reach source");co_await settle();
+        require(origin&&origin->Current(),L"Popup canceled itself on its originating routed press");pending();
+        nativePress(untagged);co_await wait([this]{return presses==1&&!owner.Active();},L"Next native press did not cancel originating popup request");
+        require(!origin->Current()&&!origin->Show(anchor,{}),L"Canceled originating request reopened popup");empty();++checks;
+        phase=L"untagged-press";auto beforePress=presses;auto pressed=owner.Begin(data,anchor,menu());pending();co_await settle();co_await wait([this]{return anchor.IsLoaded()&&untagged.ActualWidth()>0&&GetForegroundWindow()==hwnd;},L"Fixture did not become arranged and foreground");privacy();
+        nativePress(untagged);co_await wait([this,beforePress]{return presses==beforePress+1&&!owner.Active();},L"Native untagged press cancellation timed out");
+        require(presses==beforePress+1&&!pressed.Current()&&!pressed.Show(anchor,{}),L"Handled native untagged press did not cancel delayed popup");empty();++checks;
+        phase=L"blur";auto beforeBlur=blurs;auto blurred=owner.Begin(data,anchor,menu());pending();other.Activate();SetForegroundWindow(handle(other));co_await wait([this,beforeBlur]{return blurs>beforeBlur&&!owner.Active();},L"Native deactivation cancellation timed out");
+        require(blurs>beforeBlur&&!blurred.Current()&&!blurred.Show(anchor,{}),L"Native window deactivation did not cancel delayed popup");empty();auto wrongOwner=owner.Begin(data,anchor,menu());
+        require(!wrongOwner.Current()&&!wrongOwner.Show(anchor,{}),L"Popup accepted source owned by background window");empty();++checks;
+        window.Activate();SetForegroundWindow(hwnd);co_await wait([this]{return anchor.IsLoaded()&&untagged.ActualWidth()>0&&GetForegroundWindow()==hwnd;},L"Fixture did not become arranged and foreground");privacy();
+        phase=L"opening-gap";auto beforeGap=opened;auto opening=owner.Begin(data,anchor,menu());pending();require(opening.Show(anchor,{}),L"Current opening-gap popup did not show");
+        require(owner.Pending()&&opened==beforeGap,L"Opening-gap prerequisite reached Opened synchronously");
+        require(data->dismissTransients(),L"Opening popup ignored window cancellation registry");co_await settle();
+        require(opened==beforeGap&&!visiblePopup(),L"Opening-gap cancellation left a late or visible native popup");
+        require(!opening.Current()&&!opening.Show(anchor,{}),L"Opening-gap canceled reply reopened popup");empty();
+        phase=L"ordinary-opening";co_await ordinaryOpening();phase=L"ordinary-closing";co_await ordinaryClosing();++checks;
+        phase=L"show-close";auto beforeOpen=opened;auto beforeClosed=closedCount;auto shown=owner.Begin(data,anchor,menu());pending();require(shown.Show(anchor,{}),L"Current popup did not show");co_await wait([this,beforeOpen]{return opened==beforeOpen+1&&owner.Open();},L"Popup Opened timed out");
+        require(opened==beforeOpen+1&&owner.Open()&&data->transients.size()==1,L"Popup registration did not survive ShowAt through Opened");
+        require(data->dismissTransients(),L"Visible popup ignored cancellation registry");co_await wait([this,beforeClosed]{return closedCount==beforeClosed+1&&!visiblePopup();},L"Native popup Closed acknowledgement or visible-popup retirement timed out");
+        require(!shown.Current()&&!shown.Show(anchor,{}),L"Reply reopened closed popup");empty();++checks;
+        phase=L"header-context-ordering";co_await headerContextOrdering();
+        phase=L"row-swipe-presentation";co_await rowSwipePresentation();co_await workspaceSwipeAdmission();
+        require(nativeSetupFailures.empty(),nativeSetupFailures.c_str());
+        phase=L"foreground-return";auto beforeActive=opened;auto beforeHidden=closedCount;auto activated=menu();auto active=owner.Begin(data,anchor,activated);pending();
+        require(active.Show(anchor,{}),L"Foreground-return popup did not show");co_await wait([this,beforeActive]{return opened==beforeActive+1&&owner.Open();},L"Foreground-return popup Opened timed out");
+        auto popupHandle=popupWindow();require(popupHandle&&SetForegroundWindow(popupHandle)&&GetForegroundWindow()==popupHandle,L"Fixture could not activate the native popup window");
+        activated.Hide();co_await wait([this,beforeHidden]{return closedCount==beforeHidden+1&&!visiblePopup();},L"Foreground-return popup Closed timed out");
+        require(GetForegroundWindow()==hwnd,L"Closing an activated native popup left foreground on its hidden window");empty();++checks;
+        phase=L"window-close";auto closed=owner.Begin(data,anchor,menu());window.Close();co_await settle();
+        require(!closed.Current()&&!closed.Show(anchor,{}),L"Reply reopened canceled owner");empty();++checks;
+    }
+    winrt::Windows::Foundation::IAsyncAction textLayoutCases(){
+        phase=L"workspace-ime";co_await workspaceIme();
+        phase=L"shortcut-search-ime";co_await shortcutSearchIme();
+        phase=L"customization-name-ack";co_await customizationDraft();
+        phase=L"native-default-ime";co_await defaultIme();
+        phase=L"layer-language-draft";co_await layerLanguageDraft();
+        phase=L"paper-name-ime";co_await paperNameIme();
+        phase=L"settings-resize";co_await settingsResize();
+    }
+
     winrt::fire_and_forget run(){
         auto self=shared_from_this();hstring error;
         try {
             co_await wait([this]{return anchor.IsLoaded()&&untagged.ActualWidth()>0&&GetForegroundWindow()==hwnd;},L"Fixture did not become arranged and foreground");privacy();
-            phase=L"color-strip-presentation";co_await colorStripPresentation();
-            phase=L"bubble-press-timestamps";co_await bubblePressTimestamps();
-            phase=L"tooltip-help";
-            Border semantic,owned;TranslateTransform metadata;
-            AutomationProperties::SetHelpText(semantic,L"Selected texture");tooltip(semantic,L"Texture");tooltip(semantic,L"Texture updated");
-            require(AutomationProperties::GetHelpText(semantic)==L"Selected texture",L"Tooltip replaced pre-existing semantic help");
-            tooltip(semantic,L"");require(AutomationProperties::GetHelpText(semantic)==L"Selected texture",L"Clearing a tooltip cleared semantic help");
-            tooltip(owned,L"First tooltip");tooltip(owned,L"Second tooltip");
-            require(AutomationProperties::GetHelpText(owned)==L"Second tooltip",L"Tooltip-owned help did not update");
-            AutomationProperties::SetHelpText(owned,L"Graph counts");tooltip(owned,L"Third tooltip");tooltip(owned,L"Fourth tooltip");
-            require(AutomationProperties::GetHelpText(owned)==L"Graph counts",L"Repeated tooltip updates replaced explicit caller help");
-            AutomationProperties::SetHelpText(owned,L"Fourth tooltip");tooltip(owned,L"Fifth tooltip");
-            require(AutomationProperties::GetHelpText(owned)==L"Fourth tooltip",L"Tooltip claimed a caption it had never written as help");
-            AutomationProperties::SetHelpText(owned,L"");tooltip(owned,L"Reclaimed tooltip");
-            require(AutomationProperties::GetHelpText(owned)==L"Reclaimed tooltip",L"Tooltip did not acquire empty help");
-            tooltip(owned,L"");require(AutomationProperties::GetHelpText(owned).empty(),L"Clearing tooltip-owned help retained its caption");
-            tooltip(metadata,L"First metadata tooltip");tooltip(metadata,L"Second metadata tooltip");tooltip(metadata,L"");
-            require(AutomationProperties::GetHelpText(metadata).empty(),L"Nonvisual tooltip-owned help did not update and clear");
-            phase=L"primitives";
-            ComboBox choice;comboOption(choice,L"One");auto selected=comboOption(choice,L"Two");choiceColors(data,choice,ControlSurface::Settings,ChoiceFeedbackMode::Field,Windows::UI::Text::FontWeights::Bold());
-            require(choice.Background().as<SolidColorBrush>().Color()!=data->brush(L"settings").Color(),L"Settings choice has no visible face");
-            selectIndex(choice,1);require(choice.SelectedIndex()==1,L"Valid choice was rejected");
-            selectIndex(choice,99);require(choice.SelectedIndex()==-1,L"Out-of-range choice was accepted");
-            require(selected.Content().as<Windows::Foundation::IPropertyValue>().Type()==Windows::Foundation::PropertyType::String&&selected.ContentTemplate(),L"Native choice retained a visual as item data");
-            selectIndex(choice,1);root.Children().Append(choice);co_await wait([choice]{return choice.IsLoaded()&&choice.ActualWidth()>0;},L"Native choice did not load");
-            std::function<TextBlock(DependencyObject const&)> caption;caption=[&](DependencyObject const& node)->TextBlock{if(auto text=node.try_as<TextBlock>();text&&text.Text()==L"Two")return text;for(int i=0;i<VisualTreeHelper::GetChildrenCount(node);++i)if(auto text=caption(VisualTreeHelper::GetChild(node,i)))return text;return nullptr;};
-            co_await wait([&]{return bool(caption(choice));},L"Selected native choice caption did not arrange");auto face=caption(choice);
-            require(face.FontWeight().Weight==700&&face.FontFamily().Source()==L"Segoe UI"&&face.TextTrimming()==TextTrimming::CharacterEllipsis&&face.FontSize()==choice.FontSize()&&std::abs(face.RenderTransform().as<TranslateTransform>().Y()+TextBlock().FontSize()*262/4096)<.001,L"Selected choice lost its native font or optical metrics");
-            choice.IsDropDownOpen(true);co_await wait([this,&selected,&caption]{return data->popupCount==1&&bool(caption(selected));},L"Native choice did not block workspace popup routing");
-            auto popupCaption=caption(selected);require(popupCaption!=face&&popupCaption.FontWeight().Weight==400,L"Popup choice reused the selected visual or bold caption");
-            choice.IsDropDownOpen(false);co_await wait([this]{return data->popupCount==0;},L"Native choice did not release workspace popup routing");
-            require(caption(choice)&&caption(choice).FontWeight().Weight==700,L"Closing popup changed the selected choice caption weight");
-            root.Children().RemoveAtEnd();++checks;
-            phase=L"chrome-replacement";auto fade=std::make_shared<ChromeVisibility>();Border previous,replacement,decoration;
-            fade->apply(previous,true,true);fade->apply(replacement,true,true);
-            require(replacement.Visibility()==Visibility::Collapsed&&replacement.Opacity()==0&&!replacement.IsHitTestVisible(),L"Replacement chrome became visible while Zen remained hidden");
-            fade->apply(replacement,true,false);
-            require(replacement.Visibility()==Visibility::Visible&&replacement.Opacity()==1&&replacement.IsHitTestVisible(),L"Replacement chrome did not return from Zen");
-            decoration.IsHitTestVisible(false);fade->apply(decoration,true,false);
-            require(!decoration.IsHitTestVisible(),L"Replacement decorative chrome accepted input");++checks;
-            phase=L"registry";auto popup=menu();auto ticket=owner.Begin(data,anchor,popup);pending();
-            require(data->dismissTransients(),L"Pending popup ignored window cancellation registry");
-            require(!ticket.Current()&&!ticket.Show(anchor,{}),L"Registry-canceled reply reopened popup");empty();++checks;
-            phase=L"replacement";auto reused=menu();auto old=owner.Begin(data,anchor,reused);auto current=owner.Begin(data,anchor,reused);pending();
-            require(!old.Cancel()&&!old.Current()&&!old.Show(anchor,{})&&current.Current(),L"Superseded query canceled or replaced current popup lifetime");
-            require(current.Cancel(),L"Current query cancellation was refused");empty();++checks;
-            phase=L"unload";auto unloaded=owner.Begin(data,anchor,menu());root.Children().RemoveAt(0);co_await settle();
-            require(!unloaded.Current()&&!unloaded.Show(untagged,{}),L"Unloaded source query opened on replacement anchor");empty();
-            root.Children().InsertAt(0,anchor);co_await settle();++checks;
-            phase=L"escape";auto escaped=owner.Begin(data,anchor,menu());pending();anchor.Focus(FocusState::Programmatic);privacy();
-            INPUT keyboard[2]{};keyboard[0].type=keyboard[1].type=INPUT_KEYBOARD;keyboard[0].ki.wVk=keyboard[1].ki.wVk=VK_ESCAPE;keyboard[1].ki.dwFlags=KEYEVENTF_KEYUP;
-            require(SendInput(2,keyboard,sizeof(INPUT))==2,L"Native Escape injection failed");co_await wait([this]{return keys==1&&!owner.Active();},L"Native Escape cancellation timed out");
-            require(keys==1&&!escaped.Current()&&!escaped.Show(anchor,{}),L"Native Escape did not cancel delayed popup");empty();++checks;
-            phase=L"originating-press";nativePress(anchor,true);
-            co_await wait([this]{return originPresses==1;},L"Originating native press did not reach source");co_await settle();
-            require(origin&&origin->Current(),L"Popup canceled itself on its originating routed press");pending();
-            nativePress(untagged);co_await wait([this]{return presses==1&&!owner.Active();},L"Next native press did not cancel originating popup request");
-            require(!origin->Current()&&!origin->Show(anchor,{}),L"Canceled originating request reopened popup");empty();++checks;
-            phase=L"untagged-press";auto beforePress=presses;auto pressed=owner.Begin(data,anchor,menu());pending();co_await settle();co_await wait([this]{return anchor.IsLoaded()&&untagged.ActualWidth()>0&&GetForegroundWindow()==hwnd;},L"Fixture did not become arranged and foreground");privacy();
-            nativePress(untagged);co_await wait([this,beforePress]{return presses==beforePress+1&&!owner.Active();},L"Native untagged press cancellation timed out");
-            require(presses==beforePress+1&&!pressed.Current()&&!pressed.Show(anchor,{}),L"Handled native untagged press did not cancel delayed popup");empty();++checks;
-            phase=L"blur";auto beforeBlur=blurs;auto blurred=owner.Begin(data,anchor,menu());pending();other.Activate();SetForegroundWindow(handle(other));co_await wait([this,beforeBlur]{return blurs>beforeBlur&&!owner.Active();},L"Native deactivation cancellation timed out");
-            require(blurs>beforeBlur&&!blurred.Current()&&!blurred.Show(anchor,{}),L"Native window deactivation did not cancel delayed popup");empty();auto wrongOwner=owner.Begin(data,anchor,menu());
-            require(!wrongOwner.Current()&&!wrongOwner.Show(anchor,{}),L"Popup accepted source owned by background window");empty();++checks;
-            window.Activate();SetForegroundWindow(hwnd);co_await wait([this]{return anchor.IsLoaded()&&untagged.ActualWidth()>0&&GetForegroundWindow()==hwnd;},L"Fixture did not become arranged and foreground");privacy();
-            phase=L"opening-gap";auto beforeGap=opened;auto opening=owner.Begin(data,anchor,menu());pending();require(opening.Show(anchor,{}),L"Current opening-gap popup did not show");
-            require(owner.Pending()&&opened==beforeGap,L"Opening-gap prerequisite reached Opened synchronously");
-            require(data->dismissTransients(),L"Opening popup ignored window cancellation registry");co_await settle();
-            require(opened==beforeGap&&!visiblePopup(),L"Opening-gap cancellation left a late or visible native popup");
-            require(!opening.Current()&&!opening.Show(anchor,{}),L"Opening-gap canceled reply reopened popup");empty();
-            phase=L"ordinary-opening";co_await ordinaryOpening();phase=L"ordinary-closing";co_await ordinaryClosing();++checks;
-            phase=L"show-close";auto beforeOpen=opened;auto beforeClosed=closedCount;auto shown=owner.Begin(data,anchor,menu());pending();require(shown.Show(anchor,{}),L"Current popup did not show");co_await wait([this,beforeOpen]{return opened==beforeOpen+1&&owner.Open();},L"Popup Opened timed out");
-            require(opened==beforeOpen+1&&owner.Open()&&data->transients.size()==1,L"Popup registration did not survive ShowAt through Opened");
-            require(data->dismissTransients(),L"Visible popup ignored cancellation registry");co_await wait([this,beforeClosed]{return closedCount==beforeClosed+1&&!visiblePopup();},L"Native popup Closed acknowledgement or visible-popup retirement timed out");
-            require(!shown.Current()&&!shown.Show(anchor,{}),L"Reply reopened closed popup");empty();++checks;
-            phase=L"header-context-ordering";co_await headerContextOrdering();
-            phase=L"workspace-ime";co_await workspaceIme();
-            phase=L"shortcut-search-ime";co_await shortcutSearchIme();
-            phase=L"customization-name-ack";co_await customizationDraft();
-            phase=L"native-default-ime";co_await defaultIme();
-            phase=L"layer-language-draft";co_await layerLanguageDraft();
-            phase=L"paper-name-ime";co_await paperNameIme();
-            phase=L"settings-resize";co_await settingsResize();
-            phase=L"window-close";auto closed=owner.Begin(data,anchor,menu());window.Close();co_await settle();
-            require(!closed.Current()&&!closed.Show(anchor,{}),L"Reply reopened canceled owner");empty();++checks;
+            if(group==L"controls")co_await controlCases();
+            else if(group==L"text-layout")co_await textLayoutCases();
         } catch(hresult_error const& e){resultCode=1;wchar_t hex[11]{};swprintf_s(hex,L"0x%08X",static_cast<unsigned>(e.code().value));error=hstring(hex)+L": "+e.message();}catch(...){resultCode=1;error=L"Unhandled popup fixture failure";}
-        owner.Cancel();auto count=checks;auto imeCount=imeChecks;auto step=to_string(phase);auto message=to_string(error);auto path=output;
+        owner.Cancel();auto count=checks;auto imeCount=imeChecks;auto step=to_string(phase);auto suite=to_string(group);auto message=to_string(error);auto path=output;
         A imeEvents;for(auto const& event:*imeTrace)imeEvents.Append(event);auto imeJson=to_string(imeEvents.Stringify());
         co_await resume_background();
         {std::ofstream file(path.parent_path()/L"workspace-ime-events.json");file<<imeJson;if(!file)resultCode=1;}
-        {std::ofstream file(path);file<<"{\"passed\":"<<count<<",\"ime_passed\":"<<imeCount<<",\"exit_code\":"<<resultCode<<",\"phase\":\""<<step<<"\"}\n";if(!file)resultCode=1;}
+        {std::ofstream file(path);file<<"{\"group\":\""<<suite<<"\",\"passed\":"<<count<<",\"ime_passed\":"<<imeCount<<",\"exit_code\":"<<resultCode<<",\"phase\":\""<<step<<"\"}\n";if(!file)resultCode=1;}
         if(!message.empty()){std::ofstream file(path.parent_path()/L"popup-fixture-error.log");file<<message;}
         co_await apartment;other.Close();if(!windowClosed)window.Close();Application::Current().Exit();
     }
     void init(std::filesystem::path path){
         output=path.parent_path()/L"popup-fixture-result.json";context.apply(data);
+        wchar_t requested[32]{};auto length=GetEnvironmentVariableW(L"CAPY_POPUP_GROUP",requested,32);group=length&&length<32?hstring(requested):hstring{};
+        require(group==L"controls"||group==L"text-layout",L"Popup fixture group must be controls or text-layout");
         wchar_t theme[16]{};GetEnvironmentVariableW(L"CAPY_POPUP_THEME",theme,16);root.RequestedTheme(std::wstring(theme)==L"light"?ElementTheme::Light:ElementTheme::Dark);
         anchor.Content(box_value(L"Delayed popup source"));untagged.Content(box_value(L"Untagged input target"));
         root.Children().Append(anchor);root.Children().Append(untagged);root.Width(400);root.Height(240);

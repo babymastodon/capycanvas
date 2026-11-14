@@ -27,11 +27,12 @@ function Check-VisibleText([string]$Id,[string]$Expected){
   if($current.Name -ne $Expected){throw "Native visible text stayed stale for $Id; expected '$Expected'"}
  }elseif(!(Find $Expected -Name -Within $control -Type ([System.Windows.Automation.ControlType]::Text) -Visible)){throw "Native visible content stayed stale for $Id; expected '$Expected'"}
 }
-function Surface-Languages([string]$Surface,[scriptblock]$Assert,$Window=$first){
+function Surface-Languages([string]$Surface,[scriptblock]$Assert,$Window=$first,[scriptblock]$Acknowledged){
  foreach($choice in $seen){
   Use-Window $second;Language-Choice $choice.index|Out-Null
-  Wait-Until {(Model $Window).windows_active_tag -eq $choice.tag} 'Retained workflow did not adopt the new context' 30
-  Use-Window $Window;& $Assert
+  Use-Window $Window
+  Wait-Until {(Model $Window).windows_active_tag -eq $choice.tag -and (!$Acknowledged -or (& $Acknowledged))} 'Retained workflow did not adopt the new context' 30
+  & $Assert
   Capture-Window $Window ($choice.tag+'-'+$Surface)
  }
 }
@@ -121,6 +122,9 @@ function Profile-Surfaces{
   if($details.feature_copy.color.current_source -ne (Catalog-Text $choice.tag 'color-features-color-current-source')){throw 'Source profile row did not use the canonical current copy'}
   Check-VisibleText 'document-source-current-label' $details.feature_copy.color.current_source
   if((Control 'document-source-profile').Current.Name -ne $details.source_profile -or ((Control 'document-source-profile').GetRuntimeId() -join ':') -ne $sourceIdentity){throw 'Source profile caption or retained label did not match the current shared metadata'}
+ } -Acknowledged {
+  $control=Find 'document-profile-choice'
+  $control -and $control.Current.Name -eq (Model $Window).windows_document.details.feature_copy.color.current_source -and ($control.GetRuntimeId() -join ':') -eq $choiceIdentity
  }
  Invoke 'CloseButton';Wait-Until {$view=Model;$view -and !$view.windows_document} 'Source repair did not cancel' 30
  Menu-Command 'file' 'export_document'

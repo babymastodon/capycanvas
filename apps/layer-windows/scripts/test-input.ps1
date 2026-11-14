@@ -107,6 +107,70 @@ if($LASTEXITCODE -ne 0){throw 'Model update replay failed.'}
 
 & {
  $tokens=$null;$errors=$null
+ $profiles=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'LocalizationProfiles.ps1'),[ref]$tokens,[ref]$errors)
+ if($errors.Count){throw 'Localization profile fixture did not parse'}
+ foreach($name in @('Surface-Languages','Check-Copy')){
+  $definition=$profiles.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
+  if(!$definition){throw "Missing retained profile function: $name"}
+  Invoke-Expression $definition.Extent.Text
+ }
+ $surface=@($profiles.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Surface-Languages' -and $node.CommandElements[1].Extent.Text -eq "'retained-source-profile'"},$true))
+ if($surface.Count -ne 1){throw 'Expected one retained source profile language exercise'}
+ $first=[pscustomobject]@{id=41};$second=[pscustomobject]@{id=42};$seen=@([pscustomobject]@{index=1;tag='en'})
+ $choiceIdentity='4:1';$sourceIdentity='4:2'
+ $script:profileModel=[pscustomobject]@{windows_active_tag='en';state=[pscustomobject]@{document_file=[pscustomobject]@{revision=7}};windows_document=[pscustomobject]@{details=[pscustomobject]@{source_profile='Embedded profile';feature_copy=[pscustomobject]@{color=[pscustomobject]@{current_source='Current source profile'}}}}}
+ $sourceDocument=$script:profileModel.state.document_file|ConvertTo-Json -Depth 20 -Compress
+ $script:profileChoice=[pscustomobject]@{Current=[pscustomobject]@{Name='Previous caption'}}
+ $script:profileChoice|Add-Member ScriptMethod GetRuntimeId {if($script:profileCase -eq 'replaced'){4;9}else{4;1}}
+ $script:profileSource=[pscustomobject]@{Current=[pscustomobject]@{Name='Embedded profile'}}
+ $script:profileSource|Add-Member ScriptMethod GetRuntimeId {4;2}
+ function Use-Window($Window){$script:profileWindow=$Window.id}
+ function Language-Choice($Index){if($script:profileWindow -ne 42 -or $Index -ne 1){throw 'Retained profile language choice changed its publisher'}}
+ function Model($Window){if($Window.id -ne 41){throw 'Retained profile read another window model'};$script:profileModel}
+ function Fresh-Model($Window,$Tag){if($script:profileWindow -ne 41 -or $Window.id -ne 41 -or $Tag -ne 'en'){throw 'Retained profile assertions changed their target'};$script:profileAssertions++;$script:profileModel}
+ function Find($Id){
+  if($script:profileWindow -ne 41 -or $Id -ne 'document-profile-choice'){throw 'Retained profile acknowledgement inspected another control or window'}
+  if($script:profileCase -ne 'missing'){$script:profileChoice}
+ }
+ function Control($Id){
+  if($script:profileWindow -ne 41){throw 'Retained profile assertion inspected another window'}
+  switch($Id){'document-profile-choice'{$script:profileChoice};'document-source-profile'{$script:profileSource};default{throw "Unexpected retained profile control: $Id"}}
+ }
+ function Catalog-Text($Tag,$Id){if($Tag -ne 'en' -or $Id -ne 'color-features-color-current-source'){throw 'Retained profile canonical check changed'};'Current source profile'}
+ function Check-VisibleText($Id,$Expected){if($Id -ne 'document-source-current-label' -or $Expected -ne 'Current source profile'){throw 'Retained profile visible-copy assertion changed'}}
+ function Capture-Window($Window,$Name){if($Window.id -ne 41 -or $Name -ne 'en-retained-source-profile'){throw 'Retained profile capture changed its target'};$script:profileCaptures++}
+ function Wait-Until([scriptblock]$Condition,[string]$Message,[int]$Seconds){
+  $script:profileWaits++
+  if($Seconds -ne 30){throw 'Retained profile changed its existing acknowledgement bound'}
+  foreach($publication in 1..2){
+   if($publication -eq 2 -and $script:profileCase -eq 'caption'){$script:profileChoice.Current.Name='Current source profile'}
+   $script:profilePolls++
+   if(& $Condition){return}
+   if($script:profileAssertions -or $script:profileCaptures){throw 'Retained profile asserted or captured before native acknowledgement'}
+  }
+  throw $Message
+ }
+ foreach($case in @('caption','stale','replaced','missing')){
+  $script:profileCase=$case;$script:profileWaits=0;$script:profilePolls=0;$script:profileAssertions=0;$script:profileCaptures=0
+  $script:profileChoice.Current.Name=if($case -eq 'replaced'){'Current source profile'}else{'Previous caption'}
+  $failure=$null
+  try{Invoke-Expression $surface[0].Extent.Text}catch{$failure=$_.Exception.Message}
+  if($case -eq 'caption' -and $failure){throw $failure}
+  if($script:profileWaits -ne 1 -or $script:profilePolls -ne 2){throw "Retained profile did not use one state acknowledgement budget: $case"}
+  if($case -eq 'caption'){
+   if($script:profileAssertions -ne 1 -or $script:profileCaptures -ne 1){throw 'Retained profile did not assert and capture exactly once after native publication'}
+  }elseif($failure -ne 'Retained workflow did not adopt the new context' -or $script:profileAssertions -or $script:profileCaptures){throw "Retained profile accepted an unacknowledged native caption or identity: $case"}
+ }
+ foreach($case in @('stale','replaced')){
+  $script:profileCase=$case;$script:profileChoice.Current.Name=if($case -eq 'replaced'){'Current source profile'}else{'Previous caption'}
+  $failure=$null
+  try{Check-Copy 'document-profile-choice' 'Current source profile' $choiceIdentity}catch{$failure=$_.Exception.Message}
+  if($failure -ne 'Retained native control/caption changed incorrectly: document-profile-choice'){throw "Retained profile lost its original caption/identity assertion: $case"}
+ }
+}
+
+& {
+ $tokens=$null;$errors=$null
  $properties=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'LocalizationProperties.ps1'),[ref]$tokens,[ref]$errors)
  if($errors.Count){throw 'Localization property fixture did not parse'}
  $tool=$properties.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Tool-Surfaces'},$false)
@@ -363,4 +427,65 @@ int main(){
     if($LASTEXITCODE -ne 0){throw 'Layer contact generation test build failed'}
     & $executable
     if($LASTEXITCODE -ne 0){throw 'Layer contact generation trace stayed stale before contact validation'}
+}
+
+& {
+    $native=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '../WorkspaceView.cpp'))
+    $gate=[regex]::Matches($native,'(?m)^ +[^\r\n]*data->apply\(configurationInputs,[^\r\n]*')
+    if($gate.Count -ne 1){throw 'Workspace configuration gate is missing'}
+    $source=Join-Path $OutputDirectory 'configuration-gate.cpp'
+    $object=Join-Path $OutputDirectory 'configuration-gate.obj'
+    $executable=Join-Path $OutputDirectory 'configuration-gate-test.exe'
+    $harness=@'
+#include <windows.h>
+#include "NativeJson.h"
+#include "CanvasModelUpdate.h"
+#include <cassert>
+#include <memory>
+using namespace CapyUi;
+struct Expansion {
+    std::shared_ptr<CanvasModelSource> data;
+    J geometry;
+    int applied=0;
+    void Apply(double){
+        assert(!CanvasModelInputs::Capture::Active());++applied;
+        geometry=str(object(data->state,L"customization"),L"expanded").empty()?J{}:J::Parse(LR"({"group":1})");
+    }
+};
+struct View {
+    std::shared_ptr<CanvasModelSource> data=std::make_shared<CanvasModelSource>();
+    CanvasModelInputs configurationInputs;
+    std::unique_ptr<Expansion> expansion=std::make_unique<Expansion>(Expansion{data});
+    bool configured=false;
+    int presented=0;
+    double configurationHeight()const{return 0;}
+    void updateConfiguration(){configured=!str(object(data->state,L"customization"),L"expanded").empty()||(configured&&expansion->geometry.Size());}
+    void present(){
+        assert(!CanvasModelInputs::Capture::Active());++presented;
+        if(!expansion->geometry.Size()&&str(object(data->state,L"customization"),L"expanded").empty())configured=false;
+    }
+    void applyState(bool layoutChanged){
+'@
+    $harness+="`n"+$gate[0].Value+"`n    }`n};`n"+@'
+int main(){
+    winrt::init_apartment();
+    View view;CanvasModelUpdate models;
+    auto publish=[&](wchar_t const* packet,bool layoutChanged){
+        models.Read(J::Parse(packet));CanvasModelSource::Adoption adoption(*view.data,models.Model(),models.changes);view.applyState(layoutChanged);
+    };
+    publish(LR"({"state":{"customization":{"expanded":"brush_size"},"brush":{"diameter":9}}})",true);
+    assert(view.configured&&!view.expansion->applied&&!view.presented);
+    view.expansion->Apply(0);view.present();
+    publish(LR"({"model_update":[[["state","brush","diameter"],12]]})",false);
+    assert(view.configured&&view.expansion->applied==1&&view.presented==1);
+    publish(LR"({"model_update":[[["state","customization","expanded"],null]]})",false);
+    assert(view.expansion->applied==2&&view.presented==2);
+    assert(!view.configured&&!view.expansion->geometry.Size());
+}
+'@
+    [IO.File]::WriteAllText($source,$harness)
+    & cl /nologo /std:c++20 /EHsc /W4 /WX $optimization ('/I'+(Join-Path $PSScriptRoot '..')) $source "/Fo$object" "/Fe$executable" windowsapp.lib /link @manifest
+    if($LASTEXITCODE -ne 0){throw 'Workspace configuration gate test build failed'}
+    & $executable
+    if($LASTEXITCODE -ne 0){throw 'A state-only configuration close kept the expanded panel configuration'}
 }

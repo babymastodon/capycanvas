@@ -60,6 +60,9 @@ fn resources(key:&str,checkpoint:&Checkpoint,lease:Arc<dyn Send+Sync>)->Result<B
 async fn publish_ledger(store:&MetadataStore,ledger:&ImportLedger)->Result<(),String> {
     ledger.validate()?;store.publish(&serde_json::to_vec(ledger).map_err(|error|error.to_string())?).await
 }
+async fn set_aside(store:&MetadataStore,ledger:&mut ImportLedger,source:&str,detail:String)->Result<Option<String>,String> {
+    ledger.unreadable.insert(source.into());publish_ledger(store,ledger).await?;Ok(Some(detail))
+}
 async fn copy(stores:&SessionStores,record:&ImportRecord,expected:Option<PortableId>,checkpoint:&Checkpoint,lease:Arc<dyn Send+Sync>)->Result<PortableId,ImportFailure> {
     checkpoint.verified(&record.source.key)?;
     let resources=resources(&record.source.key,checkpoint,lease).map_err(ImportFailure::Invalid)?;
@@ -85,11 +88,12 @@ async fn stage_drawing(record:&ImportRecord,source:&SessionManifest,roots:&mut s
     roots.insert(record.drawing.clone());Ok(Some((window,staged)))
 }
 async fn import_drawing(stores:&SessionStores,index:&MetadataStore,ledger:&mut ImportLedger,roots:&mut std::collections::BTreeSet<String>,origin:&str,source_manifest:&SessionManifest,key:&str)->Result<Option<String>,String> {
+    if ledger.unreadable.contains(key) {return Ok(None);}
     let Some(lease)=store_transport::legacy_lock("drawing",key).await? else {return Ok(None);};
     let value=store_transport::call("legacy-snapshot",serde_json::json!({"key":key}),None).await?;
-    if value.is_undefined() || value.is_null() {return Err("The saved drawing is missing".into());}
-    let snapshot:Snapshot=serde_wasm_bindgen::from_value(value.clone()).map_err(|error|error.to_string())?;
-    let version=snapshot.current.version(key)?;
+    let read=if value.is_undefined() || value.is_null() {Err("The saved drawing is missing".to_string())}
+        else {serde_wasm_bindgen::from_value::<Snapshot>(value.clone()).map_err(|error|error.to_string()).and_then(|snapshot|Ok((snapshot.current.version(key)?,snapshot)))};
+    let (version,snapshot)=match read {Ok(read)=>read,Err(detail)=>return set_aside(index,ledger,key,detail).await};
     let (current,_existing)=match ledger.records.get(key) {
         Some(previous)=>match destination_generation(previous).await? {
             Some((Destination::Copy(generation),lease))=>(generation,Some(lease)),
@@ -128,6 +132,10 @@ async fn import_drawing(stores:&SessionStores,index:&MetadataStore,ledger:&mut I
             ledger.published(key,baseline.unwrap(),true)?;publish_ledger(index,ledger).await?;Ok(Some(detail))
         },
         Err(ImportFailure::Changed)=>Err(ImportFailure::Changed.message()),
+        Err(ImportFailure::Invalid(detail)|ImportFailure::Unsupported(detail))=>{
+            let id=staged.drawings.iter().find(|drawing|drawing.key==record.drawing).ok_or("Missing imported drawing")?.id;
+            staged.remove(id)?.publish_index(&window).await?;set_aside(index,ledger,key,detail).await
+        },
         Err(error)=>{
             let failed=block_copy(&staged,&record.drawing)?;failed.publish_index(&window).await?;
             Err(error.message())
@@ -137,7 +145,8 @@ async fn import_drawing(stores:&SessionStores,index:&MetadataStore,ledger:&mut I
 async fn import_sources(stores:&SessionStores,only:Option<&str>)->Result<Vec<String>,String> {
     let Some(io)=store_transport::transport("imports").await? else {return Ok(Vec::new());};
     let index=MetadataStore::new(io,ProjectLimits::for_import().metadata_bytes);
-    let mut ledger:ImportLedger=match index.read().await? {Some(bytes)=>serde_json::from_slice(&bytes).map_err(|error|error.to_string())?,None=>Default::default()};ledger.validate()?;
+    let ledger=index.read().await.and_then(|bytes|bytes.map_or(Ok(ImportLedger::default()),|bytes|serde_json::from_slice::<ImportLedger>(&bytes).map_err(|error|error.to_string())));
+    let Ok(mut ledger)=ledger.and_then(|ledger|ledger.validate().map(|()|ledger)) else {return Ok(Vec::new());};
     let names:Vec<String>=serde_wasm_bindgen::from_value(store_transport::call("legacy-windows",serde_json::Value::Null,None).await?).map_err(|error|error.to_string())?;
     let mut warnings=Vec::new();
     let mut roots=std::collections::BTreeSet::new();
@@ -146,11 +155,12 @@ async fn import_sources(stores:&SessionStores,only:Option<&str>)->Result<Vec<Str
         if let Ok(Some(manifest))=SessionManifest::read_index(&MetadataStore::new(io,1024*1024)).await {roots.extend(manifest.drawings.into_iter().map(|drawing|drawing.key));}
     }
     for origin in names {
+        if ledger.unreadable.contains(&origin) {continue;}
         let Some(_lease)=store_transport::legacy_lock("window",&origin).await? else {continue;};
         let value=store_transport::call("legacy-manifest",serde_json::json!({"key":origin}),None).await?;
         if value.is_undefined() || value.is_null() {continue;}
         let source:SessionManifest=match serde_wasm_bindgen::from_value::<SessionManifest>(value).map_err(|error|error.to_string()).and_then(|source|source.validate().map(|()|source)) {
-            Ok(source)=>source,Err(error)=>{warnings.push(error);continue;},
+            Ok(source)=>source,Err(error)=>{warnings.extend(set_aside(&index,&mut ledger,&origin,error).await?);continue;},
         };
         for drawing in source.drawings.iter().filter(|drawing|only.is_none_or(|only|drawing.key==only)) {
             match import_drawing(stores,&index,&mut ledger,&mut roots,&origin,&source,&drawing.key).await {

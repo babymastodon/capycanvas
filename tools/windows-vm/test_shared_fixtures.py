@@ -406,6 +406,113 @@ class SharedRunTests(unittest.TestCase):
 
 
 
+    def test_graphics_withdrawal_drains_only_its_account_and_collects_before_cleanup(self):
+        run=self.build(["lost","healthy","later"],workers=2)
+        machine=run.machines[0]
+        machine.runtime.mkdir(parents=True,exist_ok=True)
+        vm.write_session_health(machine,"boot","boot-a")
+        bad=vm.SharedSession(machine,"capy01",MagicMock(),run.id,1)
+        good=vm.SharedSession(machine,"capy02",MagicMock(),run.id,2)
+        identity={"account":"HOST\\capy01","session_id":1,"boot_utc":"boot-a","logon_sid":"S-1-5-5-1-1"}
+        good.graphics_identity=dict(identity,account="HOST\\capy02",session_id=2,logon_sid="S-1-5-5-1-2")
+        good.results=[{"name":"healthy","exit":0,"seconds":1}]
+        good.last_passed=dict(good.results[-1],observed_utc=vm.time.time())
+        for session in (bad,good):run.queue.add_runner(session.id)
+        calls=[]
+        def capture(session,proof,target,role):
+            self.assertEqual(vm.withdrawn_accounts(machine),{"capy01"})
+            self.assertTrue(vm.session_evidence_pending(machine))
+            self.assertFalse(bad.closed)
+            self.assertFalse(good.closed)
+            calls.append((session.account,role))
+            return {"status":"retrieved","role":role}
+        with patch.object(run,"capture_session_graphics",side_effect=capture),patch.object(vm,"guest") as guest:
+            run.withdraw_graphics_session(bad,identity,[good])
+        self.assertCountEqual(calls,[("capy01","affected"),("capy02","healthy")])
+        self.assertEqual(run.queue.draining,{bad.id})
+        self.assertFalse(good.draining)
+        self.assertNotIn(bad.slot,run.broken,"Fresh boots must be able to readmit the account")
+        self.assertIn("graphics-evidence-complete",guest.call_args.args[1])
+        self.assertFalse(vm.session_evidence_pending(machine))
+        self.assertEqual(vm.withdrawn_accounts(machine),{"capy01"})
+        run.queue.server.server_close()
+
+    def test_graphics_poll_retains_one_failed_result_and_never_replays_it(self):
+        run=self.build(["lost","healthy","later"],workers=2)
+        machine=run.machines[0];machine.runtime.mkdir(parents=True,exist_ok=True)
+        vm.write_session_health(machine,"boot","boot-a")
+        bad=vm.SharedSession(machine,"capy01",MagicMock(),run.id,1)
+        good=vm.SharedSession(machine,"capy02",MagicMock(),run.id,2)
+        class Executor:
+            def submit(self,function,*args):
+                function(*args)
+                return MagicMock()
+        for session in (bad,good):
+            session.started=MagicMock();session.started.done.return_value=True;session.started.exception.return_value=None
+            run.queue.add_runner(session.id)
+        run.queue.assignments[bad.id]=["lost"]
+        run.queue.assignments[good.id]=["healthy"]
+        run.queue.remaining.clear();run.queue.remaining.append("later")
+        run.sessions=[bad,good]
+        identity={"account":"capy01","session_id":1,"boot_utc":"boot-a","logon_sid":"S-1-5-5-1-1"}
+        row={"name":"lost","exit":-2003304307,"seconds":2,"message":"MILERR_NO_HARDWARE_DEVICE","infrastructure_invalid":True,"infrastructure_cause":"MILERR_NO_HARDWARE_DEVICE"}
+        statuses={bad.id:{"state":"Running","complete":False,"log":json.dumps(row),"error":None,"graphics_withdrawal":json.dumps(identity)},
+                  good.id:{"state":"Running","complete":False,"log":json.dumps({"name":"healthy","exit":0,"seconds":1}),"error":None,
+                           "graphics_identity":json.dumps(dict(identity,account="capy02",session_id=2))}}
+        with patch.object(vm,"guest",return_value=SimpleNamespace(stdout=json.dumps(statuses))),patch.object(run,"capture_session_graphics",return_value={"status":"retrieved"}) as capture:
+            run.poll(Executor());run.poll(Executor())
+        self.assertEqual(bad.results,[row])
+        self.assertEqual(list(run.queue.remaining),["later"])
+        self.assertEqual(capture.call_count,2,"Each affected and healthy capture runs exactly once")
+        self.assertEqual(run.queue.draining,{bad.id})
+        self.assertFalse(good.draining)
+        run.queue.server.server_close()
+
+    def test_post_lock_recheck_rejects_a_stale_withdrawn_account(self):
+        run=self.build(["later"])
+        machine=run.machines[0];run.prepared[machine.name]="ready"
+        machine.runtime.mkdir(parents=True,exist_ok=True)
+        (machine.runtime/"sessions.json").write_text(json.dumps(["capy01","capy02"]))
+        vm.write_session_health(machine,"capy01",{"boot_utc":"boot-a"})
+        with patch.object(vm,"host_alive",return_value=True),patch.object(run,"start_session") as start:
+            run.acquire(MagicMock(),1,{machine.name:["capy01"],run.machines[1].name:[]})
+        self.assertEqual(run.sessions,[])
+        start.assert_not_called()
+        lease=run.pool.claim(machine.name,"capy01","control",self.root)
+        self.assertIsNotNone(lease,"Rejected stale readiness must release its provisional slot")
+        lease.close();run.queue.server.server_close()
+
+
+    def test_one_slow_capture_does_not_delay_another_accounts_withdrawal(self):
+        from threading import Event,Thread
+        run=self.build(["lost-a","lost-b"])
+        machine=run.machines[0];machine.runtime.mkdir(parents=True,exist_ok=True)
+        vm.write_session_health(machine,"boot","boot-a")
+        sessions=[vm.SharedSession(machine,f"capy0{i}",MagicMock(),run.id,i) for i in (1,2)]
+        statuses={}
+        for session in sessions:
+            session.started=MagicMock();session.started.done.return_value=True;session.started.exception.return_value=None
+            run.queue.add_runner(session.id)
+            identity={"account":session.account,"session_id":int(session.account[-1]),"boot_utc":"boot-a","logon_sid":"S-1-5-5-1-"+session.account[-1]}
+            statuses[session.id]={"state":"Running","complete":False,"log":json.dumps({"name":"lost-"+session.account,"exit":-2003304307,"seconds":1,"message":"lost"}),"error":None,"graphics_withdrawal":json.dumps(identity)}
+        run.sessions=sessions
+        entered=Event();release=Event();second=Event();errors=[]
+        def capture(session,identity,target,role):
+            if session.account=="capy01":entered.set();release.wait(10)
+            else:second.set()
+            return {"status":"retrieved"}
+        def poll():
+            try:run.poll(MagicMock())
+            except BaseException as error:errors.append(error)
+        with patch.object(vm,"guest",return_value=SimpleNamespace(stdout=json.dumps(statuses))),patch.object(run,"capture_session_graphics",side_effect=capture):
+            worker=Thread(target=poll);worker.start()
+            try:
+                self.assertTrue(entered.wait(2),"The first affected capture never started")
+                self.assertTrue(second.wait(2),"A slow capture delayed another account until its cleanup bound")
+            finally:release.set();worker.join(15);run.queue.server.server_close()
+        self.assertFalse(worker.is_alive());self.assertEqual(errors,[])
+
+
 class SharedImageTests(unittest.TestCase):
     def test_server_answer_file_selects_desktop_standard_and_sets_the_administrator_password(self):
         text = vm.server_unattend((Path(vm.__file__).with_name("autounattend.xml")).read_text()).replace("@PASSWORD@", "secret")
@@ -620,6 +727,7 @@ class SharedHostTimeoutTests(unittest.TestCase):
                     patch.object(vm, "shared_accounts", return_value=["capy01"]), \
                     patch.object(vm, "RdpClients", return_value=clients), \
                     patch.object(vm, "running", return_value=True), patch.object(vm, "boot") as boot, \
+                    patch.object(vm, "initialize_session_health"), \
                     patch.object(vm, "stop_machine") as stop, \
                     patch.object(vm, "guest", side_effect=subprocess.TimeoutExpired("liveness", 20)), \
                     patch.object(vm, "session_shells", side_effect=subprocess.TimeoutExpired("health", 60)) as shells:
@@ -644,6 +752,7 @@ class SharedHostHealthTests(unittest.TestCase):
                 patch.object(vm, "shared_accounts", return_value=["capy01"]), \
                 patch.object(vm, "RdpClients") as clients, \
                 patch.object(vm, "running", side_effect=running), patch.object(vm, "boot"), \
+                patch.object(vm, "initialize_session_health"), \
                 patch.object(vm, "stop_machine") as stop, \
                 patch.object(vm, "session_shells", side_effect=shells), \
                 patch.object(vm, "guest", side_effect=probe) as guest:
@@ -719,6 +828,87 @@ class SharedHostHealthTests(unittest.TestCase):
                 self.assertNotIn("-IncludeUserName",command)
                 self.assertIn(".SessionId",command)
                 self.assertIn("quser",command)
+
+
+class SessionGraphicsTests(unittest.TestCase):
+    def test_withdrawal_filters_a_stale_ready_record_without_hiding_healthy_accounts(self):
+        with TemporaryDirectory() as directory:
+            machine=SimpleNamespace(name="shared-gpu-1",runtime=Path(directory))
+            (machine.runtime/"sessions.json").write_text(json.dumps(["capy01","capy02"]))
+            health=machine.runtime/"session-health";health.mkdir()
+            (health/"boot.json").write_text(json.dumps("boot-a"))
+            (health/"capy01.json").write_text(json.dumps({"boot_utc":"boot-a","account":"capy01","logon_sid":"S-1-5-5-1-2"}))
+            with patch.object(vm,"host_alive",return_value=True):
+                self.assertEqual(vm.ready_accounts(machine),["capy02"],"A withdrawn account was readmitted from the stale explorer record")
+
+    def test_only_a_new_guest_boot_clears_withdrawal(self):
+        with TemporaryDirectory() as directory:
+            machine=SimpleNamespace(runtime=Path(directory))
+            vm.write_session_health(machine,"boot","boot-a")
+            vm.write_session_health(machine,"capy01",{"boot_utc":"boot-a","logon_sid":"old"})
+            with patch.object(vm,"guest",return_value=SimpleNamespace(stdout="boot-a")):
+                vm.initialize_session_health(machine)
+            self.assertEqual(vm.withdrawn_accounts(machine),{"capy01"})
+            with patch.object(vm,"guest",return_value=SimpleNamespace(stdout="boot-b")):
+                vm.initialize_session_health(machine)
+            self.assertEqual(vm.withdrawn_accounts(machine),set())
+
+    def test_pending_capture_holds_idle_stop_only_within_its_recorded_bound(self):
+        with TemporaryDirectory() as directory:
+            machine=SimpleNamespace(runtime=Path(directory))
+            vm.write_session_health(machine,"capy01",{"evidence_state":"pending","evidence_deadline":100})
+            with patch.object(vm.time,"time",return_value=99):self.assertTrue(vm.session_evidence_pending(machine))
+            with patch.object(vm.time,"time",return_value=100):self.assertFalse(vm.session_evidence_pending(machine))
+            vm.write_session_health(machine,"capy01",{"evidence_state":"finished","evidence_deadline":100})
+            with patch.object(vm.time,"time",return_value=99):self.assertFalse(vm.session_evidence_pending(machine))
+
+    def test_host_waits_for_pending_capture_before_its_normal_idle_shutdown(self):
+        with TemporaryDirectory() as directory:
+            runtime=Path(directory);machine=SimpleNamespace(name="shared-gpu-1",server=True,runtime=runtime)
+            vm.write_session_health(machine,"capy01",{"evidence_state":"pending","evidence_deadline":10000})
+            clock=[0];observations=[]
+            def sleep(seconds):
+                clients.close.assert_not_called();stop.assert_not_called()
+                observations.append(clock[0]);clock[0]+=601
+                if len(observations)==2:
+                    vm.write_session_health(machine,"capy01",{"evidence_state":"finished","evidence_deadline":10000})
+            pool=vm.session_pool.Pool(runtime/"pool");lock_file=vm.cpu_pool.lock_file
+            def lock(path):return MagicMock() if path.name=="host-lock" else lock_file(path)
+            with patch.object(vm,"selected",return_value=machine),patch.object(vm.cpu_pool,"lock_file",side_effect=lock), \
+                    patch.object(vm.signal,"signal"),patch.object(vm,"shared_pool",return_value=pool), \
+                    patch.object(vm,"shared_settings",return_value={"idle_minutes":10}),patch.object(vm,"shared_accounts",return_value=["capy01"]), \
+                    patch.object(vm,"RdpClients") as clients_type,patch.object(vm,"running",return_value=True), \
+                    patch.object(vm,"boot"),patch.object(vm,"initialize_session_health"),patch.object(vm,"stop_machine") as stop, \
+                    patch.object(vm,"session_shells",return_value={"capy01"}),patch.object(vm.time,"time",return_value=0), \
+                    patch.object(vm.time,"monotonic",side_effect=lambda:clock[0]),patch.object(vm.time,"sleep",side_effect=sleep):
+                clients=clients_type.return_value
+                vm.shared_host(SimpleNamespace())
+            self.assertEqual(observations,[0,601])
+            stop.assert_called_once_with(machine)
+            clients.close.assert_called_once()
+
+
+    def test_foreign_lease_survives_another_accounts_withdrawal(self):
+        with TemporaryDirectory() as directory:
+            root=Path(directory);machine=SimpleNamespace(name="shared-gpu-1",runtime=root/"runtime")
+            pool=vm.session_pool.Pool(root/"pool")
+            foreign=pool.claim(machine.name,"capy02","foreign",root)
+            own=pool.claim(machine.name,"capy01","ours",root)
+            try:
+                with patch.object(vm,"shared_pool",return_value=pool),patch.object(vm,"shared_machines",return_value=[machine]):
+                    run=vm.SharedRun(SimpleNamespace(),root/"evidence","ours",MagicMock(),lambda _:None,{})
+                bad=vm.SharedSession(machine,"capy01",own,"ours",1)
+                vm.write_session_health(machine,"boot","boot-a")
+                with patch.object(run,"capture_session_graphics",return_value={"status":"retrieved"}), \
+                        patch.object(vm,"guest"),patch.object(vm,"stop_machine") as stop:
+                    run.withdraw_graphics_session(bad,{"account":"capy01","session_id":1,"logon_sid":"S-1-5-5-1-1","boot_utc":"boot-a"},[])
+                stop.assert_not_called()
+                self.assertEqual(set(pool.holders(machine.name,["capy01","capy02"])),{"capy01","capy02"})
+                with pool.closed(machine.name,["capy01","capy02"]) as closed:self.assertFalse(closed)
+                self.assertFalse(bad.closed)
+                self.assertEqual(vm.withdrawn_accounts(machine),{"capy01"})
+            finally:
+                own.close();foreign.close()
 
 
 if __name__ == "__main__":

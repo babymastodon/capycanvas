@@ -600,18 +600,6 @@ pub fn resolution_text(resolution: u32, l: &Localizer) -> String {
     l.format(MessageId::DOCUMENTS_PPI, &args)
 }
 
-fn bytes(value: u64, l: &Localizer) -> String {
-    let mut args = FluentArgs::new();
-    let megabytes = value as f64 / 1_048_576.;
-    if megabytes >= 1024. {
-        args.set("value", format!("{:.1}", megabytes / 1024.));
-        l.format(MessageId::DOCUMENTS_GIGABYTES, &args)
-    } else {
-        args.set("value", group(megabytes.round().max(1.) as u64));
-        l.format(MessageId::DOCUMENTS_MEGABYTES, &args)
-    }
-}
-
 pub fn paper_color_name(color: RgbColor, l: &Localizer) -> String {
     PAPER_COLORS.iter().find(|(_, named)| *named == color).map_or_else(|| hex(color), |(name, _)| l.text(*name).to_string())
 }
@@ -669,10 +657,10 @@ impl NewDrawingView {
         let capacity = Capacity::new(extent, setup.color.depth, limits);
         let mut args = FluentArgs::new();
         args.set("megapixels", format!("{:.1}", capacity.megapixels));
-        args.set("size", bytes(capacity.layer_bytes, l));
+        args.set("size", crate::byte_size(capacity.layer_bytes, l));
         let memory = match capacity.available {
             Some(available) => {
-                args.set("available", bytes(available, l));
+                args.set("available", crate::byte_size(available, l));
                 l.format(MessageId::DOCUMENTS_LAYER_MEMORY_AVAILABLE, &args)
             }
             None => l.format(MessageId::DOCUMENTS_LAYER_MEMORY, &args),
@@ -1053,7 +1041,7 @@ mod tests {
         assert_eq!(view.capacity, "8.7 MP");
         let roomy = NewDrawingView::new(&draft, &catalog(&settings, &l), CanvasLimits::new(16384, Some(400 * 1024 * 1024 * 1024)));
         assert_eq!(roomy.capacity, "8.7 MP");
-        assert_eq!(view.memory, "33 MB per layer · 6.0 GB available");
+        assert_eq!(view.memory, "33 MB per layer · 6 GB available");
         assert_eq!(view.size, "3,508 × 2,480 px");
         assert!(!view.problem);
         let mut wide = draft.clone();

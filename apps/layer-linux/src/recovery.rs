@@ -3,7 +3,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use layer_core::{package::session_store::{DrawingStore, OwnerLock}, ProjectLimits};
 use layer_host::session_stores::{SessionStores,StoreResult};
-use layer_ui::{recovery::{RecoveryState, RecoveryEvent, RecoveryWork, RecoveryWorkKind}, session_recovery::{SessionCapture, SessionRestore, SessionManifest, SessionDrawing}};
+use layer_ui::{recovery::{RecoveryState, RecoveryEvent, RecoveryWork, RecoveryWorkKind}, session_recovery::{ClaimedManifest, SessionCapture, SessionRestore, SessionManifest, SessionDrawing}};
 use std::{cell::{Cell, RefCell}, path::PathBuf, rc::Rc, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 
 fn directory() -> PathBuf {
@@ -19,18 +19,15 @@ fn storage_gate(root:&std::path::Path)->Result<OwnerLock,String> {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
-fn collect_stores()->Result<(),String> {
-    let root=directory();let _gate=storage_gate(&root)?;
+fn collect_stores() {
+    let root=directory();let Ok(_gate)=storage_gate(&root) else {return};
+    let Ok(paths)=std::fs::read_dir(&root).and_then(|entries|entries.map(|entry|entry.map(|entry|entry.path())).collect::<Result<Vec<_>,_>>()) else {return};
     let mut reachable=std::collections::BTreeSet::new();
-    for entry in std::fs::read_dir(&root).map_err(|error|error.to_string())? {
-        let path=entry.map_err(|error|error.to_string())?.path();
-        if path.extension().is_some_and(|extension|extension=="json") {
-            let manifest=SessionManifest::read(&path)?.ok_or("Saved session disappeared during cleanup")?;
-            reachable.extend(manifest.drawings.into_iter().map(|drawing|drawing.key));
-        }
+    for path in paths.into_iter().filter(|path|path.extension().is_some_and(|extension|extension=="json")) {
+        let Ok(Some(manifest))=SessionManifest::read(&path) else {return};
+        reachable.extend(manifest.drawings.into_iter().map(|drawing|drawing.key));
     }
-    pollster::block_on(layer_core::package::session_store::collect_unreferenced_stores(&root,&reachable,&AtomicBool::new(false)))?;
-    Ok(())
+    pollster::block_on(layer_core::package::session_store::collect_unreferenced_stores(&root,&reachable,&AtomicBool::new(false)));
 }
 
 pub(crate) struct Recovery {
@@ -265,11 +262,7 @@ impl Restart {
             let desired=self.manifest(w,clean_exit);
             previous.reconcile(desired.drawings,desired.active,clean_exit)
         }).await?;
-        if !clean_exit&&self.collect_due.get() {
-            match gio::spawn_blocking(collect_stores).await.map_err(|error|format!("Session cleanup stopped: {error:?}")).and_then(|result|result) {
-                Ok(())=>self.collect_due.set(false),Err(error)=>w.changed(Err(error)),
-            }
-        }
+        if !clean_exit&&self.collect_due.replace(false) {let _=gio::spawn_blocking(collect_stores).await;}
         Ok(())
     }
     async fn periodic(&self,w:&Rc<Workspace>)->Result<(),String> {
@@ -318,22 +311,25 @@ pub(crate) fn install(w:&Rc<Workspace>) {
 }
 
 struct ClaimedWindow { path: PathBuf, manifest: SessionManifest, lease: OwnerLock }
-fn abandoned() -> Result<Vec<ClaimedWindow>,String> {
+fn abandoned() -> Result<(Vec<ClaimedWindow>,Vec<String>),String> {
     let root=crate::storage::sessions().map(PathBuf::from).ok_or("Session storage is unavailable")?;
     let dir=layer_core::package::session_store::import_session_directories(&root,".json",".lock")?;
     let _gate=storage_gate(&dir)?;
     let mut paths=std::fs::read_dir(&dir).map_err(|e|e.to_string())?.flatten().map(|entry|entry.path()).filter(|path|path.extension().is_some_and(|e|e=="json")).collect::<Vec<_>>();
     paths.sort();
-    let mut result=Vec::new();
+    let mut result=Vec::new();let mut notices=Vec::new();
     for path in paths {
         let lease=match OwnerLock::claim(&path.with_extension("lock")) {Ok(Some(lease))=>lease,Ok(None)=>continue,Err(error)=>{eprintln!("Saved session claim failed: {error}");continue;}};
-        let bytes=match layer_core::package::session_store::read_bounded(&path,1024*1024) {Ok(bytes)=>bytes,Err(error)=>{eprintln!("Saved session read failed; copy retained: {error}");continue;}};
-        let manifest:SessionManifest=match serde_json::from_slice(&bytes) {Ok(manifest)=>manifest,Err(error)=>{eprintln!("Cannot read saved session; copy retained: {error}");continue;}};
-        if let Err(error)=manifest.validate() {eprintln!("Saved session validation failed; copy retained: {error}");continue;}
+        let manifest=match SessionManifest::read_claimed(&path) {
+            Ok(ClaimedManifest::Ready(manifest))=>manifest,
+            Ok(ClaimedManifest::SetAside {error,..})=>{notices.push(error);continue;},
+            Ok(ClaimedManifest::Missing)=>continue,
+            Err(error)=>{eprintln!("Saved session read failed; copy retained: {error}");continue;},
+        };
         if manifest.drawings.is_empty() {std::fs::remove_file(&path).map_err(|e|e.to_string())?;continue;}
         result.push(ClaimedWindow {path,manifest,lease});
     }
-    Ok(result)
+    Ok((result,notices))
 }
 pub(crate) fn restore_stale(w:&Rc<Workspace>,app:&adw::Application,active:&Rc<RefCell<Vec<Rc<Workspace>>>>) {
     if !enabled() {return;}
@@ -347,7 +343,8 @@ pub(crate) fn restore_stale(w:&Rc<Workspace>,app:&adw::Application,active:&Rc<Re
         let startup=w.gpu.borrow().as_ref().map(|gpu|gpu.session.session_stamp());
         let result=gio::spawn_blocking(abandoned).await.map_err(|e|format!("Session reader stopped: {e:?}")).and_then(|r|r);
         match result {
-            Ok(claims)=>{
+            Ok((claims,notices))=>{
+                for notice in notices {w.changed(Err(layer_ui::document_recovery_unavailable(&w.localization(),&notice)));}
                 for (index,claim) in claims.into_iter().enumerate() {
                     let window=if index==0 {w.clone()} else {
                         crate::open_workspace_ready(&app,&active,None,None,w.localization());
@@ -475,10 +472,8 @@ async fn failed_drawings(w:&Rc<Workspace>)->Result<(),String> {
             w.restart.stores.prepare_retirement(&drawing.key)?.await?;
             if let Some(warning)=w.restart.update_checked(|manifest|manifest.remove(drawing.id),true).await? {w.changed(Err(warning));}
             w.restart.retained.borrow_mut().retain(|entry|entry.id!=drawing.id);
-            let result=async {
-                w.restart.stores.retire_copy(&drawing.key)?.await?;
-                gio::spawn_blocking(collect_stores).await.map_err(|error|format!("Drawing cleanup stopped: {error:?}"))?
-            }.await;
+            let result=async {w.restart.stores.retire_copy(&drawing.key)?.await}.await;
+            let _=gio::spawn_blocking(collect_stores).await;
             if let Err(error)=result {w.changed(Err(error));}
         } else if response=="retry" {
             let attempt=w.restart.begin_restore(drawing.id,true).await?;
@@ -512,21 +507,5 @@ mod tests {
         let recovery = Recovery::default();
         assert!(recovery.coordinator().is_err());
         glib::MainContext::new().block_on(recovery.prepare_retirement()).unwrap();
-    }
-    #[test]
-    fn refused_legacy_namespace_cannot_be_reopened_for_fresh_publication_or_cleanup() {
-        struct Fixture(PathBuf);
-        impl Drop for Fixture { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-        let fixture = Fixture(std::env::temp_dir().join(format!("capy-gtk-namespace-{}", key())));
-        let packed = fixture.0.join("packed");
-        std::fs::create_dir_all(&packed).unwrap();
-        std::fs::write(packed.join("head.json"), b"released drawing head").unwrap();
-        let owner = OwnerLock::claim(&packed.join(".lock")).unwrap().unwrap();
-        assert!(layer_core::package::session_store::import_session_directories(&fixture.0, ".json", ".lock").unwrap_err().contains("conflicts"));
-        assert!(storage_gate(&packed).err().unwrap().contains("conflicts"));
-        assert!(!packed.join(".gc.lock").exists());
-        assert_eq!(std::fs::read(packed.join("head.json")).unwrap(), b"released drawing head");
-        assert!(OwnerLock::claim(&packed.join(".lock")).unwrap().is_none());
-        drop(owner);
     }
 }

@@ -9,6 +9,15 @@ pub(super) struct Picker {
     dirty: bool,
 }
 impl Picker {
+    pub fn prepare(&self, compiler: &crate::compile::Scope) -> bool {
+        if self.data.is_some() {
+            compiler.require([&self.pipeline], crate::startup::OTHER)
+        } else {
+            compiler.warm(&self.pipeline, crate::startup::OTHER, compiler.generation());
+            true
+        }
+    }
+
     pub fn changed(&self) -> bool { self.dirty && (self.data.is_none() || self.ready()) }
 
     fn ready(&self) -> bool { self.pipeline.ready() }

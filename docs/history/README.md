@@ -44,6 +44,9 @@ Progress notes, validation reports and other work records are not committed
   current capabilities and recommended behavior, with detailed daily-editing and
   enclosed-region coloring priorities.
 - [Color palettes](color-palettes-research.md).
+- [X11 session support](x11-session-support.md): why the Linux client needs
+  Wayland, the texture path X11 would need, the components it touches, the
+  features that stay Wayland-only and the recommended next step.
 
 ## Design records
 

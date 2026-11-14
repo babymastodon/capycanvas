@@ -27,17 +27,17 @@ struct Property:std::enable_shared_from_this<Property> {
     double epoch,layer;
     hstring key,schema;
     Property(std::shared_ptr<WorkspaceData> source,J const& control):data(std::move(source)),
-        epoch(num(object(data->state,L"document_file"),L"epoch")),
-        layer(num(object(data->state,L"layer_properties"),L"layer")),key(str(control,L"key")),
+        epoch(num(branch(data->state,L"document_file"),L"epoch")),
+        layer(num(branch(data->state,L"layer_properties"),L"layer")),key(str(control,L"key")),
         schema(propertyKindSignature(control)){}
-    J view()const{return object(data->state,L"layer_properties");}
-    J model()const{return find(array(view(),L"controls"),L"key",key);}
+    J view()const{return branch(data->state,L"layer_properties");}
+    J model()const{return find(view(),L"controls",L"key",key);}
     LocalizedCopy label()const{auto resolve=[weak=weak_from_this()]{if(auto property=weak.lock())return str(property->model(),L"label");return hstring();};return {resolve(),resolve};}
-    hstring identity()const{return O({{L"epoch",object(data->state,L"document_file").GetNamedValue(L"epoch",JsonValue::CreateNullValue())},{L"layer",view().GetNamedValue(L"layer",JsonValue::CreateNullValue())},{L"key",S(key)},{L"kind",S(propertyKindSignature(model()))}}).Stringify();}
+    hstring identity()const{return O({{L"epoch",named(branch(data->state,L"document_file"),L"epoch")},{L"layer",named(view(),L"layer")},{L"key",S(key)},{L"kind",S(propertyKindSignature(model()))}}).Stringify();}
     V value()const{return object(model(),L"value").GetNamedValue(L"value",JsonValue::CreateNullValue());}
     J curve()const{return object(model(),L"curve");}
     bool current()const{
-        return epoch==num(object(data->state,L"document_file"),L"epoch")
+        return epoch==num(branch(data->state,L"document_file"),L"epoch")
             &&layer==num(view(),L"layer",-1)&&schema==propertyKindSignature(model());
     }
     void action(J operation,hstring const& phase={})const{

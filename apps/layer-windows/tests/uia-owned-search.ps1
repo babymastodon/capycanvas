@@ -98,6 +98,7 @@ namespace CapyOwnedSearchTest {
   public static bool SetForegroundWindow(IntPtr window){Foreground=window;Activations++;return true;}
   public static IntPtr GetForegroundWindow(){return Foreground;}
  }
+ public static class Clock{public static long GetTimestamp(){return 100;}}
  public static class GeometryDriver{public static int GetDpiForWindow(IntPtr window){return 144;}}
  public class Node {
   public string AutomationId,Name;public object ControlType="control";public int ProcessId;bool offscreen;Rect bounds;public Node Parent;public Scroll Provider,TargetScroll;public int? ContentY;public bool UnclippedBounds;
@@ -124,7 +125,7 @@ namespace CapyOwnedSearchTest {
  public class Review{public int Id=33;public IntPtr MainWindowHandle=new IntPtr(132146);public bool HasExited=false;public int ExitCode=0;public void Refresh(){}public bool CloseMainWindow(){return Driver.PostMessage(MainWindowHandle,0x0010,UIntPtr.Zero,IntPtr.Zero);}}
 }
 '@
-foreach($name in @('Test-CapySearchItem','Find','Control','Wait-Scale','Wait-Until','Invoke')){
+foreach($name in @('Test-CapySearchItem','Find','Control','Wait-Scale','Wait-Until','Invoke','Review-Ready','Input-Ready')){
     $fn=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}.GetNewClosure(),$true))
     if($fn.Count -ne 1){throw 'Missing actual UIA helper'}
     . ([scriptblock]::Create($fn[0].Extent.Text.Replace('System.Windows.Automation.','CapyOwnedSearchTest.')))
@@ -363,7 +364,7 @@ if($ready.Count -ne 1 -or $statements[$ready[0]+1].Left.Extent.Text -ne '$script
     [CapyOwnedSearchTest.AutomationElement]::RootElement.Children.Clear()
     foreach($window in @($overlay,$drawing)){[CapyOwnedSearchTest.AutomationElement]::RootElement.Children.Add($window)}
     $script:root=$overlay;$script:persistenceResolutions=0;$script:persistenceWaitSeconds=$null;$script:persistenceInsideWait=$false;$actualWait=${function:Wait-Until}
-    function Model{[pscustomobject]@{brush_ready=$true}}
+    function Model{[pscustomobject]@{brush_ready=$true;windows_workspace=[pscustomobject]@{ready=$true}}}
     function Owned-DrawingWindow($Process){if($Process -ne $review -or !$script:persistenceInsideWait){throw 'Persistence resolved outside its readiness wait or for a different process'};$script:persistenceResolutions++;[pscustomobject]@{Root=$drawing;Handle=$drawing.NativeWindowHandle}}
     function Wait-Until([scriptblock]$Condition,[string]$Message,[int]$Seconds){$script:persistenceWaitSeconds=$Seconds;$script:persistenceInsideWait=$true;try{& $actualWait $Condition $Message $Seconds}finally{$script:persistenceInsideWait=$false}}
     $startup=@();$index=$ready[0]
@@ -513,19 +514,31 @@ if(@($errors).Count){throw ($errors|Out-String)}
 $scopesReveal=@($scopesAst.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Reveal-Chart'},$true))
 if($scopesReveal.Count -ne 1){throw 'Missing actual scopes Reveal-Chart helper'}
 & {
-    . ([scriptblock]::Create($scopesReveal[0].Extent.Text.Replace('System.Windows.Automation.','CapyOwnedSearchTest.').Replace('[CapyRowPointer]','[CapyOwnedSearchTest.Driver]')))
+    . ([scriptblock]::Create($scopesReveal[0].Extent.Text.Replace('System.Windows.Automation.','CapyOwnedSearchTest.').Replace('[CapyRowPointer]','[CapyOwnedSearchTest.Driver]').Replace('[Diagnostics.Stopwatch]','[CapyOwnedSearchTest.Clock]')))
     $drawingWindow=[IntPtr]1
     $viewport=[CapyOwnedSearchTest.Node]::new('panel-body-scroll-14',33,0,0)
     $viewport.BoundingRectangle=[CapyOwnedSearchTest.Rect]::new(0,0,100,100);$viewport.Provider=[CapyOwnedSearchTest.Scroll]::new()
     $chart=[CapyOwnedSearchTest.Node]::new('histogram-chart',33,0,60);$chart.Parent=$viewport
     $chart.BoundingRectangle=[CapyOwnedSearchTest.Rect]::new(0,60,80,40)
-    $state=@{arranged=[CapyOwnedSearchTest.Rect]::new(0,60,80,80);waits=0}
+    $state=@{arranged=[CapyOwnedSearchTest.Rect]::new(0,60,80,80);qpc=90;waits=0}
     function Control([string]$Id){if($Id -ne 'histogram-chart'){throw 'Unexpected scopes target'};$chart}
-    function Native-Bounds([string]$Id,[double]$Scale){if($Id -ne 'histogram-chart' -or $Scale -ne 1){throw 'Unexpected scopes native bounds request'};$state.arranged}
+    function Workspace-Root{[pscustomobject]@{Current=[pscustomobject]@{ItemStatus=(@{snapshot_qpc=$state.qpc}|ConvertTo-Json -Compress)}}}
+    function Native-Bounds([string]$Id,[double]$Scale,$Snapshot=$null){
+        if($Id -ne 'histogram-chart' -or $Scale -ne 1){throw 'Unexpected scopes native bounds request'}
+        if($Snapshot -and $Snapshot.snapshot_qpc -ne $state.qpc){throw 'Scopes bounds did not use the acknowledged snapshot'}
+        $state.arranged
+    }
     function Start-Sleep([int]$Milliseconds){if($Milliseconds -ne 200){throw 'Unexpected scopes sleep'}}
     function Wait-Until([scriptblock]$Condition,[string]$Message){
         $state.waits++
         if(& $Condition){throw 'Scopes Reveal-Chart accepted clipped UIA bounds as its scroll acknowledgment'}
+        $state.arranged=[CapyOwnedSearchTest.Rect]::new(0,16,80,80)
+        foreach($qpc in @(0,90,100)){
+            $state.qpc=$qpc
+            if(& $Condition){throw 'Scopes Reveal-Chart accepted pre-request native bounds'}
+        }
+        $state.qpc=101;$state.arranged=[CapyOwnedSearchTest.Rect]::new(0,60,80,80)
+        if(& $Condition){throw 'Scopes Reveal-Chart accepted a fresh clipped chart'}
         $state.arranged=[CapyOwnedSearchTest.Rect]::new(0,16,80,80)
         if(!(& $Condition)){throw $Message}
     }
@@ -764,6 +777,29 @@ $heldMenuCheck=[scriptblock]::Create(($switcherHold[0].Clauses[0].Item2.Statemen
 }
 Write-Output 'Workspace held-menu assertion observes delayed native publication and rejects hidden or missing menus without input.'
 
+$pickupAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-workspace-pickup.ps1'),[ref]$tokens,[ref]$errors)
+if(@($errors).Count){throw ($errors|Out-String)}
+& {
+    foreach($definition in @($pickupAst.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.FunctionDefinitionAst]})){
+        . ([scriptblock]::Create($definition.Extent.Text.Replace('System.Windows.Automation.','CapyOwnedSearchTest.').Replace('[CapyRowPointer]','[CapyOwnedSearchTest.Driver]')))
+    }
+    $Device='touch';$review=$null;$script:case='column-release';$down=[CapyOwnedSearchTest.Driver]::Injected;$native=@{ticks=0;heldReads=0;unavailable=0}
+    $run=Join-Path ([IO.Path]::GetTempPath()) ('capy-workspace-pickup-'+[guid]::NewGuid().ToString('N'));$null=New-Item -ItemType Directory -Path $run
+    function Point([string]$Id){@{x=40;y=60}}
+    function Start-Sleep{param($Milliseconds)$native.ticks++}
+    function Gesture{
+        if([CapyOwnedSearchTest.Driver]::Injected -eq $down){return [pscustomobject]@{phase='idle';generation=69}}
+        if($native.ticks -eq 1){$native.heldReads++;if($native.heldReads -gt 1){$native.unavailable++;throw [CapyOwnedSearchTest.ElementNotAvailableException]::new()}}
+        [pscustomobject]@{phase=$(if($native.ticks){'held'}else{'pressed'});generation=70;source=[pscustomobject]@{kind='panel';panel='sizes'};device='touch';requires_hold=$true;captured=$true;menu_open=$native.ticks -gt 1}
+    }
+    try{
+        Hold 'column-icon-sizes'
+        $held=Get-Content -Raw (Join-Path $run 'column-release-held.json')|ConvertFrom-Json
+        if([CapyOwnedSearchTest.Driver]::Injected -ne $down+1 -or $native.unavailable -ne 1 -or $held.phase -ne 'held' -or !$held.captured){throw 'Workspace hold did not record the native gesture its wait accepted'}
+    }finally{Remove-Item -LiteralPath $run -Recurse -Force}
+}
+Write-Output 'Workspace pickup hold asserts on the gesture its wait accepted while the opening menu retires a UIA element.'
+
 $layoutAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-workspace-layout.ps1'),[ref]$tokens,[ref]$errors)
 if(@($errors).Count){throw ($errors|Out-String)}
 $idleFps=@($layoutAst.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Idle-Fps'},$true))
@@ -771,12 +807,12 @@ if($idleFps.Count -ne 1){throw 'Missing actual idle Diagnostics assertion'}
 & {
     . ([scriptblock]::Create($idleFps[0].Extent.Text))
     $samples=@{}
-    function Control([string]$Id){
-        if($Id -ne 'renderer-stat-2'){throw 'Unexpected idle Diagnostics reading'}
+    function Renderer-Stats {
+        $samples.frameReads++
+        if($samples.frameReads -gt 2){throw 'Idle Diagnostics read more than its before and after snapshots'}
         if($samples.after){$samples.fpsReads++}
-        [pscustomobject]@{Current=@{Name=$(if($samples.after){$samples.fps}else{'0'})}}
+        [pscustomobject]@{frames=$(if($samples.after){$samples.frames}else{10});rows=@($null,$null,[pscustomobject]@{value=$(if($samples.after){$samples.fps}else{'0'})})}
     }
-    function Drawing-Frames{$samples.frameReads++;if($samples.frameReads -gt 2){throw 'Idle Diagnostics sampled Frames more than once after the interval'};if($samples.after){$samples.frames}else{10}}
     function Start-Sleep([int]$Milliseconds){if($Milliseconds -ne 1500){throw 'Idle Diagnostics changed its sample interval'};$samples.sleeps++;$samples.after=$true}
     function Wait-Until([scriptblock]$Condition,[string]$Message,[int]$Seconds){if($Seconds -ne 15 -or !(& $Condition)){throw $Message}}
     foreach($case in @(@{frames=10;fps='0';fail=$false},@{frames=11;fps='0';fail=$true},@{frames=10;fps='7';fail=$true})){
@@ -809,6 +845,7 @@ namespace CapyRuntimePreviewTest {
 '@
 & {
     . ([scriptblock]::Create($runtimePreview[0].Extent.Text.Replace('[CapyRuntimeFilterCapture','[CapyRuntimePreviewTest.Capture')))
+    function Has-Tint{throw 'Preview geometry control unexpectedly requested tint analysis'}
     $registeredWindow=[pscustomobject]@{Handle=[IntPtr]::Zero}
     $geometry=@{finds=0;arranged=0;boundsReads=0;sleeps=0;pending=$true;emptyPending=$true;invalid=$false}
     function Start-Sleep([int]$Milliseconds){
@@ -1213,6 +1250,64 @@ namespace CapyBubbleOverlayTest {
     }finally{Remove-Item -LiteralPath $script:run -Recurse -Force -ErrorAction SilentlyContinue}
 }
 Write-Output 'Actual bubble overlay sequence waits for applied Fill before composed pixels, rejects missing and wrong owned phase, and retains its pressed pixel assertion.'
+& {
+    foreach($name in @('Assert-BubbleHdrFocus','Measure-BubbleVisualOverlay')){
+        $definition=@($bubbleAst.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name}.GetNewClosure(),$true))
+        if($definition.Count -ne 1){throw "Missing actual $name fixture function"}
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+    }
+    $scale=1.5;$run='unused';$hdrEvidence=[Collections.Generic.List[object]]::new()
+    $darkBaseline=@(@(164,149,136),@(122,92,70),@(190,140,101),@(204,149,108),@(205,150,109),@(205,150,109),@(206,151,110),@(207,151,110),@(208,152,110))
+    $darkFocused=@(@(164,149,136),@(122,92,70),@(190,140,101),@(228,202,184),@(243,236,231),@(245,240,237),@(222,187,162),@(209,155,116),@(208,152,110))
+    $lightBaseline=@(@(123,100,82),@(148,108,79),@(197,144,104),@(204,150,109),@(205,150,109),@(206,151,109),@(207,151,110),@(207,152,110),@(208,152,111))
+    $lightFocused=@(@(123,100,82),@(148,108,79),@(192,140,102),@(83,70,64),@(61,56,56),@(67,60,57),@(186,137,102),@(207,152,110),@(208,152,111))
+    function Packet([long]$Id){
+        if($case -eq 'retained-light'){return @{color=@{bounds=@{x=-108.28423309326172;y=-107.78117370605469};intensity=@{point=@(-48.07900619506836,110.57414245605469);geometry=@{marker_radius=8.062493324279785}}}}}
+        @{color=@{bounds=@{x=-108.2843017578125;y=-107.78123474121094};intensity=@{point=@(-48.079036712646484,110.57421875);geometry=@{marker_radius=8.062499046325684}}}}
+    }
+    function Relative([long]$Id,$Point){@{x=1485;y=974}}
+    function Control([string]$Id,[switch]$Arranged){
+        $control=[pscustomobject]@{Current=@{BoundingRectangle=@{X=$(if($case -eq 'retained-light'){1380.}else{1377.});Y=$(if($case -eq 'retained-light'){645.}else{646.})}}}
+        $control|Add-Member ScriptMethod SetFocus {};return $control
+    }
+    function Model{@{state=@{palette=@{text=$(if($case -eq 'retained-light'){'#2e2e32'}else{'#fafafb'})}}}}
+    function Focus-Keyboard($Element){}
+    function Assert-BubbleHdrNoTooltip([long]$Id,[string]$Stage){}
+    function Start-Sleep([int]$Milliseconds){}
+    function Settled-Capture([string]$Name){}
+    function Read-BubbleVisualPatch($Point,[string]$Path){
+        if($Point.x -ne $expectedAnchor[0] -or $Point.y -ne $expectedAnchor[1]){throw 'HDR focus capture lost its retained physical geometry'}
+        $row=if($Path -like '*after.png'){$focused}else{$baseline}
+        if($Path -like '*after.png' -and $case -eq 'absent'){$row=$baseline}
+        if($Path -like '*after.png' -and $case -eq 'wrong-color'){$row=@((0..8)|ForEach-Object {,@(250,100,237)})}
+        if($Path -like '*after.png' -and $case -eq 'wrong-alpha'){$row=@((0..8)|ForEach-Object {,@(228,200,180)})}
+        if($Path -like '*after.png' -and $case -eq 'outside-radius'){$row=@($baseline|ForEach-Object {,@($_)});$row[5]=$baseline[5];$row[7]=@(245,240,237)}
+        return ,@((0..80)|ForEach-Object {$rgb=$row[$_%9];@{r=$rgb[0];g=$rgb[1];b=$rgb[2]}})
+    }
+    function Bubble-HdrPixel($Point,[string]$Name){
+        if($Name -like 'hdr-focus-marker-*'){
+            if($Point.x -ne $expectedInterior[0] -or $Point.y -ne $expectedInterior[1]){throw 'HDR focus lost its retained marker interior'}
+            return @{r=$(if($Name -like '*after' -and $case -eq 'marker'){1}else{0});g=0;b=0}
+        }
+        (Read-BubbleVisualPatch $Point ($Name+'.png'))[40]
+    }
+    foreach($case in @('retained','retained-light','absent','wrong-color','wrong-alpha','outside-radius','marker')){
+        $baseline=if($case -eq 'retained-light'){$lightBaseline}else{$darkBaseline};$focused=if($case -eq 'retained-light'){$lightFocused}else{$darkFocused}
+        $expectedAnchor=if($case -eq 'retained-light'){@(1488,973)}else{@(1485,974)};$expectedInterior=if($case -eq 'retained-light'){@(1470,973)}else{@(1467,974)}
+        $failure=$null;try{Assert-BubbleHdrFocus 25}catch{$failure=$_}
+        if($case -in @('retained','retained-light')){
+            if($failure){throw $failure}
+            $receipt=$hdrEvidence[$hdrEvidence.Count-1]
+            if([Math]::Abs($receipt.overlay.maximum_error-.58823529411765) -gt 1e-10){throw 'HDR focus did not select its numeric minimum error'}
+            if($receipt.overlay.alpha -ne 230/255. -or $receipt.overlay.maximum_error -gt 4 -or $receipt.marker_interior.maximum_error -ne 0){throw 'HDR focus changed its color, alpha or marker-interior oracle'}
+        }else{
+            $message=if($case -eq 'marker'){'HDR focus ring changed its marker interior'}else{'HDR focus ring does not use its shared marker position and GTK text overlay'}
+            if(!$failure -or $failure.Exception.Message -cne $message){throw "HDR focus accepted $case or failed outside its oracle: $failure"}
+        }
+    }
+}
+Write-Output 'Actual HDR focus assertion selects the numeric minimum in both retained dark/light candidate orders and rejects absent, wrong-color, wrong-alpha, displaced rings and a changed marker interior.'
+
 
 & {
     foreach($name in 'Bubble-VisualBounds','Assert-BubbleVisualOrbitReturn'){
@@ -1289,6 +1384,10 @@ Write-Output 'Actual bubble overlay sequence waits for applied Fill before compo
     function Wait-Until($Condition,$Message){if(!(& $Condition)){throw $Message}}
     function Tool-Tile($Command){$script:requestedNavigationTile=$Command;'tile-'+$Command}
     function Control($Id,[switch]$Arranged){throw 'navigation tile reached'}
+    function Model{throw 'Navigation tile control unexpectedly read a model'}
+    function Center{throw 'Navigation tile control unexpectedly measured a center'}
+    function Assert-Camera{throw 'Navigation tile control unexpectedly compared cameras'}
+    function Capture{throw 'Navigation tile control unexpectedly captured pixels'}
     $script:requestedNavigationTile=$null
     try{Navigation-Double 'zoom';throw 'Navigation did not request its tile'}catch{if($_.Exception.Message-ne'navigation tile reached'){throw}}
     if($script:requestedNavigationTile-ne'zoom'){throw 'Zoom double action selected another tool tile'}
@@ -1424,6 +1523,17 @@ public static class CapyImageDragPacingTest {
     if($errors.Count){throw ($errors|Out-String)}
     $actual=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Sketch-VectorRoutes'},$true)
     . ([scriptblock]::Create($actual.Extent.Text.Replace('[System.Windows.Automation.TogglePattern]','[CapyOwnedSearchTest.TogglePattern]')))
+    function Capture{throw 'Workspace route control unexpectedly captured pixels'}
+    function Use-PaintWorkspace{throw 'Workspace route control unexpectedly returned to Paint'}
+    function Reason-Hover{throw 'Workspace route control unexpectedly continued past its route'}
+    function Shortcut-Command{throw 'Workspace route control unexpectedly continued past its route'}
+    function Click{throw 'Workspace route control unexpectedly continued past its route'}
+    function Selected{throw 'Workspace route control unexpectedly continued past its route'}
+    function Key{throw 'Workspace route control unexpectedly continued past its route'}
+    function Park{throw 'Workspace route control unexpectedly continued past its route'}
+    function Take-Projection{throw 'Workspace route control unexpectedly continued past its route'}
+    function Active{throw 'Workspace route control unexpectedly continued past its route'}
+    function Fit-Canvas{throw 'Workspace route control unexpectedly fit the canvas'}
     $toggle=[pscustomobject]@{};$toggle|Add-Member ScriptMethod Toggle {}
     $lock=[pscustomobject]@{};$lock|Add-Member ScriptMethod GetCurrentPattern {param($p)$toggle}
     function Control($Id,[switch]$Arranged){if($Id-ne'layer-lock'){throw 'Unexpected control before workspace route'};$lock}
@@ -1446,6 +1556,10 @@ public static class CapyImageDragPacingTest {
     }
     $review=@{Id=33};$directory='owned-registry';$window=@{id=9;hwnd=77};$seen=@{reads=0;polls=0}
     function Model($Window){@{brush_ready=$true;windows_workspace=@{ready=$true}}}
+    function Owned-ProcessWindows($Process,$WindowHandle){
+        if($Process.Id-ne33-or$WindowHandle-ne77){throw 'Review readiness queried another window'}
+        @{Root=[CapyOwnedSearchTest.Node]::new('owned-root',33,0,0)}
+    }
     function Owned-DrawingWindow($Process,$WindowHandle,$TraceDirectory){
         if($Process.Id-ne33-or$WindowHandle-ne77-or$TraceDirectory-ne'owned-registry'){throw 'Ready queried another window registry'}
         $seen.reads++;if($seen.reads-ge3){@{Root='owned-root'}}
@@ -1453,6 +1567,45 @@ public static class CapyImageDragPacingTest {
     function Wait-Until($Condition,$Message,$Seconds){for($i=0;$i-lt3;$i++){$seen.polls++;if(& $Condition){return}};throw $Message}
     Ready $window
     if($seen.reads-ne3-or$seen.polls-ne3){throw 'Ready accepted UI state before owned registry readiness'}
+}
+
+& {
+    $tokens=$null;$errors=$null
+    $documents=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-documents.ps1'),[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw ($errors|Out-String)}
+    $admissions=[ordered]@{'Review-Ready'=@{wait={Review-Ready};admit='review'};'Input-Ready'=@{wait={Input-Ready};admit='input'}}
+    foreach($message in 'Light review did not start','Canvas startup did not finish','Session did not reopen','Untitled canvas did not finish starting'){
+        $wait=@($documents.FindAll({param($n)$n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Wait-Until' -and $n.CommandElements.Count -ge 3 -and $n.CommandElements[2].Value -ceq $message}.GetNewClosure(),$true))
+        if($wait.Count -ne 1){throw "Missing actual documents startup admission: $message"}
+        $admissions[$message]=@{wait=$wait[0].CommandElements[1].ScriptBlock.GetScriptBlock();admit='input'}
+    }
+    function Model{[pscustomobject]@{brush_ready=$true;windows_workspace=[pscustomobject]@{ready=$state.workspace};launch=[pscustomobject]@{visible=$state.launch};state=[pscustomobject]@{theme='light'};windows_recovery=[pscustomobject]@{busy=$false;restoring=$false}}}
+    function Owned-ProcessWindows($Process){if($Process.Id -ne 33){throw 'Review readiness queried another process'};foreach($window in $state.windows){[pscustomobject]@{Root=$window;Handle=$window.NativeWindowHandle}}}
+    function Drawing([bool]$Cover,[bool]$Offscreen,[bool]$Enabled){
+        $window=[CapyOwnedSearchTest.Node]::new('drawing-window',33,209,197)
+        if($Cover){$splash=[CapyOwnedSearchTest.Node]::new('launch-splash',33,209,197);$splash.IsOffscreen=$Offscreen;$window.Children.Add($splash)}
+        $canvas=[CapyOwnedSearchTest.Node]::new('drawing-canvas',33,209,240);$canvas.Enabled=$Enabled;$window.Children.Add($canvas)
+        $window
+    }
+    $ready=Drawing $false $false $true
+    $failures=[Collections.Generic.List[string]]::new()
+    foreach($state in @(
+        @{name='brush ready while the workspace is unready';workspace=$false;launch=$false;windows=@($ready);review=$false;input=$false},
+        @{name='shared ready while the launch is visible';workspace=$true;launch=$true;windows=@(Drawing $true $false $false);review=$false;input=$false},
+        @{name='shared launch hidden while the native cover takes clicks';workspace=$true;launch=$false;windows=@(Drawing $true $false $true);review=$false;input=$false},
+        @{name='a modal prompt disables the native drawing canvas';workspace=$true;launch=$false;windows=@(Drawing $false $false $false);review=$true;input=$false},
+        @{name='another owned window still covered';workspace=$true;launch=$false;windows=@($ready,(Drawing $true $false $true));review=$false;input=$false},
+        @{name='no registered drawing window';workspace=$true;launch=$false;windows=@();review=$false;input=$false},
+        @{name='offscreen native cover';workspace=$true;launch=$false;windows=@(Drawing $true $true $true);review=$true;input=$true},
+        @{name='every clause met';workspace=$true;launch=$false;windows=@($ready);review=$true;input=$true}
+    )){
+        foreach($admission in $admissions.GetEnumerator()){
+            $admit=$state[$admission.Value.admit]
+            if([bool](& $admission.Value.wait) -ne $admit){$failures.Add("$($admission.Key) $(if($admit){'rejected'}else{'admitted'}) $($state.name)")}
+        }
+    }
+    if($failures.Count){throw ($failures -join [Environment]::NewLine)}
+    'Review readiness waits for shared brush and workspace readiness, the shared launch, a registered drawing window and the native launch cover; input admission and the documents startups also wait for the enabled native drawing canvas.'
 }
 
 & {
@@ -1524,12 +1677,14 @@ public static class CapyEdgeReleaseTest {
 & {
  Add-Type -TypeDefinition @'
 public static class CapyEdgeSweepTest {
- public static int Phase,Downs,Cancels,Escapes;public static bool Active;
- public static void Down(string device,int x,int y){Phase=1;Active=true;Downs++;}
- public static void Move(int x,int y){}
- public static void Cancel(){Phase=2;Active=false;Cancels++;}
+ public struct Point {public int x,y;}
+ public static bool GetCursorPos(out Point point){point=new Point{x=X,y=Y};return true;}
+ public static int Phase,Downs,Cancels,Escapes,Moves,X,Y,StartX;public static bool Active,SharedClaimed,Committed;public static string Device;
+ public static void Down(string device,int x,int y){Phase=1;Active=true;Downs++;Device=device;X=device=="mouse"?x-1:x;StartX=X;Y=y;}
+ public static void Move(int x,int y){Moves++;X=Device=="mouse"?x+1:x;Y=y;}
+ public static void Cancel(){Committed=Device=="mouse"&&SharedClaimed&&Escapes==0;Phase=2;Active=false;Cancels++;}
  public static void Key(int key){if(key!=27)throw new System.Exception("Unexpected sweep key");Phase=2;Escapes++;}
- public static int GetDpiForWindow(object window){return 96;}
+ public static int GetDpiForWindow(object window){return 144;}
  public static bool Exists(string path){return true;}
 }
 '@
@@ -1543,30 +1698,54 @@ public static class CapyEdgeSweepTest {
  }
  $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-edge-reach.ps1'),[ref]$tokens,[ref]$errors)
  if($errors.Count){throw($errors|Out-String)}
- foreach($name in 'Escape-Edge','Settled'){
+ foreach($name in 'Escape-Edge','Settled','Contact-Receipt','Within'){
   $fn=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq$name}.GetNewClosure(),$true)
   if(!$fn){throw "Missing actual sweep function $name"}
   . ([scriptblock]::Create($fn.Extent.Text.Replace('[CapyRowPointer]','[CapyEdgeSweepTest]')))
  }
  $sweep=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Check-ReachSweep'},$true)
- $geometryCheck=$sweep.Body.FindAll({param($n)$n-is[Management.Automation.Language.IfStatementAst]-and$n.Extent.Text.Contains("throw 'Canceled edge sweep changed the arranged divider geometry'")},$true)|Sort-Object {$_.Extent.StartOffset}|Select-Object -First 1
- if(!$geometryCheck){throw 'Missing actual first sweep geometry assertion'}
- $statements=@($geometryCheck.Parent.Statements);$last=[array]::IndexOf($statements,$geometryCheck)
+ $geometryChecks=@($sweep.Body.FindAll({param($n)$n-is[Management.Automation.Language.IfStatementAst]-and$n.Extent.Text.Contains("throw 'Canceled edge sweep changed the arranged divider geometry'")},$true)|Sort-Object {$_.Extent.StartOffset})
+ if($geometryChecks.Count-ne2){throw 'Missing actual sweep geometry assertions'}
+ $statements=@($geometryChecks[1].Parent.Statements);$last=[array]::IndexOf($statements,$geometryChecks[1])
  $sequence=($statements[0..$last]|ForEach-Object {$_.Extent.Text})-join"`n"
- $sequence=$sequence.Replace('[CapyRowPointer]','[CapyEdgeSweepTest]')
+ $sequence=$sequence.Replace('[CapyRowPointer]','[CapyEdgeSweepTest]').Replace('[CapyRowPointer+Point]','[CapyEdgeSweepTest+Point]')
  function Start-Sleep([int]$Milliseconds){}
  function Wait-Until([scriptblock]$Condition,[string]$Message){for($poll=0;$poll-lt12;$poll++){if(& $Condition){return}};throw $Message}
  function Gesture{
-  $ended=[CapyEdgeSweepTest]::Phase-eq2
+  $phase=[CapyEdgeSweepTest]::Phase;$ended=$phase-eq2;$moved=[CapyEdgeSweepTest]::Moves-gt0
   if($ended){$script:sweepTerminalReads++}
   $script:sweepAcknowledged=$ended-and$script:sweepMode-ne'stale-terminal'-and$script:sweepTerminalReads-ge4
-  @{edge=$(if(!$ended){@{serial=21;claimed=$true;contact='free';vertical=$false}});pointer_id=$null;edge_reply=@{serial=$(if($script:sweepAcknowledged){21}else{20});phase='cancel'};last_edge=@{phase='cancel';claimed=$true};last_release=@{generation=1};last_cancel=@{generation=2}}
+  if($phase-eq1-and$moved){$script:sweepMotionReads++}
+  $settled=$phase-eq1-and(($moved-and$script:sweepMode-in'settled','settled-error')-or(!$moved-and$script:sweepMode-eq'settled-ineligible'-and$script:sweepDownReads-ge1))
+  if($phase-eq1-and!$moved){$script:sweepDownReads++}
+  $late=$phase-eq1-and!$moved-and$script:sweepMode-eq'late-down'-and$script:sweepDownReads-le2
+  $edge=if($phase-eq1-and!$settled-and!$late-and$script:sweepMode-notin'denied','canvas'){
+   @{serial=21;claimed=($moved-and$script:sweepMotionReads-ge4-and$script:sweepMode-ne'unclaimed');contact=$(if($script:sweepMode-like'*ineligible*'){'pickup'}else{'free'});vertical=$false;position=@((510+([CapyEdgeSweepTest]::X-[CapyEdgeSweepTest]::StartX)/1.5),(720+([CapyEdgeSweepTest]::Y-200)/1.5))}
+  }
+  if($edge-and$script:sweepMode-eq'wrong-edge-serial'){$edge.serial=22}
+  if($edge-and$script:sweepMode-eq'wrong-position'){$edge.position[0]+=1/1.5}
+  $reply=@{serial=21;phase='down';time=100;bits=8}
+  if($moved){
+   $reply.phase=if($script:sweepMotionReads-eq1-or$script:sweepMode-eq'old-down'){'down'}else{'move'}
+   $reply.time=if($reply.phase-eq'down'){100}elseif($script:sweepMotionReads-lt4-or$script:sweepMode-eq'earlier-move'){109}else{110}
+   $reply.bits=if($edge.claimed){33}else{10}
+  }
+  if($settled){$reply.phase=if($moved){'move'}else{'down'};$reply.time=if($moved){102}else{100};$reply.bits=if($script:sweepMode-eq'settled-error'){-1}else{0}}
+  if($script:sweepMode-eq'wrong-serial'){$reply.serial=20}
+  if($script:sweepMode-eq'ineligible-wrong-down'){$reply.time=99}
+  if($ended){$reply=@{serial=$(if($script:sweepAcknowledged){21}else{20});phase=$(if([CapyEdgeSweepTest]::Escapes){'cancel'}else{'up'});time=111;bits=0}}
+  $contact=@{pointer=1;time=$(if($phase-eq0-or$late-or$script:sweepMode-in'stale-down','canvas'){99}else{100});primary=$true;position=@(510,720)}
+  @{edge=$edge;pointer_id=$null;edge_reply=$reply;edge_contact=$contact;edge_input=@{pointer=$(if($script:sweepMode-eq'wrong-pointer'){2}else{1});time=$(if($script:sweepMode-eq'stale-move-input'){100}else{110});position=@(210,320)};last_edge=@{phase=$(if([CapyEdgeSweepTest]::Escapes){'cancel'}else{'up'});claimed=([CapyEdgeSweepTest]::Escapes-gt0)};last_release=@{generation=1};last_cancel=@{generation=2}}
  }
  function Model{
+  if($script:sweepMode-in'denied','canvas','settled','settled-error','settled-ineligible'-and[CapyEdgeSweepTest]::Phase-eq2){$script:sweepAcknowledged=$true}
+  if($script:sweepMode-in'ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas'-and[CapyEdgeSweepTest]::Phase-eq2){$script:sweepAcknowledged=$true;$script:sweepPublished=101}
   if(!$script:sweepAcknowledged){$script:sweepEarlyModelReads++}else{$script:sweepModelReads++}
-  if($script:sweepAcknowledged-and$script:sweepModelReads-ge6-and$script:sweepMode-ne'missing-layout'){$script:sweepPublished=101}
+  if($script:sweepAcknowledged-and$script:sweepModelReads-ge6-and$script:sweepMode-ne'missing-layout'-and![CapyEdgeSweepTest]::Committed){$script:sweepPublished=101}
   @{state=@{workspace=@{layout=$(if($script:sweepPublished-eq101){'restored'}else{'preview'})}}}
  }
+ function Layout{@{groups=@()}}
+ function Append-SweepRow($Row){$script:sweepRows.Add($Row)}
  function State-File{'owned/ui-state-7-8.json'}
  function Read-Snapshot([string]$Path){
   if((Split-Path -Leaf $Path)-like'presentation-state-*'){
@@ -1580,18 +1759,26 @@ public static class CapyEdgeSweepTest {
   $script:sweepGeometryReads++
   if($script:sweepDisplayed-eq101-and$script:sweepMode-ne'wrong-geometry'){'restored-divider'}else{'changed-divider'}
  }
- $Device='touch';$review=@{Id=7};$window=8;$at=@{x=10;y=20};$sample=@{axis='horizontal';dx=-6;dy=0};$baseline='"restored"';$geometry='restored-divider'
- foreach($mode in 'delayed','stale-terminal','missing-layout','missing-presentation','wrong-geometry'){
-  $script:sweepMode=$mode;$script:sweepTerminalReads=0;$script:sweepAcknowledged=$false;$script:sweepEarlyModelReads=0;$script:sweepModelReads=0;$script:sweepPresentationReads=0;$script:sweepGeometryReads=0;$script:sweepPublished=100;$script:sweepDisplayed=100
-  [CapyEdgeSweepTest]::Phase=0;[CapyEdgeSweepTest]::Downs=0;[CapyEdgeSweepTest]::Cancels=0;[CapyEdgeSweepTest]::Escapes=0;[CapyEdgeSweepTest]::Active=$false
+ $review=@{Id=7};$window=8;$at=@{x=100;y=200};$sample=@{axis='horizontal';x=509.9;y=720.1;dx=-6;dy=0};$baseline='"restored"';$geometry='restored-divider';$active=@{}
+ foreach($Device in 'mouse','touch'){
+ $modes=if($Device-eq'mouse'){@('delayed','late-down','wrong-serial','wrong-edge-serial','wrong-position','stale-move-input','old-down','earlier-move','wrong-pointer','stale-down','unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas','stale-terminal','missing-layout','missing-presentation','wrong-geometry')}else{@('delayed','late-down','stale-terminal','missing-layout','missing-presentation','wrong-geometry')}
+ foreach($mode in $modes){
+  $surfaces=if($mode-eq'canvas'){@(@{x=0;y=0;width=500;height=700})}else{@(@{x=500;y=700;width=20;height=40})}
+  $script:sweepMode=$mode;$script:sweepTerminalReads=0;$script:sweepMotionReads=0;$script:sweepDownReads=0;$script:sweepAcknowledged=$false;$script:sweepEarlyModelReads=0;$script:sweepModelReads=0;$script:sweepPresentationReads=0;$script:sweepGeometryReads=0;$script:sweepPublished=100;$script:sweepDisplayed=100
+  $rows=[Collections.Generic.List[object]]::new();$script:sweepRows=[Collections.Generic.List[object]]::new()
+  [CapyEdgeSweepTest]::Phase=0;[CapyEdgeSweepTest]::Downs=0;[CapyEdgeSweepTest]::Cancels=0;[CapyEdgeSweepTest]::Escapes=0;[CapyEdgeSweepTest]::Moves=0;[CapyEdgeSweepTest]::Active=$false;[CapyEdgeSweepTest]::Committed=$false;[CapyEdgeSweepTest]::SharedClaimed=$mode-notin'unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas'
   $failure=$null;try{. ([scriptblock]::Create($sequence))}catch{$failure=$_}
-  if([CapyEdgeSweepTest]::Downs-ne1-or[CapyEdgeSweepTest]::Cancels-ne1-or[CapyEdgeSweepTest]::Escapes-ne1){throw 'Sweep repeated or skipped native contact cancellation'}
-  $expected=switch($mode){'stale-terminal'{'Native gesture release was not acknowledged'}'missing-layout'{'Canceled edge sweep did not acknowledge its exact workspace layout'}'missing-presentation'{'The display did not show the latest canvas frame'}'wrong-geometry'{'Canceled edge sweep changed the arranged divider geometry'}}
-  if($mode-eq'delayed'){
-   if($failure-or$script:sweepEarlyModelReads-ne0-or$script:sweepGeometryReads-ne1-or$script:sweepDisplayed-ne101){throw "Actual edge sweep checked geometry before acknowledged rollback presentation: $failure"}
-  }elseif(!$failure-or$failure.Exception.Message-cne$expected-or($mode-ne'wrong-geometry'-and$script:sweepGeometryReads-ne0)){throw "Actual edge sweep accepted an unacknowledged or incorrect cancellation: $mode; $failure"}
+  if([CapyEdgeSweepTest]::Committed){throw 'Actual mouse sweep skipped cancellation and committed the delayed shared claim with ordinary Up'}
+  $expected=switch($mode){{$_-in'wrong-serial','wrong-edge-serial','wrong-position','stale-move-input','old-down','earlier-move','wrong-pointer'}{'Native edge sweep request was not acknowledged'}'stale-terminal'{'Native gesture release was not acknowledged'}'missing-layout'{'Canceled edge sweep did not acknowledge its exact workspace layout'}'missing-presentation'{'The display did not show the latest canvas frame'}'wrong-geometry'{'Canceled edge sweep changed the arranged divider geometry'}{$_-in'unclaimed','settled','settled-error'}{'Edge sweep lost or retained a contact:'}'stale-down'{'Native contact Down was not acknowledged at the requested point'}}
+  $early=$expected-in'Native edge sweep request was not acknowledged','Native contact Down was not acknowledged at the requested point'
+  $escapes=if($early-or$mode-in'unclaimed','settled','settled-error','ineligible','settled-ineligible','ineligible-wrong-down','denied','canvas'){0}else{1}
+  if([CapyEdgeSweepTest]::Downs-ne1-or[CapyEdgeSweepTest]::Cancels-ne[int](!$early)-or[CapyEdgeSweepTest]::Escapes-ne$escapes){throw "Sweep repeated or skipped native contact cancellation: $mode; $failure"}
+  if(!$expected){
+   if($failure-or$script:sweepEarlyModelReads-ne0-or$script:sweepGeometryReads-ne2-or$script:sweepDisplayed-ne101-or$script:sweepRows.Count-ne1){throw "Actual edge sweep checked geometry before acknowledged rollback presentation: $mode; $failure"}
+  }elseif(!$failure-or!$failure.Exception.Message.StartsWith($expected)-or($mode-notin'wrong-geometry','unclaimed','settled','settled-error'-and$script:sweepGeometryReads-ne0)){throw "Actual edge sweep accepted an unacknowledged or incorrect cancellation: $mode; $failure"}
  }
- 'Actual edge sweep: stale terminal and layout cannot satisfy cancellation; restored model epoch must display before exact geometry, which still rejects changed bounds.'
+ }
+ 'Actual edge sweep: 22 mouse and six touch cases await the Down receipt on edge surfaces only, then acknowledged eligible claims and exact geometry.'
 }
 
 & {
@@ -1821,6 +2008,50 @@ namespace CapyFitReceiptTest {
   }elseif(!$failure-or$receipt){throw "Camera receipt accepted $case ownership"}
  }
  'Actual camera receipt reader retains one packet camera/navigation and validates isolated PID, registered HWND and window identity.'
+}
+& {
+ $tokens=$null;$errors=$null
+ $localization=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-localization.ps1'),[ref]$tokens,[ref]$errors)
+ if(@($errors).Count){throw ($errors|Out-String)}
+ $reader=$ast.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Camera-Receipt'},$true)
+ if(!$reader){throw 'Missing actual camera receipt reader'}
+ . ([scriptblock]::Create($reader.Extent.Text))
+ $definitions=@($localization.FindAll({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Fit-View'},$true))
+ foreach($definition in $definitions){. ([scriptblock]::Create($definition.Extent.Text))}
+ $sites=@($localization.FindAll({param($n)$n-is[Management.Automation.Language.CommandAst]-and($n.GetCommandName()-eq'Fit-View'-or($n.GetCommandName()-eq'Menu-Command'-and@($n.CommandElements.Value)-contains'fit_canvas'))},$true)|Where-Object {$site=$_;!@($definitions|Where-Object {$site.Extent.StartOffset-ge$_.Extent.StartOffset-and$site.Extent.EndOffset-le$_.Extent.EndOffset}).Count})
+ if($sites.Count-ne3){throw "Localization drawing and pixel sampling lost a Fit step: $($sites.Count)"}
+ $review=[pscustomobject]@{Id=33};$script:current=[pscustomobject]@{id=11;hwnd=333}
+ $statePath=Join-Path $PSScriptRoot 'ui-state-33-11.json'
+ function State-File{$statePath}
+ function Model{[pscustomobject]@{state=[pscustomobject]@{camera=[pscustomobject]@{revision=13}}}}
+ function Menu-Command([string]$Menu,[string]$Id){if($Menu-cne'view'-or$Id-cne'fit_canvas'){throw 'Localization Fit invoked another command'};$fit.invoked++;$fit.reads=0}
+ function Wait-Until([scriptblock]$Condition,[string]$Message,[int]$Seconds){for($poll=0;$poll-lt12;$poll++){if(& $Condition){return}};throw $Message}
+ function Read-Snapshot($Path){
+  switch(Split-Path -Leaf $Path){
+   'ui-state-33-11.json'{return [pscustomobject]@{process_id=33;window_id=11;model=[pscustomobject]@{windows_isolated_settings=$true}}}
+   'windows-33.json'{return [pscustomobject]@{process_id=33;windows=@([pscustomobject]@{hwnd=333;id=11})}}
+   'camera-state-33-11.json'{}
+   default{throw 'Localization Fit read an unrelated file'}
+  }
+  $read=$fit.reads++;$landed=$fit.invoked-and$read-ge2-and$case-ne'missing'
+  $revision=if($landed){14}elseif($case-eq'stale'-and!$fit.invoked-and$read-lt2){12}else{13}
+  $navigation=$revision-9;if($landed-and$case-eq'skipped'){$navigation++}
+  $drawing=if($revision-eq12-or($landed-and$case-eq'foreign-drawing')){21}else{22}
+  $fit.observed=$fit.observed-or$landed
+  [pscustomobject]@{process_id=33;window_id=11;camera=[pscustomobject]@{revision=$revision;zoom=.657383918762207;viewport=@(2560,1528);work_area=@(501,135,1558,1384)};navigation=[pscustomobject]@{drawing_id=$drawing;artwork='artwork';epoch=0;revision=$navigation}}
+ }
+ foreach($site in $sites){
+  $case='late';$fit=@{invoked=0;reads=0;observed=$false}
+  . ([scriptblock]::Create($site.Extent.Text))
+  if($fit.invoked-ne1-or!$fit.observed){throw "Localization drawing or pixel sampling continued before Fit acknowledged its camera: $($site.Extent.Text)"}
+ }
+ $expected=@{stale='';skipped='Fit camera acknowledgement skipped the requested navigation';'foreign-drawing'='Fit camera acknowledgement changed its document';missing='View Fit did not acknowledge its camera'}
+ foreach($case in 'stale','skipped','foreign-drawing','missing'){
+  $fit=@{invoked=0;reads=0;observed=$false};$failure=$null
+  try{Fit-View}catch{$failure=$_}
+  if($fit.invoked-ne1-or"$($failure.Exception.Message)"-cne$expected[$case]){throw "Localization Fit mishandled $case`: $failure"}
+ }
+ 'Actual localization Fit steps wait for the next owned navigation receipt after a fresh pre-Fit receipt, and reject skipped, foreign or missing acknowledgements.'
 }
 & {
  $drawerAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-drawer-layout.ps1'),[ref]$null,[ref]$null)
@@ -2073,6 +2304,7 @@ public static class CapyCaptionOriginTest {
   }
  }
  function Wait-Until([scriptblock]$Condition,[string]$Message){if(!(& $Condition)){throw $Message}}
+ function Model{throw 'Caption geometry control unexpectedly captured a model'}
  function Workspace-Root {$workspace}
  function Expect-CaptionFailure([scriptblock]$Action,[string]$Message){$caught=$null;try{& $Action|Out-Null}catch{$caught=$_.Exception.Message};if(!$caught -or !$caught.Contains($Message)){throw "Caption negative did not reach '$Message': $caught"}}
  $review=[pscustomobject]@{Id=7};$root=[pscustomobject]@{Current=[pscustomobject]@{NativeWindowHandle=19;ProcessId=7}}
@@ -2157,12 +2389,18 @@ public static class CapyCaptionOriginTest {
  $actual=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Drag'},$true)
  if(!$actual){throw 'Missing actual column Drag function'}
  . ([scriptblock]::Create($actual.Extent.Text.Replace('[CapyRowPointer]','[CapyEdgeReleaseTest]')))
+ function Presentation{throw 'Contact capture control unexpectedly read drag presentation'}
+ function Dock-Point{throw 'Contact capture control unexpectedly resolved a drop target'}
+ function Capture{throw 'Contact capture control unexpectedly captured pixels'}
+ function Model{throw 'Contact capture control unexpectedly read a model'}
  $Device='touch'
  function At($Id){@{x=10;y=20}}
  function Wait-Until([scriptblock]$Condition,[string]$Message){for($poll=0;$poll-lt8;$poll++){if(& $Condition){return}};throw $Message}
  function Gesture{
   $phase=[CapyEdgeReleaseTest]::Phase
-  $value=[pscustomobject]@{generation=$phase;requires_hold=$false;device=$(if($script:columnCapture.mode-eq'wrong-device'){'pen'}else{'touch'});phase=$(if($phase-eq2){'idle'}else{'dragging'});menu_open=$false}
+  if($phase-eq1-and$script:columnCapture.mode-eq'stale-clear'){$script:columnCapture.clears++}
+  $clear=$phase-eq1-and$script:columnCapture.mode-eq'stale-clear'-and$script:columnCapture.clears-le2
+  $value=[pscustomobject]@{generation=$(if($phase-eq1-and!$clear){2}else{$phase});requires_hold=$clear;device=$(if($script:columnCapture.mode-eq'wrong-device'){'pen'}else{'touch'});phase=$(if($phase-eq2-or$clear){'idle'}else{'dragging'});pointer_id=$(if($phase-eq1-and!$clear){7}else{$null});menu_open=$false}
   $value|Add-Member ScriptProperty captured {
    if([CapyEdgeReleaseTest]::Phase-ne1){throw 'Capture was queried outside the admitted contact'}
    $script:columnCapture.reads++
@@ -2170,11 +2408,11 @@ public static class CapyCaptionOriginTest {
   }
   $value
  }
- foreach($mode in 'delayed','lost','unguarded','wrong-device'){
-  $script:columnCapture=@{mode=$mode;reads=0}
+ foreach($mode in 'delayed','stale-clear','lost','unguarded','wrong-device'){
+  $script:columnCapture=@{mode=$mode;reads=0;clears=0}
   [CapyEdgeReleaseTest]::Phase=0;[CapyEdgeReleaseTest]::Downs=0;[CapyEdgeReleaseTest]::Ups=0
   $failure=$null;try{Drag 'group-grip-7' @{x=30;y=40} -Captured:($mode-ne'unguarded')}catch{$failure=$_}
-  if($mode-eq'delayed'-and$failure){throw $failure}
+  if($mode-in'delayed','stale-clear'-and$failure){throw $failure}
   if($mode-eq'lost'){
    if(!$failure-or$failure.Exception.Message-cne'Immediate custom handle did not capture its contact on press'-or$script:columnCapture.reads-ne8-or[CapyEdgeReleaseTest]::Ups-ne0){throw 'Missing column capture did not retain its original failure'}
   }elseif($mode-eq'wrong-device'){
@@ -2184,7 +2422,26 @@ public static class CapyCaptionOriginTest {
    if($failure-or$script:columnCapture.reads-ne$expectedReads-or[CapyEdgeReleaseTest]::Downs-ne1-or[CapyEdgeReleaseTest]::Ups-ne1){throw "Actual column Drag did not preserve delayed capture or its optional guard: $failure"}
   }
  }
- 'Actual column Drag: advanced generation waits for delayed capture; missing capture, optional guard and device policy preserved.'
+ 'Actual column Drag: the new contact record, not an earlier clear, acknowledges Down; delayed capture waits; missing capture, optional guard and device policy preserved.'
+}
+
+& {
+ $tokens=$null;$errors=$null
+ $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-tool-bubbles.ps1'),[ref]$tokens,[ref]$errors)
+ if($errors.Count){throw($errors|Out-String)}
+ $placed=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Placed'},$true)
+ if(!$placed){throw 'Missing actual bubble placement acknowledgement'}
+ . ([scriptblock]::Create($placed.Extent.Text))
+ function Screen([double]$X,[double]$Y){@{x=[int][Math]::Round($X*1.5);y=[int][Math]::Round($Y*1.5)}}
+ function Center([long]$Id){$script:placedNative}
+ function Model{[pscustomobject]@{layout=[pscustomobject]@{viewport=@(1706.6666259765625,1018.6666870117188)};state=[pscustomobject]@{workspace=[pscustomobject]@{layout=[pscustomobject]@{bubbles=[pscustomobject]@{bubbles=@([pscustomobject]@{id=23;corner=$script:placedCorner;offset=$script:placedOffset})}}}}}}
+ $script:placedCorner='bottom_right';$script:placedOffset=@(-819.6358642578125,-367.50531005859375);$script:placedNative=@{x=1292;y=960}
+ if(Placed 23){throw 'A card short of its paired authored placement acknowledged placement'}
+ $script:placedNative=@{x=1331;y=977}
+ if(!(Placed 23)){throw 'A card at its authored bottom-right placement was rejected'}
+ $script:placedCorner='top_left';$script:placedOffset=@(200,100);$script:placedNative=@{x=300;y=150}
+ if(!(Placed 23)){throw 'A card at its authored top-left placement was rejected'}
+ 'Actual bubble placement: a native card short of its paired authored placement is unplaced; both corner bases resolve.'
 }
 
 & {
@@ -2207,6 +2464,11 @@ public static class CapyCaptionOriginTest {
     $peer=@{id=202;hwnd=202};$review=[CapyOwnedSearchTest.Review]::new();$run='clipboard-handoff'
     $script:root=$sourceRoot;$script:drawingWindow=$sourceHandle;$script:clipboardHandoffTicks=0
     function Model{@{brush_ready=$true;windows_workspace=@{ready=$true;busy=$false}}}
+    $peerRoot.Children.Add([CapyOwnedSearchTest.Node]::new('drawing-canvas',33,210,210))
+    function Owned-ProcessWindows($Process,[long]$WindowHandle){
+        if($Process.Id-ne33-or$WindowHandle-ne202){throw 'Clipboard readiness requested another owned window'}
+        @{Root=$peerRoot;Handle=$peerHandle}
+    }
     function Owned-DrawingWindow($Process,[long]$WindowHandle){
         if($Process.Id-ne33-or$WindowHandle-ne202){throw 'Clipboard handoff requested another owned window'}
         if($script:clipboardHandoffTicks-ge3){@{Root=$peerRoot;Handle=$peerHandle}}
@@ -2765,4 +3027,180 @@ namespace CapyNumericHoverTest {
   if($script:invocations -ne 1){throw 'Paper replayed its actual opener'}
  }
  'Actual Paper open/close consumer requires Apply absence and fresh owned native registry removal.'
+}
+& {
+ Add-Type -TypeDefinition @'
+using System;using System.Collections.Generic;
+namespace CapyEditorRegrowTest {
+ public class Rect {
+  public double X,Y,Width,Height;public double Left{get{return X;}}public double Top{get{return Y;}}public double Right{get{return X+Width;}}public double Bottom{get{return Y+Height;}}
+  public Rect(double x,double y,double width,double height){X=x;Y=y;Width=width;Height=height;}
+  public bool Contains(Rect other){return other.Left>=Left&&other.Top>=Top&&other.Right<=Right&&other.Bottom<=Bottom;}
+ }
+ public enum WindowVisualState {Normal,Maximized}
+ public static class WindowPattern {public static object Pattern="window";}
+ public static class TransformPattern {public static object Pattern="transform";}
+ public static class State {
+  public static int Dpi,MaxTrackHeight,MaxTrackWidth,Moves,ResizeCount;public static bool PerMonitor;
+  public static double FullSide=232,ShortSide=190;public static bool ReplaceWheel;
+  public static Rect Work,Bounds;public static WindowVisualState VisualState;
+  public static List<Rect> Requests=new List<Rect>(),Arranged=new List<Rect>();
+  public static void Reset(int dpi,Rect work,int maxHeight){Dpi=dpi;Work=work;MaxTrackHeight=maxHeight;MaxTrackWidth=(int)work.Width;Bounds=new Rect(work.Left+120,work.Top+180,1000,700);Moves=ResizeCount=0;PerMonitor=false;FullSide=232;ShortSide=190;ReplaceWheel=false;VisualState=WindowVisualState.Maximized;Requests.Clear();Arranged.Clear();}
+  public static void Resize(int width,int height){
+   Requests.Add(new Rect(Bounds.X,Bounds.Y,width,height));ResizeCount++;
+   Bounds=new Rect(Bounds.X,Bounds.Y,Math.Min(width,MaxTrackWidth),Math.Min(height,MaxTrackHeight));
+   if(Bounds.Width!=width||Bounds.Height!=height)throw new InvalidOperationException("Owned resize did not acknowledge requested "+width+"x"+height+"; Win32 maximum tracking size produced "+Bounds.Width+"x"+Bounds.Height);
+  }
+ }
+ public static class Driver {
+  public static int GetDpiForWindow(IntPtr window){return State.Dpi;}
+  public static IntPtr SetThreadDpiAwarenessContext(IntPtr value){State.PerMonitor=value==new IntPtr(-4);return IntPtr.Zero;}
+ }
+ public class Screen {
+  public Rect WorkingArea{get{return State.Work;}}
+  public static Screen FromHandle(IntPtr handle){if(!State.PerMonitor)throw new InvalidOperationException("Work area queried before PMv2 awareness");return new Screen();}
+ }
+ public class Window {
+  public Window Current{get{return this;}}public WindowVisualState WindowVisualState{get{return State.VisualState;}}public Rect BoundingRectangle{get{return State.Bounds;}}
+  public object GetCurrentPattern(object pattern){if(Object.Equals(pattern,WindowPattern.Pattern))return this;if(Object.Equals(pattern,TransformPattern.Pattern))return new Transform();throw new InvalidOperationException("Unexpected native window pattern");}
+  public void SetWindowVisualState(WindowVisualState value){State.VisualState=value;}
+ }
+ public class Transform {
+  public Transform Current{get{return this;}}public bool CanMove{get{return true;}}
+  public void Move(double x,double y){State.Moves++;State.Bounds=new Rect(x,y,State.Bounds.Width,State.Bounds.Height);}
+ }
+ public class Wheel {
+  public Wheel Current{get{return this;}}
+  public Rect BoundingRectangle{get{double scale=State.Dpi/96.0,side=State.Bounds.Height/scale<500?State.ShortSide:State.FullSide;return new Rect(State.Bounds.Left+20*scale,State.Bounds.Top+100*scale,side*scale,side*scale);}}
+  public int[] GetRuntimeId(){return new int[]{7,State.ReplaceWheel&&State.ResizeCount>1?102:101};}
+ }
+}
+'@
+ $tokens=$null;$errors=$null
+ $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-color-editor.ps1'),[ref]$tokens,[ref]$errors)
+ if($errors.Count){throw($errors|Out-String)}
+ $actual=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq'Check-EditorRegrow'},$true)
+ if(!$actual){throw 'Missing actual Edit Color regrow journey'}
+ $definition=$actual.Extent.Text.Replace('[System.Windows.Automation.','[CapyEditorRegrowTest.').Replace('[System.Windows.Forms.Screen]','[CapyEditorRegrowTest.Screen]').Replace('[Windows.Forms.Screen]','[CapyEditorRegrowTest.Screen]').Replace('[CapyRowPointer]','[CapyEditorRegrowTest.Driver]')
+ . ([scriptblock]::Create($definition))
+ $root=[CapyEditorRegrowTest.Window]::new();$review=[pscustomobject]@{Id=17};$drawingWindow=[IntPtr]17;$editorFrame='owned-editor';$run='regrow-test';$Theme='dark'
+ function Join-Path([string]$Path,[string]$ChildPath){if($ChildPath-ceq'exercise-window.ps1'){'Invoke-RegrowResize'}else{Microsoft.PowerShell.Management\Join-Path $Path $ChildPath}}
+ function Invoke-RegrowResize([int]$ProcessId,[long]$WindowHandle,[string]$Action,[int]$Width,[int]$Height){
+  if($ProcessId-ne17-or$WindowHandle-ne17-or$Action-cne'Resize'){throw 'Regrow changed its owned resize route'}
+  [CapyEditorRegrowTest.State]::Resize($Width,$Height)
+ }
+ function Open-Editor{$script:regrowOpens++}
+ function Control($Id,$Within,[switch]$Arranged){
+  if($Id-cne'edit-color-wheel'-or$Within-cne'owned-editor'){throw 'Regrow read outside its owned wheel'}
+  $wheel=[CapyEditorRegrowTest.Wheel]::new()
+  if($Arranged){
+   $bounds=$wheel.Current.BoundingRectangle
+   if(![CapyEditorRegrowTest.State]::Work.Contains([CapyEditorRegrowTest.State]::Bounds)-or![CapyEditorRegrowTest.State]::Work.Contains($bounds)){throw 'The regrow window or wheel lies outside its monitor work area'}
+   [CapyEditorRegrowTest.State]::Arranged.Add($bounds)
+  }
+  $wheel
+ }
+ function Wait-Until([scriptblock]$Condition,[string]$Message){if(!(&$Condition)){throw $Message}}
+ function Set-Content {
+  param([Parameter(Position=0)][string]$Path,[Parameter(ValueFromPipeline)]$Value)
+  process{if($Path-notlike'*wheel-regrow-sdr-dark.json'){throw 'Regrow wrote an unexpected receipt'};$script:regrowReceipt=$Value|ConvertFrom-Json}
+ }
+ function Capture([string]$Name,[switch]$WithModel){if(!$WithModel){throw 'Regrow dropped its model evidence'};$script:regrowCaptures.Add($Name)}
+ function Invoke($Id){if($Id-cne'edit-color-cancel'){throw 'Regrow changed its close action'};$script:regrowCancels++}
+ function Closed-Editor($Message){if($script:regrowCancels-ne1){throw $Message}}
+ foreach($profile in @(@{dpi=144;work=[CapyEditorRegrowTest.Rect]::new(-1920,96,1920,1008);max=1106},@{dpi=96;work=[CapyEditorRegrowTest.Rect]::new(64,80,1600,1000);max=1106})){
+  foreach($case in 'ready','full-small','full-large','short-small','short-large','replaced'){
+   [CapyEditorRegrowTest.State]::Reset($profile.dpi,$profile.work,$profile.max)
+   switch($case){'full-small'{[CapyEditorRegrowTest.State]::FullSide=230.9}'full-large'{[CapyEditorRegrowTest.State]::FullSide=233.1}'short-small'{[CapyEditorRegrowTest.State]::ShortSide=158.9}'short-large'{[CapyEditorRegrowTest.State]::ShortSide=231}'replaced'{[CapyEditorRegrowTest.State]::ReplaceWheel=$true}}
+   $script:regrowOpens=0;$script:regrowCancels=0;$script:regrowReceipt=$null;$script:regrowCaptures=[Collections.Generic.List[string]]::new()
+   $failure=$null;try{Check-EditorRegrow 'sdr'}catch{$failure=$_}
+   if($case-eq'ready'){
+    if($failure){throw $failure}
+    if([CapyEditorRegrowTest.State]::ResizeCount-ne5-or[CapyEditorRegrowTest.State]::Arranged.Count-ne4-or[CapyEditorRegrowTest.State]::Moves-lt1-or$script:regrowOpens-ne1-or$script:regrowCancels-ne1-or[CapyEditorRegrowTest.State]::VisualState-ne[CapyEditorRegrowTest.WindowVisualState]::Maximized){throw 'Actual regrow omitted an owned stage, movement, close or window restore'}
+    if(($script:regrowReceipt.stage.name-join',')-cne'tall,short,regrown,wider'-or($script:regrowCaptures-join',')-cne'wheel-sdr-tall-dark,wheel-sdr-short-dark,wheel-sdr-regrown-dark,wheel-sdr-wider-dark'){throw 'Actual regrow dropped its retained stage receipts or captures'}
+    foreach($request in [CapyEditorRegrowTest.State]::Requests){if($request.Width-gt$profile.work.Width-or$request.Height-gt$profile.work.Height){throw 'Regrow requested a physical size beyond the monitor work area'}}
+   }else{
+    $expected=if($case-eq'replaced'){'Edit Color resize rebuilt its wheel control'}else{'Edit Color wheel did not shrink and regain its full available size'}
+    if(!$failure-or$failure.Exception.Message-cne$expected){throw "Actual regrow lost its wheel size/identity oracle: $case, $failure"}
+   }
+  }
+ }
+ 'Actual Edit Color regrow:144dpi workarea-fit and96dpi offset monitor pass;232 full/159..231 short and retained native wheel reject invalid output.'
+}
+
+& {
+    Add-Type -TypeDefinition @'
+namespace CapyCanvasSeedTest {
+ public static class Driver {
+  public static bool Panned;
+  public static void RightDrag(int x0,int y0,int x1,int y1){Panned=true;}
+ }
+}
+'@
+    $tokens=$null;$errors=$null
+    $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-canvas-touch.ps1'),[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw ($errors|Out-String)}
+    $signature=$source.Find({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Signature'},$true)
+    if(!$signature){throw 'Missing actual canvas touch signature'}
+    . ([scriptblock]::Create($signature.Extent.Text))
+    $wait=$source.Find({param($n)$n-is[Management.Automation.Language.CommandAst]-and$n.GetCommandName()-eq'Wait-Until'-and@($n.CommandElements|Where-Object {$_.Value-eq'Visible mouse seed stroke did not finish'}).Count-eq1},$true)
+    if(!$wait){throw 'Missing actual canvas touch seed acknowledgement'}
+    $first=$wait
+    while($first.Parent-isnot[Management.Automation.Language.StatementBlockAst]){$first=$first.Parent;if(!$first){throw 'Missing actual canvas touch seed block'}}
+    $statements=@($first.Parent.Statements);$start=[array]::IndexOf($statements,$first)
+    $last=@(for($i=$start;$i-lt$statements.Count;$i++){if($statements[$i]-is[Management.Automation.Language.IfStatementAst]-and$statements[$i].Extent.Text.Contains("throw 'Mouse right-drag painted'")){$i}})
+    if($last.Count-ne1){throw 'Missing unchanged mouse right-drag artwork assertion'}
+    $sequence=[scriptblock]::Create(($statements[$start..$last[0]].Extent.Text-join"`n").Replace('[CapyRowPointer]','[CapyCanvasSeedTest.Driver]'))
+    $seedRevision=0;$ScrubOnly=$false;$cx=100;$cy=100;$seedState=@{committed=$false;sleeps=0}
+    [CapyCanvasSeedTest.Driver]::Panned=$false
+    function Model{
+        $done=$seedState.committed-or[CapyCanvasSeedTest.Driver]::Panned
+        [pscustomobject]@{state=[pscustomobject]@{document_file=[ordered]@{revision=$(if($done){1}else{0});modified=$true};layers=@([pscustomobject]@{id=1;paint_revision=$(if($done){73735}else{65537});mask_revision=0})}}
+    }
+    function Camera{[pscustomobject]@{translation=@($(if([CapyCanvasSeedTest.Driver]::Panned){60}else{0}),0)}}
+    function Start-Sleep{param($Milliseconds)$seedState.sleeps++}
+    function Wait-Until([scriptblock]$Condition,[string]$Message){
+        for($poll=1;$poll-le8;$poll++){if($poll-ge3){$seedState.committed=$true};if(& $Condition){return}}
+        throw $Message
+    }
+    . $sequence
+    if(!$seedState.committed-or$seedState.sleeps){throw 'Canvas touch captured its seed before commit or used a settling sleep'}
+}
+Write-Output 'Canvas touch acknowledges the committed seed before mouse navigation despite early modified state and repeated equal pending signatures.'
+
+& {
+ $tokens=$null;$errors=$null
+ $source=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-enclose-fill.ps1'),[ref]$tokens,[ref]$errors)
+ if($errors.Count){throw($errors|Out-String)}
+ $textures=$source.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Check-Textures'},$true)
+ $endpoints=@(foreach($name in @('empty','filled')){
+  $assignment=$textures.Find({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$'+$name)},$true)
+  if(!$assignment){throw "Missing actual texture endpoint: $name"}
+  $statements=@($assignment.Parent.Statements);$at=[Array]::IndexOf($statements,$assignment)
+  if($at -lt 1 -or $statements[$at-1].Extent.Text -cne 'Park'){throw "Texture endpoint lost cursor parking: $name"}
+  $statements[$at-1].Extent.Text+';'+$assignment.Extent.Text
+ })
+ $comparison=$textures.Find({param($n)$n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$filled -eq $empty'},$true)
+ if(!$comparison){throw 'Missing exact texture endpoint comparison'}
+ $helper=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/CapyUia.ps1'),[ref]$tokens,[ref]$errors)
+ $definition=$helper.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Wait-StablePixels'},$true)
+ . ([scriptblock]::Create($definition.Extent.Text))
+ function Texture-Samples{$script:textureDisplayed}
+ function Park{$script:textureParks++}
+ function Start-Sleep{param($Milliseconds)}
+ function Wait-PresentedFrame([switch]$Idle){
+  if(!$Idle){throw 'Texture endpoint did not require an idle presentation'}
+  $script:textureAcknowledgements++;$script:textureDisplayed=$script:textureAuthored
+ }
+ foreach($schedule in @('baseline-stale','filled-stale')){
+  $script:textureParks=0;$script:textureAcknowledgements=0
+  $script:textureAuthored='empty';$script:textureDisplayed=if($schedule -eq 'baseline-stale'){'filled'}else{'empty'}
+  $tool='fill';$percent=0
+  . ([scriptblock]::Create($endpoints[0]))
+  $script:textureAuthored='filled';$script:textureDisplayed=if($schedule -eq 'filled-stale'){'empty'}else{'filled'}
+  . ([scriptblock]::Create($endpoints[1]))
+  . ([scriptblock]::Create($comparison.Extent.Text))
+  if($empty -cne 'empty' -or $filled -cne 'filled' -or $script:textureParks -ne 2 -or $script:textureAcknowledgements -ne 2){throw "Texture endpoint schedule failed: $schedule"}
+ }
+ 'Actual texture endpoints: baseline-stale and filled-stale acknowledged idle presentation, kept cursor parking and exact hashes.'
 }

@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(path.join("packs")).unwrap().count(),1);
         let opened=pollster::block_on(store.load(ProjectLimits::default(),&cancel)).unwrap().unwrap();assert_eq!(opened.metadata.value["camera"],20);
         let crate::color::ColorProfile::Icc(bytes)=&opened.metadata.profiles[0] else{panic!()};assert_eq!(bytes.id(),id);assert_eq!(bytes.len(),crate::color::source::MAX_PROFILE_BYTES);
-        drop(opened);pollster::block_on(store.retire()).unwrap();drop(store);pollster::block_on(collect_unreferenced_stores(&root,&Default::default(),&cancel)).unwrap();
+        drop(opened);pollster::block_on(store.retire()).unwrap();drop(store);pollster::block_on(collect_unreferenced_stores(&root,&Default::default(),&cancel));
         assert!(!resource_path.exists());std::fs::remove_dir_all(root).unwrap();
     }
 }

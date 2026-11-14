@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Check the local GTK's codec linkage and texture round trips without a window."""
+"""Check the local GTK's linkage, texture round trips and GIO launching without a window."""
 import json
 import hashlib
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 prefix, projects = map(lambda path: Path(path).resolve(), sys.argv[1:])
 library = prefix / 'lib/libgtk-4.so.1'
@@ -140,3 +142,57 @@ for name in names:
 """, str(prefix / 'lib')],
                    env=env, check=True)
     print('PASS: private GTK/GLib/Pango, multilingual layout and system libadwaita resolve without LD_LIBRARY_PATH')
+
+launch_source = r'''
+#include <gio/gio.h>
+
+int main (int argc, char **argv)
+{
+  GError *error = NULL;
+  GAppInfo *app = g_app_info_create_from_commandline (argv[1], "Launch check", G_APP_INFO_CREATE_NONE, &error);
+  g_assert_no_error (error);
+  gboolean launched = g_app_info_launch (app, NULL, NULL, &error);
+  g_assert_no_error (error);
+  g_assert_true (launched);
+  g_object_unref (app);
+  return 0;
+}
+'''
+glib_names = [f'lib{name}-2.0.so.0' for name in ['glib', 'gobject', 'gio', 'gmodule', 'gthread']]
+gio_flags = shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'gio-2.0'], text=True))
+with tempfile.TemporaryDirectory(prefix='capy-gio-launch-') as directory:
+    root = Path(directory)
+    source_file = root / 'launch.c'
+    source_file.write_text(launch_source)
+    target = root / 'target.sh'
+    target.write_text('#!/bin/sh\nprintf %s "$GIO_LAUNCHED_DESKTOP_FILE_PID" > "$0.out"\n')
+    target.chmod(0o755)
+    env = {key: value for key, value in os.environ.items() if key not in ['LD_LIBRARY_PATH', 'GIO_LAUNCH_DESKTOP']}
+
+    def launch(name, helper):
+        bundle = root / name
+        (bundle / 'lib').mkdir(parents=True)
+        for library_name in glib_names:
+            shutil.copy2(prefix / 'lib' / library_name, bundle / 'lib' / library_name)
+        helper(bundle / 'lib/gio-launch-desktop')
+        executable = bundle / 'launch'
+        subprocess.run(['cc', str(source_file), '-o', str(executable), *gio_flags,
+                        *[str(bundle / 'lib' / library_name) for library_name in glib_names],
+                        '-Wl,-rpath,$ORIGIN/lib'], check=True)
+        output = Path(str(target) + '.out')
+        output.unlink(missing_ok=True)
+        subprocess.run([str(executable), str(target)], env=env, check=True)
+        for _ in range(100):
+            if output.exists():
+                return bundle, output.read_text()
+            time.sleep(0.05)
+        raise AssertionError(f'{name}: the launched command never ran')
+
+    def marker(path):
+        path.write_text('#!/bin/sh\nprintf beside > "$(dirname "$0")/../helper-used"\nexec "$@"\n')
+        path.chmod(0o755)
+    bundle, _ = launch('marker', marker)
+    assert (bundle / 'helper-used').read_text() == 'beside', 'GIO must run the helper beside the bundled libgio'
+    _, pid = launch('shipped', lambda path: shutil.copy2(prefix / 'lib/gio-launch-desktop', path))
+    assert pid.isdigit(), f'the shipped gio-launch-desktop must set GIO_LAUNCHED_DESKTOP_FILE_PID, got {pid!r}'
+print('PASS: bundled GIO launches applications through the gio-launch-desktop beside libgio')

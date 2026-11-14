@@ -999,6 +999,29 @@ fn shared_gradient_reverse_reorders_colors_and_keeps_uneven_adjacent_knots_valid
 }
 
 #[test]
+fn shared_gradient_selected_stop_follows_edits_and_receives_numeric_position(){
+    use crate::{GradientEdit as G,NumericOperation};
+    let selected=|app:&UiSession<Recorder>|serde_json::to_value(p28_control(app)).unwrap()["gradient"]["selected"].as_u64();
+    for tool in [false,true]{
+        let mut app=p28_gradient_session(tool);
+        for position in [0.3,0.6]{let target=p28_destination(&app,tool);p28_gradient_edit(&mut app,target,G::Stop{index:None,position,color:None,remove:false});}
+        assert_eq!(selected(&app),Some(2),"an added stop becomes selected");
+        let target=p28_destination(&app,tool);let before=p28_definition(&app);
+        for (phase,edit) in [(ContactPhase::Down,G::Stop{index:Some(1),position:0.3,color:None,remove:false}),(ContactPhase::Up,G::Position{index:1,operation:NumericOperation::Step{steps:0.}})]{
+            app.dispatch(UiAction::Effect{action:EffectAction::Gesture{phase,action:Box::new(EffectAction::Gradient{target:target.clone(),edit})}}).unwrap();
+        }
+        assert_eq!(p28_definition(&app),before,"selecting a stop keeps the gradient");
+        assert_eq!(selected(&app),Some(1),"pressing a stop selects it");
+        let index=selected(&app).unwrap() as usize;let target=p28_destination(&app,tool);
+        p28_gradient_edit(&mut app,target,G::Position{index,operation:NumericOperation::Value{value:0.35}});
+        let after=p28_definition(&app);assert_eq!(after.stops[1].position,0.35);assert_eq!(after.stops[2],before.stops[2]);
+        let target=p28_destination(&app,tool);p28_gradient_edit(&mut app,target,G::Reverse);assert_eq!(selected(&app),Some(2),"reverse keeps the same stop selected");
+        let target=p28_destination(&app,tool);p28_gradient_edit(&mut app,target,G::Stop{index:Some(2),position:0.,color:None,remove:true});
+        assert_eq!(selected(&app),Some(1),"removing a stop selects its lower neighbor");
+    }
+}
+
+#[test]
 fn shared_gradient_bucket_uses_selected_paint_in_artwork_and_masks(){
     use crate::GradientEdit as G;
     for mask in [false,true]{

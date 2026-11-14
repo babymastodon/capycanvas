@@ -1,6 +1,8 @@
 #include "pch.h"
 #include <winrt/Microsoft.UI.Xaml.Documents.h>
 #include "StatsView.h"
+#include "MeterControls.h"
+#include "TraceFile.h"
 #include "WorkspaceQuery.h"
 #include "StrokeRecording.h"
 #include <chrono>
@@ -15,9 +17,10 @@ struct StatsView:std::enable_shared_from_this<StatsView>{
     Microsoft::UI::Xaml::Shapes::Polyline samples;
     Microsoft::UI::Xaml::Shapes::Line budget;
     Microsoft::UI::Dispatching::DispatcherQueueTimer timer{nullptr};
-    std::vector<TextBlock> values;
-    std::vector<TextBlock> captions;
-    std::vector<Grid> rowLines;
+    std::vector<std::unique_ptr<MeterRow>> timings;
+    std::unique_ptr<MeterSection> memory;
+    std::shared_ptr<OrderedTraceFile> trace;
+    hstring palette;
     Button record{nullptr};
     TextBlock recordError;
     uint64_t listener=0;
@@ -36,16 +39,18 @@ struct StatsView:std::enable_shared_from_this<StatsView>{
         return true;
     }
     void init(){
-        root.Spacing(data->panelMetric(L"group_spacing"));
+        root.Spacing(6);
+        memory=std::make_unique<MeterSection>(data);
+        if(GetEnvironmentVariableW(L"CAPY_TRACE_UI",nullptr,0))trace=std::make_shared<OrderedTraceFile>();
         AutomationProperties::SetAutomationId(root,L"renderer-stats");
-        chart.Height(46);chart.IsHitTestVisible(false);
+        chart.Height(46);chart.Background(clear());
         AutomationProperties::SetAutomationId(chart,L"renderer-stats-chart");
         samples.Stroke(data->brush(L"text"));samples.StrokeThickness(1.5);samples.Opacity(.9);
         budget.Stroke(data->brush(L"text"));budget.StrokeThickness(1);budget.Opacity(.3);DoubleCollection dash;dash.Append(3);dash.Append(3);budget.StrokeDashArray(dash);
         chart.Children().Append(budget);chart.Children().Append(samples);
         chart.SizeChanged([weak=weak_from_this()](auto&&,auto&&){if(auto self=weak.lock())self->draw();});
-        record=button(data,L"",[weak=weak_from_this()]{if(auto self=weak.lock();self&&self->data->strokes)self->data->strokes->click();});
-        record.HorizontalAlignment(HorizontalAlignment::Stretch);record.MinHeight(data->controlHeight());record.Padding({6,0,6,0});
+        record=raisedButton(data,L"",[weak=weak_from_this()]{if(auto self=weak.lock();self&&self->data->strokes)self->data->strokes->click();});
+        record.HorizontalAlignment(HorizontalAlignment::Left);record.MinHeight(data->controlHeight());record.Padding({6,0,6,0});
         AutomationProperties::SetAutomationId(record,L"stroke-recording");
         recordError=label(data,L"");recordError.TextWrapping(TextWrapping::Wrap);recordError.Opacity(.75);AutomationProperties::SetAutomationId(recordError,L"stroke-recording-error");
         AutomationProperties::SetLiveSetting(recordError,Automation::Peers::AutomationLiveSetting::Polite);
@@ -71,44 +76,26 @@ struct StatsView:std::enable_shared_from_this<StatsView>{
             }))busy=false;
     }
     void apply(J const& next){
-        if(model&&model.Stringify()==next.Stringify())return;
-        auto previous=array(model,L"rows"),rows=array(next,L"rows");
-        bool rebuild=values.size()!=rows.Size();
+        if(model&&model.Stringify()==next.Stringify()&&palette==data->paletteKey)return;
+        auto rows=array(next,L"rows");bool rebuild=timings.size()!=rows.Size();
         bool chartChanged=rebuild||array(model,L"samples").Stringify()!=array(next,L"samples").Stringify()
             ||num(model,L"budget_ms")!=num(next,L"budget_ms")||str(model,L"chart_label")!=str(next,L"chart_label");
-        model=next;
+        model=next;palette=data->paletteKey;
+        if(trace){
+            auto packet=O({{L"process_id",N(GetCurrentProcessId())},{L"window_id",N(double(data->windowId))},{L"result",next}});
+            PublishTraceFile(trace,"renderer-stats-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(data->windowId)+".json",to_string(packet.Stringify()));
+        }
         if(rebuild){
-            root.Children().Clear();values.clear();captions.clear();rowLines.clear();
-            for(uint32_t i=0;i<rows.Size();i++){
-                auto row=rows.GetObjectAt(i);Grid line;
-                ColumnDefinition caption;caption.Width({1,GridUnitType::Star});line.ColumnDefinitions().Append(caption);
-                ColumnDefinition reading;reading.Width({1,GridUnitType::Auto});line.ColumnDefinitions().Append(reading);
-                line.ColumnSpacing(data->panelMetric(L"control_spacing"));
-                auto text=label(data,str(row,L"label"));line.Children().Append(text);captions.push_back(text);rowLines.push_back(line);
-                auto value=label(data,L"");Documents::Typography::SetNumeralAlignment(value,FontNumeralAlignment::Tabular);Grid::SetColumn(value,1);line.Children().Append(value);values.push_back(value);
-                AutomationProperties::SetAutomationId(value,L"renderer-stat-"+to_hstring(i));
-                tooltip(line,str(row,L"description"));
-                AutomationProperties::SetHelpText(value,str(row,L"description"));
-                root.Children().Append(line);
-                if(i+1==uint32_t(num(model,L"chart_after_rows"))){
-                    root.Children().Append(chart);
-                    AutomationProperties::SetName(chart,str(model,L"chart_label"));
-                }
+            root.Children().Clear();timings.clear();
+            for(uint32_t i=0;i<rows.Size();++i){
+                auto row=std::make_unique<MeterRow>(data,L"",L"renderer-stat-"+to_hstring(i));root.Children().Append(row->root);timings.push_back(std::move(row));
+                if(i+1==uint32_t(num(model,L"chart_after_rows")))root.Children().Append(chart);
             }
+            auto separator=[&]{Border line;line.Height(1);line.Background(data->line(L"panel",L"border"));root.Children().Append(line);};
+            separator();root.Children().Append(memory->root);separator();root.Children().Append(record);root.Children().Append(recordError);
         }
-        {uint32_t index=0;if(!root.Children().IndexOf(record,index)){root.Children().Append(record);root.Children().Append(recordError);}}
-        for(uint32_t i=0;i<rows.Size();i++){
-            auto row=rows.GetObjectAt(i);auto value=str(row,L"value");
-            if(values[i].Text()!=value)values[i].Text(value);
-            if(!rebuild){
-                auto old=previous.GetObjectAt(i);
-                if(str(old,L"label")!=str(row,L"label"))captions[i].Text(str(row,L"label"));
-                if(str(old,L"description")!=str(row,L"description")){
-                    tooltip(rowLines[i],str(row,L"description"));
-                    AutomationProperties::SetHelpText(values[i],str(row,L"description"));
-                }
-            }
-        }
+        for(uint32_t i=0;i<rows.Size();++i)timings[i]->update(data,rows.GetObjectAt(i));
+        memory->update(data,object(model,L"memory"));tooltip(chart,str(model,L"chart_label"));
         if(chartChanged){AutomationProperties::SetName(chart,str(model,L"chart_label"));draw();}
     }
     void recording(){

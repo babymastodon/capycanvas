@@ -58,6 +58,8 @@ fn generate(directory:&Path)->SessionDocumentState {
     source.files.last_export.as_mut().unwrap().recipe=recipe;
     save("drawing-icc",&source);
     write(directory,"session-icc.json",&SessionManifest::default().reconcile(vec![SessionDrawing{id:9,key:"drawing-icc".into()}],9,false).unwrap());
+    write(directory,"saved-names.json",&saved_names(&english));
+    write(directory,"workspace-layout.json",&complete_history(&english));
     authored
 }
 
@@ -95,6 +97,9 @@ fn check_inputs(directory:&Path,check:impl Fn(&str,Value)) {
             let saved=std::fs::read_to_string(&path).unwrap();check(name,serde_json::to_value(EditingState::restore(&saved,&english)).unwrap());
         } else if name.starts_with("settings") && name.ends_with(".json") {
             let saved=std::fs::read_to_string(&path).unwrap();check(name,serde_json::to_value(Settings::restore(&saved)).unwrap());
+        } else if name=="workspace-layout.json" {
+            let mut history:LayoutHistory=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            history.retain_admitted();history.validate().unwrap();check(name,serde_json::to_value(history).unwrap());
         } else if name=="export-presets-complete" {
             check("export-presets-complete.json",serde_json::to_value(crate::ExportPresets::restore(&std::fs::read(path).unwrap())).unwrap());
         } else if name=="bindings-complete.capykeys" {
@@ -417,3 +422,181 @@ const EXPORT_STRUCTS:&[StructPair]=&[("ExportPresets","",struct_fields::<crate::
 const SESSION_STRUCTS:&[StructPair]=&[("SessionDocumentState","",struct_fields::<SessionDocumentState>)];
 
 const KEYMAP_STRUCTS:&[StructPair]=SETTINGS_STRUCTS;
+
+fn tool_setting_ids(english:&Localizer)->std::collections::BTreeSet<&'static str> {
+    brush_ids().flat_map(|id|crate::tool_settings::controls(id,&layer_core::default_brush(preset(id).unwrap()),english)).map(|control|control.id).collect()
+}
+fn saved_names(english:&Localizer)->Value {
+    use ToolbarControl as C;
+    let brush=brush_ids().next().unwrap();
+    let controls=[C::ToolSlot{slot:ToolSlotId::Fill},C::Command{command:CommandId::Undo},C::Brush{id:brush},C::Size{tenths:120},C::Color,C::ColorPicker,
+        C::BrushSizeSlider,C::BrushStrengthSlider,C::ToolOptions{style:Default::default()},C::Panel{panel:Panel::Layers},C::Divider];
+    let control_kind=|control:&ToolbarControl|match control {C::ToolSlot{..}=>0,C::Command{..}=>1,C::Brush{..}=>2,C::Size{..}=>3,C::Color=>4,C::ColorPicker=>5,
+        C::BrushSizeSlider=>6,C::BrushStrengthSlider=>7,C::ToolOptions{..}=>8,C::Panel{..}=>9,C::Divider=>10};
+    assert_eq!(controls.iter().map(control_kind).collect::<std::collections::BTreeSet<_>>(),(0..=10).collect());
+    let mut items=HeaderItem::COMPONENTS.to_vec();items.push(HeaderItem::Tool{control:controls[1]});
+    let item_kind=|item:&HeaderItem|match item {HeaderItem::Capy=>0,HeaderItem::Menu=>1,HeaderItem::MenuLabels=>2,HeaderItem::Settings=>3,HeaderItem::Fullscreen=>4,
+        HeaderItem::Workspaces=>5,HeaderItem::DocumentTitle=>6,HeaderItem::Clock=>7,HeaderItem::Battery=>8,HeaderItem::Space=>9,HeaderItem::Tool{..}=>10};
+    assert_eq!(items.iter().map(item_kind).collect::<std::collections::BTreeSet<_>>(),(0..=10).collect());
+    let sources=[BubbleSource::Control{control:C::Color},BubbleSource::Medium{group:ToolGroup::ALL[0]}];
+    let source_kind=|source:&BubbleSource|match source {BubbleSource::Control{..}=>0,BubbleSource::Medium{..}=>1};
+    assert_eq!(sources.iter().map(source_kind).collect::<std::collections::BTreeSet<_>>(),(0..=1).collect());
+    let name=|panel,custom_name:Option<&str>|LayoutPanelName{panel,custom_name:custom_name.map(Into::into)};
+    let changes=[LayoutChange::Starting,LayoutChange::HeaderSize{size:HeaderSize::Large},LayoutChange::HeaderAdded{item:HeaderItem::Clock},
+        LayoutChange::HeaderRemoved{item:HeaderItem::Clock},LayoutChange::HeaderRearranged,LayoutChange::CanvasInfo,LayoutChange::CanvasBar,LayoutChange::Restored,
+        LayoutChange::RestoredEarlier,LayoutChange::panels(LayoutPanelAction::Moved,vec![name(Panel::Layers,None)]),
+        LayoutChange::Renamed{before:name(Panel::Toolbar,None),after:name(Panel::Toolbar,Some("Tools"))},LayoutChange::Bubble{action:LayoutPanelAction::Added,source:sources[0]}];
+    let change_kind=|change:&LayoutChange|match change {LayoutChange::Automatic=>usize::MAX,LayoutChange::Starting=>0,LayoutChange::HeaderSize{..}=>1,LayoutChange::HeaderAdded{..}=>2,
+        LayoutChange::HeaderRemoved{..}=>3,LayoutChange::HeaderRearranged=>4,LayoutChange::CanvasInfo=>5,LayoutChange::CanvasBar=>6,LayoutChange::Restored=>7,
+        LayoutChange::RestoredEarlier=>8,LayoutChange::Panels{..}=>9,LayoutChange::Renamed{..}=>10,LayoutChange::Bubble{..}=>11};
+    assert_eq!(changes.iter().map(change_kind).collect::<std::collections::BTreeSet<_>>(),(0..=11).collect());
+    let mut panels=Panel::ALL.to_vec();panels.push(Panel::CustomToolbar(1));
+    json!({
+        "command":CommandId::ALL.to_vec(),"tool_slot":ToolSlotId::ALL.to_vec(),"tool_group":ToolGroup::ALL.to_vec(),"panel":panels,"panel_control":crate::PanelControl::ALL.to_vec(),
+        "tile_style":TileStyle::ALL.to_vec(),"tab_style":crate::TabStyle::ALL.to_vec(),"header_size":HeaderSize::ALL.to_vec(),"edge":Edge::ALL.to_vec(),"axis":Axis::ALL.to_vec(),
+        "edge_alignment":crate::EdgeAlignment::ALL.to_vec(),"floating_toolbar_layout":crate::FloatingToolbarLayout::ALL.to_vec(),"layout_panel_action":LayoutPanelAction::ALL.to_vec(),
+        "corner":crate::Corner::ALL.to_vec(),"header_item":items,"toolbar_control":controls,"bubble_source":sources,"layout_change":changes,
+        "brush":brush_ids().collect::<Vec<_>>(),"tool_setting":tool_setting_ids(english),
+    })
+}
+fn check_saved_names(names:&Value) {
+    fn read<T:serde::de::DeserializeOwned>(names:&Value,key:&str)->Vec<T> {
+        names[key].as_array().unwrap_or_else(||panic!("saved names lack {key}")).iter()
+            .map(|name|serde_json::from_value(name.clone()).unwrap_or_else(|error|panic!("{key} {name} no longer reads: {error}"))).collect()
+    }
+    read::<CommandId>(names,"command");read::<ToolSlotId>(names,"tool_slot");read::<ToolGroup>(names,"tool_group");read::<Panel>(names,"panel");
+    read::<crate::PanelControl>(names,"panel_control");read::<TileStyle>(names,"tile_style");read::<crate::TabStyle>(names,"tab_style");
+    read::<HeaderSize>(names,"header_size");read::<Edge>(names,"edge");read::<Axis>(names,"axis");read::<crate::EdgeAlignment>(names,"edge_alignment");
+    read::<crate::FloatingToolbarLayout>(names,"floating_toolbar_layout");read::<LayoutPanelAction>(names,"layout_panel_action");
+    read::<crate::Corner>(names,"corner");read::<HeaderItem>(names,"header_item");
+    for control in read::<ToolbarControl>(names,"toolbar_control") {assert!(control.validate_admission().is_ok(),"toolbar control {control:?} no longer opens");}
+    for source in read::<BubbleSource>(names,"bubble_source") {assert!(source.validate().is_ok(),"bubble {source:?} no longer opens");}
+    for change in read::<LayoutChange>(names,"layout_change") {assert!(change.validate().is_ok(),"history entry {change:?} no longer opens");}
+    for id in read::<u32>(names,"brush") {assert!(preset(id).is_ok(),"brush {id} no longer opens");}
+    for id in read::<String>(names,"tool_setting") {assert!(crate::tool_settings::defined(&id),"tool setting {id} no longer opens");}
+}
+fn complete_layout(english:&Localizer)->DockLayout {
+    use ToolbarControl as C;
+    let mut layout=serde_json::to_value(crate::WorkspacePreset::Illustrator.layout(Platform::Gtk)).unwrap();
+    let mut next=layout["next_id"].as_u64().unwrap();let mut tile=layout["next_tile_id"].as_u64().unwrap();
+    let mut id=||{next+=1;next-1};
+    let mut tiles=|controls:Vec<ToolbarControl>|controls.into_iter().map(|control|{tile+=1;json!({"id":tile-1,"control":control})}).collect::<Vec<_>>();
+    for config in layout["panels"].as_array_mut().unwrap().iter_mut().filter(|config|config["content"]["kind"]=="controls") {
+        let panel:Panel=serde_json::from_value(config["id"].clone()).unwrap();
+        config["content"]["visible"]=json!(crate::PanelControl::available(panel));
+    }
+    let mut controls:Vec<ToolbarControl>=serde_json::from_value(saved_names(english)["toolbar_control"].clone()).unwrap();
+    controls.extend(CommandId::ALL.map(|command|C::Command{command}));
+    controls.extend(ToolSlotId::ALL.map(|slot|C::ToolSlot{slot}));
+    controls.extend(Panel::ALL.into_iter().map(|panel|C::Panel{panel}).filter(|control|control.validate_admission().is_ok()));
+    controls.extend(brush_ids().map(|id|C::Brush{id}));
+    let mut toolbars=Vec::new();
+    for (index,style) in TileStyle::ALL.iter().cycle().take(7).enumerate() {
+        let panel=Panel::CustomToolbar(id() as u32);
+        let content=tiles(if index==0 {controls.clone()} else {vec![C::Color]});
+        toolbars.push((panel,json!({"id":panel,"hide_tab":false,"tile_style":style,"content":{"kind":"toolbar","name":format!("Coverage {index}"),"tiles":content}})));
+    }
+    let tab_styles=crate::TabStyle::ALL;
+    let tabs=|index:usize,id:u64|json!({"kind":"tabs","id":id,"panels":[toolbars[index].0],"active":toolbars[index].0,"tab_style":tab_styles[index%tab_styles.len()]});
+    let bands=[
+        json!({"alignment":"start","id":id(),"edge":"bottom","extent":0.,"root":tabs(0,id())}),
+        json!({"alignment":"center","id":id(),"edge":"bottom","extent":0.,"root":{"kind":"split","id":id(),"axis":"horizontal","fraction":0.5,"first":tabs(1,id()),"second":tabs(2,id())}}),
+        json!({"alignment":"end","id":id(),"edge":"bottom","extent":0.,"root":tabs(3,id())}),
+    ];
+    layout["bands"].as_array_mut().unwrap().extend(bands);
+    for (index,toolbar_layout) in crate::FloatingToolbarLayout::ALL.into_iter().enumerate() {
+        layout["floating"].as_array_mut().unwrap().push(json!({"root":tabs(4+index,id()),"position":[100.+index as f32*60.,120.],"width":120.,"default_width":null,"height":null,"toolbar_layout":toolbar_layout}));
+    }
+    layout["panels"].as_array_mut().unwrap().extend(toolbars.iter().map(|(_,config)|config.clone()));
+    let present:Vec<HeaderItem>=layout["header"]["zones"].as_array().unwrap().iter().flat_map(|zone|zone.as_array().unwrap().iter().map(|entry|serde_json::from_value(entry["item"].clone()).unwrap())).collect();
+    let mut header_id=layout["header"]["next_id"].as_u64().unwrap();
+    let mut added=Vec::new();
+    for item in HeaderItem::COMPONENTS.into_iter().filter(|item|!present.contains(item)).chain([HeaderItem::Tool{control:C::Command{command:CommandId::Undo}}]) {
+        added.push(json!({"id":header_id,"item":item}));header_id+=1;
+    }
+    layout["header"]["zones"][2].as_array_mut().unwrap().extend(added);
+    layout["header"]["next_id"]=json!(header_id);
+    let mut sources=vec![BubbleSource::Control{control:C::Color},BubbleSource::Control{control:C::ColorPicker},
+        BubbleSource::Control{control:C::Command{command:CommandId::Undo}},BubbleSource::Control{control:C::Panel{panel:Panel::Layers}},
+        BubbleSource::Control{control:C::Brush{id:brush_ids().next().unwrap()}}];
+    sources.extend(ToolGroup::ALL.map(|group|BubbleSource::Medium{group}));
+    let bubbles:Vec<_>=sources.iter().zip(crate::Corner::ALL.iter().cycle()).map(|(source,corner)|json!({"id":id(),"source":source,"corner":corner,"offset":[80.,80.]})).collect();
+    let mut settings=tool_setting_ids(english).into_iter();
+    let rings:Vec<_>=brush_ids().map_while(|brush|{let ring:Vec<_>=settings.by_ref().take(crate::MAX_RING_SETTINGS).collect();(!ring.is_empty()).then(||json!({"brush":brush,"settings":ring}))}).collect();
+    layout["bubbles"]=json!({"show_sliders":false,"bubbles":bubbles,"rings":rings,"kept":[]});
+    layout["next_id"]=json!(next);layout["next_tile_id"]=json!(tile);
+    let layout:DockLayout=serde_json::from_value(layout).unwrap();
+    layout.validate().unwrap();
+    layout
+}
+fn complete_history(english:&Localizer)->LayoutHistory {
+    let mut layout=complete_layout(english);
+    let mut history=LayoutHistory::new(&layout);
+    let changes:Vec<LayoutChange>=serde_json::from_value(saved_names(english)["layout_change"].clone()).unwrap();
+    let actions=LayoutPanelAction::ALL.into_iter().map(|action|LayoutChange::panels(action,vec![LayoutPanelName{panel:Panel::Layers,custom_name:None}]));
+    for (index,change) in changes.into_iter().chain(actions).enumerate() {
+        layout.canvas_bar = !layout.canvas_bar;layout.header.size=HeaderSize::ALL[index%HeaderSize::ALL.len()];
+        history.append(&layout,change);
+    }
+    history.validate().unwrap();
+    history
+}
+
+#[test]
+fn released_saved_names_still_read() {
+    let releases:Vec<_>=std::fs::read_dir(root()).unwrap().map(|entry|entry.unwrap().path().join("saved-names.json")).filter(|path|path.is_file()).collect();
+    assert!(!releases.is_empty());
+    for path in releases {check_saved_names(&serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap());}
+    check_saved_names(&saved_names(&Localizer::shared(UiLanguage::English)));
+}
+
+#[test]
+fn generated_fixtures_cover_every_saved_name() {
+    type Found=std::collections::BTreeMap<&'static str,std::collections::BTreeSet<String>>;
+    fn name(value:&Value)->String {
+        let value=["kind","change"].into_iter().find_map(|tag|value.get(tag)).unwrap_or(value);
+        if value.as_str().is_some_and(|name|name.starts_with("toolbar:")) {"toolbar:*".into()} else {value.to_string()}
+    }
+    fn add(found:&mut Found,key:&'static str,value:&Value) {found.entry(key).or_default().insert(name(value));}
+    fn collect(value:&Value,found:&mut Found) {
+        match value {
+            Value::Object(fields)=>for (key,field) in fields {
+                match key.as_str() {
+                    "command"=>add(found,"command",field),"edge"=>add(found,"edge",field),"axis"=>add(found,"axis",field),
+                    "tile_style"=>add(found,"tile_style",field),"tab_style"=>add(found,"tab_style",field),"corner"=>add(found,"corner",field),
+                    "slot"=>add(found,"tool_slot",field),"group" if field.is_string()=>add(found,"tool_group",field),"alignment"=>add(found,"edge_alignment",field),
+                    "toolbar_layout"=>add(found,"floating_toolbar_layout",field),"action" if field.is_string()=>add(found,"layout_panel_action",field),
+                    "size" if field.is_string()=>add(found,"header_size",field),"brush"=>add(found,"brush",field),
+                    "visible"=>for control in field.as_array().into_iter().flatten() {add(found,"panel_control",control);},
+                    "settings"=>for setting in field.as_array().into_iter().flatten() {add(found,"tool_setting",setting);},
+                    "panels" if field.as_array().is_some_and(|panels|panels.iter().all(Value::is_string))=>for panel in field.as_array().unwrap() {add(found,"panel",panel);},
+                    "control"=>{
+                        add(found,"toolbar_control",field);
+                        if field["kind"]=="brush" {add(found,"brush",&field["id"]);}
+                        if field["kind"]=="panel" {add(found,"panel",&field["panel"]);}
+                    }
+                    "item"=>add(found,"header_item",field),"source"=>add(found,"bubble_source",field),
+                    "description"=>add(found,"layout_change",field),
+                    _=>{},
+                }
+                collect(field,found);
+            },
+            Value::Array(items)=>for item in items {collect(item,found);},
+            _=>{},
+        }
+    }
+    let directory=std::env::temp_dir().join(format!("capy-saved-names-{}",PortableId::random()));
+    generate(&directory);
+    let names:Value=serde_json::from_slice(&std::fs::read(directory.join("saved-names.json")).unwrap()).unwrap();
+    assert_eq!(names,saved_names(&Localizer::shared(UiLanguage::English)));
+    let mut found=std::collections::BTreeMap::new();
+    collect(&serde_json::from_slice(&std::fs::read(directory.join("workspace-layout.json")).unwrap()).unwrap(),&mut found);
+    let mut missing=Vec::new();
+    for (key,expected) in names.as_object().unwrap() {
+        for value in expected.as_array().unwrap() {
+            if !found.get(key.as_str()).is_some_and(|seen|seen.contains(&name(value))) {missing.push(format!("{key} {value}"));}
+        }
+    }
+    assert!(missing.is_empty(),"generated workspace fixtures miss saved names: {missing:?}");
+    std::fs::remove_dir_all(directory).unwrap();
+}

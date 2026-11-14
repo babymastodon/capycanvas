@@ -2,6 +2,7 @@ import SwiftUI
 #if os(macOS)
 import AppKit
 #else
+import GameController
 import UIKit
 #endif
 
@@ -99,6 +100,13 @@ extension KeyPress {
 
             return try JSON.decode(response)["text"].string
         } catch { return error.localizedDescription }
+    }
+    static var keyboardInput: Bool {
+        #if os(macOS)
+        return true
+        #else
+        return GCKeyboard.coalesced != nil
+        #endif
     }
     static var inputBusy: Bool {
         if composing { return true }

@@ -780,6 +780,8 @@ mod tests {
         let bake=renderer.papers.bakes.iter().find(|bake|bake.id==id).unwrap();
         let programs=renderer.papers.programs.iter().find(|programs|programs.id==bake.program).unwrap();
         pollster::block_on(renderer.compilation.prepare_all([&programs.probe,&programs.bake])).unwrap();
+        let (wake,awoken)=std::sync::mpsc::channel();
+        renderer.set_preparation_wake(Arc::new(move || {let _=wake.send(());}));
         let (send,receive)=std::sync::mpsc::channel();
         let owner=std::thread::spawn(move || {
             let result=renderer.papers.advance(&renderer.device,&renderer.queue,false,None);
@@ -809,6 +811,10 @@ mod tests {
         store.gate.entered();store.gate.release();
         let (mut renderer,result)=owner.join().unwrap();result.unwrap();
         assert!(returned,"paper preparation waited for storage on the render owner");
+        awoken.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(renderer.papers.images_ready());
+        assert!(!renderer.papers.image_waiting());
+        assert!(renderer.frame_preparation_pending(),"ready paper decode must retain its delegated frame consumer until consumed");
         assert!(renderer.papers.view(&id).is_none());
         let stored=bake_binding(&mut renderer,binding.clone());
         renderer.papers.bakes.clear();

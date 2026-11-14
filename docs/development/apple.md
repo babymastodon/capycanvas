@@ -449,6 +449,9 @@ Some journeys need prepared data and skip or fail without it:
   the folder's absolute path. On iPad, put the folder in the private test runner's
   Documents directory, enable that runner's file sharing, name its provider
   `Capy Test Files <UUID>` and set `CAPY_UI_PACKAGE_PROVIDER` to that display name.
+- **Phone drawers.** Seed `Inventory marks.png` in the private runner's
+  `Capy Files <UUID>` folder and set `CAPY_FILE_TEST_TOKEN` and
+  `CAPY_UI_PACKAGE_PROVIDER` as above before running `testPhoneToolDrawers`.
 - **Seeded sessions.** The iPad `testNativeDrawingLifecycleStress` pair opens
   private Release sessions from the owned `capy-test-drawing-*` folders named by
   `CAPY_UI_DRAWING_STORAGE_LIGHT` and `CAPY_UI_DRAWING_STORAGE_DARK`, each seeded

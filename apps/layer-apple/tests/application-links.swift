@@ -21,6 +21,7 @@ import SwiftUI
                     return accepted ? .handled : .discarded
                 }))
             try await wait("Initial editor state") { !store.state.isNull && !store.catalog.isNull }
+            try await uncover(store)
             let layers = store.state["layers"].stableKey
             for (index, command) in ["website", "source_code", "website"].enumerated() {
                 accepted = index == 2

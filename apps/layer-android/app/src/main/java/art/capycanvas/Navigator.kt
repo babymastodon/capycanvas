@@ -28,12 +28,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
+internal class NavigatorPanelState {
+    val viewport = mutableStateOf(IntSize.Zero)
+    val geometry = mutableStateOf<Pair<String,JSONObject>?>(null)
+}
+internal val LocalNavigatorPanelState = compositionLocalOf<NavigatorPanelState?> { null }
+
 /** GPU overview and shared camera geometry; Compose only displays and routes input. */
 @Composable internal fun NavigatorPanel(host: CanvasHost, availableHeight: Dp = 268.dp, onHeight: (natural: Float, displayed: Float) -> Unit = { _, _ -> }) {
     val density = LocalDensity.current.density
     val colors = LocalPalette.current
-    var viewport by remember { mutableStateOf(IntSize.Zero) }
-    var geometry by remember { mutableStateOf<JSONObject?>(null) }
+    val retained = LocalNavigatorPanelState.current ?: remember { NavigatorPanelState() }
+    var viewport by retained.viewport
     val key = remember { Any() }
     val order = LocalWorkspaceZ.current
     val opening = LocalPanelOpening.current
@@ -43,6 +49,8 @@ import kotlin.math.roundToInt
     val overview = remember { arrayOfNulls<LayoutCoordinates>(1) }
     val document = host.snapshot?.getJSONObject("state")?.array("tabs")?.optJSONObject(0)
     val documentSize = document?.let { it.optInt("width") to it.optInt("height") }
+    val sizing = listOf(viewport,documentSize,density).toString()
+    val geometry = retained.geometry.value?.second
     DisposableEffect(host) { onDispose { host.navigatorPlacement(key, null) } }
     fun open() {
         val panel = opening?.coordinates?.takeIf { it.isAttached } ?: return
@@ -60,9 +68,9 @@ import kotlin.math.roundToInt
         }
     }
     DisposableEffect(opening) { onDispose { opening?.bounds = null } }
-    LaunchedEffect(viewport, documentSize) {
-        if (viewport.width > 0 && viewport.height > 0) geometry = host.awaitQuery(obj("type" to "navigator",
-            "viewport" to JSONArray(listOf(viewport.width / density, viewport.height / density))))
+    LaunchedEffect(viewport, documentSize,density) {
+        if (viewport.width > 0 && viewport.height > 0 && retained.geometry.value?.first!=sizing) host.awaitQuery(obj("type" to "navigator",
+            "viewport" to JSONArray(listOf(viewport.width / density, viewport.height / density))))?.let { retained.geometry.value=sizing to it }
     }
     val natural = geometry?.let { (viewport.width / density * it.number("overview_aspect")).dp } ?: 220.dp
     val overviewHeight = (availableHeight - panelMetrics().height - panelMetrics().spacing - panelMetrics().inset*2).coerceIn(0.dp, natural)

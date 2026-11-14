@@ -18,9 +18,10 @@ GTK 4.22+, libadwaita 1.9 and Wayland development packages. Enabled API features
 are declared in [`apps/layer-linux/Cargo.toml`](../../apps/layer-linux/Cargo.toml).
 The launcher builds its own [GTK 4.24.1, GLib 2.90.1 and Pango 1.58.2 runtime](../../tools/build/gtk-runtime/README.md),
 which needs Meson 1.8+, Ninja, `patchelf`, `glslc`, `xz`, Wayland's scanner and protocol files,
-DRM headers and GTK's development dependencies. The first build downloads
-checksum-pinned sources, including TIFF and JPEG libraries that link statically,
-so their system development packages are unnecessary; later builds use the cache.
+the X11 client libraries, DRM headers and GTK's development dependencies. The
+first build downloads checksum-pinned sources, including TIFF and JPEG libraries
+that link statically, so their system development packages are unnecessary;
+later builds use the cache.
 The main SDK minimums are:
 
 | Dependency | Minimum version |
@@ -46,7 +47,9 @@ sudo dnf install gcc gcc-c++ pkgconf-pkg-config python3 curl patch tar \
   gtk4-devel libadwaita-devel wayland-devel libpng-devel zlib-devel \
   libffi-devel libmount-devel pcre2-devel cairo-devel fontconfig-devel freetype-devel \
   harfbuzz-devel fribidi-devel libthai-devel \
-  meson ninja-build patchelf glslc xz wayland-protocols-devel libdrm-devel vulkan-headers
+  meson ninja-build patchelf glslc xz wayland-protocols-devel libdrm-devel vulkan-headers \
+  libX11-devel libXext-devel libXi-devel libXrandr-devel libXrender-devel libXcursor-devel \
+  libXdamage-devel libXfixes-devel libXinerama-devel
 ```
 
 On Arch Linux or Omarchy:
@@ -70,7 +73,17 @@ pkg-config --modversion gtk4 libadwaita-1 wayland-client
 
 The canvas needs a Wayland session and a hardware Vulkan driver with mailbox
 presentation and premultiplied-alpha surfaces. There is no X11, GLES or CPU
-canvas fallback. GTK chooses its own renderer for the controls.
+canvas fallback. GTK chooses its own renderer for the controls. In an X11
+session the app opens only a window (`unsupported_session.rs`) that explains
+this and links to the X11 support issue; it reads the language preference and
+loads no drawings, workspaces or GPU.
+
+The canvas renders on the GPU the compositor uses. When the launch environment
+sets `DRI_PRIME`, `MESA_VK_DEVICE_SELECT`, `__NV_PRIME_RENDER_OFFLOAD` or
+`VK_LOADER_DEVICE_SELECT`, as the desktop's "Launch using Discrete Graphics
+Card" does, it uses the first GPU Vulkan lists instead. The startup log's
+`Wayland canvas GPU` line names the chosen adapter and the compositor's PCI
+device.
 
 ## Build and run
 
@@ -227,6 +240,8 @@ instructions live with the feature's guide under [`docs/ui/`](../ui/README.md).
 [`tools/performance/gtk-raster.sh`](../../tools/performance/gtk-raster.sh) runs an
 already built test executable on the same kind of private display, for tests
 that need no injected input, such as `native_application_file_launch`.
+`LAYER_TEST_X11=1` runs the test as an X11 client of the compositor's Xwayland;
+`native_x11_session_refusal` needs it.
 
 After changing the tablet proxy, run its tests with
 `python3 -m unittest discover -s apps/layer-linux/bench -p 'test_*.py'`.
@@ -237,6 +252,7 @@ After changing the tablet proxy, run its tests with
 | --- | --- |
 | `native_session_restart`, `native_session_restart_saved_origins`, `native_document_files`, `native_object_only_shared_images`, `native_document_tabs_blocked_writer_keeps_canvas_live` | `--native-recovery` |
 | `native_dialog_lines_match_the_palette` | `--native-storage` |
+| `native_released_workspaces_open_without_asking`, `native_damaged_workspace_store_installs_its_newest_copy` | `--native-storage`, `CAPY_NATIVE_TEST_THEME=light` and `dark`; set `LAYER_NATIVE_CAPTURE_DIR` for captures. |
 | `native_phone_editor_pages` | `--native-storage`, `LAYER_MOTION_VIEWPORT=412x891`, `CAPY_NATIVE_TEST_THEME=light`, `GTK_A11Y=test`; set `LAYER_NATIVE_CAPTURE_DIR` for the editor-page inventory and open Capy menu. |
 | `native_phone_page_bounds` | `--native-storage`, `GTK_A11Y=test` and captures; `280x280`, `280x560` and `320x568`, light/dark. Opens every editor inventory page and checks actual body minimums, window/header bounds and GTK size warnings. |
 | `native_phone_motion` | `--native-storage`, `LAYER_NATIVE_EVENT_MS=4`, a phone `LAYER_MOTION_VIEWPORT`, and `LAYER_PHONE_MOTION_REPORT` under the test artifacts directory. |
@@ -255,6 +271,7 @@ After changing the tablet proxy, run its tests with
 | `native_localized_photo_histogram_bounds`, `native_hue_ranges_colorize_retains_values`, `native_pointwise_filters_controls_and_persistence` | Viewports 1100 and 640 pixels wide, such as `LAYER_MOTION_VIEWPORT=1100x800` and `640x1000` |
 | `native_colorize_threshold_visible_artwork`, `native_animated_filter_moves` | A viewport 1100 pixels wide |
 | `native_panel_tab_lower_contours` | `LAYER_NATIVE_TEST_TIMEOUT_MS=300000`, at `LAYER_MOTION_SCALE` 1 and 2 |
+| `native_fractional_chrome_seams` | `LAYER_MOTION_VIEWPORT=2400x1500` at `LAYER_MOTION_SCALE` 1.5 and 1.25, `3200x2000` at 2 |
 | `native_window_resize_presentations` | `LAYER_NATIVE_EVENT_MS=4`, `LAYER_NATIVE_INPUT_TRACE=1` and `LAYER_TEST_ARTIFACTS`; add `LAYER_NATIVE_RESIZE_RESOURCE_ONLY=1` for allocation and paint-only reports |
 | `native_window_resize_inventory` | `GTK_DEBUG=snapshot`, apart from timing runs |
 | `native_workspace_tab_motion_input` | `LAYER_NATIVE_EVENT_MS=4 LAYER_MOTION_MIN_HZ=114` |
@@ -309,7 +326,8 @@ does not qualify this measurement.
   drag-and-drop; use mouse and touch for those journeys. The proxy also drops its
   connection when Quick Mask or Selection Layer rows change, so journeys through
   those modes run without `--tablet`. A pen contact with `"tool":"eraser"` uses
-  the pen's eraser end.
+  the pen's eraser end; `"tool":"rotating"` uses a pen that reports barrel
+  rotation, set in degrees with `"twist"`.
 
 ### Run a journey without the runner
 
@@ -419,8 +437,9 @@ the [Arch recipe](../../packaging/arch/README.md).
 
 Users need Flatpak, a Wayland session and hardware Vulkan; the runtime
 supplies toolkit dependencies, not the [canvas requirements](#prerequisites).
-The sandbox grants the Wayland socket for windows, clipboard and input, and GPU
-devices for rendering. The battery indicator reads the kernel's
+The sandbox grants the Wayland socket for windows, clipboard and input, the X11
+socket only when no Wayland session is running, and GPU devices for rendering.
+The battery indicator reads the kernel's
 `/sys/class/power_supply` files, which Flatpak exposes read-only. To test it in
 the sandbox, mount private power-supply fixtures read-only over the kernel paths
 in an isolated namespace; do not add Flatpak permissions or change the real

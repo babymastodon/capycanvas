@@ -31,20 +31,20 @@ export async function investigate({call,evaluate,settle}) {
       app.dispatch({type:'effect',action:{op:'set',layer:id,key:'sigma',value:{kind:'number',value:warmupFrames%2?3:4}}});
       app.frame(performance.now(),performance.now()+16.67);
       await app.wait_for_canvas();
-      if(warmupFrames%2 && Number(app.renderer_stats().rows.find(r=>r.label==='Effect passes')?.value)>=2)break;
+      if(warmupFrames%2 && Number(app.renderer_stats().effect_passes)>=2)break;
       await pause(250);
     }
     if(warmupFrames===20)throw Error('Initial Gaussian frame never completed');
     for(const sigma of [3.1,3,4,3,12,21,3.1,3]) {
       await pause(200);
-      const before=Number(app.renderer_stats().rows.find(r=>r.label==='Frames').value);
+      const before=Number(app.renderer_stats().frames);
       const start=performance.now();
       app.dispatch({type:'effect',action:{op:'set',layer:id,key:'sigma',value:{kind:'number',value:sigma}}});
       const dispatched=performance.now();
       app.frame(performance.now(),performance.now()+16.67);
       const cpu=performance.now()-dispatched;
       await app.wait_for_canvas();
-      if(Number(app.renderer_stats().rows.find(r=>r.label==='Frames').value)<=before)throw Error('Filter frame was deferred; benchmark is not valid');
+      if(Number(app.renderer_stats().frames)<=before)throw Error('Filter frame was deferred; benchmark is not valid');
       frames.push({sigma,dispatch_ms:dispatched-start,frame_cpu_ms:cpu,complete_ms:performance.now()-dispatched});
       await pause(500);
     }

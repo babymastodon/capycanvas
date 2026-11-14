@@ -241,13 +241,13 @@ fn apple_new_drawing_resolves_its_uncached_library_paper_on_the_project_worker()
         let configuration=CString::new(json!({"saved":"","preferred_languages":["en"],"paper_directory":directory}).to_string()).unwrap();
         let app=App::from_handle(unsafe {launch_json(1,configuration.as_ptr(),std::ptr::null_mut(),std::ptr::null_mut())});assert!(!(app.0==0));
         app.borrow().host.session.renderer_mut().0=Some(native_renderer());
-        assert_eq!(unsafe {capy_apple_resize(app.0,1200,900,1.)},0);app.draw_frame();
+        assert_eq!(unsafe {capy_apple_resize(app.0,1200,900,1.)},0);app.draw_until_idle();app.launched();
         let list=PaperJob::new(&app,0,&directory);list.work(None);list.apply(&app);
         assert!(matches!(app.borrow().host.session.paper_material(&id),layer_ui::paper_library::PaperMaterial::Stored {..}),"the order begins uncached");
         let before=document(&app);let mark=checkpoint(&app);
         app.order_new_drawing([96,64],&[json!({"op":"paper"}),json!({"op":"pick_paper","id":id}),json!({"op":"use_paper"})]);
         let job=ProjectJob::new(&app,true);let pointer=job.0;
-        assert_eq!(std::thread::spawn(move ||unsafe {capy_project_new(pointer)}).join().unwrap(),0);
+        assert_eq!(std::thread::spawn(move ||unsafe {capy_project_new(pointer)}).join().unwrap(),0,"{:?}",job.error());
         assert_project_document(&document(&app),&before);assert_eq!(checkpoint(&app),mark);
         assert_eq!(unsafe {capy_apple_project_adopt(app.0,job.0,c"Untitled".as_ptr(),c"".as_ptr())},0);
         let texture=document(&app).paper(None).texture;
@@ -354,11 +354,11 @@ fn apple_failed_initial_material_notifies_once_and_reload_does_not_repeat_the_fa
     std::fs::write(directory.join(format!("{id}.png")),b"invalid PNG").unwrap();
     let configuration=CString::new(remembered_launch(&directory,&id)).unwrap();
     let app=App::from_handle(unsafe {launch_json(1,configuration.as_ptr(),std::ptr::null_mut(),std::ptr::null_mut())});assert!(!(app.0==0));
-    let before=document(&app);let mark=checkpoint(&app);let notice=app.state()["notice"]["id"].clone();assert!(!notice.is_null());
+    let before=document(&app);let mark=checkpoint(&app);let notice=app.borrow().host.session.last_notice_id();assert!(notice>0);
     assert_eq!(before.paper(None).texture,layer_core::paper::built_in_paper("cold_press").unwrap().texture.clone().unwrap());
     for _ in 0..2 {let job=PaperJob::new(&app,0,&directory);job.work(None);job.apply(&app);}
     assert_project_document(&document(&app),&before);assert_eq!(checkpoint(&app),mark);
-    assert_eq!(app.state()["notice"]["id"],notice);
+    assert_eq!(app.borrow().host.session.last_notice_id(),notice);
     assert_eq!(app.borrow().host.session.state().settings.new_document.paper.as_deref(),Some(id.as_str()));
     assert!(!app.borrow().host.session.state().requests.iter().any(|request|matches!(request.kind,
         layer_ui::HostRequestKind::Paper {..}|layer_ui::HostRequestKind::SaveSettings {..})));

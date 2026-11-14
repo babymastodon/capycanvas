@@ -1,5 +1,6 @@
 #pragma once
 #include "CanvasModelSections.h"
+#include "CanvasModelInputs.h"
 #include <map>
 #include <optional>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -34,21 +35,24 @@ class CanvasModelUpdate {
     }
     static J copy(J const& object){J result;for(auto const& item:object)result.Insert(item.Key(),item.Value());return result;}
 public:
+    CanvasModelChanges changes;
     uint32_t Read(J const& packet){
+        changes={};
         if(packet.HasKey(L"state")){
+            changes.all=true;
             baseline=copy(packet);
             if(baseline.HasKey(L"localization"))baseline.Remove(L"localization");
             return CanvasAllSections;
         }
         if(!packet.HasKey(L"model_update"))return 0;
         if(!baseline)throw winrt::hresult_invalid_argument(L"Model update without a baseline");
-        Change changes;uint32_t sections=0;
+        Change replacement;uint32_t sections=0;
         for(auto const& entry:packet.GetNamedArray(L"model_update")){
-            auto pair=entry.GetArray();auto path=pair.GetArrayAt(0);auto* change=&changes;std::vector<std::wstring> names;
+            auto pair=entry.GetArray();auto path=pair.GetArrayAt(0);auto* change=&replacement;std::vector<std::wstring> names;
             for(auto const& segment:path){auto name=segment.GetString();names.emplace_back(name);change=&change->children[name];}
-            change->value=pair.GetAt(1);sections|=CanvasSections(names);
+            change->value=pair.GetAt(1);sections|=CanvasSections(names);changes.paths.Add(names);
         }
-        baseline=replace(baseline,changes).GetObject();return sections;
+        baseline=replace(baseline,replacement).GetObject();return sections;
     }
     J Model()const{
         auto model=copy(baseline);

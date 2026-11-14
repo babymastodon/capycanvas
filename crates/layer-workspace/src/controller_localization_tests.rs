@@ -15,7 +15,7 @@ impl WorkspaceStore for Store {
 }
 fn controller() -> WorkspaceController<Store> {
     let mut controller = WorkspaceController::new_localized(
-        Store::default(), Platform::Web, 1000, Localizer::shared(UiLanguage::English),
+        Store::default(), Platform::Web, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}),
     );
     let result = controller.task.as_mut().unwrap().poll().unwrap().unwrap();
     let Outcome::Adopt(incoming) = result else { panic!() };

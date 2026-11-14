@@ -8,18 +8,15 @@
 
 namespace CapyUi {
 struct ChromeFrames {
-    using Array=winrt::Windows::Data::Json::JsonArray;
     using Object=winrt::Windows::Data::Json::JsonObject;
     struct Frame {
         std::set<uint32_t> groups,columns;
         std::set<void*> elements;
-        std::map<void*,Object> views;
-        Array overviews;
         Object document;
     };
     Frame current,presented;
     std::map<uint64_t,Frame> sent;
-    std::map<void*,std::function<void()>> retiring,observers;
+    std::map<void*,std::function<void()>> retiring;
     winrt::weak_ref<winrt::Microsoft::UI::Xaml::FrameworkElement> root;
     uint64_t revision=0,sentRevision=0;
     bool closed=false;
@@ -34,6 +31,11 @@ struct ChromeFrames {
     bool Retains(winrt::Windows::Foundation::IInspectable const& element)const{return RetainsId(Id(element));}
     bool Group(uint32_t id)const{return current.groups.contains(id)&&presented.groups.contains(id);}
     bool Column(uint32_t id)const{return current.columns.contains(id)&&presented.columns.contains(id);}
+    static bool SameFrame(Frame const& first,Frame const& second,Object const& document){
+        if(first.groups!=second.groups||first.columns!=second.columns||first.elements!=second.elements)return false;
+        return first.document.GetNamedNumber(L"width",0)==document.GetNamedNumber(L"width",0)
+            &&first.document.GetNamedNumber(L"height",0)==document.GetNamedNumber(L"height",0);
+    }
     bool Sent(uint64_t next){
         if(closed)return false;
         sentRevision=next;sent.insert_or_assign(next,current);
@@ -44,6 +46,7 @@ struct ChromeFrames {
     bool Present(uint64_t next,Object document){
         if(closed)return false;
         auto found=sent.find(next);if(found==sent.end()||next<revision)return false;
+        bool changed=!SameFrame(presented,found->second,document);
         presented=found->second;presented.document=document;revision=next;
         sent.erase(sent.begin(),found);
         std::vector<std::function<void()>> release;
@@ -51,13 +54,9 @@ struct ChromeFrames {
             release.push_back(std::move(it->second));it=retiring.erase(it);
         }else ++it;
         for(auto& ready:release)ready();
-        for(auto const& [id,refresh]:observers)refresh();
-        return true;
+        return changed;
     }
-    void Reset(){presented=Frame{};revision=0;for(auto const& [id,refresh]:observers)refresh();}
-    void Close(){if(closed)return;closed=true;current=Frame{};presented=Frame{};sent.clear();auto release=std::exchange(retiring,{});for(auto& [id,ready]:release)ready();observers.clear();}
-    Object View(winrt::Windows::Foundation::IInspectable const& element)const{
-        auto found=presented.views.find(Id(element));return found==presented.views.end()?Object{}:found->second;
-    }
+    void Reset(){presented=Frame{};revision=0;}
+    void Close(){if(closed)return;closed=true;current=Frame{};presented=Frame{};sent.clear();auto release=std::exchange(retiring,{});for(auto& [id,ready]:release)ready();}
 };
 }

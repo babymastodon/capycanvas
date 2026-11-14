@@ -18,17 +18,17 @@ impl Drop for MemorySampler {
 #[derive(Clone)]
 struct Sample { memory: MemorySnapshot, budget: Arc<MemoryBudgetSummary> }
 #[cfg(test)]
-pub(super) fn fixture_sampler(budget: MemoryBudget) -> MemorySampler {
+pub(super) fn fixture_sampler(budget: MemoryBudget, id: MemoryDevice) -> MemorySampler {
     let refresh = budget.clone();
     MemorySampler::with_updates(move || {
         budget.flush_reports();
         let snapshot = budget.snapshot();
         Sample { memory: MemorySnapshot { sampled_at: Instant::now(), process: None, gpu: None },
-            budget: Arc::new(MemoryBudgetSummary::new(&snapshot)) }
+            budget: Arc::new(MemoryBudgetSummary::new(&snapshot, id)) }
     }, |sample| sample, move |sample| {
         refresh.flush_reports();
         let snapshot = refresh.snapshot();
-        sample.budget = Arc::new(MemoryBudgetSummary::new(&snapshot));
+        sample.budget = Arc::new(MemoryBudgetSummary::new(&snapshot, id));
     })
 }
 impl MemorySampler {
@@ -55,7 +55,7 @@ impl MemorySampler {
         }, move |reading| publish(&budget, id, &allocator, reading), move |sample| {
             refresh.flush_reports();
             let snapshot=refresh.snapshot();
-            sample.budget=Arc::new(MemoryBudgetSummary::new(&snapshot));
+            sample.budget=Arc::new(MemoryBudgetSummary::new(&snapshot, id));
         })
     }
     fn with_updates<T: Send + 'static>(mut query: impl FnMut() -> T + Send + 'static,
@@ -99,7 +99,7 @@ fn publish(budget: &MemoryBudget, id: MemoryDevice, allocator: &MemoryOwner, (me
     }
     budget.update_device(id, gpu);
     let snapshot = budget.snapshot();
-    Sample { memory, budget: Arc::new(MemoryBudgetSummary::new(&snapshot)) }
+    Sample { memory, budget: Arc::new(MemoryBudgetSummary::new(&snapshot, id)) }
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -153,7 +153,9 @@ mod tests {
     use super::*;
 
     fn sample(memory: MemorySnapshot) -> Sample {
-        Sample { memory, budget: Arc::new(MemoryBudgetSummary::new(&MemoryBudget::new().snapshot())) }
+        let budget = MemoryBudget::new();
+        let device = budget.register_device(DeviceMemoryFacts::default());
+        Sample { memory, budget: Arc::new(MemoryBudgetSummary::new(&budget.snapshot(), device)) }
     }
 
     #[test]
@@ -233,6 +235,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize,Ordering};
         let queries=Arc::new(AtomicUsize::new(0));let count=queries.clone();
         let budget=MemoryBudget::new();let owner=budget.register_owner(layer_core::MemoryOwnerKind::Scene,layer_core::MemoryClass::Visible,None);
+        let device=budget.register_device(DeviceMemoryFacts::default());
         let (started,running)=mpsc::channel();let (release,held)=mpsc::channel();let (updated,done)=mpsc::channel();
         let refresh=budget.clone();
         let sampler=MemorySampler::with_updates(move||{
@@ -240,7 +243,7 @@ mod tests {
             MemorySnapshot {sampled_at:Instant::now(),process:None,gpu:None}
         },sample,move|sample|{
             refresh.flush_reports();let snapshot=refresh.snapshot();
-            sample.budget=Arc::new(MemoryBudgetSummary::new(&snapshot));
+            sample.budget=Arc::new(MemoryBudgetSummary::new(&snapshot,device));
             updated.send((snapshot.ram_physical_bytes,sample.memory.sampled_at)).unwrap();
         });
         running.recv_timeout(Duration::from_secs(5)).unwrap();

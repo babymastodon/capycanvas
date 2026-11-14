@@ -65,13 +65,13 @@ export async function checkFilterPreviews({call,evaluate,settle}) {
     await settle();await show();
     await wait(`previewCheck.status&&!previewCheck.status.pending&&previewCheck.pixels('curves')`);
     assert.equal(await evaluate(`!!previewCheck.image('curves')&&!previewCheck.image('curves').parentElement.querySelector('canvas')`),true,'Held contact shows the loaded bundled image without a GPU preview canvas');
-    assert.deepEqual(await evaluate('previewCheck.ids'),[],'Held contact requests no GPU previews for bundled rows');
+    assert.ok((await evaluate('previewCheck.ids')).includes('curves'),'Visible bundled rows reach shared preparation during a held contact');
     assert.equal((await status()).requests,0,'Held contact loads bundled previews without GPU requests');
     await timed('release_ms',()=>evaluate("document.body.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:987,pointerType:'pen'}));undefined"),
       `previewCheck.status&&!previewCheck.status.pending&&previewCheck.pixels('curves')`);
     await settle();
     assert.equal(await evaluate(`!!previewCheck.image('curves')&&!previewCheck.image('curves').parentElement.querySelector('canvas')`),true,'Release retains the loaded bundled image without a GPU preview canvas');
-    assert.deepEqual(await evaluate('previewCheck.ids'),[],'Built-in rows show bundled previews and request none');
+    assert.ok((await evaluate('previewCheck.ids')).includes('curves'),'Built-in rows reach shared preparation while showing their bundled previews');
     const first=await status();assert.equal(first.error??null,null);assert.equal(first.requests,0);
     for(const theme of ['light','dark']){
       await evaluate(`(()=>{

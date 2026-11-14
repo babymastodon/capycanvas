@@ -60,7 +60,7 @@ function Submenu {
 function Header-Overflow {
     $owner=$Root.Current
     if(!$env:CAPY_FIXTURE_CONTEXT -or !$owner.ProcessId -or !$owner.NativeWindowHandle -or !(Get-Command Read-Snapshot -ErrorAction SilentlyContinue)){return}
-    $context=Read-Snapshot $env:CAPY_FIXTURE_CONTEXT
+    $context=Read-CapyFixtureContext
     $registered=@($context.windows|Where-Object {$_.process_id -eq $owner.ProcessId -and $_.hwnd -eq $owner.NativeWindowHandle})
     if($registered.Count -ne 1 -or !$registered[0].window_id -or !$registered[0].trace_directory){return}
     $path=Join-Path $registered[0].trace_directory "ui-state-$($owner.ProcessId)-$($registered[0].window_id).json"

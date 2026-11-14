@@ -877,6 +877,7 @@ impl Editor {
             .child(&body_view)
             .build());
         let overlay = gtk::Overlay::new();
+        overlay.set_vexpand(true);
         overlay.set_child(Some(&body_scroll));
         let slide = crate::slide_sheet::SlideSheet::new(&overlay, &sheet);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);

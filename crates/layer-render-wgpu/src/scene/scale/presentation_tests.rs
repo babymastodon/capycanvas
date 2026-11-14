@@ -51,7 +51,7 @@ fn view(matrix: [f32; 6]) -> ViewState {
 }
 
 fn submit(r: &mut WgpuRasterizer, doc: &layer_core::Document, view: ViewState, all: bool, bounded: bool) {
-    let mut frame=FramePacket {view,inspect_mask:doc.working.inspect_mask,composite_all:all,..packet(doc.scene(),doc.composition().size)};
+    let mut frame=FramePacket {view,inspect_mask:doc.working.inspect_mask,composite_all:all,blend_space:doc.composition().blend,..packet(doc.scene(),doc.composition().size)};
     let deadline = std::time::Instant::now() + READBACK_TIMEOUT;
     loop {
         if bounded {working_scene_frame(r,frame);}
@@ -1031,4 +1031,77 @@ fn a_24mp_fit_reshow_finishes_within_two_frames_once_its_real_inputs_are_residen
     crate::test_support::submit_settled(&mut r,FramePacket {time_seconds:0.5,..show});
     close(&shown,&present(&r,&mut presenter,v));
     assert!(completed.is_some(),"24MP Fit re-show must finish within two still frames after all384 needed GPU inputs are actually resident: complete={completed:?}, coverage={coverage:?}, source_physical={source_bytes}");
+}
+
+#[test]
+fn native_to_fit_stroke_undo_preserves_attachment_precision_and_pixels() {
+    use layer_core::EffectValue;
+    use layer_engine::{CanvasEngine, PenPhase, SampleFlags, ViewTransform, input_queue};
+    let extent = [2133, 1600];
+    let mut doc = Document::new(PortableId::random(), extent[0], extent[1], layer_core::DocumentNames {paint:"Ink".into(),paper:"Paper".into()});
+    composition_mut(&mut doc).color = DocumentColor {space:RgbSpace::Srgb,depth:SampleDepth::U8};
+    composition_mut(&mut doc).blend = layer_core::BlendSpace::Perceptual;
+    let paper = doc.scene().order()[1];
+    set_effect_value(&mut doc,paper,"texture",EffectValue::Texture(layer_core::paper::built_in_paper("cold_press").unwrap().texture.clone()));
+    set_effect_value(&mut doc,paper,"relief",EffectValue::Number(100.));
+    set_effect_value(&mut doc,paper,"light",EffectValue::Number(225.));
+    set_effect_value(&mut doc,paper,"color",EffectValue::Color(layer_core::color::RgbColor::new(RgbSpace::Srgb,[244./255.,241./255.,232./255.,1.]).unwrap()));
+    let authored = doc.artwork.clone();
+    let native = ViewState {width_px:1418,height_px:988,document_to_surface:[1.,0.,0.,1.,0.,0.]};
+    let fit = ViewState {document_to_surface:[0.19957805,0.,0.,0.19957805,524.65,425.83755],..native};
+    let color = doc.composition().color;
+    let (mut input, consumer) = input_queue(64);
+    let mut engine = CanvasEngine::new(WgpuRasterizer::new_native_headless(color).unwrap(),doc,consumer,native,ViewTransform::IDENTITY).unwrap();
+    let flush = |engine:&mut CanvasEngine<WgpuRasterizer>| {
+        let deadline = std::time::Instant::now()+READBACK_TIMEOUT;
+        loop {
+            engine.render_frame().unwrap();
+            if !engine.has_pending_input() && !engine.has_pending_document_edits()
+                && (engine.has_active_stroke() || engine.backend().next_frame()!=layer_render::FrameDemand::Work) {break;}
+            assert!(std::time::Instant::now()<deadline,"native-to-Fit engine work did not publish");
+            std::thread::yield_now();
+        }
+    };
+    flush(&mut engine);
+    let resident = engine.backend().scale_display.as_ref().unwrap().resident_bytes();
+    assert!(resident>0,"initial native view must admit the resident hierarchy before Fit");
+    let inverse = ViewTransform {revision:1,surface_to_document:[1./fit.document_to_surface[0],0.,0.,1./fit.document_to_surface[3],-fit.document_to_surface[4]/fit.document_to_surface[0],-fit.document_to_surface[5]/fit.document_to_surface[3]]};
+    engine.set_view(fit,inverse);
+    engine.render_frame().unwrap();
+    flush(&mut engine);
+    let capture = |r:&WgpuRasterizer| {
+        let formats = r.presentation_views().unwrap().map(|view|view.texture().format());
+        let (texture,target) = create_target(&r.device,[fit.width_px,fit.height_px],wgpu::TextureFormat::Bgra8UnormSrgb,"native-to-Fit attachment");
+        let mut presenter = ViewportPresenter::for_surface(r,wgpu::TextureFormat::Bgra8UnormSrgb,crate::SdrSurfaceColor::Srgb).unwrap();
+        pollster::block_on(presenter.prepare(r)).unwrap();
+        presenter.present(r,&target,fit,[0.2,0.2,0.2,1.]).unwrap();
+        (formats,crate::layer_tests::page_bytes(r,&texture))
+    };
+    let baseline = capture(engine.backend());
+    for (i,phase) in [PenPhase::Down,PenPhase::Move,PenPhase::Up].into_iter().enumerate() {
+        let mut event = crate::test_support::pen(i as u64+1,phase,[780.+i as f32*12.,630.],SampleFlags::PRIMARY);
+        event.view_revision = inverse.revision;
+        input.push(event).unwrap();
+        flush(&mut engine);
+    }
+    let painted = capture(engine.backend());
+    let stroke_checkpoint = engine.checkpoint();
+    let undo_applied = engine.undo().unwrap();
+    flush(&mut engine);
+    let undone = capture(engine.backend());
+    let mut fresh = WgpuRasterizer::new_native_headless(color).unwrap();
+    submit(&mut fresh,engine.document(),fit,true,false);
+    let control = capture(&fresh);
+    let center = ((634*fit.width_px+796)*4) as usize;
+    let paper_visible = baseline.1[center..center+3].iter().all(|v|*v>180) && baseline.1[center+3]==255;
+    let restored_authored = engine.document().artwork == authored;
+    let differences = baseline.1.iter().zip(&undone.1).filter(|(a,b)|a!=b).count();
+    assert!(paper_visible,"first fitted attachment must contain the lit paper");
+    assert!(painted.1!=baseline.1,"seed stroke must visibly change the attachment");
+    assert!(restored_authored && engine.checkpoint()!=stroke_checkpoint && !engine.can_undo() && engine.can_redo(),"real Undo must return the authored baseline and advance history");
+    assert!(undo_applied,"seed stroke must produce a real Undo entry");
+    assert_eq!(baseline.0,undone.0,"camera-only Fit and real Undo must select stable attachment precision");
+    assert_eq!(baseline.0,control.0,"fresh Fit must select the baseline attachment precision");
+    assert!(baseline.1==undone.1,"real Undo changed {differences} attachment bytes");
+    assert!(baseline.1==control.1,"fresh Fit differs from the first fitted baseline attachment");
 }

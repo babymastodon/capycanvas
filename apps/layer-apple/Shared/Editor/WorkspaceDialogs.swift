@@ -23,7 +23,16 @@ struct WorkspaceDialog: View {
     @ObservedObject var store: EditorStore
     @Environment(\.editorDialogPage) private var page
     @Environment(\.editorDialogAvailableHeight) private var availableHeight
+    #if os(iOS)
+    @State private var searchFocused = false
+    #else
     @FocusState private var searchFocused: Bool
+    #endif
+    @FocusState private var nameFocused: Bool
+    @State private var resultsHeight: CGFloat = 0
+    @State private var firstRowHeight: CGFloat = 0
+    @State private var countHeight: CGFloat = 0
+    @State private var showsCount = true
     private var snapshot: SnapshotProjection { store.snapshot }
     private var common: JSON { store.bootstrap["common"] }
     private var palette: EditorPalette { EditorPalette(source: store.state["palette"]) }
@@ -56,6 +65,10 @@ struct WorkspaceDialog: View {
     private func error(_ value: JSON) -> some View {
         Group { if !value["error"].isNull { Text(value["error"].string).foregroundStyle(.red).accessibilityIdentifier("workspace-validation") } }
     }
+    private func fitCount() {
+        guard firstRowHeight > 0, countHeight > 0 else { return }
+        showsCount = !page || (resultsHeight + (showsCount ? countHeight + 14 : 0)) - countHeight - 14 >= firstRowHeight
+    }
     private func picker(_ view: JSON) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             if page {
@@ -65,35 +78,58 @@ struct WorkspaceDialog: View {
             } else { Text(view["title"].string).font(.headline) }
             if !view["name"].isNull {
                 EditorTextField(view["name_label"].string, value: view["name"].string) { store.customize(["type": "picker_name", "name": $0]) }
+                    .focused($nameFocused).onAppear { nameFocused = page }
                     .textFieldStyle(.roundedBorder).accessibilityIdentifier("toolbar-name")
             }
             EditorTextField(view["search_hint"].string, value: view["query"].string) { store.customize(["type": "picker_search", "query": $0]) }
-                .editorSearchInput().focused($searchFocused).textFieldStyle(.roundedBorder).accessibilityIdentifier("tool-picker-search")
+                #if os(iOS)
+                .editorFocus($searchFocused, identifier: "tool-picker-search")
+                #else
+                .focused($searchFocused)
+                #endif
+                .editorSearchInput()
+                .textFieldStyle(.roundedBorder).accessibilityIdentifier("tool-picker-search")
+                .onAppear {
+                    #if os(iOS)
+                    searchFocused = NativeTextContext.keyboardInput && view["name"].isNull
+                    #endif
+                }
             EditorScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(view["choices"].array, id: \.workspaceChoiceKey) { choice in
-                        Button {
-                            store.customize(["type": "picker_select", "control": choice["control"].raw, "selected": !choice["selected"].bool])
-                        } label: {
-                            HStack(spacing: 12) {
-                                SharedIcon(name: choice["icon"].string)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(choice["label"].string).fontWeight(.medium)
-                                    Text(choice["description"].string).font(.caption).foregroundStyle(.secondary)
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                                SharedIcon(name: choice["selected"].bool ? "selection-checked" : "selection-empty")
-                            }.frame(minHeight: 50).padding(.horizontal, 8).contentShape(Rectangle())
-                        }.buttonStyle(.plain)
-                            .disabled(view["disabled"].array.contains { $0.stableKey == choice["control"].stableKey })
-                            .accessibilityIdentifier("tool-choice-" + choice["label"].string)
-                            .accessibilityAddTraits(choice["selected"].bool ? .isSelected : [])
-                        EditorLine(color: palette.settingsBorder)
+                        VStack(spacing: 0) {
+                            Button {
+                                store.customize(["type": "picker_select", "control": choice["control"].raw, "selected": !choice["selected"].bool])
+                            } label: {
+                                HStack(spacing: 12) {
+                                    SharedIcon(name: choice["icon"].string)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(choice["label"].string).fontWeight(.medium)
+                                        Text(choice["description"].string).font(.caption).foregroundStyle(.secondary)
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                    SharedIcon(name: choice["selected"].bool ? "selection-checked" : "selection-empty")
+                                }.frame(minHeight: 50).padding(.horizontal, 8).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .disabled(view["disabled"].array.contains { $0.stableKey == choice["control"].stableKey })
+                                .accessibilityIdentifier("tool-choice-" + choice["label"].string)
+                                .accessibilityAddTraits(choice["selected"].bool ? .isSelected : [])
+                            EditorLine(color: palette.settingsBorder)
+                        }.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+                            if choice.workspaceChoiceKey == view["choices"].array.first?.workspaceChoiceKey {
+                                firstRowHeight = height; fitCount()
+                            }
+                        }
                     }
                 }
             }.frame(minHeight: page ? 0 : 120, idealHeight: page ? nil : 340, maxHeight: page ? .infinity : 400)
+                .accessibilityIdentifier("tool-picker-results")
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+                    resultsHeight = height; fitCount()
+                }
+                .onChange(of: page) { _, _ in fitCount() }
             error(view)
-            HStack {
-                Text(view["selected_label"].string).foregroundStyle(.secondary)
+            if showsCount { HStack {
+                Text(view["selected_label"].string).foregroundStyle(.secondary).accessibilityIdentifier("tool-picker-count")
                 Spacer()
                 if !page {
                 Button(common["cancel"].string, role: .cancel) { escape() }.keyboardShortcut(.cancelAction)
@@ -102,6 +138,9 @@ struct WorkspaceDialog: View {
                     .keyboardShortcut(.defaultAction).disabled(!view["can_confirm"].bool)
                     .accessibilityIdentifier("tool-picker-confirm")
                 }
+            }.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+                    countHeight = height; fitCount()
+                }
             }
         }.padding(page ? 8 : 0).accessibilityElement(children: .contain).accessibilityIdentifier("tool-picker")
     }
@@ -109,7 +148,7 @@ struct WorkspaceDialog: View {
         Group {
             if alert {
                 EditorAlertLayout(viewport: CGSize(width: snapshot["layout"]["viewport"][0].number,
-                    height: availableHeight ?? max(0, snapshot["layout"]["viewport"][1].number - store.keyboardInset)),
+                    height: availableHeight ?? max(0, snapshot["layout"]["viewport"][1].number - store.obscuredBottom)),
                     preferWide: view["dialog"]["frame"]["prefer_wide"].bool,
                     fontPixels: CGFloat(store.catalog["text_size_pt"].number * 4 / 3)) {
                     Text(view["title"].string).font(.headline).multilineTextAlignment(.center)
@@ -137,6 +176,7 @@ struct WorkspaceDialog: View {
             if !view["message"].string.isEmpty { Text(view["message"].string) }
             if !view["name"].isNull {
                 EditorTextField(view["name_label"].string, value: view["name"].string) { store.customize(["type": "toolbar_name", "name": $0]) }
+                    .focused($nameFocused).onAppear { nameFocused = page }
                     .textFieldStyle(.roundedBorder).accessibilityIdentifier("toolbar-name")
             }
             error(view)

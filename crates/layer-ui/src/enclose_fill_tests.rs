@@ -139,6 +139,26 @@ mod enclose_fill_checks {
     }
 
     #[test]
+    fn fill_reveal_completion_publishes_export_availability() {
+        for platform in Platform::ALL {
+            let mut s=session(platform);invoke(&mut s,CommandId::Fill);
+            contact(&mut s,PenPhase::Down,[40.,60.]);s.frame(20_000_000,20_000_000).unwrap();
+            let request=s.renderer_mut().region_requests.last().unwrap().clone();
+            contact(&mut s,PenPhase::Up,[40.,60.]);s.frame(30_000_000,30_000_000).unwrap();
+            reply(&mut s,&request);s.frame(40_000_000,40_000_000).unwrap();
+            s.frame(50_000_000,50_000_000).unwrap();
+            s.frame(60_000_000,60_000_000).unwrap();
+            assert!(s.engine.can_undo());assert!(s.renderer_mut().fill_reveal.is_some());
+            assert!(!s.state.commands.iter().find(|command|command.id==CommandId::ExportDocument).unwrap().enabled);
+            let change=s.frame(1_000_000_000,1_000_000_000).unwrap();
+            assert!(s.renderer_mut().fill_reveal.is_none());assert!(s.command(CommandId::ExportDocument).enabled);
+            assert!(s.state.commands.iter().find(|command|command.id==CommandId::ExportDocument).unwrap().enabled,
+                "{platform:?}: reveal completion must publish enabled Export");
+            assert_ne!(change.regions & regions::COMMANDS,0);
+        }
+    }
+
+    #[test]
     fn fill_press_previews_before_release_and_cancel_preserves_history() {
         for platform in Platform::ALL {
             let mut s=session(platform);invoke(&mut s,CommandId::Fill);

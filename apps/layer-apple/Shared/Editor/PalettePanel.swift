@@ -321,11 +321,7 @@ private struct PaletteChooser: View {
         }.accessibilityElement(children: .contain).accessibilityIdentifier("palette-browser")
             .onChange(of: query, initial: true) { _, _ in search() }
             .onChange(of: view["palettes"].stableKey) { _, _ in search() }
-            .onAppear {
-                #if os(macOS)
-                searching = true
-                #endif
-            }
+            .onAppear { searching = NativeTextContext.keyboardInput }
     }
     private func search() {
         let text = query

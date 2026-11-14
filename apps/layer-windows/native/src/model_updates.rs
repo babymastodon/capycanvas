@@ -1,5 +1,4 @@
 use layer_host::{ModelUpdates, handles::{self, Handle}};
-use serde_json::value::RawValue;
 use std::{collections::BTreeMap, ffi::{CString, c_char}};
 
 #[unsafe(no_mangle)]
@@ -19,10 +18,7 @@ pub unsafe extern "C" fn capy_model_updates_publish(updates:u64,input:*const c_c
     std::panic::catch_unwind(||unsafe {crate::input::with_text(input,|text| {
         let lease=Handle::from_raw(updates).and_then(handles::lease::<ModelUpdates>).map_err(|error|error.to_string())?;
         let mut encoder=lease.borrow().map_err(|error|error.to_string())?;
-        let mut fields:BTreeMap<&str,&RawValue>=serde_json::from_str(text).map_err(|error|error.to_string())?;
-        let localization=fields.remove("localization");
-        let bytes=if localization.is_some(){serde_json::to_vec(&fields).map_err(|error|error.to_string())?}else{text.as_bytes().to_vec()};
-        let bytes=encoder.publish(bytes).map_err(|error|error.to_string())?;
+        let (bytes,localization)=encoder.publish_without(text.as_bytes().to_vec(),Some("localization")).map_err(|error|error.to_string())?;
         let bytes=match localization {
             Some(value)=>layer_host::extend_update(bytes,&serde_json::to_vec(&BTreeMap::from([("localization",value)])).map_err(|error|error.to_string())?),
             None=>bytes,

@@ -5,8 +5,11 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColumnStack {
     pub column: u32,
+    #[serde(default, deserialize_with = "crate::lenient::vec")]
     pub members: Vec<u32>,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub drawers: bool,
+    #[serde(default, deserialize_with = "crate::lenient::or_default")]
     pub auto_hide: bool,
     #[serde(skip)]
     pub open_column: Option<u32>,

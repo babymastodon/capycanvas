@@ -72,7 +72,7 @@ private struct NewDrawingForm: View {
             .onChange(of: drawer["kind"].string, initial: true) { _, kind in follow(kind) }
             .onChange(of: drawer["save"].isNull, initial: true) { _, closed in
                 if !closed { presetName = drawer["save"]["name"].string }
-                if closed && drawer["kind"].string == "presets" { focused = "search" }
+                if closed && drawer["kind"].string == "presets" && NativeTextContext.keyboardInput { focused = "search" }
             }
             .onChange(of: drawer["query"].string) { _, shared in if shared.isEmpty { query = "" } }
             .onNativeTextKey(.escape) {
@@ -182,8 +182,9 @@ private struct NewDrawingForm: View {
                 Text(copy["name"].string)
                 TextField(view["untitled"].string, text: $name).textFieldStyle(.plain).autocorrectionDisabled()
                     .padding(.horizontal, 10).frame(height: 34).background(palette.newDrawingField, in: SquircleShape.control)
+                    .focused($focused, equals: "name")
                     #if os(iOS)
-                    .onNativeTextSubmit(name) { name = $0; create() }
+                    .onNativeTextSubmit(name) { name = $0; if phonePage { focused = nil } else { create() } }
                     #endif
                     .accessibilityLabel(copy["name"].string).accessibilityIdentifier("new-drawing-name")
             }
@@ -344,8 +345,7 @@ private struct NewDrawingForm: View {
     }
 
     private var presets: some View {
-        let tiles = drawer["tiles"].array, tabs = drawer["tabs"].array
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             if phonePage {
                 EditorPageHeader(intent: view["dialog"], title: copy["presets"].string, identifier: "new-drawing-browser", subpage: true,
                     primaryLabel: drawer["save"].isNull ? copy["select"].string : drawer["save"]["confirm"].string,
@@ -353,43 +353,59 @@ private struct NewDrawingForm: View {
                     primaryIdentifier: drawer["save"].isNull ? "new-drawing-select" : "new-drawing-save-confirm", cancelsOnEscape: false,
                     cancel: { send(["op": "cancel"]) }, back: { send(["op": "back"]) },
                     primary: { send(["op": drawer["save"].isNull ? "use_preset" : "save_preset"]) })
+                EditorScrollView { VStack(spacing: 0) { presetSearch; presetGrid; EditorLine(color: palette.settingsBorder); presetFooter } }
+            } else {
+                presetSearch
+                EditorScrollView { presetGrid }
+                EditorLine(color: palette.settingsBorder)
+                presetFooter
             }
-            HStack(spacing: 8) {
-                SharedIcon(name: "search").opacity(0.6)
-                TextField(copy["search"].string, text: $query).textFieldStyle(.plain).autocorrectionDisabled()
-                    .focused($focused, equals: "search")
-                    .onAppear { focused = "search" }
-                    .onChange(of: query) { _, text in if text != drawer["query"].string { send(["op": "search", "query": text]) } }
-                    .accessibilityLabel(copy["search"].string).accessibilityIdentifier("new-drawing-search")
-            }.padding(.horizontal, 10).frame(height: 34).background(palette.newDrawingField, in: SquircleShape.control)
-                .padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 10)
-            EditorScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ConfigurationFlow(spacing: 4) {
-                        ForEach(tabs.indices, id: \.self) { index in pill(tabs[index], index: index) }
-                    }.disabled(!drawer["tabs_enabled"].bool).opacity(drawer["tabs_enabled"].bool ? 1 : 0.4)
-                        .accessibilityElement(children: .contain).accessibilityIdentifier("new-drawing-tabs")
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 128, maximum: 128), spacing: 10, alignment: .top)], spacing: 12) {
-                        ForEach(tiles.indices, id: \.self) { index in presetTile(tiles[index], index: index) }
-                    }.accessibilityElement(children: .contain).accessibilityIdentifier("new-drawing-presets")
-                    if !drawer["empty"].isNull {
-                        Text(drawer["empty"].string).font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("new-drawing-empty")
-                    }
-                }.padding(.horizontal, 20).padding(.bottom, 20).frame(maxWidth: .infinity, alignment: .leading)
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("new-drawing-browser")
+    }
+
+    private var presetSearch: some View {
+        HStack(spacing: 8) {
+            SharedIcon(name: "search").opacity(0.6)
+            TextField(copy["search"].string, text: $query).textFieldStyle(.plain).autocorrectionDisabled()
+                .focused($focused, equals: "search")
+                .onAppear { if NativeTextContext.keyboardInput { focused = "search" } }
+                #if os(iOS)
+                .onNativeTextSubmit(query) { query = $0; focused = nil }
+                #endif
+                .onChange(of: query) { _, text in if text != drawer["query"].string { send(["op": "search", "query": text]) } }
+                .accessibilityLabel(copy["search"].string).accessibilityIdentifier("new-drawing-search")
+        }.padding(.horizontal, 10).frame(height: 34).background(palette.newDrawingField, in: SquircleShape.control)
+            .padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 10)
+    }
+
+    private var presetGrid: some View {
+        let tiles = drawer["tiles"].array, tabs = drawer["tabs"].array
+        return VStack(alignment: .leading, spacing: 14) {
+            ConfigurationFlow(spacing: 4) {
+                ForEach(tabs.indices, id: \.self) { index in pill(tabs[index], index: index) }
+            }.disabled(!drawer["tabs_enabled"].bool).opacity(drawer["tabs_enabled"].bool ? 1 : 0.4)
+                .accessibilityElement(children: .contain).accessibilityIdentifier("new-drawing-tabs")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 128, maximum: 128), spacing: 10, alignment: .top)], spacing: 12) {
+                ForEach(tiles.indices, id: \.self) { index in presetTile(tiles[index], index: index) }
+            }.accessibilityElement(children: .contain).accessibilityIdentifier("new-drawing-presets")
+            if !drawer["empty"].isNull {
+                Text(drawer["empty"].string).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("new-drawing-empty")
             }
-            EditorLine(color: palette.settingsBorder)
-            VStack(alignment: .leading, spacing: 10) {
-                if phonePage { summary }
-                HStack(spacing: 10) {
+        }.padding(.horizontal, 20).padding(.bottom, 20).frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var presetFooter: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if phonePage { summary }
+            HStack(spacing: 10) {
                 if !phonePage { summary; Spacer(minLength: 8) }
                 ZStack {
                     if drawer["save"].isNull { browserActions.transition(.opacity) }
                     else { saveRow(drawer["save"]).transition(.opacity) }
                 }.animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: drawer["save"].isNull)
-                }
-            }.padding(.horizontal, 20).padding(.vertical, 12)
-        }.accessibilityElement(children: .contain).accessibilityIdentifier("new-drawing-browser")
+            }
+        }.padding(.horizontal, 20).padding(.vertical, 12)
     }
 
     private func pill(_ tab: JSON, index: Int) -> some View {
@@ -469,7 +485,8 @@ private struct NewDrawingForm: View {
                 .onChange(of: presetName) { _, text in if text != drawer["save"]["name"].string { send(["op": "preset_name", "text": text]) } }
                 .onNativeTextSubmit(presetName) { text in
                     presetName = text
-                    send(["op": "preset_name", "text": text]); send(["op": "save_preset"])
+                    send(["op": "preset_name", "text": text])
+                    if phonePage { focused = nil } else { send(["op": "save_preset"]) }
                 }
                 .accessibilityLabel(copy["preset_name"].string).accessibilityIdentifier("new-drawing-save-name")
             choice(copy["preset_category"].string, save["groups"].array, value: save["group"], identifier: "new-drawing-save-group") {

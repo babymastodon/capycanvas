@@ -22,9 +22,9 @@ impl CapyApple {
                 StoreWorker::shared(std::path::Path::new(directory)).map_err(|e| e.to_string())?;
             self.host.session.set_workspace_read_only(true);
             let platform = self.host.session.state().platform;
-            let mut controller = WorkspaceController::new_localized(store, platform, time, self.host.session.localization().clone())
+            let wake = self.workspace_wake.as_ref().ok_or("Workspace wake is not registered")?.signal();
+            let controller = WorkspaceController::new_localized(store, platform, time, self.host.session.localization().clone(), wake)
                 .with_resume_key(format!("apple:scene:{scene}"), time);
-            if let Some(wake) = &self.workspace_wake { controller.set_wake(wake.clone()); }
             self.workspaces = Some(controller);
         }
         let Some(c) = &mut self.workspaces else {

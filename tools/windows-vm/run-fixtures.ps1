@@ -17,6 +17,14 @@ trap {
     ($_ | Out-String) + $_.ScriptStackTrace | Set-Content (Join-Path $Output 'runner-error.txt')
     exit 1
 }
+if(!$List -and !$env:CAPY_PRIVATE_DESKTOP){
+    New-Item -ItemType Directory -Force $Output|Out-Null
+    $runner=Join-Path $Output 'runner.json'
+    [IO.File]::WriteAllText($runner+'.tmp',(@{process_id=$PID;process_start_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json))
+    [IO.File]::Move($runner+'.tmp',$runner)
+}
+. (Join-Path $PSScriptRoot 'session-identity.ps1')
+. (Join-Path $PSScriptRoot '../../apps/layer-windows/scripts/FixtureJapaneseInput.ps1')
 function Write-FixtureResult([string]$Path,[string]$Json){
     $stream=[IO.File]::Open($Path,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::Write,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
     $writer=[IO.StreamWriter]::new($stream,[Text.UTF8Encoding]::new($false))
@@ -46,6 +54,30 @@ public static class CapyFixturePlanFile {
 }
 '@}
     [CapyFixturePlanFile]::Publish($temporary,$Path)
+}
+function Get-FixtureGraphicsFailure($Exit,[string]$Message){
+    if($Exit -eq 0){return}
+    $text=([string]$Exit)+' '+$Message
+    if($text -match '(?<![A-Za-z0-9_])(?:MILERR_NO_HARDWARE_DEVICE|0x0*8898008D|2291662989|-2003304307)(?![A-Za-z0-9_])'){return 'MILERR_NO_HARDWARE_DEVICE'}
+}
+function Write-FixtureSessionRecord([string]$Directory,[string]$Name,$Record){
+    $path=Join-Path $Directory $Name;$temporary=$path+'.tmp'
+    [IO.File]::WriteAllText($temporary,($Record|ConvertTo-Json -Depth 4),[Text.UTF8Encoding]::new($false))
+    [CapyFixturePlanFile]::Publish($temporary,$path)
+}
+function Write-FixtureGraphicsWithdrawal([string]$Directory,$Result,$Identity){
+    $request=@{};foreach($key in $Identity.Keys){$request[$key]=$Identity[$key]}
+    $request.name=$Result.name;$request.exit=$Result.exit;$request.error=$Result.message
+    $request.cause=$Result.infrastructure_cause;$request.time_utc=[DateTime]::UtcNow.ToString('o')
+    Write-FixtureSessionRecord $Directory 'graphics-withdrawal.json' $request
+}
+function Wait-FixtureGraphicsEvidence([string]$Directory){
+    $started=[DateTime]::UtcNow.ToString('o');$watch=[Diagnostics.Stopwatch]::StartNew()
+    $path=Join-Path $Directory 'graphics-evidence-complete'
+    while(!(Test-Path -LiteralPath $path) -and $watch.ElapsedMilliseconds -lt 360000){
+        Start-Sleep -Milliseconds ([int][Math]::Max(0,[Math]::Min(1000,360000-$watch.ElapsedMilliseconds)))
+    }
+    Write-FixtureSessionRecord $Directory 'graphics-evidence-wait.json' @{started_utc=$started;completed_utc=[DateTime]::UtcNow.ToString('o');timeout=(!(Test-Path -LiteralPath $path));timeout_seconds=360}
 }
 function Get-FixtureTextScale{
     $path='HKCU:\Software\Microsoft\Accessibility'
@@ -164,6 +196,20 @@ foreach ($script in Get-ChildItem (Join-Path $scripts 'exercise-*.ps1')) {
         $choices = ($parameter.Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' }).PositionalArguments.Value
         foreach ($choice in $choices | Where-Object { $null -ne $_ -and $_ -ne $parameter.DefaultValue.Value }) { $runs["${fixture}:$choice"] = @{arguments=@(Get-FixtureVariantArguments $fixture $option $choice);hardware_gpu=$false} }
     }
+    if($fixture -eq 'popup'){
+        $runs.Remove('popup');$runs.Remove('popup:light')
+        foreach($group in 'controls','text-layout'){
+            $runs["popup:${group}-light"]=@{arguments=@('-Group',$group,'-Theme','light');hardware_gpu=$false}
+        }
+    }
+}
+$runs.Remove('tool-bubbles:HdrOnly')
+$runs.Remove('edge-reach:SweepOnly')
+foreach($scenario in 'photo','photo-open','photo-collapsed','paint'){
+    $runs.Remove("edge-reach:$scenario")
+    foreach($theme in 'dark','light'){
+        $runs["edge-reach:sweep-$scenario-$theme"]=@{arguments=@('-SweepOnly','-SweepScenario',$scenario,'-Theme',$theme);hardware_gpu=$false}
+    }
 }
 foreach($hardwareSelector in @('drawers','drawers:light','toolbars:light','idle-brush','idle-brush:light','touch-gestures','touch-gestures:Simple','touch-gestures:SimpleLight','touch-gestures:ThreeFinger','touch-gestures:layers','localization:ColorOnly','tool-variations:sketch','tool-variations:sketch-light','color-picker:light','tool-bubbles:EraserOnly','tool-bubbles:EraserLightOnly','tool-bubbles:blenders-dark','tool-bubbles:blenders-light','tool-bubbles:BlendersOnly','tool-bubbles:sliders-dark','tool-bubbles:sliders-light','tool-bubbles:SlidersOnly')){
     if(!$runs.Contains($hardwareSelector)){throw "Unknown hardware fixture: $hardwareSelector"}
@@ -187,7 +233,9 @@ function Select-Fixtures([string[]]$Available,[string[]]$Requested) {
     if($null -eq $Requested -or !$Requested.Count){return $Available}
     $Requested=@($Requested|ForEach-Object {
         switch($_){
+            'tool-bubbles:HdrOnly'{'tool-bubbles:hdr-dark';'tool-bubbles:hdr-light'}
             'header-settings'{'header:catalog-only';'header:catalog-only-light'}
+            'edge-reach:SweepOnly'{foreach($scenario in 'photo','photo-open','photo-collapsed','paint'){foreach($theme in 'dark','light'){"edge-reach:sweep-$scenario-$theme"}}}
             'smoke'{
                 'activation:default','canvas-editing:smoke','canvas-editing:smoke-light','clipboard:default',
                 'color-editor:light','column-stacks:touch','documents:new-drawing','documents:native-writeback-light',
@@ -200,6 +248,13 @@ function Select-Fixtures([string[]]$Available,[string[]]$Requested) {
                 'tool-bubbles:light-pen','toolbar-components:default','window:default','window:light',
                 'workspace-layout:default','workspace-layout:light','workspace-pickup:default','zoom-readout:touch'
             }
+            default{$_}
+        }
+    })
+    $Requested=@($Requested|ForEach-Object {
+        switch($_){
+            'popup:default'{foreach($group in 'controls','text-layout'){"popup:$group"}}
+            'popup:light'{foreach($group in 'controls','text-layout'){"popup:${group}-light"}}
             default{$_}
         }
     })
@@ -294,7 +349,7 @@ function Reviews([string]$ContextPath,[Collections.Generic.List[object]]$Failure
     }
     $files=if($ContextPath){Get-Item -LiteralPath $ContextPath}else{Get-ChildItem -LiteralPath $Output -Filter '*-context.json' -File}
     $contexts=@(foreach($file in $files){
-        try{Get-Content -LiteralPath $file.FullName -Raw|ConvertFrom-Json}
+        try{Get-Content -LiteralPath $file.FullName -Encoding UTF8 -Raw|ConvertFrom-Json}
         catch{if($null -eq $Failures){throw};$Failures.Add($_)}
     })
     $closed=@($contexts|ForEach-Object {$_.closes}|Where-Object {$_.result -ceq 'pass' -and $_.window_only -is [bool] -and !$_.window_only -and $_.process_start_utc})
@@ -326,6 +381,9 @@ function Reviews([string]$ContextPath,[Collections.Generic.List[object]]$Failure
                 $retained=$true;$matched.Add($process)
             }catch{
                 $failure=$_
+                $exited=$false
+                if($null -ne $process){try{$exited=$process.HasExited}catch{}}
+                if($exited -is [bool] -and $exited){continue}
                 $fresh=Get-CimInstance Win32_Process -Filter "ProcessId=$id" -Property ProcessId,SessionId,CreationDate -ErrorAction Stop
                 if(& $sameIdentity $fresh $owner $start){throw $failure}
             }
@@ -358,7 +416,7 @@ function Wait-FixtureReviews([string]$Log) {
         }
     }finally{foreach($process in $owned){$process.Dispose()}}
 }
-function Save-Evidence([string]$Log,[bool]$Renders=$true) {
+function Save-Evidence([string]$Log,[bool]$Renders=$true,[switch]$PreserveReviews) {
     $rendered = $Renders -and $HardwareGpu -and !$controlFixture
     $evidence = "$Log-evidence"
     $desktopRuns=@(if(Test-Path -LiteralPath "$Log.log"){Get-Content -LiteralPath "$Log.log"|ForEach-Object {if($_ -cmatch '^Private desktop artifacts: (.+)$'){$Matches[1]}}})|Select-Object -Unique
@@ -374,7 +432,7 @@ function Save-Evidence([string]$Log,[bool]$Renders=$true) {
         if ($rendered) { throw "Missing fixture context: $Log-context.json" }
         return
     }
-    $context = Get-Content "$Log-context.json" -Raw | ConvertFrom-Json
+    $context = Get-Content "$Log-context.json" -Encoding UTF8 -Raw | ConvertFrom-Json
     New-Item -ItemType Directory -Force $evidence | Out-Null
     $owners = @($context.process_id) + @($context.windows | ForEach-Object { $_.process_id }) + @(Reviews | ForEach-Object {try{$_.Id}finally{$_.Dispose()}})
     $folders = @($context.trace_directory, $context.run, (Split-Path $Executable)) + @($context.windows | ForEach-Object { $_.trace_directory }) | Where-Object { $_ } | Select-Object -Unique
@@ -385,7 +443,7 @@ function Save-Evidence([string]$Log,[bool]$Renders=$true) {
             } | Copy-Item -Destination $evidence
         }
     }
-    Stop-Review
+    if(!$PreserveReviews){Stop-Review}
     if ($context.run -and (Test-Path -LiteralPath $context.run)) {
         & robocopy.exe $context.run $evidence /E /R:0 /W:0 /NFL /NDL /NJH /NJS | Out-Null
         if ($LASTEXITCODE -ge 8) { throw "Could not preserve fixture evidence: $($context.run)" }
@@ -461,17 +519,21 @@ if($QueueConfig -and (!$queue.url -or !$queue.token)){throw 'The fixture queue c
 $env:CAPY_WAIT_SCALE = if($HardwareGpu -and !$SharedSession){$null}else{'3'}
 $textScale=[pscustomobject]@{exists=$false;kind=$null;value=$null}
 Restore-FixtureTextScale $textScale
+$fixtureSessionIdentity=if($SharedSession){Get-CapySessionIdentity}else{$null}
+if($fixtureSessionIdentity){Write-FixtureSessionRecord $Output 'graphics-identity.json' $fixtureSessionIdentity}
 $claimed=[Collections.Generic.List[string]]::new()
 $results = Join-Path $Output 'results.jsonl'
+$graphicsCause=$null
 while($null -ne ($name=Get-NextFixture $planned $queue $claimed)){
     $run=[pscustomobject]@{Key=$name;Value=$runs[$name].arguments}
     if($queue){Write-FixturePlan (Join-Path $Output 'plan.json') $claimed.ToArray()}
     $fixture = ($run.Key -split ':')[0]
     Stop-Review
+    Remove-FixtureJapaneseInput
     $log = Join-Path $Output ($run.Key -replace ':', '-')
     $env:CAPY_FIXTURE_CONTEXT = "$log-context.json"
     $started = Get-Date
-    $cleanupError=$null;$retirementError=$null;$timedOut=$false
+    $cleanupError=$null;$retirementError=$null;$timedOut=$false;$graphicsCause=$null;$graphicsExit=$null;$errors=@()
     try {
       try {
         Wait-FixtureTextScale $textScale 'setup'
@@ -501,10 +563,16 @@ while($null -ne ($name=Get-NextFixture $planned $queue $claimed)){
         $exit = if($timedOut){'timeout'}else{'runner'}
         $message = $_.Exception.Message
       }
+      $graphicsCause=Get-FixtureGraphicsFailure $exit ($message+' '+($errors -join ' '))
+      if($graphicsCause){$graphicsExit=$exit}
       try {
         if ($exit -ne 0 -and !(Test-Path "$log.png")) { Save-Screen "$log.png" }
-        Save-Evidence $log ($runs[$run.Key].renders -ne $false)
-      } catch { if(!$timedOut){$exit = 'evidence'}; $message += " $($_.Exception.Message)" }
+        Save-Evidence $log ($runs[$run.Key].renders -ne $false) -PreserveReviews:([bool]($SharedSession -and $graphicsCause))
+      } catch {
+        if(!$timedOut){$exit = 'evidence'}
+        if(!$graphicsCause){$graphicsCause=Get-FixtureGraphicsFailure $exit $_.Exception.Message;$graphicsExit=$exit}
+        $message += " $($_.Exception.Message)"
+      }
     } finally {
         if($timedOut){try{Wait-FixtureReviews $log}catch{$retirementError=$_.Exception.Message}}
         if($textScale){try{Restore-FixtureTextScale $textScale}catch{$cleanupError=$_.Exception.Message}}
@@ -514,8 +582,11 @@ while($null -ne ($name=Get-NextFixture $planned $queue $claimed)){
         if(!$timedOut){$exit='cleanup'}
     }
     if($retirementError){$message=(@($message,"Session retired after timeout: $retirementError")|Where-Object {$_}) -join ' '}
+    if($graphicsCause){$exit=$graphicsExit}
     $result = [ordered]@{ name = $run.Key; exit = $exit; seconds = [math]::Round(((Get-Date) - $started).TotalSeconds); message = $message }
+    if($graphicsCause){$result.infrastructure_invalid=$true;$result.infrastructure_cause=$graphicsCause}
     Write-FixtureResult $results ($result|ConvertTo-Json -Compress)
+    if($graphicsCause -and $SharedSession){Write-FixtureGraphicsWithdrawal $Output $result $fixtureSessionIdentity;Wait-FixtureGraphicsEvidence $Output;break}
     if($retirementError){throw "Session retired after timeout: $retirementError"}
     if($cleanupError){throw "Fixture text-scale cleanup failed: $cleanupError"}
 }

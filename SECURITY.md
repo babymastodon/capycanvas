@@ -2,7 +2,7 @@
 
 ## Report a vulnerability
 
-Use [private vulnerability reporting](https://github.com/capyatelier/capycanvas/security/advisories/new)
+Use [private vulnerability reporting](https://github.com/babymastodon/capycanvas/security/advisories/new)
 for security problems in Capy Canvas or its release tooling. Include the affected
 version or commit, platform, expected impact, and steps to reproduce. Use a
 small synthetic document when a drawing or imported file is needed.
@@ -23,7 +23,7 @@ Secret scanning, push protection, Dependabot security updates and private
 vulnerability reporting are enabled in GitHub settings. The `Protect main
 history` ruleset blocks deleting or force-pushing `main`; normal fast-forward
 pushes remain available. The [CodeQL workflow](.github/workflows/codeql.yml)
-scans pushes and pull requests to `main`, and runs weekly. It compiles Android
+scans only when dispatched (`gh workflow run codeql.yml --ref main`). It compiles Android
 Kotlin and both Apple clients explicitly; the other supported languages use
 analysis without a full build. Scanner findings are separate from app tests.
 Keep advanced setup enabled: default setup cannot find the Android build.

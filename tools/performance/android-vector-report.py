@@ -83,7 +83,7 @@ def response_run(report, shown):
     injected = motion.get("injected")
     start = motion.get("notice_answered_ns") or (injected[-1][0] if injected else motion["begin_ns"])
     rows = sorted(report["completions"], key=lambda r: r[1])
-    raster = max([row[3] for row in rows if row[1] < start] or [int(next(r["value"] for r in report["renderer_before"]["rows"] if r["label"] == "Frames"))])
+    raster = max([row[3] for row in rows if row[1] < start] or [int(report["renderer_before"]["frames"])])
     first = next((row for row in rows if row[1] >= start and row[3] > raster), None)
     last = [row for row in rows if start <= row[1] <= report["settled_ns"]]
     result = {"first_update_ms": (first[2] - start) / 1e6 if first else None,

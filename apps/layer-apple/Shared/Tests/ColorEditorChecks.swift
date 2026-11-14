@@ -6,6 +6,8 @@ import AppKit
 extension XCTestCase {
     @MainActor func editColorValue(_ name: String, _ text: String, in app: XCUIApplication) {
         let value = app.descendants(matching: .any)["color-value-" + name].firstMatch
+        let scroll = app.scrollViews.containing(.any, identifier: "color-value-" + name).firstMatch
+        if scroll.exists { revealEditorControl(value, in: scroll) }
         workspaceActivate(value)
         let field = app.textFields["color-entry-" + name]
         guard field.waitForExistence(timeout: 5) else { XCTFail("Tapping a value opens it for typing"); return }
@@ -89,7 +91,7 @@ extension XCTestCase {
         expectation(for: NSPredicate(format: "value == %@", "Canvas ready"), evaluatedWith: canvas)
         waitForExpectations(timeout: 30)
         editorMenu(in: app, menu: "View", id: "fit_canvas", label: "Fit canvas")
-        let originalPixels = editorPixels(in: app)
+        let originalPixels = settledEditorPixels(in: app)
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
         func expectHex(_ hex: String, _ message: String) {
             let match = NSPredicate { _, _ in self.colorValueText("hex", in: app).uppercased() == hex }
@@ -188,6 +190,7 @@ extension XCTestCase {
         expectHex("#00FF00", "The hex accepts a whole color")
         editColorValue("0-0", "1", in: app)
         expectHex("#FFFF00", "A value commits through its row")
+        workspaceActivate(app.buttons["color-copy-hex"])
         let red = element("color-value-0-0")
         #if os(macOS)
         red.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -198,6 +201,12 @@ extension XCTestCase {
         #endif
         expectation(for: NSPredicate { _, _ in self.colorValueText("hex", in: app).uppercased() != "#FFFF00" }, evaluatedWith: app)
         waitForExpectations(timeout: 10)
+        let scrubbed = colorValueText("hex", in: app).uppercased()
+        app.typeKey("c", modifierFlags: .command)
+        workspaceActivate(element("color-current"))
+        expectHex("#E61A1A", "Current changes the draft before Paste")
+        app.typeKey("v", modifierFlags: .command)
+        expectHex(scrubbed, "Copy and Paste after a scrub use the color draft")
         #if os(macOS)
         workspaceActivate(app.buttons["color-copy-hex"])
         let copied = colorValueText("hex", in: app)
@@ -370,7 +379,7 @@ extension XCTestCase {
             canvas.value as? String == "Canvas ready" && sketch.exists && sketch.isSelected
         }, evaluatedWith: app)
         waitForExpectations(timeout: 30)
-        createWhitePaperDrawing(in: app)
+        createWhitePaperDrawing(texture: "Cold press", relief: "0", in: app)
         editorMenu(in: app, menu: "View", id: "fit_canvas", label: "Fit canvas")
         func pixels(_ accept: @escaping (Int, Int, Int) -> Bool, _ message: String) {
             let match = NSPredicate { _, _ in
@@ -430,7 +439,7 @@ extension XCTestCase {
             waitForExpectations(timeout: 10)
         }
         expectTexture("Cold press")
-        let white = editorPixels(in: app)
+        let white = settledEditorPixels(in: app)
         let dialog = app.descendants(matching: .any)["texture-dialog"].firstMatch
         let coldPress = app.buttons["texture-tile-2"], rough = app.buttons["texture-tile-3"]
         workspaceActivate(texture)

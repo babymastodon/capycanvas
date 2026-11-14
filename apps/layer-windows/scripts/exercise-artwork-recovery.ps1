@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$Executable,[ValidateSet('dark','light')][string]$Theme='dark')
+﻿param([Parameter(Mandatory)][string]$Executable,[ValidateSet('dark','light')][string]$Theme='dark')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'CapyUia.ps1')
 $CapyWaitSeconds=60
@@ -29,7 +29,7 @@ function Start-Review([string]$Label,[switch]$AllowFailure){
     $null=$review.Handle;$native=@{window=$null}
     Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window} 'No review window'
     $script:drawingWindow=$native.window.Handle;$script:root=$native.window.Root
-    Wait-Until {$m=Model;$m.canvas_ready -and $m.brush_ready -and $m.windows_workspace.ready -and !$m.windows_recovery.busy -and !$m.windows_recovery.restoring} 'Session did not finish reopening' 120
+    Wait-Until {$m=Model;$m.canvas_ready -and (Review-Ready $m) -and !$m.windows_recovery.busy -and !$m.windows_recovery.restoring} 'Session did not finish reopening' 120
     if(!(Model).windows_isolated_settings){throw 'Session test requires isolated settings'}
     if(!$AllowFailure -and (Model).windows_recovery.error){throw (Model).windows_recovery.error}
     if(Find-Name 'Restore drawing'){throw 'Ordinary restart presented a recovery prompt'}
@@ -189,19 +189,21 @@ try {
     Close-Review
     Start-Review 'after-close'
     if(@((Model).windows_tabs.tabs).Count -ne 1){throw 'Restart resurrected an explicitly closed drawing'}
-    $remaining=Signature
     Close-Review
     $manifest=Get-ChildItem (Join-Path $env:CAPY_STORAGE_DIR 'state/sessions') -Filter session.json -Recurse|Sort-Object LastWriteTimeUtc -Descending|Select-Object -First 1
-    $original=[IO.File]::ReadAllBytes($manifest.FullName)
-    [IO.File]::WriteAllText($manifest.FullName,'incomplete membership')
+    $damagedMembership=[Text.Encoding]::UTF8.GetBytes('incomplete membership')
+    [IO.File]::WriteAllBytes($manifest.FullName,$damagedMembership)
     Start-Review 'corrupt-index' -AllowFailure
-    if(!(Model).windows_recovery.error){throw 'Corrupt session membership was silently replaced'}
-    Start-Sleep -Seconds 2
-    if([IO.File]::ReadAllText($manifest.FullName) -ne 'incomplete membership'){throw 'Corrupt session source was overwritten'}
-    Capture 'retained-corrupt-source' -WithModel
-    [IO.File]::WriteAllBytes($manifest.FullName,$original)
-    Invoke-Control 'Retry Storage'
-    Wait-Until {!(Model).windows_recovery.busy -and !(Model).windows_recovery.restoring -and !(Model).windows_recovery.error -and (Signature) -eq $remaining} 'Retry did not reopen the preserved drawing' 120
+    Wait-Until {(Model).error -like 'Recovery unavailable:*'} 'Corrupt session membership did not report its one-time recovery notice'
+    if((Model).windows_recovery.error -or (Find-Name 'Retry Storage')){throw 'Set-aside membership remained in the storage Retry loop'}
+    $preserved=@(Get-ChildItem -LiteralPath $manifest.DirectoryName -Filter 'preserved-*' -File|Where-Object {[Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName)) -eq [Convert]::ToBase64String($damagedMembership)})
+    if($preserved.Count -ne 1){throw 'Unreadable membership was not preserved byte for byte once'}
+    Capture 'retained-corrupt-source' -WithModel -Composed
+    Close-Review
+    Start-Review 'after-corrupt-index'
+    if((Model).error -or (Model).windows_recovery.error -or (Find-Name 'Retry Storage')){throw 'Restart repeated the set-aside membership error'}
+    if([Convert]::ToBase64String([IO.File]::ReadAllBytes($preserved[0].FullName)) -ne [Convert]::ToBase64String($damagedMembership)){throw 'Restart changed preserved membership bytes'}
+    Capture 'after-corrupt-index' -WithModel -Composed
     Command 'File' 'new_document'
     New-DrawingPixels 2048 1536
     Invoke-Control 'Create'

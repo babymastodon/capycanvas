@@ -23,16 +23,21 @@ impl LayoutPanelName {
         localization.format(if self.panel.kind() == PanelKind::Tiles { MessageId::WORKSPACE_HISTORY_TOOLBAR } else { MessageId::WORKSPACE_HISTORY_PANEL }, &args)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LayoutPanelAction { Added, Deleted, Moved, Resized, Collapsed, Expanded, Hidden, Shown, Rearranged, TabReordered, TabsChanged, ToolsAdded, ToolsRemoved, ToolsChanged, Customized, Replaced, Selected }
+crate::variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum LayoutPanelAction { Added, Deleted, Moved, Resized, Collapsed, Expanded, Hidden, Shown, Rearranged, TabReordered, TabsChanged, ToolsAdded, ToolsRemoved, ToolsChanged, Customized, Replaced, Selected }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "change", rename_all = "snake_case")]
 pub enum LayoutChange {
     Automatic, Starting, HeaderSize { size: crate::HeaderSize }, HeaderAdded { item: crate::HeaderItem }, HeaderRemoved { item: crate::HeaderItem }, HeaderRearranged, CanvasInfo, CanvasBar, Restored, RestoredEarlier,
-    Panels { action: LayoutPanelAction, panels: Vec<LayoutPanelName> },
+    Panels { action: LayoutPanelAction, #[serde(default, deserialize_with = "crate::lenient::vec")] panels: Vec<LayoutPanelName> },
     Renamed { before: LayoutPanelName, after: LayoutPanelName },
     Bubble { action: LayoutPanelAction, source: crate::BubbleSource },
+}
+impl Default for LayoutChange {
+    fn default() -> Self { Self::Panels { action: LayoutPanelAction::Customized, panels: Vec::new() } }
 }
 impl LayoutChange {
     pub fn panels(action: LayoutPanelAction, panels: Vec<LayoutPanelName>) -> Self { Self::Panels { action, panels } }

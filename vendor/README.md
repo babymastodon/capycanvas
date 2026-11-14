@@ -330,6 +330,24 @@ artwork dependencies even when a viewport submission flushes them. Headless
 surface tests exercise pending fences, overlapping viewports, concurrent output
 replacement, failed submissions and callback reentry with ranked locks.
 
+`wgpu-dx12-nonblocking-surfaces.patch` adds an opt-in D3D12 surface policy
+for retained Navigator surfaces. Under heavy GPU load a queued Navigator present
+can still be pending when its next update is due; waiting in acquire would then
+stall canvas frames mid-stroke. The policy polls acquisition with zero timeout,
+uses `DXGI_PRESENT_DO_NOT_WAIT`, and retains the acquired texture on presentation
+backpressure. Ordinary canvas surfaces and other backends keep their default
+behavior. Files: `wgpu-hal/src/dx12/mod.rs`, `wgpu-hal/src/lib.rs`,
+`wgpu-hal/src/dynamic/queue.rs`, `wgpu-core/src/present.rs`,
+`wgpu-core/src/device/resource.rs`, and `wgpu-core/src/device/surface_tests.rs`.
+
+Upstream status checked on 2026-11-11: [issue #3283](https://github.com/gfx-rs/wgpu/issues/3283)
+requests documented/nonblocking acquisition, and open [PR #10511](https://github.com/gfx-rs/wgpu/pull/10511)
+addresses a related D3D12 latency-handle wait after discarded textures. Neither
+provides this per-surface acquire/present extension; the upstream issue/PR search
+found no `DO_NOT_WAIT` match. This patch has not been submitted upstream.
+The D3D12 `nonblocking_tests` and core `device::surface_tests` cover unavailable
+acquisition, retained output under backpressure, terminal cleanup and discard.
+
 Remove each patch when an upstream release supplies its equivalent fix, and
 remove these snapshots when no patch remains necessary.
 

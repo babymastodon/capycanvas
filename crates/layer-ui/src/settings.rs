@@ -100,6 +100,7 @@ pub struct Settings {
     /// Shared by Quick Mask and every saved selection, across documents.
     pub selection_painting: layer_core::SelectionPaintBehavior,
     pub pressure_curve: layer_core::PressureResponse,
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub tilt_calibrations: BTreeMap<String,layer_core::TiltCalibration>,
     pub cursor: CursorMode,
     pub hide_cursor_while_drawing: bool,
@@ -117,14 +118,15 @@ pub struct Settings {
     pub platform_prediction: bool,
     pub prediction_ms: f32,
     /// Only overrides are stored. Empty keys disable an action's shortcut.
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub shortcuts: BTreeMap<String, Vec<KeyChord>>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "crate::lenient::map")]
     pub gestures: BTreeMap<String, String>,
     /// What each pen button does per kind of tool, when set that way.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "crate::lenient::map")]
     pub pen_buttons: BTreeMap<String, BTreeMap<ToolCategory, String>>,
     /// The artist's modifier keys; `None` follows the keymap.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::lenient::optional_vec")]
     pub hold_keys: Option<Vec<crate::shortcuts::HoldKey>>,
     #[serde(skip_serializing_if = "EraserEnd::is_default")]
     pub eraser_end: EraserEnd,
@@ -135,6 +137,7 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keymap: Option<crate::keymaps::KeymapRef>,
     /// Per-preset slider values, shared by every placement of that slider.
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub slider_bookmarks: BTreeMap<String, SliderBookmarks>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +240,12 @@ impl Settings {
             _ => preference,
         }
     }
+    pub fn launch_icon(saved: &str) -> ZenIcon {
+        if saved.len() > Self::MAX_FILE_BYTES { return ZenIcon::default(); }
+        serde_json::from_str::<serde_json::Value>(saved).ok()
+            .and_then(|value| value.get("zen_icon").and_then(|icon| ZenIcon::deserialize(icon).ok()))
+            .unwrap_or_default()
+    }
     /// Read settings saved by any build. Each field this build cannot read or
     /// validate keeps its default; the next save replaces the saved copy.
     pub fn restore(saved: &str) -> Self {
@@ -244,7 +253,7 @@ impl Settings {
     }
     pub fn restore_localized(saved: &str, localization: &Localizer) -> Self {
         if saved.len() > Self::MAX_FILE_BYTES { return Self::default(); }
-        let (mut restored, _) = crate::saved_state::restore_fields(
+        let mut restored = crate::saved_state::restore_fields(
             serde_json::from_str(saved).unwrap_or_default(), Self::default,
             |settings| settings.validate_localized(localization).is_ok(),
         );
@@ -981,6 +990,11 @@ fn transparency_label(value: crate::Transparency, localizer: &Localizer) -> Stri
     let index = crate::Transparency::CHOICES.iter().position(|choice| choice.0 == value).unwrap();
     localizer.text([MessageId::SETTINGS_OFF, MessageId::SETTINGS_LOW, MessageId::SETTINGS_MEDIUM, MessageId::SETTINGS_HIGH][index]).to_string()
 }
+fn version_label(revision: &str, unoptimized: bool) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    if revision.is_empty() { return version.into(); }
+    format!("{version}\u{a0}· {revision}{}", if unoptimized { "\u{a0}dbg" } else { "" })
+}
 
 fn preference_choice_search(kind: &PreferenceKind) -> String {
     match kind {
@@ -1329,7 +1343,7 @@ impl Settings {
                         &localizer.text(MessageId::SETTINGS_VERSION),
                         "",
                         PreferenceKind::Info {
-                            value: env!("CARGO_PKG_VERSION").into(),
+                            value: version_label(env!("CAPY_BUILD_REVISION"), cfg!(debug_assertions)),
                         },
                     ),
                     row(
@@ -2298,6 +2312,17 @@ impl PreferencesState {
 mod copy_tests {
     use super::*;
 
+    #[test]
+    fn about_version_names_the_source_revision_outside_public_releases() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(version_label("", true), version);
+        assert_eq!(version_label("12ae790db", false), format!("{version}\u{a0}· 12ae790db"));
+        assert_eq!(version_label("12ae790db*", true), format!("{version}\u{a0}· 12ae790db*\u{a0}dbg"));
+        let shown = Settings::default().pages(Platform::Gtk).into_iter().flat_map(|page| page.groups).flat_map(|group| group.rows)
+            .find_map(|row| match (row.id, row.kind) { (PreferenceId::Version, PreferenceKind::Info { value }) => Some(value), _ => None });
+        assert_eq!(shown.unwrap(), version_label(env!("CAPY_BUILD_REVISION"), cfg!(debug_assertions)));
+    }
+
     fn accent_row(settings: &Settings, system: Option<HexColor>) -> (Vec<Swatch>, u32, String) {
         let row = PreferencesState::default()
             .view(settings, Platform::Gtk, false, system, &Localizer::shared(UiLanguage::English))
@@ -3055,6 +3080,18 @@ mod localization_tests {
         let view = state.view(&settings, Platform::Gtk, true, None, &japanese);
         assert_eq!(view.capture_icon, Some(crate::ShortcutCaptureIcon::Information));
         assert_eq!(view.capture.unwrap().notice, japanese.text(MessageId::SETTINGS_ALREADY_A_MODIFIER_KEY).to_string());
+    }
+
+    #[test]
+    fn launch_icon_reads_only_a_saved_zen_icon() {
+        for (icon, _) in ZenIcon::CHOICES {
+            let saved = serde_json::to_string(&Settings { zen_icon: icon, ..Settings::default() }).unwrap();
+            assert_eq!(Settings::launch_icon(&saved), icon);
+        }
+        for saved in ["", "{", "[]", r#"{"zen_icon":"dancing"}"#, r#"{"zen_icon":3}"#] {
+            assert_eq!(Settings::launch_icon(saved), ZenIcon::LookingUp);
+        }
+        assert_eq!(Settings::launch_icon(&format!(r#"{{"zen_icon":"sleeping","pad":"{}"}}"#, "x".repeat(Settings::MAX_FILE_BYTES))), ZenIcon::LookingUp);
     }
 
     #[test]

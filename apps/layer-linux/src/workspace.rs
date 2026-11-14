@@ -385,7 +385,10 @@ mod allocation {
                 if child.has_css_class("expanded-panel") && !child.has_css_class("gpu-panel-surface") {
                     native.pop();
                 }
-                let node = native.to_node();
+                let node = native.to_node().map(|node| match child.compute_bounds(&*self.obj()) {
+                    Some(bounds) => crate::squircle::outline(node, &bounds),
+                    None => node,
+                });
                 if let Some(owner) = &owner {
                     holes.extend(
                         owner
@@ -1300,7 +1303,7 @@ impl Workspace {
         restart_canvas.set_halign(gtk::Align::Center);
         restart_canvas.set_visible(false);
         let content = gtk::Overlay::new();
-        let launch = crate::launch::LaunchSplash::new(&localization);
+        let launch = crate::launch::LaunchSplash::new(&localization, crate::launch_capy(app));
         let workspaces = manager::NativeWorkspaces::new();
         workspaces.root.add_css_class("workspace-notice");
         content.set_child(Some(&surface));
@@ -1324,7 +1327,6 @@ impl Workspace {
         notices.append(&status);
         notices.append(&restart_canvas);
         notices.append(&workspaces.root);
-        content.add_overlay(&launch.root);
         content.add_overlay(&notices);
         let notice = crate::notice::NoticeBubble::new();
         content.add_overlay(&notice.root);
@@ -1342,6 +1344,7 @@ impl Workspace {
         content.add_overlay(&color_strip.root);
         let pages = crate::page_dialog::Pages::new();
         content.add_overlay(&pages.root);
+        content.add_overlay(&launch.root);
         window.set_content(Some(&crate::squircle::Squircles::new(&content)));
         let this = Rc::new(Self {
             pages,
@@ -1718,7 +1721,13 @@ impl Workspace {
                 if window.visible_dialog().is_some_and(|d| d != this.preferences.dialog) {
                     this.interact(UiInput::Blur);
                 }
+                this.refresh_launch();
             }
+        ));
+        self.pages.root.connect_visible_child_notify(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| this.refresh_launch()
         ));
     }
 
@@ -2336,6 +2345,11 @@ impl Workspace {
             g.session.engine().backend().view_color.with_rendition(document.composition().color, g.session.effective_sdr_rendition())
         })
     }
+    pub(crate) fn capture_canvas(&self, view: crate::display_color::ViewColor) -> Result<layer_render::ReadbackImage, String> {
+        let readback = self.gpu.borrow().as_ref().ok_or("The canvas has not started")?
+            .session.engine().backend().request_capture(view)?;
+        readback.wait()
+    }
     pub(crate) fn paint_view_color(&self) -> crate::display_color::ViewColor {
         self.gpu.borrow().as_ref().map_or(Default::default(), |g| {
             let colors = g.session.state().display_colors();
@@ -2481,14 +2495,15 @@ impl Workspace {
         self.changed(result);
     }
     fn refresh_launch(self: &Rc<Self>) {
-        let view = self.gpu.borrow_mut().as_mut().map(|gpu| (gpu.launch_view(), gpu.needs_present));
+        let interaction = self.visible_dialog().is_some();
+        let view = self.gpu.borrow_mut().as_mut().map(|gpu| (gpu.launch_view(interaction), gpu.needs_present));
         match view {
             Some((Ok(view), wake)) => {
                 self.launch.update(view, &self.localization());
                 if wake { self.wake(); }
             }
             Some((Err(_), _)) => self.launch.bypass(),
-            None if self.status.is_visible() => self.launch.bypass(),
+            None if interaction || self.status.is_visible() => self.launch.bypass(),
             None => (),
         }
     }
@@ -2737,9 +2752,10 @@ impl Workspace {
                         previous + ((now.saturating_sub(previous) / period) + 1) * period
                     };
                     this.frame_deadline.set(next);
+                    let interaction = this.visible_dialog().is_some();
                     let result = this.gpu.borrow_mut().as_mut().map(|g| {
                         this.update_canvas_chrome(g);
-                        g.render(area, now, !expedited)
+                        g.render(area, now, !expedited, interaction)
                     });
                     match result {
                         Some(Ok(change)) => this.changed(Ok(change)),
@@ -3210,7 +3226,10 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn palette(&self) -> Option<ThemePalette> { self.palette.get() }
+
     fn apply_palette(&self, palette: ThemePalette) {
+        self.launch.set_palette(&palette);
         if self.palette.replace(Some(palette)) == Some(palette) {
             return;
         }
@@ -3228,6 +3247,7 @@ impl Workspace {
             ("text", palette.text),
             ("accent", palette.accent),
             ("accent-foreground", palette.accent_foreground),
+            ("error", palette.error),
             ("relationship", palette.relationship),
             ("selection", palette.selection),
             ("header-selection", palette.header_selection),
@@ -3246,6 +3266,9 @@ impl Workspace {
             write!(css, "--capy-preference-trough: {};", palette.controls.preference_trough).unwrap();
         }
         let glass = palette.glass;
+        if let Some(squircles) = self.window.content().and_downcast::<crate::squircle::Squircles>() {
+            squircles.set_surfaces(&glass.surfaces());
+        }
         for (name, color) in [
             ("panel", glass.panel),
             ("strip", glass.strip),

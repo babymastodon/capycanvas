@@ -136,13 +136,27 @@ extension XCTestCase {
 
     @MainActor private func phoneSettledScreenshot(in app: XCUIApplication) -> XCUIScreenshot? {
         let window = workspaceViewport(in: app), canvas = app.descendants(matching: .any)["canvas"].firstMatch
-        func screenshot() -> XCUIScreenshot {
-            canvas.exists && canvas.frame == window.frame ? editorScreenshot(in: app) : window.screenshot()
+        let field = app.descendants(matching: .any).matching(NSPredicate(format: "hasKeyboardFocus == YES")).firstMatch
+        func screenshot() -> (screen: XCUIScreenshot, pixels: Data) {
+            let screen = canvas.exists && canvas.frame == window.frame ? editorScreenshot(in: app) : window.screenshot()
+            let image = editorImage(from: screen), scale = CGFloat(image.width) / window.frame.width
+            var pixels = Data(count: image.width * image.height * 4)
+            pixels.withUnsafeMutableBytes { bytes in
+                let context = CGContext(data: bytes.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8,
+                    bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+                guard field.exists else { return }
+                let caret = field.frame.offsetBy(dx: -window.frame.minX, dy: -window.frame.minY).insetBy(dx: -4, dy: -4)
+                context.clear(CGRect(x: caret.minX * scale, y: CGFloat(image.height) - caret.maxY * scale,
+                    width: caret.width * scale, height: caret.height * scale))
+            }
+            return (screen, pixels)
         }
         var previous = screenshot(), settled: XCUIScreenshot?
         let unchanged = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let next = screenshot()
-            if next.pngRepresentation == previous.pngRepresentation { settled = next; return true }
+            if next.pixels == previous.pixels { settled = next.screen; return true }
             previous = next; return false
         }, object: app)
         guard XCTWaiter.wait(for: [unchanged], timeout: 10) == .completed, let settled else {
@@ -189,11 +203,7 @@ extension XCTestCase {
             "native_only": id.row["native_only"] as? Bool ?? false,
             "document_fixture": app.launchEnvironment["CAPY_STORAGE_DIR"].flatMap { phoneDrawingFixtures[$0] }
                 ?? ["status": "STATE", "reason": "The current drawing has no canonical document proof"],
-            "visible_text_measurements": app.staticTexts.allElementsBoundByIndex.prefix(12).filter { $0.isHittable }.map {
-                let frame = $0.frame
-                return ["identifier": $0.identifier, "text": $0.label,
-                    "bounds": [frame.minX, frame.minY, frame.width, frame.height]] as [String: Any]
-            }, "required_unverified": extra["required_unverified"] as? [String] ?? []]
+            "required_unverified": extra["required_unverified"] as? [String] ?? []]
         for (key, value) in extra where key != "required_unverified" {
             guard metadata[key] == nil else { return XCTFail("Capture details must not override observed identity: \(key)") }
             metadata[key] = value

@@ -167,6 +167,9 @@ pub enum CommandSearchAction {
     Commit {
         text: String,
     },
+    Search {
+        text: String,
+    },
     Query {
         text: String,
     },
@@ -1517,8 +1520,9 @@ impl<R: CanvasRenderer> UiSession<R> {
                 crate::DialogEscape::Cancel => A::Close,
             });
         }
+        let search_only = matches!(&action, A::Search { .. });
         match action {
-            A::Commit { text } => {
+            A::Commit { text } | A::Search { text } => {
                 let view = self.state.command_search.as_ref().unwrap();
                 if let Some(parameter) = &view.parameter {
                     return self.command_search_action(A::Execute {
@@ -1530,7 +1534,7 @@ impl<R: CanvasRenderer> UiSession<R> {
                     self.search_commands(text.chars().take(256).collect());
                 }
                 let view = self.state.command_search.as_ref().unwrap();
-                if let Some(selected) = view.results.get(view.selected) {
+                if let Some(selected) = view.results.get(view.selected).filter(|_| !search_only) {
                     return self.command_search_action(A::Execute {
                         id: selected.id.clone(),
                         value: None,

@@ -2,8 +2,9 @@ import XCTest
 
 extension XCTestCase {
     @MainActor func checkLiveInterfaceLanguage(in app: XCUIApplication, theme: String) {
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"invoke","command":"settings"},{"type":"preferences","action":{"type":"page","page":"appearance"}}]"#
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}},{"type":"invoke","command":"settings"},{"type":"preferences","action":{"type":"page","page":"appearance"}}]"#
         app.launch()
+        waitForEditorInteraction(in: app)
         let done = app.buttons["settings-done"], layers = app.buttons["panel-tab-layers"]
         #if os(macOS)
         let language = app.popUpButtons["preference-language"]
@@ -77,7 +78,7 @@ extension XCTestCase {
         workspaceActivate(paint)
         expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: paint)
         waitForExpectations(timeout: 10)
-        let untouched = editorPixels(in: app)
+        let untouched = settledEditorPixels(in: app)
         #if os(macOS)
         let canvas = workspaceViewport(in: app)
         let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.6))
@@ -89,10 +90,10 @@ extension XCTestCase {
         #endif
         expectation(for: NSPredicate { _, _ in self.editorPixels(in: app) != untouched }, evaluatedWith: app)
         waitForExpectations(timeout: 15)
-        let painted = editorPixels(in: app)
-        for (label, doneLabel, title, help, previewLabel, chooseFile, cancel, save, discard, fileMenu, export, close, closeTitle, undo, redo, tag) in [
-            ("日本語", "完了", "画像を書き出す", "プロファイル付きのコピーを書き出します。編集可能な作品は変わりません。", "出力をプレビュー", "ファイルを選択…", "キャンセル", "保存", "変更を破棄", "ファイル", "書き出し…", "閉じる", "「無題」の変更を保存しますか？", "元に戻す", "やり直す", "ja"),
-            ("English", "Done", "Export image", "Export a profiled copy. The editable drawing stays unchanged.", "Preview Output", "Choose File…", "Cancel", "Save", "Discard Changes", "File", "Export…", "Close", "Save changes to “Untitled”?", "Undo", "Redo", "en")
+        let painted = settledEditorPixels(in: app)
+        for (label, doneLabel, title, formatField, previewLabel, chooseFile, cancel, save, discard, fileMenu, export, close, closeTitle, undo, redo, tag) in [
+            ("日本語", "完了", "画像を書き出す", "形式", "出力をプレビュー", "ファイルを選択…", "キャンセル", "保存", "変更を破棄", "ファイル", "書き出し…", "閉じる", "「無題」の変更を保存しますか？", "元に戻す", "やり直す", "ja"),
+            ("English", "Done", "Export image", "Format", "Preview Output", "Choose File…", "Cancel", "Save", "Discard Changes", "File", "Export…", "Close", "Save changes to “Untitled”?", "Undo", "Redo", "en")
         ] {
             workspaceActivate(app.buttons["settings-button"])
             choose(label); expectLabel(done, doneLabel); workspaceActivate(done)
@@ -107,7 +108,11 @@ extension XCTestCase {
             expectLabel(app.buttons["export-preview"], previewLabel)
             expectLabel(exportCancel, cancel)
             XCTAssertTrue(app.staticTexts[title].exists)
-            XCTAssertTrue(app.staticTexts[help].exists)
+            XCTAssertTrue(app.staticTexts[formatField].exists)
+            let colorPage = app.buttons["export-page-color"]
+            revealEditorControl(colorPage, in: app.scrollViews.containing(.button, identifier: colorPage.identifier).firstMatch)
+            workspaceActivate(colorPage)
+            XCTAssertTrue(app.staticTexts[tag == "ja" ? "色と透明度" : "Color & transparency"].exists)
             expectLabel(app.buttons["source-profile-import"], tag == "ja" ? "ICCプロファイルを読み込む…" : "Import ICC Profile…")
             let profileLibrary = app.buttons["color-profile-library"]
             expectLabel(profileLibrary, tag == "ja" ? "保存したプロファイル…" : "Saved Profiles…")
@@ -123,6 +128,8 @@ extension XCTestCase {
             attachEditor(in: app, name: "language-profile-library-" + tag + "-" + theme)
             workspaceActivate(libraryDone)
             XCTAssertTrue(libraryDone.waitForNonExistence(timeout: 10))
+            workspaceActivate(app.buttons["export-back"])
+            XCTAssertTrue(colorPage.waitForExistence(timeout: 10))
             workspaceActivate(exportCancel)
             XCTAssertTrue(exportCancel.waitForNonExistence(timeout: 10))
             expectPixels(painted, in: app)

@@ -423,7 +423,7 @@ try {
  $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $run 'stderr.log')
  $null=$review.Handle;Write-Output "HDR review $($review.Id), $Depth, $run"
  $owned=@{window=$null}
- Wait-Until {$owned.window=Owned-DrawingWindow $review;$m=Model;$owned.window -and $m.brush_ready -and $m.canvas_ready -and $m.windows_tabs.available -and $m.windows_workspace.ready} 'Owned drawing did not start' 75
+ Wait-Until {$owned.window=Owned-DrawingWindow $review;$m=Model;$owned.window -and (Review-Ready $m) -and $m.canvas_ready -and $m.windows_tabs.available} 'Owned drawing did not start' 75
  $root=$owned.window.Root;$drawingWindow=$owned.window.Handle
  [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  [CapyRowPointer]::SetForegroundWindow($drawingWindow)|Out-Null
@@ -1000,8 +1000,8 @@ try {
  }
  & (Join-Path $PSScriptRoot 'inspect-window.ps1') -TraceDirectory $CapyTraceDirectory -ProcessId $review.Id -Output (Join-Path $run 'hdr.png') -ClientOnly -Composed *> (Join-Path $run 'hdr.json')
  $count=@((Model).windows_tabs.tabs).Count
- [CapyWindowApi]::PostMessage($drawingWindow,0x10,[UIntPtr]::Zero,[IntPtr]::Zero)|Out-Null;Button 'Cancel';Idle
- if(@((Model).windows_tabs.tabs).Count -ne $count){throw 'Window close cancellation lost drawings'}
+ Command 'close_document' 'File';Button 'Cancel';Idle
+ if(@((Model).windows_tabs.tabs).Count -ne $count){throw 'Drawing close cancellation lost drawings'}
  Command 'close_document' 'File';Button 'Discard Changes';Idle
  Wait-Until {@((Model).windows_tabs.tabs).Count -eq $count-1 -and (Model).windows_tabs.available} 'Close drawing did not retain the other tabs' 60
  & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Close -DiscardUnsaved -StateDirectory $directory

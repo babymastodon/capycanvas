@@ -104,3 +104,28 @@ fn asynchronous_brush_stamp_matches_completed_production_taps_and_preserves_artw
     let style=DabStyle::for_brush(&brush,StrokeTool::Brush);let empty=preview(&mut r,id+1,&BrushStampRequest {style,dabs:Vec::new(),bounds,shape_strength:None});
     assert!(empty.iter().all(|a|*a==0),"zero input clears every output byte after a populated stamp");
 }
+
+#[test]
+fn toolbar_stamp_keeps_default_pencil_coverage_on_the_current_paper() {
+    let mut doc=support::named_document(&["Ink"],[640;2],BlendSpace::Perceptual);
+    let paper=layer_core::paper::built_in_paper("cold_press").unwrap().texture.clone();
+    doc.set_paper_texture(paper.clone());
+    assert_eq!(Some(doc.paper(doc.working.target).texture),paper);
+    let r=WgpuRasterizer::new_native_headless(doc.composition().color).expect("hardware GPU required");
+    let mut session=layer_ui::UiSession::new(r,doc,SIZE,layer_ui::Platform::Android).unwrap();
+    assert_eq!(session.state().brush.preset,DefaultBrushPreset::Pencil as u32);
+    let mut frame=0;
+    for size in [40.,400.] {
+        session.dispatch(layer_ui::UiAction::SetBrushSize {value:size}).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(60);
+        let stamp=loop {
+            frame+=16_666_667;
+            session.frame(frame,frame+16_666_667).unwrap();
+            if let Some(stamp)=session.toolbar_stamp(session.state().toolbar_context(),None).unwrap()
+                && !stamp.pending && !stamp.alpha.is_empty() {break stamp;}
+            assert!(Instant::now()<deadline,"Size{size}: final toolbar stamp completes");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(stamp.alpha.iter().any(|a|*a>0),"Size{size}: the default Pencil stamp retains its paper contact");
+    }
+}

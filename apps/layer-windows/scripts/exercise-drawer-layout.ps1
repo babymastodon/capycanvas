@@ -92,7 +92,6 @@ function Scroll-Check([string]$phase){
    if($scroll.Current.VerticallyScrollable){$scroll.Scroll([System.Windows.Automation.ScrollAmount]::NoAmount,[System.Windows.Automation.ScrollAmount]::LargeIncrement);Wait-Until {$scroll.Current.VerticalScrollPercent-ne$before} ($phase+' '+$panel+' genuine overflow scroll moves');$after=$scroll.Current.VerticalScrollPercent;Check ($after-ne$before) ($phase+' '+$panel+' genuine overflow scroll moves') @{before=$before;after=$after;outer=$actual};$scroll.SetScrollPercent(-1,0)}
   }
  }
- Wait-OverviewProjection
  $overview=(Control 'navigator-overview' -Arranged).Current.BoundingRectangle
  $parent=Control 'navigator-overview' -Arranged;$pattern=$null
  while($parent-and!$parent.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$pattern)){$parent=[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($parent)}
@@ -125,7 +124,7 @@ function Navigator-Contacts{
  try{[CapyRowPointer]::Down('touch',$points[0],$points[2]);Wait-Until {(Model).state.camera.revision-gt$revision} 'Navigator touch Down not acknowledged'
   $rect=[CapyWindowApi+Rect]::new();[CapyWindowApi]::GetWindowRect($window,[ref]$rect)|Out-Null
   [CapyWindowExercise]::MoveWindow($window,$rect.left,$rect.top,$rect.right-$rect.left+80,$rect.bottom-$rect.top,$true)|Out-Null
-  Start-Sleep -Milliseconds 700;Wait-OverviewProjection;$after=@((Presentation).groups|Where-Object id -eq $group.id)[0].body_scroll
+  Start-Sleep -Milliseconds 700;$null=Control 'navigator-overview' -Arranged;$after=@((Presentation).groups|Where-Object id -eq $group.id)[0].body_scroll
   Check ([math]::Abs($after.bounds.x-$before.bounds.x)-gt1-and[math]::Abs($after.bounds.width-$before.bounds.width)-le.6-and[math]::Abs($after.viewport_height-$before.viewport_height)-le.6) 'Navigator global position changes with local allocation retained' @{before=$before;after=$after}
   $canceled=Camera-Pose;[CapyRowPointer]::Move($points[1],$points[2]);Start-Sleep -Milliseconds 150
  }finally{if([CapyRowPointer]::Active){[CapyRowPointer]::Up()}}
@@ -140,7 +139,7 @@ try{
  [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json))
  $Executable=(Resolve-Path $Executable).Path;$directory=Split-Path $Executable
  $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError(Join-Path $run 'stderr.log');$null=$review.Handle
- $owned=@{window=$null};Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window-and(Model).brush_ready-and(Model).windows_workspace.ready-and!(Model).windows_workspace.busy} 'Owned drawer review did not start' 90
+ $owned=@{window=$null};Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window-and(Review-Ready)-and!(Model).windows_workspace.busy} 'Owned drawer review did not start' 90
  $root=$owned.window.Root;$window=$owned.window.Handle;[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  & (Join-Path $scripts 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $window.ToInt64() -Action Resize -Width 1800 -Height 1200
  [CapyWindowApi]::ShowWindow($window,9)|Out-Null;[CapyWindowExercise]::MoveWindow($window,40,40,1800,1200,$true)|Out-Null

@@ -71,7 +71,7 @@ try{
     $stderr=Join-Path $run 'stderr.log'
     $review=Start-Process -FilePath $Executable -WorkingDirectory $run -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle
-    Wait-Until {$script:drawing=Owned-DrawingWindow $review;$drawing -and (Model).canvas_ready -and (Model).brush_ready} 'Photo review did not start' 90
+    Wait-Until {$script:drawing=Owned-DrawingWindow $review;$drawing -and (Model).canvas_ready -and (Review-Ready)} 'Photo review did not start' 90
     $root=$drawing.Root
     $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null

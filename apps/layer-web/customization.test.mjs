@@ -594,7 +594,7 @@ export async function checkWorkspace({ call, evaluate, settle }) {
 }
 
 export async function checkCustomization({ call, evaluate, settle, canvasPixels }) {
-  const dir = "artifacts/ui/workspace-management/web"; await mkdir(dir, { recursive: true });
+  const dir = process.env.LAYER_TEST_ARTIFACTS || "artifacts/ui/workspace-management/web"; await mkdir(dir, { recursive: true });
   const wait = () => evaluate("new Promise(resolve => setTimeout(resolve, 260))");
   const until = condition => evaluate(`new Promise((resolve,reject)=>{const end=performance.now()+15000;function poll(){if(${condition})resolve();else if(performance.now()>end)reject(Error(${JSON.stringify(condition)}));else setTimeout(poll,40);}poll();})`);
   const send = (action) => evaluate(`layerApp.dispatch(${JSON.stringify(action)})`);
@@ -652,8 +652,31 @@ export async function checkCustomization({ call, evaluate, settle, canvasPixels 
     await send({ type: "restore_workspace", workspace: initial });
     await send({ type: "set_theme", theme }); await wait();
     assert.equal(await evaluate("document.querySelector('.sizes-panel [data-control=brush_size]').hidden"), true);
-    const tiles = await evaluate("[...document.querySelectorAll('.sizes-panel .size-button')].map(n=>{const b=n.getBoundingClientRect(),l=n.querySelector('.size-label').getBoundingClientRect(),d=n.querySelector('.size-dot').getBoundingClientRect(),s=getComputedStyle(n);return{value:Number(n.dataset.size),height:b.height,top:b.top,overlap:l.top>=b.top&&l.bottom<=b.bottom,center:d.top+d.height/2-b.top,fullText:s.fontSize===getComputedStyle(n.closest('.panel')).fontSize&&s.fontWeight==='400',fade:getComputedStyle(n.querySelector('.size-preview')).maskImage}})");
-    assert.equal(tiles.length, 40); assert.ok(tiles.every(t=>t.height===44&&t.center===18&&t.overlap&&t.fullText&&t.fade.includes('linear-gradient'))); assert.ok(tiles.slice(0,6).every(t=>t.top===tiles[0].top)&&tiles[6].top>tiles[0].top);
+    const textSize = await evaluate("getComputedStyle(document.documentElement).getPropertyValue('--ui-text-size')");
+    try {
+      for (const width of [1200, 412]) {
+        await call('Emulation.setDeviceMetricsOverride', { width, height: width === 412 ? 891 : 900, deviceScaleFactor: 1, mobile: false }); await settle();
+        if (width === 412) { await send({type:'phone',action:{kind:'panel',panel:'sizes'}}); await wait(); }
+        for (const scale of [1, 1.5]) {
+          await evaluate(`document.documentElement.style.setProperty('--ui-text-size', ${JSON.stringify(`calc(${textSize} * ${scale})`)})`); await settle(); await wait();
+          const tiles = await evaluate("[...document.querySelectorAll('.sizes-panel .size-button')].map(n=>{const b=n.getBoundingClientRect(),label=n.querySelector('.size-label'),l=label.getBoundingClientRect(),range=document.createRange();range.selectNodeContents(label);const text=range.getBoundingClientRect(),d=n.querySelector('.size-dot').getBoundingClientRect(),s=getComputedStyle(n);return{value:Number(n.dataset.size),width:b.width,height:b.height,labelTop:l.top-b.top,contained:l.left>=b.left&&l.right<=b.right&&l.top>=b.top&&l.bottom<=b.bottom&&text.left>=b.left&&text.right<=b.right,center:d.top+d.height/2-b.top,fullText:s.fontSize===getComputedStyle(n.closest('.panel')).fontSize&&s.fontWeight==='400',fade:getComputedStyle(n.querySelector('.size-preview')).maskImage}})");
+          assert.equal(tiles.length, 40);
+          for (const tile of tiles) {
+            assert.equal(tile.contained, true, `${theme} ${width}px ${scale}× ${tile.value}: label lies inside its button`);
+            assert.equal(tile.width, tiles[0].width, `${theme} ${width}px ${scale}× ${tile.value}: uniform tile width`);
+            assert.ok(tile.labelTop >= 24, `${theme} ${width}px ${scale}× ${tile.value}: label starts below the dot row`);
+            assert.equal(tile.center, 18); assert.ok(tile.fullText && tile.fade.includes('linear-gradient'));
+            if (scale === 1) assert.equal(tile.height, 44);
+          }
+          await evaluate(`document.querySelector('.sizes-panel [data-size=\"2000\"]').scrollIntoView({block:'nearest'})`); await settle();
+          await shot(`sizes-${width}-text-${scale}-${theme}`);
+        }
+      }
+    } finally {
+      await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+      await send({type:'restore_workspace',workspace:initial});
+      await evaluate(`document.documentElement.style.setProperty('--ui-text-size', ${JSON.stringify(textSize)})`); await settle(); await wait();
+    }
     for (const value of [.7, 1.5, 2.5, 2000]) { await click(`.sizes-panel [data-size="${value}"]`); assert.ok(Math.abs(await evaluate('layerApp.state().brush.diameter')-value)<.001); }
     const wide = structuredClone(initial); wide.layout.bands[0].extent = 420;
     await send({ type: 'restore_workspace', workspace: wide }); await wait();
@@ -730,7 +753,7 @@ export async function checkCustomization({ call, evaluate, settle, canvasPixels 
     await send({type:'workspace_manager',command:{type:'new_toolbar',group:8}});await toolbarForm();
     await text('#workspace-item-name',`illustration ${theme}`);
     await click('.workspace-form[open] .suggested-action');
-    await until("document.querySelector('.workspace-form[open] .workspace-error').textContent && !JSON.parse(layerApp.app.workspace_view()).busy");
+    await until("document.querySelector('.workspace-form[open] .preferences-error').textContent && !JSON.parse(layerApp.app.workspace_view()).busy");
     assert.deepEqual(await evaluate("layerApp.state().workspace"), beforeCancel, "duplicate names leave the workspace unchanged");
     assert.equal(await evaluate("document.querySelector('#workspace-item-name').value"), `illustration ${theme}`);
     await click('.workspace-form[open] footer button:first-child');await formClosed();

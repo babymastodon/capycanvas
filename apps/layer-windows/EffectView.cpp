@@ -212,7 +212,7 @@ struct PropertiesView : std::enable_shared_from_this<PropertiesView> {
         auto view=object(data->state,L"layer_properties");auto list=array(view,L"actions");
         if(data->updating||index>=list.Size()||!flag(view,L"enabled"))return;
         data->dispatchDocument(O({{L"type",S(L"effect")},{L"action",object(list.GetObjectAt(index),L"action")}}),
-            to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch"))));
+            to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch"))));
     }
     Button actionButton(J const& spec,hstring const& id,hstring const& text,std::function<void()> click){
         auto pick=raisedButton(data,text,std::move(click));pick.Height(data->controlHeight());pick.MinWidth(data->panelMetric(L"control_height"));
@@ -312,7 +312,7 @@ struct PropertiesView : std::enable_shared_from_this<PropertiesView> {
             if(uint32_t(box.SelectedIndex())>=pages.Size())return;auto id=str(pages.GetObjectAt(box.SelectedIndex()),L"id");
             if(id==str(view,L"page")||view.GetNamedValue(L"layer",JsonValue::CreateNullValue()).ValueType()!=JsonValueType::Number)return;
             data->dispatchDocument(O({{L"type",S(L"effect")},{L"action",O({{L"op",S(L"select_page")},{L"layer",N(num(view,L"layer"))},{L"page",S(id)}})}}),
-                to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch"))));
+                to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch"))));
         });
         addFilter=raisedButton(data,L"",[]{});addFilter.MinHeight(data->controlHeight());addFilter.Height(data->controlHeight());addFilter.Padding({6,0,6,0});
         {StackPanel content;content.Orientation(Orientation::Horizontal);content.Spacing(data->panelMetric(L"control_spacing"));
@@ -321,7 +321,7 @@ struct PropertiesView : std::enable_shared_from_this<PropertiesView> {
         addFilter.Click([data=data,weak=make_weak(addFilter)](auto&&,auto&&){
             auto anchor=weak.get();auto model=object(object(data->state,L"layer_properties"),L"add_filter");
             if(data->updating||!anchor||!anchor.XamlRoot()||!model.Size())return;
-            auto epoch=to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")));
+            auto epoch=to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch")));
             MenuFlyout menu;TrackPopup(menu,data);
             NativeMenuItems(menu.Items(),array(model,L"sections"),data,[data,epoch](J action){data->dispatchDocument(action,epoch);});
             menu.ShowAt(anchor);
@@ -359,7 +359,7 @@ struct PropertiesView : std::enable_shared_from_this<PropertiesView> {
             auto c=value.GetObject();keys.Append(O({{L"key",S(str(c,L"key"))},{L"field",S(fieldSchema(c))},
                 {L"section_id",c.GetNamedValue(L"section_id",JsonValue::CreateNullValue())}}));
         }
-        auto owner=to_hstring(uint64_t(num(object(data->state,L"document_file"),L"epoch")))+L":"+view.GetNamedValue(L"layer",JsonValue::CreateNullValue()).Stringify();
+        auto owner=to_hstring(uint64_t(num(branch(data->state,L"document_file"),L"epoch")))+L":"+view.GetNamedValue(L"layer",JsonValue::CreateNullValue()).Stringify();
         auto next=O({{L"owner",S(owner)},{L"controls",keys}}).Stringify();
         if(next!=schema){
             schema=next;headings.clear();std::vector<UIElement> items;
@@ -379,8 +379,8 @@ struct PropertiesView : std::enable_shared_from_this<PropertiesView> {
             }
             arrange(items);
         }
-        for(auto const& update:headings)update();
-        for(auto const& [key,field]:fields)for(auto const& update:field.bindings)update();
+        for(auto const& update:headings)update.Apply();
+        for(auto const& [key,field]:fields)for(auto const& update:field.bindings)update.Apply();
         bodyGate.IsEnabled(flag(view,L"enabled"));body.Opacity(flag(view,L"enabled")?1.:.4);
     }
 };

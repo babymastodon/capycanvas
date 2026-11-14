@@ -41,9 +41,8 @@ pub fn finish_shader_compiler_shutdown() {
     static FINISHING: Mutex<()> = Mutex::new(());
     let _finishing = FINISHING.lock().unwrap();
     loop {
-        let live = live_coordinators();
         let mut joined = false;
-        for coordinator in live {
+        for coordinator in live_coordinators() {
             if coordinator.stop(false) {
                 joined |= coordinator.join();
             }
@@ -55,6 +54,11 @@ pub fn finish_shader_compiler_shutdown() {
         for thread in threads {
             let _ = thread.join();
         }
+    }
+}
+pub fn stop_shader_compilers() {
+    for coordinator in live_coordinators() {
+        coordinator.stop(false);
     }
 }
 pub(super) fn workers(parallelism: usize) -> usize {

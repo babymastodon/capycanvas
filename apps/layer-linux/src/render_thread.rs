@@ -101,6 +101,42 @@ enum FirstChrome {
     Visible,
 }
 
+pub(crate) struct Readback(mpsc::Receiver<Result<ReadbackImage, String>>);
+impl Readback {
+    pub(crate) async fn received(self) -> Result<ReadbackImage, String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match self.0.try_recv() {
+                Ok(image) => return image,
+                Err(mpsc::TryRecvError::Disconnected) => return Err("GPU worker stopped".into()),
+                Err(mpsc::TryRecvError::Empty) if std::time::Instant::now() >= deadline => {
+                    return Err("Canvas readback timed out".into());
+                }
+                Err(mpsc::TryRecvError::Empty) => gtk::glib::timeout_future(Duration::from_millis(1)).await,
+            }
+        }
+    }
+    pub(crate) fn wait(self) -> Result<ReadbackImage, String> {
+        gtk::glib::MainContext::default().block_on(self.received())
+    }
+}
+
+const EIGHT_BIT_SURFACE: &str = "The Wayland canvas requires an 8-bit swapchain format";
+
+fn canvas_refusal(caps: &wgpu::SurfaceCapabilities) -> Option<String> {
+    if crate::display_color::ViewColor::sdr_surface(caps, false).is_none() {
+        Some(EIGHT_BIT_SURFACE.into())
+    } else if !caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+        Some("Wayland swapchain requires premultiplied alpha for rounded corners".into())
+    } else if !caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+        // FIFO barriers stalled the tested NVIDIA/Mutter child when GTK was
+        // idle. Never silently select that known-broken presentation mode.
+        Some("The Wayland canvas requires Vulkan mailbox presentation".into())
+    } else {
+        None
+    }
+}
+
 fn workspace_presenter(renderer: &WgpuRasterizer,format: wgpu::TextureFormat,color: layer_render_wgpu::SdrSurfaceColor) -> Result<ViewportPresenter,String> {
     let mut presenter=ViewportPresenter::for_surface(renderer,format,color).map_err(error)?;
     presenter.prepare_chrome(renderer);
@@ -798,18 +834,15 @@ impl RenderWorker {
         Ok(rx)
     }
     #[cfg(test)]
-    pub(super) fn document_pixels(&self, request_id: u64) -> Result<ReadbackImage, String> {
+    pub(super) fn request_document_pixels(&self, request_id: u64) -> Result<Readback, String> {
         let (tx, rx) = mpsc::channel();
         self.send(Command::DocumentPixels(request_id, tx)).map_err(error)?;
-        rx.recv_timeout(Duration::from_secs(30)).map_err(error)?
+        Ok(Readback(rx))
     }
-    pub(super) fn capture(&self) -> Result<ReadbackImage, String> {
-        self.capture_in(crate::display_color::ViewColor::Srgb)
-    }
-    pub(super) fn capture_in(&self, view: crate::display_color::ViewColor) -> Result<ReadbackImage, String> {
+    pub(super) fn request_capture(&self, view: crate::display_color::ViewColor) -> Result<Readback, String> {
         let (tx, rx) = mpsc::channel();
         self.send(Command::Capture(view, tx)).map_err(error)?;
-        rx.recv_timeout(Duration::from_secs(30)).map_err(error)?
+        Ok(Readback(rx))
     }
     pub(super) fn new(
         area: &gtk::Picture,
@@ -1210,6 +1243,9 @@ impl Drop for RenderWorker {
 impl CanvasRenderer for RenderWorker {
     fn shader_input(&mut self) { if let Some(activity) = &self.shader_activity { activity.input(); } }
     fn shader_idle(&mut self, idle: bool, speculative_idle: bool) { if let Some(activity) = &self.shader_activity { activity.idle(idle, speculative_idle); } }
+    fn preparation_key(&self, document: &layer_core::Document) -> Option<Arc<dyn layer_render::PreparationKey>> {
+        Some(Arc::new(layer_render_wgpu::ShaderDocument::new(document)))
+    }
     fn prepare_context(&mut self, document: &layer_core::Document, brush: &layer_core::BrushSnapshot, context: layer_render::PreparationContext) {
         let _ = self.send(Command::PrepareContext(Box::new((document.clone(), brush.clone(), context))));
     }
@@ -1686,6 +1722,7 @@ struct Worker {
     pending_present: bool,
     hdr_encoding: Option<layer_render_wgpu::SdrSurfaceColor>,
     hdr_float_supported: bool,
+    sdr_described: bool,
     hdr_attempted: bool,
     hdr_rendition: Option<layer_core::color::hdr::SdrRendition>,
     preview_sdr: bool,
@@ -2307,12 +2344,17 @@ impl Worker {
         localization: &layer_ui::Localizer,
     ) -> Result<Self, String> {
         let mut child = Child::new(parent, clock.clone())?;
+        let compositor_gpu = child.compositor_gpu()?;
+        let launcher_chose_gpu = layer_host::gpu::launcher_chose_gpu(|name| std::env::var_os(name));
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::VULKAN;
         descriptor.flags = descriptor.flags.with_env();
         let instance = layer_host::gpu::native_instance(descriptor);
         let surface = unsafe { instance.create_surface_unsafe(child.target()) }.map_err(error)?;
-        let gpu = pollster::block_on(layer_host::gpu::process_gpu(&instance, &surface, localization, wgpu::PowerPreference::HighPerformance))?;
+        let preferred = |adapter: &wgpu::Adapter| layer_host::gpu::prefers_compositor_adapter(
+            &adapter.get_info(), compositor_gpu.as_deref(), launcher_chose_gpu);
+        let gpu = pollster::block_on(layer_host::gpu::process_gpu(&instance, &surface, localization,
+            layer_host::gpu::AdapterChoice::Prefer(&preferred), &canvas_refusal))?;
         let adapter = gpu.factory.adapter();
         let caps = surface.get_capabilities(adapter);
         let mut config = surface
@@ -2322,29 +2364,21 @@ impl Worker {
         let hdr_encoding = if color.depth.is_float() && hdr_float_supported {
             child.describe_hdr()?
         } else { None };
-        let hdr_surface = hdr_encoding.is_some();
-        let (format, view_color) = if hdr_surface {
-            (wgpu::TextureFormat::Rgba16Float, crate::display_color::ViewColor::Srgb)
+        let (format, color_space, sdr_described, view_color) = if hdr_encoding.is_some() {
+            (wgpu::TextureFormat::Rgba16Float, wgpu::SurfaceColorSpace::PassThrough, false, crate::display_color::ViewColor::Srgb)
         } else {
-            (crate::display_color::ViewColor::format(&caps)?, child.describe_sdr()?)
+            let sdr = crate::display_color::ViewColor::sdr_surface(&caps, child.compositor_describes_wide_color()?)
+                .ok_or(EIGHT_BIT_SURFACE)?;
+            let view_color = if sdr.described { child.describe_sdr()? } else { crate::display_color::ViewColor::Srgb };
+            (sdr.format, sdr.color_space, sdr.described, view_color)
         };
-        config.color_space = wgpu::SurfaceColorSpace::PassThrough;
+        config.color_space = color_space;
         config.format = format;
         config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
-        if !caps.alpha_modes.contains(&config.alpha_mode) {
-            return Err(
-                "Wayland swapchain requires premultiplied alpha for rounded corners".into(),
-            );
-        }
-        // FIFO barriers stalled the tested NVIDIA/Mutter child when GTK was
-        // idle. Never silently select that known-broken presentation mode.
-        if !caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-            return Err("The Wayland canvas requires Vulkan mailbox presentation".into());
-        }
         config.present_mode = wgpu::PresentMode::Mailbox;
         config.desired_maximum_frame_latency = 2;
         eprintln!(
-            "Wayland canvas GPU: {:?}, {:?}, {:?}",
+            "Wayland canvas GPU: {:?}, {:?}, {:?}; compositor GPU {compositor_gpu:?}, launcher choice {launcher_chose_gpu}",
             adapter.get_info(),
             config.present_mode,
             config.format
@@ -2381,6 +2415,7 @@ impl Worker {
             pending_present: false,
             hdr_encoding,
             hdr_float_supported,
+            sdr_described,
             hdr_attempted: color.depth.is_float(),
             hdr_rendition: color.depth.is_float().then_some(Default::default()),
             preview_sdr: false,
@@ -2446,6 +2481,7 @@ impl Worker {
         self.presenter = presenter;
         self.hdr_encoding = Some(encoding);
         self.config.format = wgpu::TextureFormat::Rgba16Float;
+        self.config.color_space = wgpu::SurfaceColorSpace::PassThrough;
         self.surface_configured = false;
         self.last_view = None;
         self.pending_presentation = None;
@@ -2628,7 +2664,7 @@ impl Worker {
             if let Some(mut native) = native {
                 native.child.set_clock(self.clock.clone());
                 if self.hdr_encoding.is_some() { let _ = native.child.describe_hdr()?; }
-                else { let _ = native.child.describe_sdr()?; }
+                else if self.sdr_described { let _ = native.child.describe_sdr()?; }
                 self.surface = native.surface;
                 self.instance = native.instance;
                 self.child = native.child;

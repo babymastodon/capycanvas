@@ -23,14 +23,15 @@ namespace CapyRegisteredDiscoveryTest {
 '@
  $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path $Helper),[ref]$tokens,[ref]$errors)
  if($errors.Count){throw 'Helper parse failed'}
- foreach($name in @('Update-CapyFixtureContext','Register-CapyFixtureWindow','Owned-ProcessWindows','Owned-DrawingWindow')){
+ foreach($name in @('Read-Snapshot','Read-CapyFixtureContext','Update-CapyFixtureContext','Register-CapyFixtureWindow','Owned-ProcessWindows','Owned-DrawingWindow')){
   $node=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}.GetNewClosure(),$true)
   if(!$node){throw "Missing actual helper: $name"}
   $source=$node.Extent.Text.Replace('[Diagnostics.Process]','[CapyRegisteredDiscoveryTest.Process]').Replace('CapyWindowApi','CapyRegisteredDiscoveryTest.Native').Replace('System.Windows.Automation.AutomationElement','CapyRegisteredDiscoveryTest.AutomationElement')
   . ([scriptblock]::Create($source))
  }
+ $actualSnapshotReader=(Get-Command Read-Snapshot).ScriptBlock
  $script:snapshotReads=0
- function Read-Snapshot($Path){$script:snapshotReads++;Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json}
+ function Read-Snapshot([string]$Path,[switch]$Raw){$script:snapshotReads++;& $actualSnapshotReader -Path $Path -Raw:$Raw}
  $process=[CapyRegisteredDiscoveryTest.Process]::new((Join-Path $Output 'review.exe'))
  $script:CapyTraceDirectory=$Output;$env:CAPY_FIXTURE_CONTEXT=Join-Path $Output 'context.json'
  $registry=Join-Path $Output 'windows-33.json';$handle=123456;$second=123457;$checks=0
@@ -43,6 +44,33 @@ namespace CapyRegisteredDiscoveryTest {
  function Assert-NoDiscovery {
   if(@(Owned-ProcessWindows $process).Count -or $null -ne (Owned-DrawingWindow $process $handle $Output) -or [CapyRegisteredDiscoveryTest.AutomationElement]::Calls.Count){throw 'Missing registration reached UI Automation'}
   $script:checks++
+ }
+ & {
+  $priorContext=$env:CAPY_FIXTURE_CONTEXT;$priorTrace=$env:CAPY_TRACE_UI
+  $unicode=([string][char]0x65e5)+[char]0x672c+'-'+[char]0x00e9+'-'+[char]0x00d7
+  $unicodeContext=Join-Path $Output ($unicode+'.json')
+  $unicodeRun=Join-Path $Output $unicode
+  try {
+   $env:CAPY_FIXTURE_CONTEXT=$unicodeContext;Remove-Item Env:CAPY_TRACE_UI -ErrorAction SilentlyContinue
+   Update-CapyFixtureContext {
+    param($context)
+    $context.run=$unicodeRun;$context.profile=Join-Path $unicodeRun 'profile';$context.trace_directory=$unicodeRun
+    $context.windows=@(@{process_id=33;hwnd=123456;executable=(Join-Path $unicodeRun 'review.exe');trace_directory=$unicodeRun})
+   }
+   $expected=[IO.File]::ReadAllBytes($unicodeContext)
+   $utf8=[Text.UTF8Encoding]::new($false,$true)
+   for($update=0;$update -lt 8;$update++){
+    Update-CapyFixtureContext {param($context)}
+    $actual=[IO.File]::ReadAllBytes($unicodeContext)
+    $saved=$utf8.GetString($actual)|ConvertFrom-Json
+    if($saved.run -cne $unicodeRun -or $saved.profile -cne (Join-Path $unicodeRun 'profile') -or $saved.trace_directory -cne $unicodeRun -or $saved.windows[0].executable -cne (Join-Path $unicodeRun 'review.exe') -or $saved.windows[0].trace_directory -cne $unicodeRun){throw 'Fixture context changed a Unicode path during an update'}
+    if($actual.Length -ne $expected.Length -or [Convert]::ToBase64String($utf8.GetBytes($saved.run)) -cne [Convert]::ToBase64String($utf8.GetBytes($unicodeRun))){throw 'Fixture context Unicode bytes grew or changed during an update'}
+    $script:checks++
+   }
+  } finally {
+   $env:CAPY_FIXTURE_CONTEXT=$priorContext;$env:CAPY_TRACE_UI=$priorTrace
+   if(Test-Path -LiteralPath $unicodeContext){Remove-Item -LiteralPath $unicodeContext}
+  }
  }
  Assert-NoDiscovery
  Expect-Failure {Register-CapyFixtureWindow $process $handle $Output}
@@ -78,7 +106,7 @@ namespace CapyRegisteredDiscoveryTest {
  Expect-Failure {Owned-ProcessWindows $process $handle}
  [CapyRegisteredDiscoveryTest.Native]::Owners[$handle]=33
  $drawing=Owned-DrawingWindow $process $handle $Output
- $entry=(Get-Content $env:CAPY_FIXTURE_CONTEXT -Raw|ConvertFrom-Json).windows[0]
+ $entry=(Read-CapyFixtureContext).windows[0]
  if($drawing.Handle.ToInt64() -ne $handle -or $drawing.Root -ne [CapyRegisteredDiscoveryTest.AutomationElement]::Nodes[$handle] -or $entry.window_id -ne 77 -or $entry.executable -ne $process.Path){throw 'Registered identity or census mismatch'};$checks++
  [CapyRegisteredDiscoveryTest.AutomationElement]::Calls.Clear()
  $drawing=Owned-DrawingWindow $process
@@ -105,7 +133,7 @@ namespace CapyRegisteredDiscoveryTest {
  Registry @(@{id=79;hwnd=$handle})
  Expect-Failure {Register-CapyFixtureWindow $process $handle $Output}
  Registry @(@{id=77;hwnd=$handle})
- $context=Get-Content $env:CAPY_FIXTURE_CONTEXT -Raw|ConvertFrom-Json;$context.windows[0].executable='foreign.exe';$context|ConvertTo-Json -Depth 8|Set-Content $env:CAPY_FIXTURE_CONTEXT
+ $context=Read-CapyFixtureContext;$context.windows[0].executable='foreign.exe';$context|ConvertTo-Json -Depth 8|Set-Content $env:CAPY_FIXTURE_CONTEXT
  Expect-Failure {Register-CapyFixtureWindow $process $handle $Output}
  Set-Content $registry '{';Expect-Failure {Owned-ProcessWindows $process}
  $activation=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-file-activation.ps1'),[ref]$tokens,[ref]$errors)
@@ -150,7 +178,7 @@ namespace CapyRegisteredDiscoveryTest {
    $expected=if($inherited){$parent}else{Join-Path $run 'context.json'}
    if($env:CAPY_FIXTURE_CONTEXT -cne $expected){throw 'Scroll fixture replaced its inherited row context'}
    if(!(Test-Path -LiteralPath $expected)){throw 'Scroll fixture did not publish its evidence context'}
-   $context=Get-Content -LiteralPath $expected -Raw|ConvertFrom-Json
+   $context=Read-CapyFixtureContext
    if($context.run -cne $run){throw 'Scroll fixture context omitted the actual child run directory'}
    if($inherited -and ($context.marker -cne 'keep' -or @($context.windows).Count -ne 1 -or $context.windows[0].process_id -ne 33 -or $context.windows[0].hwnd -ne 123456 -or $context.windows[0].window_id -ne 77)){throw 'Scroll evidence setup changed the recorded window identity'}
    $script:checks++

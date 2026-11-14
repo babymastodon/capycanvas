@@ -16,7 +16,7 @@ struct ChromeVisibility:std::enable_shared_from_this<ChromeVisibility>{
         if(shown==visible)return;
         bool initial=!shown;shown=visible;frames.revoke();
         auto target=visible?1.:0.;
-        if(initial||!element.IsLoaded()||!winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()){
+        if(initial||!element.IsLoaded()||!SystemUiSettings().AnimationsEnabled()){
             element.Opacity(target);element.Visibility(visible?Visibility::Visible:Visibility::Collapsed);return;
         }
         auto from=element.Opacity();element.Visibility(Visibility::Visible);auto start=std::chrono::steady_clock::now();

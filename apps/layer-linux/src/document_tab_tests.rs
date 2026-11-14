@@ -1007,12 +1007,12 @@ fn native_session_restart_saved_origins() {
             w.window.maximize();until(||w.window.is_maximized(),"selection window maximized");
             super::pointwise::configure_properties(&w);
             until(||widgets(w.window.upcast_ref()).any(|widget|widget.widget_name()=="property-mask_opacity" && widget.is_mapped()),"saved-selection opacity control mapped");
-            let overlay_before=ui_session(&w).engine().backend().capture().unwrap().bytes;
+            let overlay_before=w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap().bytes;
             let mut input=RemoteInput::new().timeout_secs(30);input.ready();
             let control=super::pointwise::number(&w,"mask_opacity");super::histogram::scroll_to(control.upcast_ref());
             input.click(screen_point(&find_css(control.upcast_ref(),"number-value").unwrap(),&w.window,[0.5,0.5]));
             descendant::<gtk::Entry>(&control).unwrap().set_text("37");input.key(0xff0d);new_photo::ready(&w);
-            assert_ne!(ui_session(&w).engine().backend().capture().unwrap().bytes,overlay_before,"native canvas updates saved-selection overlay opacity");
+            assert_ne!(w.capture_canvas(crate::display_color::ViewColor::Srgb).unwrap().bytes,overlay_before,"native canvas updates saved-selection overlay opacity");
             w.customize(CustomizationAction::SetPanelVisible {panel:Panel::Layers,visible:true});
             w.dispatch(UiAction::MovePanel {panel:Panel::Layers,target:DockTarget::Edge {edge:Edge::Left,outer:false},viewport:[w.window.width() as f32,800.]});new_photo::ready(&w);
             let row=named::<gtk::Box>(w.layer_panel.root.upcast_ref(),&format!("art-layer-{}",layer_ui::occurrence_token(occurrence)));

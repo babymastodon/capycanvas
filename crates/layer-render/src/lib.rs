@@ -15,6 +15,8 @@ mod outline;
 mod telemetry;
 mod selection;
 mod cursor_icons;
+mod filter_preparation;
+pub use filter_preparation::{FilterPreparation, PreparationKey};
 pub mod panel_geometry;
 mod panel_mesh;
 pub use panel_mesh::{panel_mesh, panel_mesh_with_coverage};
@@ -22,7 +24,7 @@ pub use cursor_icons::{TOOL_CURSOR_ICONS, TOOL_CURSOR_HOTSPOTS, tool_cursor_mark
 pub use selection::{SelectionGradient, SelectionOverlay, SelectionPaint, SelectionPaintMode, SelectionPaintResult};
 pub use outline::{TipOutline, mask_outline};
 pub use telemetry::{FrameRate, FrameRateSource, PresentationRate, RendererTelemetry, TimingSamples,
-    GpuMemory, GpuMemoryKind, MemoryPeak, MemorySnapshot, MemoryBudgetSummary, ProcessMemory, ProcessMemoryKind};
+    GpuAdapter, GpuMemory, GpuMemoryKind, MemoryPeak, MemoryPool, MemorySnapshot, MemoryBudgetSummary, ProcessMemory, ProcessMemoryKind};
 
 pub struct ReadySubmission(());
 
@@ -866,8 +868,25 @@ impl CanvasFade {
     pub const WAITING: Self = Self {drawing:Some(1.),navigator:Some(1.)};
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationUse { Gradient, Figure }
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PreparationContext { pub selection: bool }
+pub struct PreparationUses {
+    pub selection_strokes: bool,
+    pub selection_paint: bool,
+    pub fill: bool,
+    pub transform: bool,
+    pub operation: Option<OperationUse>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PreparationContext {
+    pub next: PreparationUses,
+    pub brushes: Vec<layer_core::BrushSnapshot>,
+    pub regions: RegionRefinement,
+    pub filters: Vec<FilterPreparation>,
+}
 
 /// GPU command boundary implemented by the renderer owned by each platform.
 ///
@@ -884,6 +903,7 @@ pub trait CanvasRenderer {
     /// holds admission during a stroke/gesture or unfinished document edit.
     fn shader_input(&mut self) {}
     fn shader_idle(&mut self, _idle: bool, _speculative_idle: bool) {}
+    fn preparation_key(&self, _document: &layer_core::Document) -> Option<std::sync::Arc<dyn PreparationKey>> { None }
     /// Declare optional pipeline needs for the current tool context.
     fn prepare_context(&mut self, _document: &layer_core::Document, _brush: &layer_core::BrushSnapshot, _context: PreparationContext) {}
     /// UI-only tool changes may still need a first-use preparation callback.

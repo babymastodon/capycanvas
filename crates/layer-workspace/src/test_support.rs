@@ -2,6 +2,11 @@ use crate::*;
 use layer_ui::{DockLayout, WorkspaceCapture};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(crate) fn uncovered(mut host: layer_host::NativeHost) -> layer_host::NativeHost {
+    host.set_launch_interaction(true);
+    host
+}
+
 pub(crate) struct TestClock(pub AtomicU64);
 impl Clock for TestClock {
     fn now_ms(&self) -> u64 {

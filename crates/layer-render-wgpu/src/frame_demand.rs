@@ -12,11 +12,11 @@ impl WgpuRasterizer {
     pub(crate) fn outstanding_terms(&self) -> Vec<(&'static str, Outstanding)> {
         self.outstanding().into_iter().filter_map(|(term, state)| state.map(|state| (term, state))).collect()
     }
-    fn outstanding(&self) -> [(&'static str, Option<Outstanding>); 24] {
+    fn outstanding(&self) -> [(&'static str, Option<Outstanding>); 25] {
         let restoring = self.restore_preparation().is_some();
         self.terms().map(|(term, state)| (term, state.filter(|_| !restoring || matches!(term, "restore preparation" | "display selection" | "settling"))))
     }
-    fn terms(&self) -> [(&'static str, Option<Outstanding>); 24] {
+    fn terms(&self) -> [(&'static str, Option<Outstanding>); 25] {
         use Outstanding::{Blocked, Runnable};
         let decode = self.image_decode_waiting();
         let gated = |pending: bool| pending.then_some(if decode { Blocked(Input::Decode) } else { Runnable });
@@ -43,7 +43,9 @@ impl WgpuRasterizer {
             ("navigator", self.navigator.outstanding(self).map(|state| if objects_waiting { Blocked(Input::Decode) } else { state })),
             ("canonical names", (self.navigator.waiting_for_name()
                 || self.scale_display.as_ref().is_some_and(|cache| cache.waiting_for_name())).then_some(Blocked(Input::Name))),
-            ("transform sources", gated(self.transform_sources_pending && (self.transform_preview.is_some() || self.moving_pixels.is_some()))),
+            ("transform sources", gated(self.transform_sources_pending && self.transform_preview.is_some())),
+            ("transform standby", (self.transform_sources_pending && self.moving_pixels.is_some() && self.transform_preview.is_none())
+                .then_some(Blocked(Input::Compile))),
             ("moving images", gated(self.moving_images_pending())),
             ("decodes", gated(self.moving_decode.as_ref().is_some_and(|(_, queue)| queue.pending()))),
             ("objects", objects(self.moving_layer.is_none() && self.scene.as_deref().is_some_and(scene::Scene::objects_demanded))),
@@ -102,9 +104,10 @@ impl WgpuRasterizer {
         }).collect();
         debug_assert!(lost.is_empty(), "an idle renderer waits on inputs that are not outstanding: {lost:?}");
     }
-    pub fn settled(&self) -> bool {
-        !self.region_step_runnable() && self.can_submit() && self.outstanding().iter().all(|(_, state)| state.is_none())
+    pub fn frame_preparation_pending(&self) -> bool {
+        self.region_step_runnable() || self.outstanding().iter().any(|(_, state)| state.is_some())
     }
+    pub fn settled(&self) -> bool { self.can_submit() && !self.frame_preparation_pending() }
 }
 
 #[cfg(test)]

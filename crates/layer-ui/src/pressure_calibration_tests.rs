@@ -11,6 +11,19 @@ fn calibration(s: &mut UiSession<Recorder>, action: PressureCalibrationAction) {
 }
 
 #[test]
+fn response_calibration_exposes_a_square_graph_minimum_on_every_host() {
+    for platform in Platform::ALL {
+        let mut s = session(platform);
+        s.dispatch(UiAction::Invoke { command: CommandId::PenPressure }).unwrap();
+        let pressure = serde_json::to_value(s.state.pressure_calibration.as_ref().unwrap()).unwrap();
+        assert_eq!(pressure["graph_minimum"], serde_json::json!([200.,200.]));
+        s.dispatch(UiAction::Invoke { command: CommandId::PenTilt }).unwrap();
+        let tilt = serde_json::to_value(&s.state.tilt_calibration.as_ref().unwrap().panel).unwrap();
+        assert_eq!(tilt["graph_minimum"], pressure["graph_minimum"]);
+    }
+}
+
+#[test]
 fn live_pressure_preview_is_independent_of_artwork_settings_and_workspace_history() {
     let mut s = session(Platform::Gtk);
     let layout = serde_json::to_value(&s.state.workspace).unwrap();
@@ -112,6 +125,37 @@ fn response_utilities_open_inside_the_clear_canvas_after_native_measurement() {
         dispatch(&mut s,PressureCalibrationAction::Measure{extent:[384.,622.],viewport});assert_eq!(bounds(&s),moved);
         dispatch(&mut s,PressureCalibrationAction::Cancel);invoke(&mut s,command);
         dispatch(&mut s,PressureCalibrationAction::Measure{extent:[384.,622.],viewport});assert_eq!(bounds(&s),initial);
+    }
+}
+
+#[test]
+fn response_utilities_never_cover_native_caption_buttons() {
+    for command in [CommandId::PenPressure,CommandId::PenTilt] {
+        for (insets,viewport,corner,expected) in [
+            ([0.,138.,32.],[1600.,1000.],[2000.,-2000.],[1216.,32.]),
+            ([54.,0.,32.],[1600.,1000.],[-2000.,-2000.],[0.,32.]),
+            ([0.,138.,32.],[1600.,622.],[2000.,-2000.],[1078.,0.]),
+        ] {
+            let mut s=session(Platform::Windows);
+            s.dispatch(UiAction::MeasureTitlebar{insets}).unwrap();
+            let dispatch=|s:&mut UiSession<Recorder>,action| {
+                s.dispatch(if command==CommandId::PenTilt {UiAction::TiltCalibration{action:TiltCalibrationAction::Panel{action}}}
+                    else {UiAction::PressureCalibration{action}}).unwrap();
+            };
+            let bounds=|s:&UiSession<Recorder>| if command==CommandId::PenTilt {s.state.tilt_calibration.as_ref().unwrap().panel.bounds}
+                else {s.state.pressure_calibration.as_ref().unwrap().bounds};
+            invoke(&mut s,command);
+            dispatch(&mut s,PressureCalibrationAction::Measure{extent:[384.,622.],viewport});
+            let press={let b=bounds(&s);[b.x+30.,b.y+20.]};
+            for (phase,position) in [(ContactPhase::Down,press),(ContactPhase::Move,[press[0]+corner[0],press[1]+corner[1]]),(ContactPhase::Up,[press[0]+corner[0],press[1]+corner[1]])] {
+                dispatch(&mut s,PressureCalibrationAction::Drag{phase,position,viewport});
+            }
+            let placed=bounds(&s);
+            for buttons in [Bounds{x:0.,y:0.,width:insets[0],height:insets[2]},Bounds{x:viewport[0]-insets[1],y:0.,width:insets[1],height:insets[2]}] {
+                assert!(placed.intersection(buttons).is_none(),"{command:?} {insets:?} {viewport:?} {placed:?} covers {buttons:?}");
+            }
+            assert_eq!([placed.x,placed.y,placed.width,placed.height],[expected[0],expected[1],384.,622.],"{command:?} {insets:?} {viewport:?}");
+        }
     }
 }
 

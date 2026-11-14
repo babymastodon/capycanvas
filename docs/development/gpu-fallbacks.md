@@ -36,7 +36,8 @@ feature allows and approximate only where an exact result costs too much.
 | Float32 blending (`FLOAT32_BLENDABLE`) | Every Mali generation, including the low- and mid-tier reference tablets; Adreno 5xx | Works through the slow `portable_blend` path |
 | Android shared presentation (`SharedDemandRefresh`) | Android 13 and probably 10–12: the platform loader adds `VK_EXT_swapchain_maintenance1` and `VK_EXT_surface_maintenance1` only from Android 14. A Galaxy Tab S7 (Adreno 650, Android 13) has `VK_KHR_shared_presentable_image` but neither maintenance extension. `minSdk` is 29 | FIFO ink presentation; see [Android presentation](#android-presentation) |
 | Read-write Float32 storage (`TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`) | Unknown; possibly older D3D12 GPUs | `rendering_features` requests it only when both storage formats allow read-write access; otherwise dry media use separate candidates |
-| Wayland mailbox presentation | Unknown | The GTK host refuses to start |
+| Wayland mailbox presentation | Unknown | The GTK host chooses another GPU that has it, or refuses to start |
+| Wayland color pass-through | NVIDIA 580 and older, Mesa before 25.1 | When the driver lists only sRGB and the compositor describes Display P3 or PQ, the GTK host keeps its own color description on an sRGB swapchain; otherwise it presents untagged sRGB. HDR needs pass-through |
 | Timestamp queries | Many mobile GPUs, Metal, Web | Already optional |
 | Large textures (`max_texture_dimension_2d`) | 8192 on Web and some PowerVR | Already adaptive: the canvas size is capped |
 

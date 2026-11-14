@@ -11,7 +11,9 @@
 #include "NativeHandles.h"
 #include "ChromeFrames.h"
 #include "NativePresentation.h"
+#include "NativeJson.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Documents.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.UI.Text.h>
 #include <algorithm>
@@ -71,32 +73,6 @@ inline V N(double value){return JsonValue::CreateNumberValue(value);}
 inline V B(bool value){return JsonValue::CreateBooleanValue(value);}
 inline J O(std::initializer_list<std::pair<wchar_t const*,V>> fields){
     J value;for(auto const& [key,item]:fields)value.Insert(key,item);return value;
-}
-inline J object(J const& value,wchar_t const* key){
-    auto item=value.GetNamedValue(key,JsonValue::CreateNullValue());
-    return item.ValueType()==JsonValueType::Object?item.GetObject():J{};
-}
-inline A array(J const& value,wchar_t const* key){
-    auto item=value.GetNamedValue(key,JsonValue::CreateNullValue());
-    return item.ValueType()==JsonValueType::Array?item.GetArray():A{};
-}
-inline J objectAt(A const& values,int32_t index){
-    if(index<0||uint32_t(index)>=values.Size())return {};auto item=values.GetAt(index);return item.ValueType()==JsonValueType::Object?item.GetObject():J{};
-}
-inline hstring str(J const& value,wchar_t const* key,hstring fallback=L""){
-    auto item=value.GetNamedValue(key,JsonValue::CreateNullValue());
-    return item.ValueType()==JsonValueType::String?item.GetString():fallback;
-}
-inline double num(J const& value,wchar_t const* key,double fallback=0){
-    auto item=value.GetNamedValue(key,JsonValue::CreateNullValue());
-    return item.ValueType()==JsonValueType::Number?item.GetNumber():fallback;
-}
-inline bool flag(J const& value,wchar_t const* key,bool fallback=false){return value.GetNamedBoolean(key,fallback);}
-inline J find(A const& list,wchar_t const* key,hstring const& id){
-    for(auto value:list){auto row=value.GetObject();if(str(row,key)==id)return row;}return J{};
-}
-inline J findId(A const& list,double id){
-    for(auto value:list){auto row=value.GetObject();if(num(row,L"id")==id)return row;}return J{};
 }
 inline Windows::UI::Color color(hstring const& hex){
     auto text=to_string(hex);
@@ -274,21 +250,22 @@ inline J numeric(CapyLocalization  localization,J const& spec,double value,J con
     if(response.HasKey(L"error_reason"))throw NumericFailure(str(response,L"error"),object(response,L"error_reason"));
     return response;
 }
-using Bindings=std::vector<std::function<void()>>;
+using Bindings=std::vector<CanvasModelBinding>;
 using NumericAdmissions=std::vector<std::function<bool(bool)>>;
 struct LocalizedCopy : hstring {
     std::function<hstring()> current;
     LocalizedCopy(hstring value,std::function<hstring()> resolve):hstring(value),current(std::move(resolve)){}
 };
-struct WorkspaceData : std::enable_shared_from_this<WorkspaceData> {
+struct WorkspaceData : CanvasModelSource,std::enable_shared_from_this<WorkspaceData> {
     NativeLocalization localization;
     uint64_t localizationGeneration=uint64_t(-1);
     std::vector<std::function<bool()>> copyViews;
     size_t copyCleanup=64;
     void copyView(std::function<bool()> update){
-        if(copyViews.size()>=copyCleanup){std::erase_if(copyViews,[](auto const& refresh){return !refresh();});copyCleanup=std::max(size_t(64),copyViews.size()*2);}
+        if(copyViews.size()>=copyCleanup){refreshCopy();copyCleanup=std::max(size_t(64),copyViews.size()*2);}
         copyViews.emplace_back(std::move(update));
     }
+    void refreshCopy(){std::erase_if(copyViews,[](auto const& update){return !update();});}
     bool adoptLocalization(J const& snapshot){
         auto presentation=object(snapshot,L"localization");
         if(!presentation.Size())return false;
@@ -298,15 +275,19 @@ struct WorkspaceData : std::enable_shared_from_this<WorkspaceData> {
         auto tag=to_string(str(bootstrap,L"active_tag"));
         NativeLocalization next(capy_localization_for_tag(tag.c_str()),capy_localization_free);
         if(!next)throw hresult_invalid_argument(L"Invalid localization presentation");
-        if(snapshot.HasKey(L"state")){model=snapshot;state=object(snapshot,L"state");}
-        nextCatalog.Insert(L"bootstrap",bootstrap);catalog=nextCatalog;localization=std::move(next);localizationGeneration=generation;
-        std::erase_if(copyViews,[](auto const& update){return !update();});
+        if(snapshot.HasKey(L"state")){model=snapshot;state=branch(snapshot,L"state");}
+        nextCatalog=copyObject(nextCatalog);nextCatalog.Insert(L"bootstrap",bootstrap);catalog=nextCatalog;localization=std::move(next);localizationGeneration=generation;
+        refreshCopy();
         return true;
     }
-    J state,catalog,model;
     std::shared_ptr<FilterPreviewCache> previews;
     std::shared_ptr<LayerThumbnailCache> thumbnails;
     std::shared_ptr<PaperPreviewCache> papers;
+    using NavigatorTransport=std::function<void(uint64_t,CapyNavigatorViewport const*,std::function<void(NativeSurfaceAttachment)>)>;
+    NavigatorTransport navigatorSurface;
+    using NavigatorViews=std::map<uint64_t,std::pair<std::function<void()>,std::function<void()>>>;
+    std::shared_ptr<NavigatorViews> navigatorViews=std::make_shared<NavigatorViews>();
+    std::function<bool()> navigatorMoving;
     PreviewTransport query;
     std::function<void(J,Windows::Foundation::Point,std::function<bool()>,std::function<void()>)> takeBubble;
     uint64_t windowId=0;bool glassSurfaces=false;A drawerSources;
@@ -334,15 +315,18 @@ struct WorkspaceData : std::enable_shared_from_this<WorkspaceData> {
         for(auto& [id,close]:current)closed=close()||closed;
         return closed;
     }
-    J colorPreview;
+    CanvasModelInputs colorInputs;
     std::map<uint64_t,std::function<void()>> colorViews;uint64_t nextColorView=0,colorFieldPixels=0;bool colorQueued=false;
     std::function<void()> colorsPresented;
-    uint64_t colorView(std::function<void()> refresh){colorViews.emplace(++nextColorView,std::move(refresh));return nextColorView;}
+    uint64_t colorView(std::function<void()> refresh){auto id=++nextColorView;colorViews.emplace(id,std::move(refresh));queueColors();return id;}
     void queueColors(){
         if(std::exchange(colorQueued,true))return;
         Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().TryEnqueue([weak=weak_from_this()]{if(auto self=weak.lock()){
-            self->colorQueued=false;auto views=self->colorViews;
-            for(auto const& [id,refresh]:views)refresh();
+            {
+                auto capture=self->inputs(self->colorInputs);
+                self->colorQueued=false;auto views=self->colorViews;
+                for(auto const& [id,refresh]:views)refresh();
+            }
             if(self->colorsPresented)self->colorsPresented();
         }});
     }
@@ -353,6 +337,7 @@ struct WorkspaceData : std::enable_shared_from_this<WorkspaceData> {
     mutable std::map<std::pair<std::wstring,uint8_t>,SolidColorBrush> tintBrushes;
     mutable std::map<std::wstring,SolidColorBrush> glassBrushes;
     mutable std::map<std::pair<std::wstring,std::wstring>,SolidColorBrush> lineBrushes;
+    hstring paletteKey;J paletteSource{nullptr};
     ResourceDictionary controlResources=paletteResources();
     static Windows::UI::Color unitColor(A const& value){
         auto channel=[&](uint32_t i){return uint8_t(std::lround(std::clamp(value.GetNumberAt(i),0.,1.)*255));};
@@ -374,10 +359,16 @@ struct WorkspaceData : std::enable_shared_from_this<WorkspaceData> {
     }
     void refreshPalette(){
         auto palette=object(state,L"palette");
+        if(palette!=paletteSource){
+        paletteSource=palette;auto signature=palette.Stringify();
+        if(signature!=paletteKey){
         for(auto const& [role,brush]:paletteBrushes)brush.Color(paletteColor(role.c_str()));
         for(auto const& [role,brush]:glassBrushes)brush.Color(glassColor(role.c_str()));
         for(auto const& [key,brush]:lineBrushes)brush.Color(lineColor(key.first,key.second));
         for(auto const& [key,brush]:tintBrushes){auto value=color(str(palette,key.first.c_str(),L"#414141"));value.A=key.second;brush.Color(value);}
+        paletteKey=signature;
+        }
+        }
         refreshControlPalette(*this);
     }
     hstring caption(J const& request)const{
@@ -420,14 +411,17 @@ struct WorkspaceData : std::enable_shared_from_this<WorkspaceData> {
     hstring language()const{return str(object(catalog,L"bootstrap"),L"active_tag");}
     hstring theme()const{return str(state,L"theme",L"dark");}
     SolidColorBrush brush(wchar_t const* role)const{
+        CanvasModelInputs::Capture::Read(state,L"palette");
         auto found=paletteBrushes.find(role);if(found!=paletteBrushes.end())return found->second;
         return paletteBrushes.emplace(role,fill(paletteColor(role))).first->second;
     }
     SolidColorBrush glass(wchar_t const* role)const{
+        CanvasModelInputs::Capture::Read(state,L"palette");
         auto found=glassBrushes.find(role);if(found!=glassBrushes.end())return found->second;
         return glassBrushes.emplace(role,fill(glassColor(role))).first->second;
     }
     SolidColorBrush line(wchar_t const* surface,wchar_t const* role)const{
+        CanvasModelInputs::Capture::Read(state,L"palette");
         auto key=std::make_pair(std::wstring(surface),std::wstring(role));
         if(auto found=lineBrushes.find(key);found!=lineBrushes.end())return found->second;
         return lineBrushes.emplace(key,fill(lineColor(key.first,key.second))).first->second;
@@ -435,6 +429,7 @@ struct WorkspaceData : std::enable_shared_from_this<WorkspaceData> {
     SolidColorBrush line(wchar_t const* role)const{return line(L"",role);}
     bool transparent()const{return str(object(object(state,L"palette"),L"glass"),L"transparency",L"off")!=L"off";}
     SolidColorBrush tint(wchar_t const* role,uint8_t alpha)const{
+        CanvasModelInputs::Capture::Read(state,L"palette");
         auto key=std::make_pair(std::wstring(role),alpha);
         if(auto found=tintBrushes.find(key);found!=tintBrushes.end())return found->second;
         auto value=color(str(object(state,L"palette"),role,L"#414141"));value.A=alpha;
@@ -442,7 +437,7 @@ struct WorkspaceData : std::enable_shared_from_this<WorkspaceData> {
     }
     double textSize()const{return num(catalog,L"text_size_pt",11)*96./72.;}
     double panelMetric(wchar_t const* name)const{return num(object(catalog,L"panel_metrics"),name);}
-    double controlHeight()const{return std::max(panelMetric(L"control_height"),std::ceil(textSize()*Windows::UI::ViewManagement::UISettings().TextScaleFactor()*1.3));}
+    double controlHeight()const{return std::max(panelMetric(L"control_height"),std::ceil(textSize()*SystemUiSettings().TextScaleFactor()*1.3));}
     CornerRadius controlCorner()const{auto r=panelMetric(L"control_radius")*CornerFit;return {r,r,r,r};}
 };
 inline std::shared_ptr<ControlCapture> captureControl(std::shared_ptr<WorkspaceData> const& data,FrameworkElement const& surface,
@@ -565,8 +560,13 @@ inline void segmentColors(std::shared_ptr<WorkspaceData> const& data,Primitives:
     buttonColors(data,button,20,data->brush(L"header_selection"));
 }
 inline bool& touchContact(){thread_local bool touch=false;return touch;}
+inline hstring plainTip(J const& tip){
+    auto text=str(tip,L"text");
+    for(auto value:array(tip,L"lines")){auto line=value.GetObject();if(!text.empty())text=text+L"\n";text=text+str(line,L"label")+L": "+str(line,L"value");}
+    return text;
+}
 struct TooltipOwner {
-    weak_ref<DependencyObject> owner;hstring text,lastHelpText;
+    weak_ref<DependencyObject> owner;hstring text,lastHelpText;J tip{nullptr};
     void updateAutomationHelpText(DependencyObject const& target,hstring const& value){
         auto current=AutomationProperties::GetHelpText(target);
         if(current.empty()||current==lastHelpText){AutomationProperties::SetHelpText(target,value);lastHelpText=value;}
@@ -599,8 +599,28 @@ struct TooltipPresentation {
         root.AddHandler(UIElement::PointerPressedEvent(),pressed,true);root.AddHandler(UIElement::KeyDownEvent(),escape,true);
     }
     void Refresh(FrameworkElement const& view,hstring const& value){
-        text.Text(value);AutomationProperties::SetName(frame,value);
-        auto size=view.XamlRoot().Size();frame.MaxWidth(std::min(320.,std::max(1.,double(size.Width)-8)));
+        auto found=tooltipOwners().find(get_abi(view.as<DependencyObject>()));
+        auto tip=found==tooltipOwners().end()?J{nullptr}:found->second.tip;
+        auto lines=tip?array(tip,L"lines"):A{};
+        if(!lines.Size()){text.Text(value);frame.Child(text);}else{
+            auto block=[&](hstring const& value){TextBlock result;result.Text(value);result.Foreground(text.Foreground());result.FontSize(text.FontSize());result.FontFamily(text.FontFamily());result.TextWrapping(TextWrapping::Wrap);return result;};
+            StackPanel stack;stack.Spacing(6);
+            auto intro=str(tip,L"text");if(!intro.empty()){auto lead=block(intro);lead.MaxWidth(320);lead.HorizontalAlignment(HorizontalAlignment::Left);stack.Children().Append(lead);}
+            Grid grid;grid.ColumnSpacing(16);grid.RowSpacing(4);grid.HorizontalAlignment(HorizontalAlignment::Left);
+            for(int i=0;i<2;++i){ColumnDefinition column;column.Width({1,GridUnitType::Auto});grid.ColumnDefinitions().Append(column);}
+            bool figures=flag(tip,L"figures");
+            for(uint32_t i=0;i<lines.Size();++i){
+                RowDefinition row;row.Height({1,GridUnitType::Auto});grid.RowDefinitions().Append(row);auto line=lines.GetObjectAt(i);
+                auto key=block(str(line,L"label"));key.Opacity(.75);key.VerticalAlignment(VerticalAlignment::Top);Grid::SetRow(key,i);grid.Children().Append(key);
+                auto reading=block(str(line,L"value"));Grid::SetRow(reading,i);Grid::SetColumn(reading,1);
+                if(figures){reading.TextAlignment(TextAlignment::Right);reading.FontWeight(Windows::UI::Text::FontWeights::Medium());Documents::Typography::SetNumeralAlignment(reading,FontNumeralAlignment::Tabular);}
+                else reading.MaxWidth(text.FontSize()*.55*38);
+                grid.Children().Append(reading);
+            }
+            stack.Children().Append(grid);frame.Child(stack);
+        }
+        AutomationProperties::SetName(frame,value);
+        auto size=view.XamlRoot().Size();frame.MaxWidth(std::min(lines.Size()?double(size.Width):320.,std::max(1.,double(size.Width)-8)));
         frame.Measure({float(frame.MaxWidth()),std::numeric_limits<float>::infinity()});auto extent=frame.DesiredSize();
         auto bounds=view.TransformToVisual(root).TransformBounds({0,0,float(view.ActualWidth()),float(view.ActualHeight())});
         popup.HorizontalOffset(std::clamp(double(bounds.X+(bounds.Width-extent.Width)/2),0.,std::max(0.,double(size.Width-extent.Width))));
@@ -634,7 +654,7 @@ inline void setTouchContact(bool touch){
     if(touchContact()==touch)return;
     touchContact()=touch;if(touch)tooltipPresentation().Hide();
 }
-inline void tooltip(DependencyObject const& target,hstring const& text){
+inline void setTooltip(DependencyObject const& target,hstring const& text,J const& tip){
     auto& owners=tooltipOwners();auto found=owners.find(get_abi(target));
     bool known=found!=owners.end()&&found->second.owner.get()==target;
     if(!known){
@@ -642,7 +662,7 @@ inline void tooltip(DependencyObject const& target,hstring const& text){
         found=owners.insert_or_assign(get_abi(target),TooltipOwner{make_weak(target)}).first;
     }
     auto& owner=found->second;owner.updateAutomationHelpText(target,text);
-    bool changed=owner.text!=text;owner.text=text;
+    bool changed=owner.text!=text||!JsonEqual(owner.tip,tip);owner.text=text;owner.tip=tip;
     auto view=target.try_as<FrameworkElement>();if(!view)return;
     if(known){
         auto& shown=tooltipPresentation();if(shown.owner.get()==view){if(text.empty())shown.Hide();else if(changed&&shown.popup&&shown.popup.IsOpen())shown.Refresh(view,text);}return;
@@ -660,6 +680,10 @@ inline void tooltip(DependencyObject const& target,hstring const& text){
     });
     view.LostFocus([weak=make_weak(view)](auto&&,RoutedEventArgs const& event){if(auto view=weak.get();view&&tooltipFocusOwner(view,event)&&tooltipPresentation().owner.get()==view)tooltipPresentation().Hide();});
     view.Unloaded([weak=make_weak(view)](auto&&,auto&&){if(tooltipPresentation().owner.get()==weak.get())tooltipPresentation().Hide();});
+}
+inline void tooltip(DependencyObject const& target,hstring const& text){setTooltip(target,text,nullptr);}
+inline void tooltip(DependencyObject const& target,J const& tip){
+    auto text=plainTip(tip);AutomationProperties::SetName(target,text);setTooltip(target,text,tip);
 }
 inline void copyName(std::shared_ptr<WorkspaceData> const& data,FrameworkElement const& target,LocalizedCopy const& text,bool tip=false){
     auto present=[tip](FrameworkElement const& view,hstring const& value){AutomationProperties::SetName(view,value);if(tip)tooltip(view,value);};

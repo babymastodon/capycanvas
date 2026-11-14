@@ -19,6 +19,7 @@ pub struct PressureCalibrationView {
     pub dialog: crate::DialogIntent,
     pub bounds: Bounds,
     pub axis_gutter:String,
+    pub graph_minimum: [f32; 2],
     pub title: String,
     pub close: String,
     pub firmer: String,

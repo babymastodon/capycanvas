@@ -4,6 +4,7 @@ import android.view.Surface
 
 /** Only CanvasHost's render Looper can access a native session handle. */
 internal object Native {
+    @JvmStatic external fun launchMarkSize(width: Float, height: Float): Float
     @JvmStatic external fun workspaceNameError(name: String, language: String): String
     @JvmStatic external fun profileMatches(entries: String, query: String, language: String): String
     @JvmStatic external fun nativeCaption(request: String, language: String = ""): String
@@ -59,6 +60,7 @@ internal object Native {
     @JvmStatic external fun navigatorPlacements(handle: Long, placements: String)
     @JvmStatic external fun glassRegions(handle: Long, glass: String, triangles: FloatArray)
     @JvmStatic external fun takeFilterPreviews(handle: Long): Array<Any>?
+    @JvmStatic external fun toolbarStamp(handle: Long, context: String, knownRequest: Long): Array<Any>?
     @JvmStatic external fun takeScopes(handle: Long): Array<Any>?
     @JvmStatic external fun documentTabs(handle: Long, request: String): String
     @JvmStatic external fun documentSwitch(handle: Long, id: Long, close: Boolean): Long
@@ -123,6 +125,7 @@ internal object Native {
     @JvmStatic external fun documentReleasePreparedClose(handle: Long, job: Long)
     @JvmStatic external fun sessionFree(task: Long)
     @JvmStatic external fun sessionManifestRead(path: String): String
+    @JvmStatic external fun sessionManifestClaim(path: String): String
     @JvmStatic external fun sessionManifestWrite(path: String, value: String): String
     @JvmStatic external fun sessionManifestUpdate(state: String, event: String): String
     @JvmStatic external fun sessionCollect(directory: String, keys: String)
@@ -201,6 +204,7 @@ internal object Native {
     @JvmStatic external fun phoneUi(request: String): String
     @JvmStatic external fun dialogUi(request: String): String
     @JvmStatic external fun deviceClass(handle: Long, phone: Boolean)
+    @JvmStatic external fun launchInteraction(handle: Long, open: Boolean)
     /** Pure shared color-wheel hit geometry, independent of the render thread. */
     @JvmStatic external fun bubbleUi(request: String): String
     @JvmStatic external fun colorWheelHit(request: String): String

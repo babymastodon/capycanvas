@@ -3,12 +3,14 @@
 //! use the same path as full edge docks. Hosts only display published geometry.
 use super::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EdgeAlignment {
-    Start,
-    Center,
-    End,
+crate::variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum EdgeAlignment {
+        Start,
+        Center,
+        End,
+    }
 }
 impl EdgeAlignment {
     fn index(self) -> usize {

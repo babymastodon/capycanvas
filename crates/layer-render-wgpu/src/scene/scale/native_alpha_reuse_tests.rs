@@ -189,13 +189,12 @@ fn native_alpha_reuse_admits_warm_pages_beside_cold_output_pages() {
         frame.composite_all=false;
         frame.view.document_to_surface=[0.25,0.,0.,0.25,0.,0.];
         let mut r=WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
-        crate::test_support::submit_ready(&mut r, frame).unwrap();
+        crate::test_support::submit_settled(&mut r, frame);
         let mut dab=crate::tests::test_dab([258.5,129.5],[0.,0.,0.,0.],1.);
         dab.radii=[260.,131.];
         let batch=dab_batch(target,crate::layer_tests::preset_style(DefaultBrushPreset::GPen),dab.bounds());
         for _ in 0..2 {
-            crate::test_support::submit_ready(&mut r, FramePacket {dabs:std::slice::from_ref(&dab),dab_batches:std::slice::from_ref(&batch),..frame}).unwrap();
-            r.wait_idle().unwrap();
+            crate::test_support::submit_settled(&mut r, FramePacket {dabs:std::slice::from_ref(&dab),dab_batches:std::slice::from_ref(&batch),..frame});
         }
         let flags=r.changed_cells.as_ref().unwrap().reusable(target,[0,0]).unwrap();
         let bytes=pollster::block_on(crate::local_tone::read_buffer_async(&r.device,&r.queue,flags)).unwrap();
@@ -484,13 +483,12 @@ fn native_alpha_reuse_raw_mask_paint_forces_unchanged_paint_cells() {
         frame.view.document_to_surface = [0.25, 0., 0., 0.25, 0., 0.];
         let mut cached = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
         let mut rebuilt = WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
-        for mut r in [&mut cached, &mut rebuilt] { crate::test_support::submit_ready(&mut r, frame).unwrap(); }
+        for mut r in [&mut cached, &mut rebuilt] { crate::test_support::submit_settled(&mut r, frame); }
         let mut dab = crate::tests::test_dab([125.5, 126.5], [0.1, 0.1, 0.1, 0.6], 0.8);
         dab.radii = [13.25, 11.75];
         let paint_batch = dab_batch(paint, crate::layer_tests::preset_style(DefaultBrushPreset::GPen), dab.bounds());
         for mut r in [&mut cached, &mut rebuilt] {
-            crate::test_support::submit_ready(&mut r, FramePacket { dabs: std::slice::from_ref(&dab), dab_batches: std::slice::from_ref(&paint_batch), ..frame }).unwrap();
-            for _ in 0..2 { crate::test_support::submit_ready(&mut r, frame).unwrap(); r.wait_idle().unwrap(); }
+            crate::test_support::submit_settled(&mut r, FramePacket { dabs: std::slice::from_ref(&dab), dab_batches: std::slice::from_ref(&paint_batch), ..frame });
         }
         assert!(cached.changed_cells.as_ref().unwrap().buffer(paint, [0, 0]).is_some(), "{name} retained paint flags must be admitted before the mask write");
         let before = display_pixels(&cached);
@@ -690,9 +688,8 @@ fn native_alpha_reuse_direct_edged_flow_contacts_force_native_alpha_recompositio
         seed_style.blend_space = frame.blend_space;
         let seed = dab_batch(target, seed_style, dab.bounds());
         for mut r in [&mut cached, &mut native] {
-            crate::test_support::submit_ready(&mut r, frame).unwrap();
-            crate::test_support::submit_ready(&mut r, FramePacket { dabs: std::slice::from_ref(&dab), dab_batches: std::slice::from_ref(&seed), ..frame }).unwrap();
-            for _ in 0..2 { crate::test_support::submit_ready(&mut r, frame).unwrap(); r.wait_idle().unwrap(); }
+            crate::test_support::submit_settled(&mut r, frame);
+            crate::test_support::submit_settled(&mut r, FramePacket { dabs: std::slice::from_ref(&dab), dab_batches: std::slice::from_ref(&seed), ..frame });
         }
         assert!(cached.changed_cells.as_ref().unwrap().buffer(target, [0, 0]).is_some());
         let before = display_pixels(&cached);
@@ -800,8 +797,8 @@ fn fused_prediction_tracks_actual_warm_primary_and_forces_relocated_pages() {
         let frame=FramePacket {view,blend_space:blend,composite_all:false,..packet(doc.scene(),extent)};
         let mut r=WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
         let mut reference=WgpuRasterizer::new_native_headless(doc.composition().color).unwrap();
-        for backend in [&mut r,&mut reference] {crate::test_support::submit_ready(backend, frame).unwrap();}
         for backend in [&mut r,&mut reference] {crate::test_support::prepare_scene_effects(backend,frame);}
+        for backend in [&mut r,&mut reference] {crate::test_support::submit_ready(backend, frame).unwrap();}
         let mut dab=crate::tests::test_dab([125.5,127.5],[0.,0.,0.,1.],0.8);dab.radii=[24.,21.];
         let mut style=crate::layer_tests::preset_style(preset);style.blend_space=blend;
         if let Some(dry)=style.contact.and_then(|c|c.dry) {

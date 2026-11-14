@@ -200,7 +200,7 @@ internal fun runVectorBenchmark(instrumentation: Instrumentation, args: Bundle, 
         healthy()
         return data
     }
-    fun drawn(stats: JSONObject) = stats.array("rows").objects().single { it.getString("label") == "Frames" }.getString("value").toLong()
+    fun drawn(stats: JSONObject) = stats.getLong("frames")
     fun changed(data: JSONObject) = data.getString("content_after") != data.getString("content_before") ||
         drawn(data.getJSONObject("renderer_after")) > drawn(data.getJSONObject("renderer_before"))
     fun undo() { invoke("undo"); settle() }

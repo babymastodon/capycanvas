@@ -26,7 +26,7 @@ void ElementFactory::RecycleElement(ElementFactoryRecycleArgs const& args){
 LayersView::~LayersView(){ForgetLayerThumbnails(data->thumbnails,this);if(outsideSurface)outsideSurface.RemoveHandler(UIElement::PointerPressedEvent(),box_value(outsidePress));if(pickup)pickup->Cancel();if(timer)timer.Stop();if(menu)menu.Hide();}
 double LayersView::intrinsicUnitHeight(){
     auto scale=root.XamlRoot()?root.XamlRoot().RasterizationScale():1.;
-    auto key=data->theme()+L":"+data->language()+L":"+to_hstring(data->textSize())+L":"+to_hstring(Windows::UI::ViewManagement::UISettings().TextScaleFactor())
+    auto key=data->theme()+L":"+data->language()+L":"+to_hstring(data->textSize())+L":"+to_hstring(SystemUiSettings().TextScaleFactor())
         +L":"+to_hstring(scale)+L":"+to_hstring(data->panelMetric(L"control_height"))+L":"+to_hstring(data->panelMetric(L"compound_spacing"))+L":"+to_hstring(data->panelMetric(L"layer_edge_inset"));
     if(key!=unitStyle){
         Border frame;Grid body;layerRowFrame(data,frame,body);frame.Child(body);
@@ -215,7 +215,7 @@ void LayersView::init(){
 }
 void LayersView::refresh(){
     CapyEffects::Updating updating(data);
-    auto panel=find(array(data->model,L"panels"),L"id",L"layers");
+    auto panel=find(data->model,L"panels",L"id",L"layers");
     auto shown=[&](wchar_t const* control){return flag(find(array(panel,L"controls"),L"control",control),L"visible_in_panel",true);};
     bool rowsShown=shown(L"layers"),opacityShown=shown(L"layer_opacity");
     header.Visibility(full&&(rowsShown||opacityShown)?Visibility::Visible:Visibility::Collapsed);
@@ -321,7 +321,7 @@ void LayersView::layoutConnections(){
         if(!row->current()||!row->root.IsLoaded()||row->content.ActualWidth()<=0||!order.contains(row->id))continue;
         auto rect=row->content.TransformToVisual(list).TransformBounds({0,0,float(row->content.ActualWidth()),float(row->content.ActualHeight())});
         geometry[row->id]=rect;auto [index,depth]=order.at(row->id);
-        if(index<first){first=index;column=rect.X+row->swipeOffset-std::min(depth*8,24.);}last=std::max(last,index);
+        if(index<first){first=index;column=row->root.TransformToVisual(list).TransformPoint(row->content.TransformToVisual(row->body).TransformPoint({0,0})).X-std::min(depth*8,24.);}last=std::max(last,index);
     }
     A shapes;auto edges=array(view(),L"connections");double height=list.ActualHeight();
     auto endpoint=[&](double id,bool bottom)->std::optional<double>{

@@ -102,7 +102,7 @@ import UIKit
         store?.state["tabs"][0]["title"].string ?? ""
     }
     var alertTitle: String {
-        error == nil ? confirmationTitle : store?.bootstrap["recovery"]["attention"].string ?? ""
+        error == nil ? confirmationTitle : store?.bootstrap["cannot_open_file"].string ?? ""
     }
     func forgetDocument(_ id: UInt64) { destinations.removeValue(forKey: id) }
     func receive(_ state: JSON) {

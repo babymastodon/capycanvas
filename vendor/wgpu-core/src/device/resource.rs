@@ -5352,6 +5352,7 @@ impl Device {
                         device: Arc::clone(self),
                         config: config.clone(),
                         acquired_texture: None,
+                        prepared: false,
                     });
                     Ok(true)
                 })();

@@ -1,5 +1,6 @@
-﻿param([Parameter(Mandatory)][string]$Executable,[ValidateSet('mouse','pen','touch')][string]$Device='mouse',[switch]$ColumnResetOnly,[switch]$CanvasResetOnly,[switch]$ClosedStripOnly,[switch]$LayerRowOnly,[switch]$CancelOnly,[switch]$EdgeEscapeOnly,[switch]$NumericOnly,[switch]$ControlRoleOnly,[switch]$SweepOnly,[ValidateSet('dark','light')][string]$Theme)
+﻿param([Parameter(Mandatory)][string]$Executable,[ValidateSet('mouse','pen','touch')][string]$Device='mouse',[switch]$ColumnResetOnly,[switch]$CanvasResetOnly,[switch]$ClosedStripOnly,[switch]$LayerRowOnly,[switch]$CancelOnly,[switch]$EdgeEscapeOnly,[switch]$NumericOnly,[switch]$ControlRoleOnly,[switch]$SweepOnly,[ValidateSet('photo','photo-open','photo-collapsed','paint')][string]$SweepScenario,[ValidateSet('dark','light')][string]$Theme)
 $ErrorActionPreference='Stop'
+if($SweepScenario){$SweepOnly=$true}
 if(($CanvasResetOnly -or $CancelOnly) -and !$PSBoundParameters.ContainsKey('Device')){$Device='touch'}
 . (Join-Path $PSScriptRoot 'CapyUia.ps1')
 $CapyPopups=$true
@@ -47,20 +48,23 @@ function Swipe($From,$To,[int]$Steps=10,[scriptblock]$During){
     if($During){& $During}
     [CapyRowPointer]::Up();Wait-NativeGestureRelease $release $terminalGeneration;Settled
 }
+function Contact-Receipt($Point,[double]$Previous){
+    $receipt=@{gesture=$null}
+    Wait-Until {
+        $g=Gesture;$receipt.gesture=$g;$contact=$g.edge_contact
+        $fresh=$contact -and $contact.primary -and $contact.time -gt $Previous
+        $fresh -and [Math]::Abs($contact.position[0]-$Point.x) -le 1 -and [Math]::Abs($contact.position[1]-$Point.y) -le 1
+    } 'Native contact Down was not acknowledged at the requested point'
+    $receipt.gesture
+}
 function Contact($Point){
     $at=Screen $Point.x $Point.y
     if($Device -eq 'mouse'){[CapyRowPointer]::Hover($at.x,$at.y)}
-    $before=Gesture;$previous=[double]$before.edge_contact.time;$ack=@{edge=$null}
+    $previous=[double](Gesture).edge_contact.time
     [CapyRowPointer]::Down($Device,$at.x,$at.y)
-    try{
-        Wait-Until {
-            $g=Gesture;$ack.edge=$g.edge;$contact=$g.edge_contact
-            $fresh=$contact -and $contact.primary -and $contact.time -gt $previous
-            $fresh -and [Math]::Abs($contact.position[0]-$Point.x) -le 1 -and [Math]::Abs($contact.position[1]-$Point.y) -le 1
-        } 'Native contact Down was not acknowledged at the requested point'
-        $ack.edge
-    }finally{[CapyRowPointer]::Cancel();Wait-Until {!(Gesture).edge} 'Native contact Cancel did not settle'}
+    try{(Contact-Receipt $Point $previous).edge}finally{[CapyRowPointer]::Cancel();Wait-Until {!(Gesture).edge} 'Native contact Cancel did not settle'}
 }
+function Within($Point,[object[]]$Bounds){@($Bounds|Where-Object {$_ -and $Point.x -ge $_.x -and $Point.x -le $_.x+$_.width -and $Point.y -ge $_.y -and $Point.y -le $_.y+$_.height}).Count -gt 0}
 function Reach-Point([object[]]$Candidates,[scriptblock]$Accept){
     foreach($point in $Candidates){$edge=Contact $point;Settled;if($edge -and (& $Accept $edge)){return $point}}
     throw 'No candidate contact lies within the edge reach'
@@ -117,7 +121,7 @@ function Start-Review([string]$Theme,[string]$Name=$Theme){
     @{process_id=$review.Id;run=$run;device=$Device}|ConvertTo-Json|Set-Content (Join-Path $repo 'artifacts/windows/edge-reach-review.json')
     Write-Output "Owned edge reach review $($review.Id) ($Device, $Theme)"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy -and (Model).state.theme -eq $Theme} 'Edge reach review did not start' 45
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready) -and !(Model).windows_workspace.busy -and (Model).state.theme -eq $Theme} 'Edge reach review did not start' 45
     $script:root=$native.window.Root;$script:window=$native.window.Handle;$script:drawingWindow=$window
     $null=[CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4));$null=[CapyRowPointer]::SetForegroundWindow($window)
     (Control 'drawing-canvas').SetFocus()
@@ -155,7 +159,7 @@ function Append-SweepRow($Row){
 }
 function Check-ReachSweep([string]$Theme){
     $rows=[Collections.Generic.List[object]]::new()
-    $scenarios='photo','photo-open','photo-collapsed','paint'
+    $scenarios=if($SweepScenario){@($SweepScenario)}else{@('photo','photo-open','photo-collapsed','paint')}
     foreach($scenario in $scenarios){
         Start-Review $Theme ($Theme+'-'+$scenario)
         if($scenario -like 'photo*'){Use-Workspace 'builtin:workspace:photographer' 'Photo'}else{Use-PaintWorkspace}
@@ -177,23 +181,42 @@ function Check-ReachSweep([string]$Theme){
         $active=@{};foreach($group in (Layout).groups){$active[$group.id]=$group.active}
         $null=Gesture
         (Layout)|ConvertTo-Json -Depth 40|Set-Content (Join-Path $run ("sweep-$Theme-$scenario-layout.json"))
-        $strips=@((Layout).collapsed.bounds)
-        $samples=@(Reach-Samples|Sort-Object { $sample=$_;$inside=@($strips|Where-Object {$sample.x -ge $_.x -and $sample.x -le $_.x+$_.width -and $sample.y -ge $_.y -and $sample.y -le $_.y+$_.height});if($inside.Count){0}else{1} })
+        $strips=@((Layout).collapsed.bounds);$surfaces=@((Layout).groups.bounds)+$strips
+        $samples=@(Reach-Samples|Sort-Object {if(Within $_ $strips){0}else{1}})
         foreach($sample in $samples){
             $script:sweepProbe=@{theme=$Theme;device=$Device;scenario=$scenario;sample=$sample;baseline=($baseline|ConvertFrom-Json);geometry=$geometry}
             @{theme=$Theme;device=$Device;scenario=$scenario;sample=$sample}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $run 'sweep-current.json')
             $at=Screen $sample.x $sample.y
             if($Device -eq 'mouse'){[CapyRowPointer]::Hover($at.x,$at.y)}
             try{
-                [CapyRowPointer]::Down($Device,$at.x,$at.y);Start-Sleep -Milliseconds 60
-                $down=Gesture
+                $previous=[double](Gesture).edge_contact.time
+                [CapyRowPointer]::Down($Device,$at.x,$at.y)
+                $down=if(Within $sample $surfaces){Contact-Receipt $sample $previous}else{Gesture}
                 $eligible=$null -ne $down.edge -and $(if($sample.axis -eq 'horizontal'){$down.edge.contact -eq 'free'}else{[bool]$down.edge.vertical})
                 $claimed=$false
                 if($eligible){
                     $scale=[CapyRowPointer]::GetDpiForWindow($window)/96.
-                    for($i=1;$i -le 10;$i++){[CapyRowPointer]::Move([int]($at.x+$sample.dx*$i*$scale),[int]($at.y+$sample.dy*$i*$scale));Start-Sleep -Milliseconds 16}
-                    Start-Sleep -Milliseconds 180
-                    $mid=Gesture;$claimed=[bool]$mid.edge.claimed
+                    $origin=$at
+                    if($Device -eq 'mouse'){$cursor=[CapyRowPointer+Point]::new();if(![CapyRowPointer]::GetCursorPos([ref]$cursor)){throw 'Native edge sweep Down cursor is unavailable'};$origin=@{x=$cursor.x;y=$cursor.y}}
+                    for($i=1;$i -le 10;$i++){$move=@{x=[int]($at.x+$sample.dx*$i*$scale);y=[int]($at.y+$sample.dy*$i*$scale)};[CapyRowPointer]::Move($move.x,$move.y);Start-Sleep -Milliseconds 16}
+                    if($Device -eq 'mouse'){$cursor=[CapyRowPointer+Point]::new();if(![CapyRowPointer]::GetCursorPos([ref]$cursor)){throw 'Native edge sweep Move cursor is unavailable'};$move=@{x=$cursor.x;y=$cursor.y}}
+                    $ack=@{time=$null;gesture=$null}
+                    Wait-Until {
+                        $g=Gesture;$reply=$g.edge_reply
+                        if($reply.serial -ne $down.edge.serial){return $false}
+                        if(!$g.edge){
+                            if($reply.phase -in 'down','move' -and $reply.time -ge $down.edge_contact.time -and ($reply.bits -lt 0 -or ($reply.bits -band 9) -eq 0)){$ack.gesture=$g;return $true}
+                            return $false
+                        }
+                        if($g.edge.serial -ne $down.edge.serial){return $false}
+                        if($null -eq $ack.time -and $g.edge_input.pointer -eq $down.edge_contact.pointer -and $g.edge_input.time -gt $down.edge_contact.time -and
+                            [Math]::Round(($g.edge.position[0]-$down.edge_contact.position[0])*$scale) -eq $move.x-$origin.x -and
+                            [Math]::Round(($g.edge.position[1]-$down.edge_contact.position[1])*$scale) -eq $move.y-$origin.y){$ack.time=$g.edge_input.time}
+                        $ready=$null -ne $ack.time -and $reply.phase -eq 'move' -and $reply.time -ge $ack.time
+                        if($ready){$ack.gesture=$g;return $true}
+                        $false
+                    } 'Native edge sweep request was not acknowledged'
+                    $claimed=[bool]$ack.gesture.edge.claimed
                 }
                 $release=Gesture
                 $terminalGeneration=[Math]::Max([long]$release.last_release.generation,[long]$release.last_cancel.generation)

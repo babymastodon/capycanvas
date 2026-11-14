@@ -16,7 +16,7 @@ fn ready(w: &Rc<Workspace>, presentations: usize) {
 }
 
 fn pixels(w: &Rc<Workspace>, id: u64) -> layer_render::ReadbackImage {
-    ui_session(w).engine().backend().document_pixels(id).unwrap()
+    w.document_pixels(id).unwrap()
 }
 
 fn assert_objects(document: &layer_core::Document, nearest: bool) {

@@ -3,6 +3,7 @@ use crate::*;
 pub(crate) fn readable_items(items: impl Iterator<Item = Result<StoredEntity, StoreError>>) -> Result<Vec<StoredEntity>, StoreError> {
     items.filter_map(|item| match item {
         Err(error) if error.kind == ErrorKind::InvalidData => None,
+        Ok(item) if item.fallback => None,
         item => Some(item),
     }).collect()
 }

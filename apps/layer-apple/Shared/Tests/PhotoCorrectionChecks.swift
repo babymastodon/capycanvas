@@ -28,7 +28,7 @@ extension XCTestCase {
         expectation(for: NSPredicate { _,_ in window.frame.width < 950 }, evaluatedWith: window)
         waitForExpectations(timeout: 10)
         addTeardownBlock {
-            await MainActor.run {
+            MainActor.assumeIsolated {
                 guard window.exists else { return }
                 let restored = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
                 restored.press(forDuration: 0.1, thenDragTo: restored.withOffset(CGVector(dx: 320, dy: 0)))

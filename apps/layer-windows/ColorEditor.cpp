@@ -74,7 +74,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
     std::array<Row,3> formRows;
     std::shared_ptr<Field> hex,intensity;
     Canvas wheelBox,arc;
-    Image image;
+    Image image,markers;
     Shapes::Path arcTrack;
     std::shared_ptr<ColorIntensity> intensityArc;
     WheelImage drawing;
@@ -220,6 +220,8 @@ struct Editor:std::enable_shared_from_this<Editor>{
         wheelBox.Background(clear());image.Stretch(Stretch::Fill);image.IsHitTestVisible(false);
         AutomationProperties::SetAutomationId(image,L"edit-color-wheel");AutomationProperties::SetName(image,copy(L"wheel"));
         wheelBox.Children().Append(image);
+        markers.Stretch(Stretch::Fill);markers.IsHitTestVisible(false);AutomationProperties::SetAccessibilityView(markers,Automation::Peers::AccessibilityView::Raw);
+        wheelBox.Children().Append(markers);
         intensityArc=std::make_shared<ColorIntensity>();intensityArc->data=data;
         intensityArc->changed=[weak](double stops){if(auto self=weak.lock())self->setIntensity(stops);};
         intensityArc->init(L"edit-color-intensity-range");arc=intensityArc->root;arcTrack=intensityArc->track;arc.Visibility(Visibility::Collapsed);wheelBox.Children().Append(arc);
@@ -345,7 +347,8 @@ struct Editor:std::enable_shared_from_this<Editor>{
         AutomationProperties::SetAutomationId(node,id);tooltip(node,copy(L"copy"));
         node.Click([weak,text,owner=make_weak(node)](auto&&,auto&&){
             auto self=weak.lock();auto node=owner.get();if(!self||!node)return;
-            copyText(text());node.Content(icon(L"check",self->data->theme()));
+            if(!copyText(text())){self->clipboardFailed();return;}
+            node.Content(icon(L"check",self->data->theme()));
             auto done=self->copy(L"copied");AutomationProperties::SetName(node,done);tooltip(node,done);
             auto timer=node.DispatcherQueue().CreateTimer();timer.IsRepeating(false);timer.Interval(std::chrono::milliseconds(1200));
             timer.Tick([weak,owner](auto&& sender,auto&&){
@@ -488,7 +491,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
     void animateSheet(bool open){
         if(slide)slide.Stop();
         double height=page.ActualHeight(),target=open?0:height;
-        if(!winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()||height<=0){
+        if(!SystemUiSettings().AnimationsEnabled()||height<=0){
             sheetShift.Y(target);if(!open)sheet.Visibility(Visibility::Collapsed);return;
         }
         Animation::DoubleAnimation motion;motion.From(sheetShift.Y());motion.To(target);motion.Duration(DurationHelper::FromTimeSpan(std::chrono::milliseconds(250)));
@@ -646,16 +649,18 @@ struct Editor:std::enable_shared_from_this<Editor>{
         if(!control||(e.Key()!=VirtualKey::C&&e.Key()!=VirtualKey::V))return;
         if(auto focused=FocusManager::GetFocusedElement(body.XamlRoot());focused&&focused.try_as<TextBox>())return;
         e.Handled(true);
-        if(e.Key()==VirtualKey::C){copyText(str(view,L"hex"));return;}
-        auto content=winrt::Windows::ApplicationModel::DataTransfer::Clipboard::GetContent();
-        if(!content.Contains(winrt::Windows::ApplicationModel::DataTransfer::StandardDataFormats::Text()))return;
+        if(e.Key()==VirtualKey::C){if(!copyText(str(view,L"hex")))clipboardFailed();return;}
         auto weak=weak_from_this();
-        content.GetTextAsync().Completed([weak,dispatcher=body.DispatcherQueue()](auto const& operation,auto status){
-            if(status!=winrt::Windows::Foundation::AsyncStatus::Completed)return;
-            auto text=operation.GetResults();
-            dispatcher.TryEnqueue([weak,text]{if(auto self=weak.lock();self&&!self->finished)self->act(O({{L"op",S(L"text")},{L"text",S(text)}}));});
-        });
+        try{
+            auto content=winrt::Windows::ApplicationModel::DataTransfer::Clipboard::GetContent();
+            if(!content.Contains(winrt::Windows::ApplicationModel::DataTransfer::StandardDataFormats::Text()))return;
+            content.GetTextAsync().Completed([weak,dispatcher=body.DispatcherQueue()](auto const& operation,auto status){
+                auto completed=status==winrt::Windows::Foundation::AsyncStatus::Completed;auto text=completed?operation.GetResults():hstring{};
+                dispatcher.TryEnqueue([weak,completed,text]{if(auto self=weak.lock();self&&!self->finished){if(completed)self->act(O({{L"op",S(L"text")},{L"text",S(text)}}));else self->clipboardFailed();}});
+            });
+        }catch(hresult_error const&){clipboardFailed();}
     }
+    void clipboardFailed(){act(O({{L"op",S(L"clipboard_failed")}}));}
     void closingRequested(ContentDialogClosingEventArgs const& e){
         if(closing)return;
         if(auto f=editingField()){e.Cancel(true);end(f,true);return;}
@@ -687,7 +692,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
             }
             auto bare=colorUi(data->localization.get(),O({{L"type",S(L"bare_layout")},{L"width",N(width)},{L"height",N(height)},{L"hdr",B(hdr)}})).GetObject();
             side=num(bare,L"wheel");stageSize=num(bare,L"stage");inset=num(bare,L"inset");double bottom=num(bare,L"bottom");
-            wheelBox.Width(side);wheelBox.Height(bottom-inset);image.Width(side);image.Height(side);
+            wheelBox.Width(side);wheelBox.Height(bottom-inset);for(auto const& layer:{image,markers}){layer.Width(side);layer.Height(side);}
             Canvas::SetLeft(arc,-inset);Canvas::SetTop(arc,-inset);arc.Width(stageSize);arc.Height(bottom);
             paintKey=L"";
         }
@@ -695,12 +700,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
         auto nextPaint=panel.Stringify()+L"/"+to_hstring(scale());
         if(nextPaint==paintKey)return;
         try{
-            try{drawing.draw(image,panel,object(editor,L"picker"),side,scale());}
-            catch(hresult_error const& exception){
-                auto code=exception.code();
-                if(code!=DXGI_ERROR_DEVICE_REMOVED&&code!=DXGI_ERROR_DEVICE_RESET&&code!=D2DERR_RECREATE_TARGET&&code!=E_SURFACE_CONTENTS_LOST)throw;
-                drawing.draw(image,panel,object(editor,L"picker"),side,scale(),true);
-            }
+            drawing.present(image,markers,panel,object(editor,L"picker"),side,scale());
             paintKey=nextPaint;AutomationProperties::SetItemStatus(image,data->caption(L"header",L"ready"));
         }catch(hresult_error const&){AutomationProperties::SetItemStatus(image,copy(L"wheel_failed"));}
     }
@@ -753,7 +753,7 @@ struct Editor:std::enable_shared_from_this<Editor>{
         resized.revoke();
         auto memoryNow=object(object(editor,L"picker"),L"editor");
         if(memoryNow.Stringify()!=memory)data->dispatch(O({{L"type",S(L"color")},{L"action",O({{L"op",S(L"editor_memory")},{L"memory",memoryNow}})}}));
-        if(accepting&&num(object(data->state,L"document_file"),L"epoch")==epoch&&accepted){
+        if(accepting&&num(branch(data->state,L"document_file"),L"epoch")==epoch&&accepted){
             auto stops=view.GetNamedValue(L"stops",JsonValue::CreateNullValue());
             accepted(object(view,L"value"),stops.ValueType()==JsonValueType::Number?std::optional<double>(stops.GetNumber()):std::nullopt);
         }
@@ -774,7 +774,7 @@ void CapyUi::EditColor(std::shared_ptr<WorkspaceData> const& data,UIElement cons
     auto editor=std::make_shared<Editor>();editor->data=data;editor->accepted=std::move(accepted);editor->rendition=rendition;
     editor->editor=object(opened,L"editor");editor->view=object(opened,L"view");
     editor->memory=object(object(editor->editor,L"picker"),L"editor").Stringify();
-    editor->epoch=num(object(data->state,L"document_file"),L"epoch");
+    editor->epoch=num(branch(data->state,L"document_file"),L"epoch");
     editor->init(xaml,data->colorStrip!=nullptr);
     openEditors().push_back(editor);
     editor->present();

@@ -5,10 +5,10 @@ import AppKit
 
 extension XCTestCase {
     @MainActor func checkSettingsControls(in app: XCUIApplication) {
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"light"},{"type":"invoke","command":"settings"},{"type":"preferences","action":{"type":"page","page":"appearance"}}]"#
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"light"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}},{"type":"invoke","command":"settings"},{"type":"preferences","action":{"type":"page","page":"appearance"}}]"#
         app.launch()
         func page(_ id: String) {
-            let item = app.staticTexts["settings-page-" + id]
+            let item = app.buttons["settings-page-" + id]
             XCTAssertTrue(item.waitForExistence(timeout: 10)); workspaceActivate(item)
         }
         func reopen(_ id: String) {
@@ -95,6 +95,7 @@ extension XCTestCase {
     @MainActor func checkSettingsTextState(in app: XCUIApplication, theme: String = "light", keyboardSelection: Bool = true) {
         app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"invoke","command":"settings"}]"#
         app.launch()
+        waitForEditorInteraction(in: app)
         assertEditorSettingsRoot(in: app, phone: false)
         func reopen() {
             workspaceActivate(app.buttons["settings-done"])
@@ -407,14 +408,14 @@ extension XCTestCase {
         app.launch(); capturePaintEditor(in: app)
         let above = CGPoint(x: 0.5, y: 0.42)
         func pixels() -> Data { editorPixels(in: app, at: above) }
-        let paper = pixels()
+        let paper = settledEditorPixels(in: app, at: above)
         editorMenu(in: app, menu: "Select", id: "select_all", label: "Select all pixels")
         editorMenu(in: app, menu: "Edit", id: "fill_selection", label: "Fill selection")
         expectation(for: NSPredicate { _, _ in
             let sample = pixels(); return Int(sample[2]) > Int(sample[0]) + 50
         }, evaluatedWith: app)
         waitForExpectations(timeout: 10)
-        let painted = pixels()
+        let painted = settledEditorPixels(in: app, at: above)
         let value = app.buttons["number-value-tool-size"], entry = app.textFields["number-entry-tool-size"]
         revealEditorControl(value, in: app.scrollViews.containing(.button, identifier: value.identifier).firstMatch)
         workspaceActivate(value); XCTAssertTrue(entry.waitForExistence(timeout: 5))
@@ -487,7 +488,7 @@ extension XCTestCase {
             XCTAssertFalse(app.staticTexts["Canvas error"].exists)
         }
         let links = [("website", "https://capycanvas.art"),
-            ("source_code", "https://github.com/capyatelier/capycanvas")]
+            ("source_code", "https://github.com/babymastodon/capycanvas")]
         workspaceActivate(app.buttons["settings-button"])
         XCTAssertTrue(app.staticTexts["settings-page-about"].waitForExistence(timeout: 10))
         workspaceActivate(app.staticTexts["settings-page-about"])
@@ -568,7 +569,7 @@ extension XCTestCase {
                 "label == %@ OR label == %@ OR value == %@", label + ", " + value, value, value)).firstMatch
             XCTAssertTrue(content.exists, "About \(label) must show \(value)")
         }
-        for (id, label) in [("website", "capycanvas.art"), ("source_code", "github.com/capyatelier/capycanvas")] {
+        for (id, label) in [("website", "capycanvas.art"), ("source_code", "github.com/babymastodon/capycanvas")] {
             let link = app.descendants(matching: .any)["preference-" + id].firstMatch
             XCTAssertTrue(link.exists && link.isHittable, "About must expose the \(id) link")
             XCTAssertTrue(link.label.hasSuffix(label), "The native link label must retain its destination")
@@ -633,9 +634,11 @@ extension XCTestCase {
         activate(app.buttons["settings-done"])
         let title = editorDocumentTitle(in: app)
         XCTAssertTrue(title.waitForExistence(timeout: 10))
+        let enabledTitle = app.buttons.matching(identifier: title.identifier).matching(NSPredicate(format: "enabled == YES")).firstMatch
+        XCTAssertTrue(enabledTitle.exists)
         app.typeKey("z", modifierFlags: .command)
-        XCTAssertTrue(title.waitForNonExistence(timeout: 10), "The new shortcut must execute Zen after the editor closes")
+        XCTAssertTrue(enabledTitle.waitForNonExistence(timeout: 10), "The new shortcut must execute Zen after the editor closes")
         app.typeKey("z", modifierFlags: .command)
-        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        XCTAssertTrue(enabledTitle.waitForExistence(timeout: 10))
     }
 }

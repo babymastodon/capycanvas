@@ -3,6 +3,7 @@ use layer_ui::{Localizer, Platform, UiAction, UiLanguage};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    sync::Arc,
 };
 
 #[derive(Default)]
@@ -785,8 +786,8 @@ fn controllers_begin_with_independent_languages() {
     use std::sync::Arc;
     let japanese = Localizer::shared(UiLanguage::Japanese);
     let korean = Localizer::shared(UiLanguage::Korean);
-    let first = WorkspaceController::new_localized(Store(Rc::new(Backend::default())), Platform::Gtk, 0, japanese.clone());
-    let second = WorkspaceController::new_owned_localized(Store(Rc::new(Backend::default())), Platform::Gtk, Owner::fresh(), 0, korean.clone());
+    let first = WorkspaceController::new_localized(Store(Rc::new(Backend::default())), Platform::Gtk, 0, japanese.clone(), Arc::new(|| {}));
+    let second = WorkspaceController::new_owned_localized(Store(Rc::new(Backend::default())), Platform::Gtk, Owner::fresh(), 0, korean.clone(), Arc::new(|| {}));
     assert!(Arc::ptr_eq(first.localization(), &japanese));
     assert!(Arc::ptr_eq(second.localization(), &korean));
     assert_eq!(first.localization().language(), UiLanguage::Japanese);
@@ -803,9 +804,12 @@ impl Fixture {
         Self::for_platform(Platform::Web)
     }
     fn for_platform(platform: Platform) -> Self {
+        Self::with_wake(platform, Arc::new(|| {}))
+    }
+    fn with_wake(platform: Platform, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let backend = Rc::new(Backend::default());
         backend.now.set(1000);
-        let mut host = layer_host::NativeHost::new(platform).unwrap();
+        let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(platform).unwrap());
         let capture = host.session.capture_workspace().unwrap();
         let baseline = capture.history.layout().clone();
         let entity = Entity::workspace("My Workspace", capture, baseline, 1000);
@@ -819,7 +823,7 @@ impl Fixture {
         )
         .unwrap();
         pollster::block_on(Store(backend.clone()).execute(StoreRequest::Commit { batch })).unwrap();
-        let controller = WorkspaceController::new_localized(Store(backend.clone()), platform, 1000, Localizer::shared(UiLanguage::English));
+        let controller = WorkspaceController::new_localized(Store(backend.clone()), platform, 1000, Localizer::shared(UiLanguage::English), wake);
         let mut f = Self {
             backend,
             controller,
@@ -871,7 +875,7 @@ fn restoring_a_bound_window_claims_without_republishing_its_selection() {
     let deliveries = f.backend.deliveries.borrow().len();
     f.backend.now.set(2000);
     f.controller =
-        WorkspaceController::new_owned_localized(Store(f.backend.clone()), Platform::Web, owner.clone(), 2000, Localizer::shared(UiLanguage::English));
+        WorkspaceController::new_owned_localized(Store(f.backend.clone()), Platform::Web, owner.clone(), 2000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
     f.pump();
     assert!(f.controller.view.ready, "{:?}", f.controller.view.error);
     assert_eq!(f.controller.view.id.as_deref(), Some(id.as_str()));
@@ -903,7 +907,7 @@ fn startup_with_an_occupied_window_binding_reuses_an_available_default() {
     let claimed = pollster::block_on(other.prepare_switch(&original, 1_000)).unwrap();
     other.activate(claimed);
     f.controller =
-        WorkspaceController::new_owned_localized(Store(f.backend.clone()), Platform::Web, owner, 1_000, Localizer::shared(UiLanguage::English));
+        WorkspaceController::new_owned_localized(Store(f.backend.clone()), Platform::Web, owner, 1_000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
     f.pump();
     assert!(f.controller.view.ready, "{:?}", f.controller.view.error);
     assert_eq!(
@@ -1356,7 +1360,7 @@ fn new_workspaces_are_pinned_without_repinning_hidden_workspaces() {
 fn closing_before_adoption_drains_claims() {
     let mut f = Fixture::new();
     f.input(serde_json::json!({"type":"suspend"}));
-    let mut closing = WorkspaceController::new_localized(Store(f.backend.clone()), Platform::Web, 1000, Localizer::shared(UiLanguage::English));
+    let mut closing = WorkspaceController::new_localized(Store(f.backend.clone()), Platform::Web, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
     closing
         .input(&mut f.host.session, WorkspaceInput::Close, 1000)
         .unwrap();
@@ -1928,15 +1932,37 @@ fn discard_close_releases_claims_without_saving_and_resume_cancels() {
 }
 
 #[test]
+fn constructor_wakes_the_first_pending_startup_reply() {
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let backend = Rc::new(Backend::default());
+    backend.now.set(1000);
+    let (release, gate) = async_channel::bounded(1);
+    *backend.editing_gate.borrow_mut() = Some(gate);
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let counter = wakes.clone();
+    let mut controller = WorkspaceController::new_localized(
+        Store(backend), Platform::Web, 1000, Localizer::shared(UiLanguage::English),
+        Arc::new(move || { counter.fetch_add(1, Ordering::SeqCst); }),
+    );
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
+    controller.tick(&mut host.session, 1000);
+    assert!(!controller.view.ready);
+    assert_eq!(wakes.load(Ordering::SeqCst), 0);
+    release.try_send(()).unwrap();
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    controller.tick(&mut host.session, 1000);
+    assert!(controller.view.ready);
+}
+
+#[test]
 fn wake_fires_on_store_reply_and_stop_disarms() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    let mut f = Fixture::new();
     let wakes = Arc::new(AtomicUsize::new(0));
     let counter = wakes.clone();
-    f.controller.set_wake(Arc::new(move || {
+    let mut f = Fixture::with_wake(Platform::Web, Arc::new(move || {
         counter.fetch_add(1, Ordering::SeqCst);
     }));
     f.input(serde_json::json!({"type":"open","page":"workspaces"}));
@@ -2004,7 +2030,7 @@ fn resume_key_restores_the_scene_workspace_before_last_used() {
     let mut f = Fixture::new();
     let first = f.controller.view.id.clone().unwrap();
     let key = "apple:scene:one".to_string();
-    let mut host = layer_host::NativeHost::new(Platform::Web).unwrap();
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
     let now = f.backend.now.get();
     let mut run = |c: &mut WorkspaceController<Store>, input: Option<serde_json::Value>| {
         if let Some(input) = input {
@@ -2016,7 +2042,7 @@ fn resume_key_restores_the_scene_workspace_before_last_used() {
         }
     };
     let start = |f: &Fixture| {
-        WorkspaceController::new_localized(Store(f.backend.clone()), Platform::Web, now, Localizer::shared(UiLanguage::English))
+        WorkspaceController::new_localized(Store(f.backend.clone()), Platform::Web, now, Localizer::shared(UiLanguage::English), Arc::new(|| {}))
             .with_resume_key(key.clone(), now)
     };
     let mut scene = start(&f);
@@ -2118,7 +2144,7 @@ impl WorkspaceStore for FaultyStore {
             return Err(StoreError::new(f.kind.clone(), "invalid type: map, expected a boolean"));
         }
         f.healed.set(f.healed.get() || aside);
-        if aside { *f.database.borrow_mut() = BrowserDatabase::default(); return Ok(StoreResponse::Done); }
+        if aside { *f.database.borrow_mut() = BrowserDatabase::default(); return Ok(StoreResponse::SetAside { restored: false }); }
         if let StoreRequest::Commit { batch } = &request {
             f.database.borrow_mut().prepare_delivery(batch)?;
         }
@@ -2129,8 +2155,8 @@ fn start<S: WorkspaceStore + 'static>(
     store: S,
     platform: Platform,
 ) -> (WorkspaceController<S>, layer_host::NativeHost) {
-    let mut host = layer_host::NativeHost::new(platform).unwrap();
-    let mut controller = WorkspaceController::new_localized(store, platform, 1000, Localizer::shared(UiLanguage::English));
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(platform).unwrap());
+    let mut controller = WorkspaceController::new_localized(store, platform, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
     for _ in 0..20 {
         if controller.view.ready {
             break;
@@ -2188,7 +2214,7 @@ fn release_fixtures_load_without_loss() {
 }
 
 #[test]
-fn saved_slots_alias_released_ids_and_keep_unknown_layouts_without_resetting_storage() {
+fn saved_slots_alias_released_ids_and_drop_unknown_tiles_without_resetting_storage() {
     for slot in ["lasso_fill", "unknown_slot"] {
         let backend = Rc::new(Backend::default());
         let layout = layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web);
@@ -2200,20 +2226,29 @@ fn saved_slots_alias_released_ids_and_keep_unknown_layouts_without_resetting_sto
         let stored = backend.database.borrow().encoded().unwrap().replace("\"slot\":\"fill\"", &format!("\"slot\":\"{slot}\""));
         *backend.database.borrow_mut() = BrowserDatabase::decode(&stored).unwrap();
         let (controller, mut host) = start(Store(backend), Platform::Web);
-        if slot == "unknown_slot" { assert_started(&controller, &mut host, slot); }
         assert!(controller.view.ready);
         assert!(controller.view.error.is_none());
         assert!(host.session.state().workspace_ready);
         assert_eq!(notice(&host), None);
-        assert_eq!(host.session.capture_workspace().unwrap().history.layout(), &layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web));
-        let loaded = pollster::block_on(controller.manager.load(&id));
-        if slot == "lasso_fill" {
-            assert_eq!(controller.manager.current().unwrap().id, id);
-            assert_eq!(loaded.unwrap().entity.capture().unwrap().history.layout(), &layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web));
-            assert_eq!(serde_json::from_str::<layer_ui::ToolSlotId>("\"lasso_fill\"").unwrap(), layer_ui::ToolSlotId::Fill);
-        } else {
-            assert!(loaded.is_err());
+        assert_eq!(controller.manager.current().unwrap().id, id, "{slot}");
+        let mut expected = serde_json::to_value(layer_ui::WorkspacePreset::Illustrator.layout(Platform::Web)).unwrap();
+        if slot == "unknown_slot" {
+            fn retain(value: &mut serde_json::Value) {
+                match value {
+                    serde_json::Value::Array(items) => {
+                        items.retain(|item| item["control"] != serde_json::json!({"kind":"tool_slot","slot":"fill"}));
+                        items.iter_mut().for_each(retain);
+                    }
+                    serde_json::Value::Object(fields) => fields.values_mut().for_each(retain),
+                    _ => {}
+                }
+            }
+            retain(&mut expected);
         }
+        assert_eq!(serde_json::to_value(host.session.capture_workspace().unwrap().history.layout()).unwrap(), expected);
+        let loaded = pollster::block_on(controller.manager.load(&id)).unwrap();
+        assert_eq!(serde_json::to_value(loaded.entity.capture().unwrap().history.layout()).unwrap(), expected);
+        assert_eq!(serde_json::from_str::<layer_ui::ToolSlotId>("\"lasso_fill\"").unwrap(), layer_ui::ToolSlotId::Fill);
         assert_eq!(controller.manager.items().len(), DEFAULT_WORKSPACES.len() + 1);
         assert!(!controller.manager.in_memory());
     }
@@ -2258,31 +2293,10 @@ fn notice(host: &layer_host::NativeHost) -> Option<String> {
     host.session.state().notice.as_ref().map(|n| n.text.clone())
 }
 #[test]
-fn unreadable_editing_fields_raise_one_notice_per_start() {
-    for damaged in [false,true] {
-        let backend = Rc::new(Backend::default());
-        let mut editing = serde_json::to_value(layer_ui::EditingState::default()).unwrap();
-        if damaged { editing["preset"] = "unreadable".into(); }
-        let mut stored = serde_json::from_str::<serde_json::Value>(&backend.database.borrow().encoded().unwrap()).unwrap();
-        stored["editing"] = editing.to_string().into();
-        *backend.database.borrow_mut() = BrowserDatabase::decode(&stored.to_string()).unwrap();
-        let (mut controller,mut host) = start(Store(backend),Platform::Web);
-        assert_started(&controller,&mut host,"editing notice");
-        assert_eq!(notice(&host).as_deref(),damaged.then_some("Some palettes or brush settings can't be opened in this version of Capy Canvas. Update Capy Canvas to open them."));
-        if let Some(notice) = host.session.state().notice.clone() {
-            for _ in 0..4 { controller.tick(&mut host.session,2000); }
-            assert_eq!(host.session.state().notice.as_ref().unwrap().id,notice.id);
-            host.session.dispatch(UiAction::Notice {id:notice.id,accept:false,action:None}).unwrap();
-            controller.tick(&mut host.session,3000);
-            assert!(host.session.state().notice.is_none());
-        }
-    }
-}
-#[test]
 fn startup_notices_survive_initial_drawing_recovery_without_reappearing_after_dismissal() {
     let (mut controller,mut host) = start(FaultyStore::failing(0,false,ErrorKind::Unavailable),Platform::Web);
     let notice = host.session.state().notice.clone().unwrap();
-    let mut restored = layer_host::NativeHost::new(Platform::Web).unwrap();
+    let mut restored = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
     restored.session.inherit_window_state(&host.session).unwrap();
     std::mem::swap(&mut host.session,&mut restored.session);
     controller.tick(&mut host.session,2000);
@@ -2407,8 +2421,8 @@ fn startup_on_every_platform_adopts_from_empty_or_unusable_storage() {
 fn mobile_browsers_start_in_sketch_and_desktop_browsers_start_in_paint() {
     for (mobile, expected) in [(false, "Paint"), (true, "Sketch")] {
         let store = Store(Rc::new(Backend::default()));
-        let mut host = layer_host::NativeHost::new(Platform::Web).unwrap();
-        let mut controller = WorkspaceController::new_localized(store, Platform::Web, 1000, Localizer::shared(UiLanguage::English))
+        let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Web).unwrap());
+        let mut controller = WorkspaceController::new_localized(store, Platform::Web, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}))
             .with_mobile_browser(mobile);
         assert!(!host.session.state().workspace_ready);
         for _ in 0..20 { controller.tick(&mut host.session, 1000); }
@@ -2435,8 +2449,8 @@ fn workspace_controls_become_ready_with_the_restored_layout_on_every_platform() 
         pollster::block_on(manager.close()).unwrap();
         let (release, hold) = async_channel::bounded(1);
         *store.0.switcher_gate.borrow_mut() = Some(hold);
-        let mut host = layer_host::NativeHost::new(platform).unwrap();
-        let mut controller = WorkspaceController::new_localized(store, platform, 1000, Localizer::shared(UiLanguage::English));
+        let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(platform).unwrap());
+        let mut controller = WorkspaceController::new_localized(store, platform, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
         for _ in 0..20 {
             controller.tick(&mut host.session, 1000);
             assert!(!controller.view.ready, "{platform:?}");
@@ -2536,9 +2550,9 @@ fn startup_replaces_only_storage_it_cannot_read() {
 pub(crate) fn start_native(
     directory: &std::path::Path,
 ) -> (WorkspaceController<StoreWorker>, layer_host::NativeHost) {
-    let mut host = layer_host::NativeHost::new(Platform::Gtk).unwrap();
+    let mut host = crate::test_support::uncovered(layer_host::NativeHost::new(Platform::Gtk).unwrap());
     let mut controller =
-        WorkspaceController::new_localized(StoreWorker::shared(directory).unwrap(), Platform::Gtk, 1000, Localizer::shared(UiLanguage::English));
+        WorkspaceController::new_localized(StoreWorker::shared(directory).unwrap(), Platform::Gtk, 1000, Localizer::shared(UiLanguage::English), Arc::new(|| {}));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while !controller.view.ready && std::time::Instant::now() < deadline {
         controller.tick(&mut host.session, 1000);
@@ -2572,7 +2586,7 @@ fn sqlite_startup_retention_does_not_delay_workspace_forms() {
 }
 
 #[test]
-fn sqlite_startup_creates_one_workspace_and_keeps_unreadable_rows() {
+fn sqlite_startup_opens_unreadable_workspaces_without_rewriting_them() {
     let directory = crate::test_support::temp_dir("workspace-stale");
     let (controller, mut host) = start_native(&directory);
     assert_started(&controller, &mut host, "first start");
@@ -2597,26 +2611,23 @@ fn sqlite_startup_creates_one_workspace_and_keeps_unreadable_rows() {
     assert_eq!(stale, DEFAULT_WORKSPACES.len());
 
     let unreadable_rows = || {
-        let mut query = db.prepare("SELECT * FROM items WHERE content='{}' ORDER BY id").unwrap();
+        let mut query = db.prepare("SELECT id,content,working FROM items WHERE content='{}' ORDER BY id").unwrap();
         let columns = query.column_count();
         query.query_map([],|row| (0..columns).map(|column| row.get::<_,rusqlite::types::Value>(column)).collect::<rusqlite::Result<Vec<_>>>()).unwrap()
             .collect::<rusqlite::Result<Vec<_>>>().unwrap()
     };
     let original = unreadable_rows();
-    let mut active = None;
     for launch in ["stale start","restart"] {
         let (controller, mut host) = start_native(&directory);
         assert!(controller.view.ready && !controller.view.busy, "{launch}: {:?}",controller.view.error);
         assert!(controller.view.error.is_none());
-        assert!(host.session.capture_workspace().is_ok());
         assert!(host.session.state().workspace_ready);
-        assert_eq!(notice(&host).as_deref(),(launch=="stale start").then_some("This version of Capy Canvas can't open your saved workspaces. Update Capy Canvas to open them."));
+        assert_eq!(notice(&host), None, "{launch}");
         assert!(!controller.manager.in_memory());
         let id = controller.manager.active_id().unwrap();
-        assert!(!DEFAULT_WORKSPACES.iter().any(|(builtin,_)| *builtin==id));
-        if let Some(previous) = &active { assert_eq!(&id,previous); }
-        active = Some(id);
-        assert_eq!(controller.manager.items().iter().filter(|item|item.metadata.kind==ItemKind::Workspace).count(),stale+1);
+        let included = Entity::included_workspace(&id,Platform::Gtk,false,0).unwrap();
+        assert_eq!(host.session.capture_workspace().unwrap().history.layout(),included.capture().unwrap().history.layout(),"{launch}");
+        assert_eq!(controller.manager.items().iter().filter(|item|item.metadata.kind==ItemKind::Workspace).count(),stale);
         close_native(controller, &mut host);
         assert_eq!(unreadable_rows(),original);
     }
@@ -2743,64 +2754,6 @@ fn workspace_projection_uses_one_identity_without_publishing_or_dirtying() {
         assert!(!manager.dirty());
         assert_eq!(serde_json::to_string(&manager.current().unwrap()).unwrap(), before);
         assert_eq!(backend.deliveries.borrow().len(), publications);
-    }
-}
-
-#[test]
-fn reset_restore_prompt_keeps_both_choices_and_a_copy_of_replaced_data() {
-    for restore in [false,true] {
-        let directory = crate::test_support::temp_dir("reset-restore-prompt");
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("workspaces.sqlite3");
-        std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compat/1.0.15/workspaces.sqlite3"),&path).unwrap();
-        {
-            let mut store = SqliteStore::open(&path).unwrap();
-            store.handle(StoreRequest::Reset).unwrap();
-        }
-        let english = Localizer::shared(UiLanguage::English);
-        let mut current = layer_ui::EditingState::new_localized(&english);
-        current.tools.set_override(current.preset,"size",43.,&english).unwrap();
-        {
-            let sql = rusqlite::Connection::open(&path).unwrap();
-            sql.execute("INSERT INTO editing(id,json) VALUES(1,?1)",[serde_json::to_string(&current).unwrap()]).unwrap();
-        }
-        let (mut controller,mut host) = start_native(&directory);
-        fn drive(controller:&mut WorkspaceController<StoreWorker>,host:&mut layer_host::NativeHost,done:impl Fn(&WorkspaceController<StoreWorker>,&layer_host::NativeHost)->bool) {
-            let deadline = std::time::Instant::now()+std::time::Duration::from_secs(20);
-            while !done(controller,host) && std::time::Instant::now()<deadline {
-                controller.tick(&mut host.session,1000);
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            assert!(done(controller,host),"{:?}",controller.view.error);
-        }
-        drive(&mut controller,&mut host,|c,_|c.view.prompt.is_some());
-        let prompt = controller.view.prompt.as_ref().unwrap();
-        assert_eq!(prompt.title,"Restore Workspaces?");
-        assert_eq!(prompt.message,"An older version of Capy Canvas reset your workspaces, palettes and brush settings. Restoring replaces changes you made after the reset.");
-        assert_eq!(prompt.confirm,"Restore");
-        assert_eq!(prompt.cancel.as_deref(),Some("Keep Current"));
-        assert_eq!(host.session.state().brush.diameter,43.);
-        let copies = || std::fs::read_dir(&directory).unwrap().map(|entry|entry.unwrap().path())
-            .filter(|path|path.file_name().unwrap().to_string_lossy().strip_suffix(".sqlite3").is_some_and(crate::snapshots::managed_name)).collect::<Vec<_>>();
-        let before = copies();
-        controller.input(&mut host.session,if restore {WorkspaceInput::Submit {name:String::new(),description:None,choice:None}} else {WorkspaceInput::Cancel},1000).unwrap();
-        drive(&mut controller,&mut host,|c,h|c.view.prompt.is_none() && c.view.ready && h.session.state().brush.diameter==if restore {37.} else {43.});
-        assert!(controller.view.prompt.is_none(),"{:?}",controller.view.error);
-        assert!(controller.view.error.is_none(),"{:?}",controller.view.error);
-        assert_eq!(host.session.state().brush.diameter,if restore {37.} else {43.});
-        let added: Vec<_> = copies().into_iter().filter(|path|!before.contains(path)).collect();
-        assert_eq!(added.len(),usize::from(restore));
-        if restore {
-            let sql = rusqlite::Connection::open(&added[0]).unwrap();
-            let json: String = sql.query_row("SELECT json FROM editing",[],|row|row.get(0)).unwrap();
-            assert_eq!(layer_ui::EditingState::restore(&json,&english),current);
-        }
-        close_native(controller,&mut host);
-        let (controller,mut host) = start_native(&directory);
-        assert!(controller.view.prompt.is_none());
-        assert_eq!(host.session.state().brush.diameter,if restore {37.} else {43.});
-        close_native(controller,&mut host);
-        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 

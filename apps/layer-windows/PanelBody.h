@@ -13,7 +13,7 @@ public:
     PanelBody(std::shared_ptr<CapyUi::WorkspaceData> data,CapyUi::J const& panel,
         CapyUi::J const& geometry,std::function<void()> layoutChanged,std::shared_ptr<WorkspaceGestures> const& gestures={},bool scrollable=true,std::function<CapyUi::J()> tools={});
     winrt::Microsoft::UI::Xaml::FrameworkElement Root()const{return root;}
-    void Apply(bool visible);
+    void Apply(bool visible,bool refresh=false);
     void Layout(CapyUi::J const& geometry);
     double drawerMinimum=0;winrt::hstring iconTheme;
     double ContentHeight(double width=0)const;
@@ -24,6 +24,9 @@ public:
     std::map<uint32_t,winrt::Microsoft::UI::Xaml::Controls::Button> tileControls;
     std::map<std::wstring,winrt::Microsoft::UI::Xaml::FrameworkElement> anchors;
 private:
+    CanvasModelInputs inputs;
+    CapyUi::J appliedState{nullptr},appliedCatalog{nullptr};
+    bool wasVisible=false;
     std::shared_ptr<CapyUi::WorkspaceData> data;
     winrt::Microsoft::UI::Xaml::FrameworkElement root{nullptr};
     CapyUi::Bindings bindings;

@@ -43,7 +43,7 @@ try {
     $watch=[Diagnostics.Stopwatch]::StartNew()
     do{$review.Refresh();if($review.HasExited){throw 'Review exited at startup'};Start-Sleep -Milliseconds 100;$script:registeredWindow=Owned-DrawingWindow $review}while(!$registeredWindow -and $watch.Elapsed.TotalSeconds -lt 45)
     $root=$registeredWindow.Root
-    Wait-Until {(Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Retouching review did not start' 45
+    Wait-Until {(Review-Ready) -and !(Model).windows_workspace.busy} 'Retouching review did not start' 45
     $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     [CapyRowPointer]::SetForegroundWindow($registeredWindow.Handle)|Out-Null

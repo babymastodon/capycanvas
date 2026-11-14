@@ -54,7 +54,7 @@ private struct CommandSearchBar: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let height = min(geometry.size.height, max(0, store.snapshot["layout"]["viewport"][1].number - store.keyboardInset))
+            let height = min(geometry.size.height, max(0, store.snapshot["layout"]["viewport"][1].number - store.obscuredBottom))
             let visible = JSON(["x": 0, "y": 0, "width": geometry.size.width, "height": height])
             let key = JSON([visible.raw, store.snapshot["layout"]["phone"].raw]).stableKey
             ZStack(alignment: .topLeading) {
@@ -144,7 +144,7 @@ private struct CommandSearchBar: View {
                 if toCanvas { send(["type": "commit", "text": text]) }
                 return true
             }, cancel: back, step: { _ = move(-$0) }, placeholder: prompt, alignment: .natural, returnKey: .search,
-            selectsReplacedText: true)
+            selectsReplacedText: true, softSubmit: { send(["type": "search", "text": text]) })
             .frame(height: 24)
         #else
         TextField(prompt, text: $text, selection: $selection)

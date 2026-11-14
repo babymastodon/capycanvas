@@ -1,7 +1,7 @@
 struct Params { bounds: vec4<f32>, count: u32, shape_only: u32, strength: f32, unused: u32 }
 struct Contacts { values: array<Dab,64> }
 @group(0) @binding(0) var<uniform> style: Style;
-@group(0) @binding(1) var<uniform> contacts: Contacts;
+@group(0) @binding(1) var<storage,read> contacts: Contacts;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage,read_write> output: array<u32>;
 

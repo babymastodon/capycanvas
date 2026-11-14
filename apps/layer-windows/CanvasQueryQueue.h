@@ -8,12 +8,15 @@
 #include <string>
 #include <utility>
 #include <atomic>
+#include <algorithm>
+#include <chrono>
+#include <limits>
 
 enum class CanvasQueryKind { Filters, Thumbnails, LayerMenu, Workspace, Document, Papers };
 using PreviewPacket=NativePreview;
 using PreviewReply=std::function<void(PreviewPacket)>;
 using PreviewTransport=std::function<bool(CanvasQueryKind,std::string,PreviewReply)>;
-struct CanvasQuery {CanvasQueryKind kind;std::string json;PreviewReply reply;};
+struct CanvasQuery {CanvasQueryKind kind;std::string json;PreviewReply reply;uint64_t after=0;};
 
 // Optional UI queries never consume the input queue's reserved command space.
 // Each cache allows one outstanding reply; this queue also bounds the window
@@ -29,10 +32,10 @@ public:
         if(items.size()>=MaxItems)return false;
         items.emplace_back(std::move(item));return true;
     }
-    std::optional<CanvasQuery> Take(std::optional<CanvasQueryKind> kind={}){
+    std::optional<CanvasQuery> Take(std::optional<CanvasQueryKind> kind={},uint64_t taken=std::numeric_limits<uint64_t>::max()){
         auto next=items.end();
         for(auto it=items.begin();it!=items.end();++it){
-            if(kind&&it->kind!=*kind)continue;
+            if((kind&&it->kind!=*kind)||it->after>taken)continue;
             if(next==items.end())next=it;
             if(it->kind==CanvasQueryKind::LayerMenu){next=it;break;}
         }
@@ -51,6 +54,14 @@ inline CanvasRenderStep NextCanvasRenderStep(bool canvasPending,CanvasWorkBuffer
 }
 
 inline bool CanAnswerCanvasQueryAfterFrame(bool closing){return !closing;}
+
+class CanvasSurfacePoll {
+    std::optional<std::chrono::steady_clock::time_point> due;
+public:
+    void Schedule(bool pending,std::chrono::steady_clock::time_point now,std::chrono::nanoseconds refresh){if(pending)due=now+refresh;else due.reset();}
+    std::chrono::steady_clock::time_point Wake(std::chrono::steady_clock::time_point services)const{return due?std::min(*due,services):services;}
+    bool Due(std::chrono::steady_clock::time_point now)const{return due&&now>=*due;}
+};
 
 class CanvasQuerySlots {
     struct Slot {

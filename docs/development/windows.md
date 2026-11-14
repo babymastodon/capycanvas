@@ -133,6 +133,7 @@ metadata and retained beside their matching x64 DLLs for emulation on Arm.
 
 ### Changing the host
 
+- **Model inputs.** Use `NativeJson.h` readers (`named` for raw values, `branch` for traversal, `count` for array length) in cached presentation callbacks; adopt model/state before gating and force refreshes for native input changes.
 - **Integers in native JSON.** Emit unsigned identifiers and nanosecond
   timestamps as integer tokens through `NativeJson.h`; the WinRT JSON number type
   stores doubles.
@@ -206,7 +207,7 @@ set, and passing `$null` to `[Environment]::SetEnvironmentVariable` can leave on
 | Variable | Effect |
 | --- | --- |
 | `CAPY_STORAGE_DIR` | Absolute folder replacing every [app folder](#where-files-live). Test and review runs use a fresh one under `artifacts/windows`; smoke-test hooks require it. |
-| `CAPY_TRACE_UI=1` | Writes `ui-state-<pid>-<window>.json`, `camera-state-<pid>-<window>.json`, `panel-metrics-<pid>-<window>.json`, `windows-<pid>.json` and `lifecycle.log` in the working directory, and adds gesture state to UI Automation. These files can contain private settings. |
+| `CAPY_TRACE_UI=1` | Writes `ui-state-<pid>-<window>.json`, `camera-state-<pid>-<window>.json`, `panel-metrics-<pid>-<window>.json`, `text-input-<pid>-<window>.json`, `windows-<pid>.json` and `lifecycle.log` in the working directory, and adds gesture state to UI Automation. These files can contain private settings. |
 | `CAPY_SMOKE_TEST=1` | Adds test buttons: replayed stroke, pan, pen and backlog, filter reload and GPU device removal. Replay bypasses OS input delivery. |
 | `CAPY_TEST_HDR=1` | With `CAPY_SMOKE_TEST`, adds buttons that simulate HDR and SDR output. |
 | `CAPY_TEST_DISPLAY=1` | Opens the window on a display running at 120 Hz or more, or on the primary display with `CAPY_TEST_PRIMARY=1`. |
@@ -444,9 +445,15 @@ Use `fixtures --runners N <areas>` for matrices across the reserved
 [CPU runner pool](windows-vm.md#cpu-runner-pool).
 Run changed UI in both themes, and input changes with each device.
 
-`exercise-edge-reach.ps1 -SweepOnly` samples edge reach bands, group gaps and
-empty closed-strip space in Photo, Photo with both columns closed, and Paint.
-Run it with each `-Device` and both `-Theme` values.
+`fixtures edge-reach:SweepOnly` runs eight scenario/theme rows covering Photo,
+open and closed Photo columns, and Paint in both themes. Direct
+`exercise-edge-reach.ps1 -SweepOnly -SweepScenario photo -Theme dark` selects one
+group; omitting `-SweepScenario` keeps all four scenarios. Samples cover edge
+reach bands, group gaps and empty closed-strip space. Run direct checks with
+each `-Device` and both `-Theme` values.
+
+`fixtures popup` runs `controls` and `text-layout` in both themes; direct
+`exercise-popup.ps1 -Group controls` or `-Group text-layout` selects one group.
 
 Run `gh workflow run windows-readiness.yml -f source_ref=<commit-sha>` for x64
 WARP fixtures on hosted Windows VMs; its `fixtures` input takes a JSON array
@@ -484,6 +491,12 @@ Follow these rules when writing one:
   desktop and foreground input. Run them sequentially.
 - **Resolve the drawing window.** Use `Owned-DrawingWindow` at startup and after
   reopening, and keep its root and HWND for input, sizing, captures and closing.
+  Wait for `Review-Ready` before the first input after every launch, never for
+  `brush_ready` alone: the native launch cover takes clicks and keys until its
+  reveal, after the brush and workspace are ready. When the first input is
+  keyboard or canvas input, wait for `Input-Ready`, which also needs the enabled
+  drawing canvas; a launch that opens on a modal prompt keeps `Review-Ready`.
+  Pass the window handle when the process has several windows.
   `Process.MainWindowHandle` can select an input-indicator overlay in the same
   process. Pass `-StateDirectory` when the app's working directory differs from
   its executable directory.
@@ -493,6 +506,9 @@ Follow these rules when writing one:
   rows within the published `panel-body-scroll-N` bounds: a scroll provider's
   bounds can include its whole content extent. Convert DIP sizes with the owned
   window's DPI before resizing.
+- **Launch at the text size you test.** In the VM harness a text-size registry
+  change reaches a running app only seconds later, without a notification; set
+  it before a fresh launch and check the published `text_scale` first.
 - **Use real keyboard focus.** Arrange keyboard targets, then use `Focus-Keyboard`,
   which uses native Tab traversal; UI Automation's SetFocus does not establish
   keyboard modality.
@@ -507,9 +523,15 @@ Follow these rules when writing one:
 - **Measure timed input.** Use the native test drivers for double presses,
   holds and prediction strokes and record their actual timing; PowerShell sleeps
   can exceed a gesture's interval under load.
+- **Keep mixed-device holds on the mouse.** Windows cancels held touch when a pen
+  comes into range; use the mouse to hold a gesture across pen input.
+- **Open mouse submenus by hovering.** Clicking leaves WinUI's delay-open timer
+  running, which can reopen the submenu after Escape.
 - **Wait for the operation you started.** Compare the document revision or the
   requested state before and after input. An already enabled Undo does not prove
   a new stroke committed, and `WaitForInputIdle` does not acknowledge an operation.
+  Equal pixel or state signatures across a sleep do not prove a commit; wait for
+  the published document revision.
   For native overlays, acknowledge the applied fill before composed pixel
   sampling; bubble checks use `Wait-BubbleOverlayPhase`.
   After zooming, steady-motion checks also wait for the committed
@@ -522,8 +544,9 @@ Follow these rules when writing one:
   SwapChainPanel image. Before `Wait-StablePixels` samples, the `presentation-state`
   acknowledgement must show the required present as displayed, because the
   desktop compositor can show frames more than a second late. Compare restoration
-  with the original pixels, not a theme-specific threshold, and move the pointer
-  and tooltips out of the capture first.
+  with the original pixels, not a theme-specific threshold. Before pixel or
+  tooltip-free captures, park on clear canvas paper (`Canvas-Point`), away from
+  chrome that owns a tooltip.
 - **Use current identifiers.** Menu items use the shared command ID, other layer
   actions `layer-menu-<op>`. Resolve a toolbar tile once and keep its ID:
   `resolved_control` changes when its variant does.

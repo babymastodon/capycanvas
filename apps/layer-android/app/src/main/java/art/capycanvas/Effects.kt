@@ -77,7 +77,7 @@ private fun CanvasHost.effect(action: JSONObject, moving: Boolean = false) = dis
     LaunchedEffect(host, previewView) {
         snapshotFlow {
             val visible = list.layoutInfo.visibleItemsInfo.map { it.key }.toSet()
-            currentChoices.filter { !it.getBoolean("bundled_preview") }.map { it.getString("id") }.filter { it in visible }
+            currentChoices.map { it.getString("id") }.filter { it in visible }
         }.collect { ids -> cache.update(previewView, ids) }
     }
     Column(modifier.padding(panelMetrics().inset), verticalArrangement = Arrangement.spacedBy(panelMetrics().spacing)) {
@@ -310,7 +310,7 @@ private data class CurveTap(val position: Offset, val time: Long, val epoch: Lon
 }
 
 @Composable internal fun SharedCurveControl(host: CanvasHost, state: JSONObject, control: JSONObject, label: String, target: JSONObject,
-    enabled: Boolean = true, histogram: Boolean = false, gutterLabel: String? = null, overlay: @Composable BoxScope.() -> Unit = {}) {
+    enabled: Boolean = true, histogram: Boolean = false, gutterLabel: String? = null, minimumSize: androidx.compose.ui.unit.DpSize = androidx.compose.ui.unit.DpSize(0.dp,200.dp), overlay: @Composable BoxScope.() -> Unit = {}) {
     val colors = LocalPalette.current
     val density = LocalDensity.current.density
     val current by rememberUpdatedState(control)
@@ -322,7 +322,7 @@ private data class CurveTap(val position: Offset, val time: Long, val epoch: Lon
         if (gutterLabel != null) (measurer.measure(gutterLabel, style).size.width / density).dp + 8.dp else 40.dp
     }
     var graphWidth by remember { mutableIntStateOf(0) }
-    val graphHeight = if (gutterLabel != null && graphWidth > 0) (graphWidth / density).dp else 200.dp
+    val graphHeight = if (gutterLabel != null && graphWidth > 0) maxOf((graphWidth / density).dp,minimumSize.height) else minimumSize.height
     val curve = control.getJSONObject("controls")
     val axes = curve.array("axes").objects()
     val focus = remember { FocusRequester() }
@@ -352,7 +352,7 @@ private data class CurveTap(val position: Offset, val time: Long, val epoch: Lon
                 }
                 Text(axes[1].getString("minimum"), color = colors.secondary)
             }
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f).widthIn(min = minimumSize.width)) {
                 Box(Modifier.fillMaxWidth().height(graphHeight).onSizeChanged { graphWidth = it.width }.background(colors.input)) {
                     if (histogram) ScopeGraph(host, state, "tonal_histogram", Modifier.fillMaxSize())
                     Canvas(Modifier.fillMaxSize().testTag("effect-curve").semantics { contentDescription = label }
@@ -473,7 +473,6 @@ private data class CurveTap(val position: Offset, val time: Long, val epoch: Lon
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun RendererStatsPanel(host: CanvasHost) {
     var stats by remember { mutableStateOf<JSONObject?>(null) }
     LaunchedEffect(host) {
@@ -488,30 +487,30 @@ private data class CurveTap(val position: Offset, val time: Long, val epoch: Lon
         }
     }
     val colors = LocalPalette.current
-    Column(Modifier.fillMaxWidth().testTag("renderer-stats"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(Modifier.fillMaxWidth().testTag("renderer-stats"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         stats?.let { view ->
             view.array("rows").objects().forEachIndexed { index, row ->
-                HoverTip(row.getString("description")) {
-                    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(row.getString("label"), Modifier.weight(1f))
-                        Text(row.getString("value"), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End)
-                    }
-                }
+                MeterRow(row, Modifier.testTag("renderer-stat-row-$index"), "renderer-stat-$index")
                 if (index + 1 == view.getInt("chart_after_rows")) {
-                    Canvas(Modifier.fillMaxWidth().height(46.dp).testTag("renderer-stats-chart")) {
-                        val samples = view.array("samples").values().map { (it as Number).toFloat() }
-                        val budget = view.number("budget_ms"); val max = maxOf(budget,samples.maxOrNull() ?: 0f)*1.1f
-                        drawLine(colors.secondary,Offset(0f,size.height*(1-budget/max)),Offset(size.width,size.height*(1-budget/max)))
-                        val path=Path();samples.forEachIndexed { i,v -> val x=i*size.width/119;val y=size.height*(1-v/max);if(i==0)path.moveTo(x,y) else path.lineTo(x,y) }
-                        drawPath(path,colors.text,style=Stroke(1.dp.toPx()))
+                    HoverTip(view.getString("chart_label")) {
+                        Canvas(Modifier.fillMaxWidth().height(46.dp).testTag("renderer-stats-chart").semantics { contentDescription = view.getString("chart_label") }) {
+                            val samples = view.array("samples").values().map { (it as Number).toFloat() }
+                            val budget = view.number("budget_ms"); val max = maxOf(budget,samples.maxOrNull() ?: 0f)*1.1f
+                            drawLine(colors.secondary,Offset(0f,size.height*(1-budget/max)),Offset(size.width,size.height*(1-budget/max)))
+                            val path=Path();samples.forEachIndexed { i,v -> val x=i*size.width/119;val y=size.height*(1-v/max);if(i==0)path.moveTo(x,y) else path.lineTo(x,y) }
+                            drawPath(path,colors.text,style=Stroke(1.dp.toPx()))
+                        }
                     }
                 }
             }
+            HorizontalDivider(color = colors.menuSeparator)
+            MeterSection(view.getJSONObject("memory"))
+            HorizontalDivider(color = colors.menuSeparator)
         }
         TextButton(onClick = host.strokeRecording::click, enabled = !host.strokeRecording.busy,
             modifier = Modifier.height(panelMetrics().height).testTag("stroke-recording"), shape = ControlShape,
-            colors = ButtonDefaults.textButtonColors(contentColor = colors.text), contentPadding = PaddingValues(horizontal = panelMetrics().padding)) {
-            Text(host.strokeRecording.status?.optString("label") ?: host.catalog.getJSONObject("native_copy").getJSONObject("color").getString("record_tablet"))
+            colors = ButtonDefaults.textButtonColors(containerColor = colors.button, contentColor = colors.text), contentPadding = PaddingValues(horizontal = panelMetrics().padding)) {
+            Text(host.strokeRecording.status?.optString("label") ?: host.catalog.getJSONObject("native_copy").getJSONObject("color").getString("record_tablet"), fontWeight = FontWeight.Bold)
         }
     }
 }

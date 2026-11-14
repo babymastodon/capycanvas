@@ -2,7 +2,7 @@ import XCTest
 
 extension XCTestCase {
     @MainActor func checkLiveColorTab(in app: XCUIApplication, theme: String) {
-        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"}]"#
+        app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"\#(theme)"},{"type":"workspace_manager","command":{"type":"switch","id":"builtin:workspace:illustrator"}},{"type":"set_color","rgba":[0.3176470588235294,0.5019607843137255,0.22745098039215686,1]}]"#
         app.launch()
         let canvas = app.descendants(matching: .any)["canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 30))
@@ -35,7 +35,7 @@ extension XCTestCase {
         XCTAssertTrue(transparent.exists)
         XCTAssertEqual(transparent.frame.width, background.frame.width, accuracy: 1)
         XCTAssertEqual(transparent.frame.height, background.frame.height, accuracy: 1)
-        workspaceActivate(background); expectIcon([255, 255, 255])
+        colorControlPoint(background, in: app).clickOrTap(); expectIcon([255, 255, 255])
         workspaceActivate(transparent); expectIcon([255, 255, 255])
         workspaceActivate(app.buttons["color-foreground"]); expectIcon(green)
         workspaceActivate(app.buttons["paint-edit-color"].firstMatch)
@@ -110,7 +110,14 @@ extension XCTestCase {
         #else
         canvas.tap()
         expectSelected(eyedropper, false)
+        expectColor([1, 1, 1, 1])
+        workspaceActivate(app.buttons["paint-edit-color"].firstMatch)
+        XCTAssertTrue(app.buttons["color-use"].waitForExistence(timeout: 10))
+        editColorValue("hex", "#3373CC", in: app)
+        workspaceActivate(app.buttons["color-use"])
+        XCTAssertTrue(app.buttons["color-use"].waitForNonExistence(timeout: 10))
         expectColor([0.2, 0.45, 0.8, 1])
+        expectSelected(eyedropper, false)
         canvas.press(forDuration: 1)
         expectSelected(eyedropper, false)
         expectColor([1, 1, 1, 1])

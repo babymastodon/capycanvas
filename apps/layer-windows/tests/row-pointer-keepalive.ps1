@@ -1,5 +1,43 @@
-param([string]$Driver=(Join-Path $PSScriptRoot '../scripts/RowPointerDriver.cs'))
+param([string]$Driver=(Join-Path $PSScriptRoot '../scripts/RowPointerDriver.cs'),[switch]$TypeSourceOnly)
 $ErrorActionPreference='Stop'
+$driverSource=[IO.File]::ReadAllText((Resolve-Path $Driver)).Replace('public static class CapyRowPointer {',@'
+public static class CapyRowPointerMixed {
+public static Point StubCursor;
+public static readonly System.Collections.Generic.List<Mouse> StubMouse=new System.Collections.Generic.List<Mouse>();
+public static readonly System.Collections.Generic.List<TypeInfo> StubPen=new System.Collections.Generic.List<TypeInfo>();
+'@)
+$imports=@{
+ InitializeTouchInjection='return true;'
+ InjectTouchInput='throw new InvalidOperationException("Unexpected touch injection.");'
+ CreateSyntheticPointerDevice='return new IntPtr(1);'
+ InjectSyntheticPointerInput='StubPen.AddRange(contacts);return true;'
+ DestroySyntheticPointerDevice=''
+ SendInput='foreach(var value in input){StubMouse.Add(value.mouse);if((value.mouse.flags&0x8000)!=0)StubCursor=new Point{x=value.mouse.dx,y=value.mouse.dy};}return count;'
+ GetSystemMetrics='return code==78||code==79?65536:0;'
+ GetCursorPos='point=StubCursor;return true;'
+ GetForegroundWindow='return new IntPtr(1);'
+ GetWindowThreadProcessId='process=71;return 1;'
+ WindowFromPoint='return new IntPtr(1);'
+}
+foreach($method in $imports.Keys){
+ $pattern='\[DllImport\([^\r\n]+\)\] ((?:public )?static) extern (\w+) '+$method+'\(([^;\r\n]*)\);'
+ $matches=[regex]::Matches($driverSource,$pattern)
+ if($matches.Count -ne 1){throw "Missing native boundary: $method"}
+ $match=$matches[0]
+ $driverSource=$driverSource.Replace($match.Value,($match.Groups[1].Value+' '+$match.Groups[2].Value+' '+$method+'('+$match.Groups[3].Value+'){'+$imports[$method]+'}'))
+}
+$edgeSource= @'
+namespace CapyEdgeContactTest {
+ public static class Pointer {
+  public static int Downs,Cancels,Hovers,X,Y;
+  public static void Down(string device,int x,int y){Downs++;X=x;Y=y;}
+  public static void Cancel(){Cancels++;}
+  public static void Hover(int x,int y){Hovers++;}
+ }
+}
+'@
+$mixedSource=$driverSource+"`n"+$edgeSource
+if($TypeSourceOnly){return $mixedSource}
 Add-Type -Path $Driver
 $type=[CapyRowPointer]
 $flags=[Reflection.BindingFlags]'NonPublic,Static'
@@ -47,22 +85,60 @@ try{
 'Synthetic contact expiry is detected and remains a Verify failure after cleanup'
 
 & {
- Add-Type -TypeDefinition @'
-namespace CapyEdgeContactTest {
- public static class Pointer {
-  public static int Downs,Cancels,Hovers,X,Y;
-  public static void Down(string device,int x,int y){Downs++;X=x;Y=y;}
-  public static void Cancel(){Cancels++;}
-  public static void Hover(int x,int y){Hovers++;}
+ Add-Type -TypeDefinition $mixedSource
+ $type=[CapyRowPointerMixed]
+ function Assert-Mouse([int]$X,[int]$Y){
+  $point=$type.GetField('last',$flags).GetValue($null)
+  if(!$type::Active -or $type.GetField('kind',$flags).GetValue($null) -ne 4 -or $point.x -ne $X -or $point.y -ne $Y){throw 'Pen hover changed the active mouse contact'}
  }
+ $type::Initialize(71)
+ $gate=$type.GetField('gate',$flags).GetValue($null)
+ try{
+  [Threading.Monitor]::Enter($gate)
+  try{
+   foreach($ending in 'Cancel','Up'){
+    $type::Down('mouse',100,200)
+    $type::PenTilt(15,-25)
+    $type::PenHover(300,400)
+    Assert-Mouse 100 200
+    $frame=$type::StubPen[$type::StubPen.Count-1]
+    if($frame.type -ne 3 -or $frame.pen.pointer.type -ne 3 -or $frame.pen.pointer.flags -ne 0x20002 -or
+       $frame.pen.pointer.pixel.x -ne 300 -or $frame.pen.pointer.pixel.y -ne 400 -or $frame.pen.tiltX -ne 15 -or $frame.pen.tiltY -ne -25){throw 'Pen hover lost its own pointer kind, position or tilt'}
+    $count=$type::StubPen.Count
+    $type.GetMethod('Pulse',$flags).Invoke($null,@($null))|Out-Null
+    Assert-Mouse 100 200
+    $frame=$type::StubPen[$type::StubPen.Count-1]
+    if($type::StubPen.Count -ne $count+1 -or $frame.pen.pointer.type -ne 3 -or $frame.pen.pointer.flags -ne 0x20002 -or $frame.pen.pointer.pixel.x -ne 300 -or $frame.pen.pointer.pixel.y -ne 400){throw 'Pen keepalive lost the independent hover'}
+    $type::PenLeave()
+    Assert-Mouse 100 200
+    $frame=$type::StubPen[$type::StubPen.Count-1]
+    if($frame.pen.pointer.flags -ne 0x20000 -or $frame.pen.pointer.pixel.x -ne 300 -or $frame.pen.pointer.pixel.y -ne 400){throw 'Pen leave did not retire the hover at its own point'}
+    $type::Move(110,210)
+    Assert-Mouse 110 210
+    if($type::StubCursor.x -ne 110 -or $type::StubCursor.y -ne 210){throw 'Mouse move did not resume after pen leave'}
+    $type::PenHover(320,420)
+    $type::Move(120,220)
+    Assert-Mouse 120 220
+    $frame=$type::StubPen[$type::StubPen.Count-1]
+    if($frame.pen.pointer.flags -ne 0x20000 -or $frame.pen.pointer.pixel.x -ne 320 -or $frame.pen.pointer.pixel.y -ne 420){throw 'Mouse movement retired the pen hover at the mouse point'}
+    if($ending -eq 'Cancel'){$type::Cancel()}else{$type::Up()}
+    if($type::Active -or $type::StubMouse[$type::StubMouse.Count-1].flags -ne 4){throw "Mouse $ending did not release its original button"}
+    $type::Verify()
+   }
+  }finally{[Threading.Monitor]::Exit($gate)}
+ }finally{$type::Dispose()}
+ 'Pen tilt, hover and leave preserve active mouse contact state, movement and Cancel/Up cleanup'
 }
-'@
+
+& {
  $tokens=$null;$errors=$null
  $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../scripts/exercise-edge-reach.ps1'),[ref]$tokens,[ref]$errors)
  if($errors.Count){throw($errors|Out-String)}
- $function=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Contact'},$true)
- if(!$function){throw 'Missing actual edge contact helper'}
- . ([scriptblock]::Create($function.Extent.Text.Replace('[CapyRowPointer]','[CapyEdgeContactTest.Pointer]')))
+ foreach($name in 'Contact','Contact-Receipt'){
+  $function=$ast.Find({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name}.GetNewClosure(),$true)
+  if(!$function){throw "Missing actual edge contact helper $name"}
+  . ([scriptblock]::Create($function.Extent.Text.Replace('[CapyRowPointer]','[CapyEdgeContactTest.Pointer]')))
+ }
  function Screen([double]$X,[double]$Y){@{x=[int]$X;y=[int]$Y}}
  function Gesture{
   if([CapyEdgeContactTest.Pointer]::Cancels){return [pscustomobject]@{edge=$null}}

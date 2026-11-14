@@ -47,6 +47,10 @@ import UIKit
     static func ascent(size: Double, weight: Weight = .regular) -> CGFloat {
         CTFontGetAscent(nativeFont(size: size, weight: weight))
     }
+    static func lineHeight(size: Double, weight: Weight = .regular) -> CGFloat {
+        let font = nativeFont(size: size, weight: weight)
+        return CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font)
+    }
     static func width(_ text: String, size: Double, weight: Weight, monospacedDigits: Bool = false) -> CGFloat {
         let key = Key(text: text, size: size, weight: weight, monospacedDigits: monospacedDigits)
         if let width = widths[key] { return width }

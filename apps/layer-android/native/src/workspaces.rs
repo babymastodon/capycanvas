@@ -40,8 +40,6 @@ impl App {
         let before = self.host.session.state().revision;
         let change = c.tick(&mut self.host.session, time);
         self.host.apply_change(before, change);
-        self.host.set_launch_interaction(c.view.error.is_some() || c.view.prompt.is_some()
-            || c.view.status.as_ref().is_some_and(|status| status.action.is_some()));
         Ok(json!({"view": c.view, "wake": change.needs_present(), "refresh": change.regions != 0}))
     }
 }

@@ -9,7 +9,7 @@ extension XCTestCase {
         // Clean up the app even when an assertion interrupts the workflow.
         // Each test owns this application; unrelated app instances stay open.
         addTeardownBlock {
-            await MainActor.run {
+            MainActor.assumeIsolated {
                 if app.state != .notRunning { app.terminate() }
             }
         }
@@ -32,6 +32,7 @@ extension XCTestCase {
         for launch in 0..<2 {
             if launch == 1 { app.launchEnvironment.removeValue(forKey: "CAPY_INITIAL_ACTIONS") }
             app.launch()
+            waitForEditorInteraction(in: app)
             XCTAssertTrue(app.descendants(matching: .any)["color-wheel"].firstMatch.waitForExistence(timeout: 15),
                 "The restored workspace must retain the Color panel")
             let status = app.staticTexts["persistence-status"]

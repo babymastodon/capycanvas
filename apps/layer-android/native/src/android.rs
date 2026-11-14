@@ -17,6 +17,11 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_art_capycanvas_Native_launchMarkSize(mut env: JNIEnv, _: JClass, width: jfloat, height: jfloat) -> jfloat {
+    crate::jni_entry!(env, { layer_ui::launch_mark_size([width, height]) })
+}
+
 fn owner_callback(vm:Arc<jni::JavaVM>,reference:Arc<jni::objects::GlobalRef>,method:&'static str)->Arc<dyn Fn()+Send+Sync> {
     Arc::new(move || {
         let Ok(mut env)=vm.attach_current_thread() else {return;};
@@ -472,7 +477,7 @@ impl App {
             // whose shared state otherwise defaults to eager rendering.
             self.host.startup = Default::default();
             let gpu = pollster::block_on(layer_host::gpu::process_gpu(
-                &instance, &surface, self.host.session.localization(), wgpu::PowerPreference::None,
+                &instance, &surface, self.host.session.localization(), wgpu::PowerPreference::None, &|_| None,
             ))?;
             // Callbacks record failures without panicking through JNI or owning
             // the device. The render owner suspends input and exposes recovery.
@@ -826,6 +831,9 @@ impl Fallback for jni::sys::jint {
 impl Fallback for jlong {
     fn fallback() -> Self { 0 }
 }
+impl Fallback for jfloat {
+    fn fallback() -> Self { 0. }
+}
 impl Fallback for jni::sys::jobject {
     fn fallback() -> Self { std::ptr::null_mut() }
 }
@@ -920,7 +928,7 @@ pub extern "system" fn Java_art_capycanvas_Native_bootstrap(
         let locales = locale_tags(&mut env, &locales)?;
         let tags = locales.iter().map(String::as_str).collect::<Vec<_>>();
         let localization = crate::launch::localization(&saved, &tags);
-        serde_json::to_string(&layer_ui::bootstrap_view(&localization)).map_err(error)
+        serde_json::to_string(&crate::launch::bootstrap_view(&saved, &localization)).map_err(error)
     })();
     string(&mut env, result)
     })
@@ -1355,15 +1363,10 @@ pub extern "system" fn Java_art_capycanvas_Native_modelUpdate(
     let result = (|| {
         let a = &mut *capy_app;
         let Some(bytes) = a.host.take_model_update_bytes().map_err(error)? else { return Ok(None); };
-        if a.published_language == a.host.localization_generation() {
+        let Some(extension) = a.published_bootstrap.update(&mut a.host)? else {
             return String::from_utf8(bytes).map(Some).map_err(error);
-        }
-        let extension = serde_json::to_vec(&serde_json::json!({
-            "bootstrap": serde_json::to_value(a.host.bootstrap_view()).map_err(error)?,
-            "catalog": a.host.query(serde_json::json!({"type": "catalog"}))?,
-            "localization_generation": a.host.localization_generation(),
-        })).map_err(error)?;
-        a.published_language = a.host.localization_generation();
+        };
+        let extension = serde_json::to_vec(&extension).map_err(error)?;
         String::from_utf8(layer_host::extend_update(bytes, &extension)).map(Some).map_err(error)
     })();
     match result {
@@ -1489,6 +1492,36 @@ pub extern "system" fn Java_art_capycanvas_Native_glassRegions(
         Ok(())
     })();
     fail(&mut env, result);
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_art_capycanvas_Native_toolbarStamp(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    context: JString,
+    known_request: jlong,
+) -> jni::sys::jobjectArray {
+    crate::jni_entry!(env, handle, capy_app, {
+        let result = (|| {
+            let context = read(&mut env, &context)?;
+            let context = if context.is_empty() { None } else { Some(serde_json::from_str(&context).map_err(error)?) };
+            capy_app.observe_gpu_failure();
+            let Some(mut stamp) = capy_app.host.toolbar_stamp(context, (known_request > 0).then_some(known_request as u64))? else {
+                return Ok(std::ptr::null_mut());
+            };
+            let alpha = std::mem::take(&mut stamp.alpha);
+            let mut metadata = serde_json::to_value(stamp).map_err(error)?;
+            metadata.as_object_mut().unwrap().remove("alpha");
+            let values = env.new_object_array(2, "java/lang/Object", JObject::null()).map_err(error)?;
+            let metadata = env.new_string(metadata.to_string()).map_err(error)?;
+            let alpha = env.byte_array_from_slice(&alpha).map_err(error)?;
+            env.set_object_array_element(&values, 0, metadata).map_err(error)?;
+            env.set_object_array_element(&values, 1, alpha).map_err(error)?;
+            Ok(values.into_raw())
+        })();
+        or_throw(&mut env, result, std::ptr::null_mut())
     })
 }
 
@@ -1635,6 +1668,13 @@ pub extern "system" fn Java_art_capycanvas_Native_dialogUi(mut env: JNIEnv, _: J
         let result = read(&mut env, &request).and_then(|source| layer_ui::dialog_ui(&source))
             .and_then(|value| serde_json::to_string(&value).map_err(error));
         string(&mut env, result)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_art_capycanvas_Native_launchInteraction(mut env: JNIEnv, _: JClass, handle: jlong, open: jboolean) {
+    crate::jni_entry!(env, handle, capy_app, {
+        capy_app.host.set_launch_interaction(open != 0);
     })
 }
 

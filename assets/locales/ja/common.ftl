@@ -7,14 +7,20 @@ common-save = 保存
 
 common-preparing-brush = ブラシを準備中…
 
+common-compiling-gpu-shaders = GPUシェーダーをコンパイル中…
 common-preparing-canvas = キャンバスを準備中…
 
 common-canvas-init-failed = キャンバスを初期化できませんでした
 common-gpu-unsupported = このデバイスのグラフィックプロセッサ（GPU）では{ common-app-name }を実行できません。システムまたはグラフィックドライバーを更新すると解決する場合があります。
 
 common-restart-canvas = キャンバスを再起動
+common-x11-unsupported-title = { common-app-name }はまだX11では動作しません
+common-x11-unsupported-body = { common-app-name }を使うには、ログアウトしてログイン画面でWaylandセッションを選び、もう一度開いてください。
+common-learn-more = 詳細を見る
+common-quit = 終了
 
 common-action-failed = この操作を完了できませんでした
+common-clipboard-failed = クリップボードを使用できませんでした。もう一度お試しください。
 
 common-editor-closed = 編集画面は閉じられました
 

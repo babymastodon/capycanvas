@@ -24,13 +24,8 @@ pub(crate) fn recovered_elsewhere() -> StoreError {
 pub(crate) fn already_saved() -> StoreError {
     StoreError::known(ErrorKind::Conflict, WorkspaceRefusal::TheInterruptedChangesAlreadyFinishedSaving)
 }
-/// Only a reset replaces a store, and never a newer one: a window still running
-/// an older build must not discard the newer build's workspaces.
 pub(crate) fn newer_schema() -> StoreError {
     StoreError::known(ErrorKind::UnsupportedSchema, WorkspaceRefusal::ANewerVersionOfCapyCanvasUpdatedWorkspaceStorage)
-}
-pub(crate) fn other_schema() -> StoreError {
-    StoreError::known(ErrorKind::UnsupportedSchema, WorkspaceRefusal::WorkspaceStorageWasWrittenByAnEarlierVersionOfCapyCanvas)
 }
 pub(crate) fn owned_elsewhere() -> StoreError {
     StoreError::known(ErrorKind::OwnedElsewhere, WorkspaceRefusal::ThisWorkspaceIsOpenInAnotherWindow)
@@ -212,29 +207,4 @@ pub(crate) fn check_binding(
     }
     let fence = claim.ok_or_else(StoreError::conflict)?.fence;
     check_claim(claim, owner, fence, now)
-}
-pub(crate) fn summary_fallback(
-    id: String,
-    kind: Option<&str>,
-    name: Option<&str>,
-    builtin: bool,
-    generations: Generations,
-    claim: Option<Claim>,
-    error: StoreError,
-) -> ItemSummary {
-    let kind = match kind {
-        Some("toolbar") => ItemKind::Toolbar,
-        _ => ItemKind::Workspace,
-    };
-    let mut metadata = Metadata::new(kind, name.unwrap_or_default(), 0);
-    metadata.name = name.unwrap_or_default().into();
-    metadata.builtin = builtin;
-    ItemSummary {
-        id,
-        metadata,
-        generations,
-        claim,
-        error: Some(error),
-        unavailable_name: name.is_none(),
-    }
 }

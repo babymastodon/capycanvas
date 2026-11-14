@@ -414,7 +414,7 @@ def canvas_update_progress(header, grouped, intervals):
     snapshot = lambda at: {"submitted_frames": sum(r[1] < at for r in completions),
                            "completed_frames": sum(r[2] < at for r in completions)}
     report = {"motion": {"begin_ns": begin, "end_ns": end, "active_intervals_ns": intervals},
-              "completions": completions, "renderer_before": {"rows": [{"label": "Frames", "value": initial_raster or 0}]},
+              "completions": completions, "renderer_before": {"frames": initial_raster or 0},
               "display_before": snapshot(begin), "display_after_input": snapshot(end)}
     progress = completion_window(report)
     for key in ["snapshot_submitted_per_s", "snapshot_completed_per_s", "snapshot_pending"]:

@@ -12,6 +12,7 @@ import android.view.inspector.WindowInspector
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsNode
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.junit4.ComposeTestRule
@@ -273,6 +274,7 @@ fun CanvasHost.importImage(file: File) {
         } }
         try {
             Native.imageImportRead(task, ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).detachFd(), file.name)
+            Native.imageImportPrepare(task)
             runBlocking { withNative { Native.imageImportAdopt(it, task) } }
         } finally { Native.imageImportFree(task); Native.captureFree(control) }
         instrumentation.runOnMainSync { documentChanged() }
@@ -361,6 +363,62 @@ fun findNode(match: (SemanticsNode) -> Boolean, first: ViewRootForTest? = null):
     (listOfNotNull(first) + semanticsRoots().filter { it !== first }).firstNotNullOfOrNull { root -> root.find(match)?.let { root to it } }
 
 fun findTag(tag: String, first: ViewRootForTest? = null) = findNode(hasTag(tag), first)
+
+internal fun assertBrushSizeLabelsAtFontScales(activity: MainActivity, host: CanvasHost, compose: ComposeTestRule? = null) {
+    val original = android.content.res.Configuration(activity.resources.configuration)
+    val labels = host.catalog.array("brush_sizes").objects().map { it.getString("label") }
+    fun text(tile: SemanticsNode) = checkNotNull(tile.find { it.config.getOrNull(SemanticsActions.GetTextLayoutResult) != null })
+    fun layout(node: SemanticsNode): androidx.compose.ui.text.TextLayoutResult {
+        val result = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        assertTrue(node.config[SemanticsActions.GetTextLayoutResult].action!!.invoke(result))
+        return result.single()
+    }
+    fun configuration(value: android.content.res.Configuration) {
+        instrumentation.runOnMainSync {
+            @Suppress("DEPRECATION")
+            activity.resources.updateConfiguration(value, activity.resources.displayMetrics)
+            activity.window.decorView.dispatchConfigurationChanged(value)
+            activity.onConfigurationChanged(value)
+        }
+        host.awaitMain("Sizes labels use font scale ${value.fontScale}", 10_000, { "font=${activity.resources.configuration.fontScale}" }, compose) {
+            findTag("size-preset-${labels.first()}")?.second?.let { layout(text(it)).layoutInput.density.fontScale == value.fontScale } == true
+        }
+    }
+    try {
+        for (scale in listOf(original.fontScale, 1.1f, 2f).distinct()) {
+            configuration(android.content.res.Configuration(original).apply { fontScale = scale })
+            instrumentation.runOnMainSync {
+                var width: Float? = null
+                for (label in labels) {
+                    val tile = checkNotNull(findTag("size-preset-$label")).second
+                    val node = text(tile)
+                    val measured = layout(node)
+                    val density = measured.layoutInput.density.density
+                    val message = "$label at font scale $scale; text=${measured.size}, tile=${tile.size}, density=$density"
+                    assertEquals("$message uses the requested font scale", scale, measured.layoutInput.density.fontScale, 0f)
+                    assertEquals("$message uses one line", 1, measured.lineCount)
+                    assertFalse("$message shows the complete label height", measured.didOverflowHeight)
+                    assertFalse("$message never ellipsizes", measured.isLineEllipsized(0))
+                    assertEquals("$message measures the preset label", label, measured.layoutInput.text.text)
+                    assertEquals("$message retains every digit", label.length, measured.getLineEnd(0, visibleEnd = true))
+                    val t = tile.positionInRoot
+                    val p = node.positionInRoot
+                    assertTrue("$message starts below the dot row", p.y >= t.y + 24f * density - .5f)
+                    if (scale == 1f) assertEquals("$message keeps the normal tile height", 44f * density, tile.size.height.toFloat(), 1f)
+                    assertTrue("$message shows the complete line", p.x + measured.getLineLeft(0) >= t.x - .5f &&
+                        p.y + measured.getLineTop(0) >= t.y - .5f && p.x + measured.getLineRight(0) <= t.x + tile.size.width + .5f &&
+                        p.y + measured.getLineBottom(0) <= t.y + tile.size.height + .5f)
+                    assertTrue("$message stays inside its tile", p.x >= t.x - 1 && p.y >= t.y - 1 &&
+                        p.x + node.size.width <= t.x + tile.size.width + 1 && p.y + node.size.height <= t.y + tile.size.height + 1)
+                    width?.let { assertEquals("$message has the uniform tile width", it, tile.size.width.toFloat(), 1f) }
+                    width = tile.size.width.toFloat()
+                }
+            }
+        }
+    } finally {
+        configuration(original)
+    }
+}
 
 internal fun createEnglishHostForTest(profiling: Boolean = false): Long = Native.create("", arrayOf("en"), "", profiling)
 

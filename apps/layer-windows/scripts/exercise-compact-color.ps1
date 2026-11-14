@@ -618,7 +618,7 @@ try{
     [IO.File]::WriteAllText((Join-Path $run 'pid.txt'),[string]$review.Id)
     Write-Output "Compact color review $($review.Id), $run"
     $owned=@{window=$null}
-    Wait-Until {$m=Model;if(!$m.brush_ready -or !$m.windows_workspace.ready){return $false};$owned.window=Owned-DrawingWindow $review -TraceDirectory $run;$null -ne $owned.window} 'Color fixture did not start' 60
+    Wait-Until {$m=Model;if(!(Review-Ready $m)){return $false};$owned.window=Owned-DrawingWindow $review -TraceDirectory $run;$null -ne $owned.window} 'Color fixture did not start' 60
     $root=$owned.window.Root
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     [CapyRowPointer]::SetForegroundWindow([IntPtr]$root.Current.NativeWindowHandle)|Out-Null

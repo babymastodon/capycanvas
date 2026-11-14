@@ -40,6 +40,7 @@ mod swipe_row;
 mod navigator;
 mod notice;
 mod number_control;
+mod meter;
 mod range_control;
 mod palette_grid;
 mod panel_controls;
@@ -64,6 +65,7 @@ mod tool_extra;
 mod tooltips;
 mod text_language;
 mod transparency_choice;
+mod unsupported_session;
 mod wayland;
 mod window;
 mod workspace;
@@ -127,6 +129,13 @@ pub fn check_saved_data_cli() -> Option<gtk::glib::ExitCode> {
 
 pub fn run() -> gtk::glib::ExitCode {
     glib::set_application_name(launch_localization().language().app_name());
+    if let Err(error) = gtk::init() {
+        eprintln!("{error}");
+        return gtk::glib::ExitCode::FAILURE;
+    }
+    if !gtk::gdk::Display::default().is_some_and(|display| unsupported_session::supported(&display)) {
+        return unsupported_session::run(storage::APP_ID, launch_localization());
+    }
     let (app, active) = application(storage::APP_ID);
     let result = app.run();
     let windows = std::mem::take(&mut *active.borrow_mut());
@@ -138,20 +147,36 @@ pub fn run() -> gtk::glib::ExitCode {
     result
 }
 
-fn launch_localization() -> &'static std::sync::Arc<layer_ui::Localizer> {
-    static ACTIVE: std::sync::OnceLock<std::sync::Arc<layer_ui::Localizer>> = std::sync::OnceLock::new();
+struct LaunchPreferences {
+    localization: std::sync::Arc<layer_ui::Localizer>,
+    capy: layer_ui::ZenIcon,
+}
+
+impl LaunchPreferences {
+    fn read(saved: &str, tags: &[&str]) -> Self {
+        Self { localization: layer_ui::launch_localization(saved, tags), capy: layer_ui::Settings::launch_icon(saved) }
+    }
+}
+
+fn launch_preferences() -> &'static LaunchPreferences {
+    static ACTIVE: std::sync::OnceLock<LaunchPreferences> = std::sync::OnceLock::new();
     ACTIVE.get_or_init(|| {
-        let preference = match preferences::load_language_preference() {
-            Ok(preference) => preference,
-            Err(error) => {
-                eprintln!("{error}; using system language");
-                layer_ui::LanguagePreference::System
-            }
-        };
+        let saved = preferences::load_saved().unwrap_or_else(|error| {
+            eprintln!("{error}; using default preferences");
+            None
+        });
         let languages = glib::language_names_with_category("LC_MESSAGES");
         let tags = languages.iter().map(|tag| tag.as_str()).collect::<Vec<_>>();
-        layer_ui::Localizer::shared(layer_ui::resolve_launch_language(preference, &tags))
+        LaunchPreferences::read(saved.as_deref().unwrap_or_default(), &tags)
     })
+}
+
+fn launch_localization() -> &'static std::sync::Arc<layer_ui::Localizer> {
+    &launch_preferences().localization
+}
+
+pub(crate) fn launch_capy(app: &adw::Application) -> layer_ui::ZenIcon {
+    application_localization(app).borrow().settings.as_ref().map_or(launch_preferences().capy, |settings| settings.zen_icon)
 }
 
 struct ApplicationLocalization {
@@ -333,15 +358,6 @@ fn install_actions(app: &adw::Application, active: &Rc<RefCell<Vec<Rc<workspace:
         }
     ));
     app.add_action(&settings_changed);
-    app.connect_window_removed(glib::clone!(
-        #[weak]
-        active,
-        move |_, window| {
-            active
-                .borrow_mut()
-                .retain(|w| w.window.upcast_ref::<gtk::Window>() != window);
-        }
-    ));
     let new_window = gtk::gio::SimpleAction::new("new-window", None);
     new_window.connect_activate(glib::clone!(
         #[weak]
@@ -407,6 +423,16 @@ fn open_workspace_ready(
         if let Some(w) = owner.upgrade() { w.documents.enqueue(&w, (project, location)); }
     }));
     active.borrow_mut().push(workspace.clone());
+    workspace.window.connect_local("retire-renderers", false, glib::clone!(
+        #[weak] active,
+        #[weak(rename_to = window)] workspace.window,
+        #[upgrade_or] None,
+        move |_| {
+            let index = active.borrow().iter().position(|w| w.window == window);
+            let _closing = index.map(|index| active.borrow_mut().remove(index));
+            None
+        }
+    ));
     workspace.window.present();
     if let Some(settings) = settings {
         workspace.dispatch(layer_ui::UiAction::RestoreSettings { settings: Box::new(settings) });
@@ -435,8 +461,7 @@ fn snapshot(workspace: &workspace::Workspace) -> gtk::gdk::Texture {
 fn with_canvas_snapshot<T>(workspace: &workspace::Workspace, capture: impl FnOnce() -> T) -> T {
     // Explicit screenshot: GTK snapshots omit app-owned child surfaces.
     let color = workspace.view_color();
-    let image = workspace.gpu.borrow().as_ref().unwrap().session.engine().backend()
-        .capture_in(color).expect("capture managed canvas");
+    let image = workspace.capture_canvas(color).expect("capture managed canvas");
     let canvas = color.texture([image.width, image.height],
         gtk::gdk::MemoryFormat::R8g8b8a8Premultiplied, image.stride as usize, image.bytes);
     workspace.area.set_paintable(Some(&canvas));

@@ -131,9 +131,10 @@ extension XCTestCase {
         app.launchEnvironment["CAPY_COLOR_PROBE"] = "1"
         #endif
         app.launch(); capturePaintEditor(in: app)
+        createWhitePaperDrawing(in: app)
         editorTool("Hand", in: app)
         let hand = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@",
-            "tool-group-", "Hand")).firstMatch
+            "tool-subtool-", "Hand")).firstMatch
         expectation(for: NSPredicate(format: "selected == YES"), evaluatedWith: hand)
         waitForExpectations(timeout: 5)
         let viewport = workspaceViewport(in: app)
@@ -141,7 +142,7 @@ extension XCTestCase {
         let sheet = editorPaper(in: app)
         let point = sheet.point(0.06, 0.5)
         func pixels() -> Data { editorPixels(in: app, at: point) }
-        let paper = pixels()
+        let paper = settledEditorPixels(in: app, at: point)
         XCTAssertTrue(paper.prefix(3).allSatisfy { $0 == 255 }, "The initial sample must lie on white paper")
         let start = viewport.coordinate(withNormalizedOffset: sheet.offset(0.3, 0.5))
         let end = viewport.coordinate(withNormalizedOffset: sheet.offset(0.7, 0.5))

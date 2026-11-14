@@ -22,6 +22,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_VERSION: "1.99.0"
   SIGNED: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+  CAPY_PUBLIC_RELEASE: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
 jobs:
   version:
     runs-on: ubuntu-24.04
@@ -113,9 +114,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          previous=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.assets[] | select(.name | endswith("-flatpak-repository.tar.zst")) | .browser_download_url')
+          previous=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.assets[] | select(.name | endswith("-flatpak-repository.tar.zst")) | .url')
           if [[ -n "$previous" ]]; then
-            curl --fail --location "$previous" -o "$RUNNER_TEMP/previous-flatpak.tar.zst"
+            gh api -H 'Accept: application/octet-stream' "$previous" > "$RUNNER_TEMP/previous-flatpak.tar.zst"
             tar --zstd -xf "$RUNNER_TEMP/previous-flatpak.tar.zst" -C target/flatpak
           fi
       - env:

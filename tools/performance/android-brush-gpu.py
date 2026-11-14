@@ -51,7 +51,7 @@ def main():
         for index in range(info['repeats']):
             data = json.loads(trace.with_name(f'{label}-{index}.json').read_text())
             start, end = data['motion']['begin_ns'], data['motion']['end_ns']
-            last = int(next(row['value'] for row in data['renderer_before']['rows'] if row['label'] == 'Frames'))
+            last = int(data['renderer_before']['frames'])
             samples = []
             for row in data['completions']:
                 _, queued, completed, raster = row[:4]

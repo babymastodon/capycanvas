@@ -118,9 +118,10 @@ menu or reorder meaning. Hold Capy
 and release it on the opposite toolbar edge to Swap Sides; releasing elsewhere
 keeps the current side. Rotating or crossing the phone threshold cancels the hold.
 
-On phone tool tiles, a stationary hold lifts the tile; moving after the hold
-reorders along the bar. A touch or pen release without dragging opens Remove
-Tool and Insert Tools; a touch or pen hold on empty toolbar space opens Add Tools.
+On phone tool tiles, a stationary hold lifts the tile; a touch or pen hold also
+opens Remove Tool and Insert Tools before release. Moving after the hold closes
+the menu and reorders along the bar; release without dragging keeps the menu open.
+A touch or pen hold on empty toolbar space opens Add Tools.
 Mouse holds only arm pickup. Releasing more than one tile beyond the bar cancels.
 Escape, resize and rotation cancel without a layout change; phone drags never
 create tool bubbles.

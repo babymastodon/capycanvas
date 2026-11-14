@@ -27,6 +27,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 fluent-syntax = "0.12"
 
 [dev-dependencies]
+layer-render-wgpu = { path = "../layer-render-wgpu" }
 pollster = "0.4"
 fluent-syntax = "0.12"
 layer-core = { path = "../layer-core", features = ["test-support"] }

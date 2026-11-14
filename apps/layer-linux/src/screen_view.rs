@@ -6,7 +6,7 @@ use gtk::{gdk, glib};
 use layer_color::screen::edid::{self, Edid};
 use layer_color::screen::ScreenReport;
 use layer_core::color::RgbSpace;
-use layer_ui::{MessageId, ScreenChip, ScreenDetails, UiAction};
+use layer_ui::{Chip, MessageId, ScreenDetails, UiAction};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -152,7 +152,7 @@ impl ScreenView {
         }
     }
 
-    fn show_chip(&self, chip: Option<ScreenChip>) {
+    fn show_chip(&self, chip: Option<Chip>) {
         self.button.set_visible(chip.is_some());
         if let Some(chip) = chip {
             self.label.set_label(&chip.label);

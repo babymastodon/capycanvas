@@ -163,8 +163,8 @@ pub fn alert_dialog_layout(viewport: [f32; 2], metrics: &AlertMetrics, text_scal
         }
     } else { regular_maximum }.max(minimum);
     let natural = metrics.natural.clamp(minimum, maximum);
-    let width = floating_dialog_width(viewport[0], natural).max(minimum);
-    AlertLayout { width, short, stacked: !short && alert_responses_stacked(&metrics.responses, 12., width - padding) }
+    let width = floating_dialog_width(viewport[0], natural).max(minimum).min(viewport[0].max(0.));
+    AlertLayout { width, short, stacked: alert_responses_stacked(&metrics.responses, 12., width - padding) }
 }
 
 pub fn dialog_panes_fit(width: f32, minimum: [f32; 2], gap: f32) -> bool {
@@ -208,7 +208,8 @@ fn dialog_presentation_in(role: DialogRole, viewport: [f32; 2], insets: [f32; 4]
     let Some(work_area) = work_area else { return DialogPresentation::Floating; };
     match role {
         DialogRole::Alert => DialogPresentation::Floating,
-        DialogRole::CanvasPanel => DialogPresentation::CanvasPanel(work_area.intersection(visible).unwrap_or(work_area)),
+        DialogRole::CanvasPanel => DialogPresentation::CanvasPanel(work_area.intersection(visible)
+            .filter(|area| area.height >= crate::HEADER_HEIGHT.min(work_area.height)).unwrap_or(work_area)),
         DialogRole::Editor => {
             let [left, top, right, bottom] = insets;
             DialogPresentation::Page(Bounds { x: left, y: top,
@@ -270,11 +271,11 @@ mod tests {
         assert_eq!(floating_dialog_width(20.,440.),0.);
     }
     #[test]
-    fn native_alert_sizing_preserves_response_caps_and_the_absolute_minimum() {
+    fn native_alert_sizing_preserves_response_caps_and_fits_the_viewport() {
         let mut metrics = AlertMetrics { minimum: 48., natural: 800., heading: 200., responses: vec![100.,144.,100.] };
         assert_eq!(alert_dialog_layout([891.,412.], &metrics, 1., false), AlertLayout { width:300., short:false, stacked:true });
         metrics.responses = vec![100.,100.];
-        for (viewport, width) in [([891.,412.],372.),([412.,891.],352.),([280.,560.],300.),([320.,320.],300.)] {
+        for (viewport, width) in [([891.,412.],372.),([412.,891.],352.),([280.,560.],280.),([320.,320.],300.)] {
             assert_eq!(alert_dialog_layout(viewport,&metrics,1.,false).width,width);
         }
         metrics.responses = vec![140.,140.];
@@ -286,7 +287,7 @@ mod tests {
         assert_eq!(alert_dialog_layout([891.,412.],&metrics,1.,true).width,372.);
         assert_eq!(alert_dialog_layout([891.,360.],&metrics,1.,false).width,688.);
         metrics.minimum = 400.;metrics.responses.clear();
-        assert_eq!(alert_dialog_layout([280.,560.],&metrics,1.,false).width,400.);
+        assert_eq!(alert_dialog_layout([280.,560.],&metrics,1.,false).width,280.);
         metrics.minimum = 48.;metrics.natural = 48.;
         assert_eq!(alert_dialog_layout([891.,412.],&metrics,1.,false).width,300.);
     }
@@ -302,6 +303,20 @@ mod tests {
         assert_eq!(alert_dialog_layout([891.,412.],&metrics,scale,false).width,340.);
         metrics.heading = 200.;metrics.responses = vec![320.,320.];metrics.natural = 310.;
         assert_eq!(alert_dialog_layout([891.,412.],&metrics,1.,false).width,310.);
+    }
+    #[test]
+    fn short_alerts_stack_only_when_the_response_row_does_not_fit() {
+        for viewport in [[320.,320.],[280.,280.]] {
+            let mut metrics = AlertMetrics {minimum:48.,natural:800.,heading:200.,responses:vec![96.,130.,106.]};
+            let layout = alert_dialog_layout(viewport,&metrics,16./11.,false);
+            assert!(layout.short);
+            assert!(layout.stacked);
+            assert!(layout.width <= viewport[0]);
+            metrics.responses = vec![100.,100.];
+            let fitting = alert_dialog_layout(viewport,&metrics,16./11.,false);
+            assert_eq!(fitting.width,layout.width);
+            assert!(!fitting.stacked);
+        }
     }
     #[test]
     fn canvas_intents_preserve_native_modality_and_progress_is_a_cancel_only_alert() {

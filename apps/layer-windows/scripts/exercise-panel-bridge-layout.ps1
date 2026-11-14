@@ -2,6 +2,7 @@ param([Parameter(Mandatory)][string]$Executable,[ValidateSet('light','dark')][st
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'CapyUia.ps1')
 Add-Type -Path (Join-Path $PSScriptRoot 'RowPointerDriver.cs')
+Add-Type -AssemblyName System.Windows.Forms
 [CapyRowPointer]::VerifyPrivateDesktop($env:CAPY_PRIVATE_DESKTOP)
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 $Executable=(Resolve-Path -LiteralPath $Executable).Path;$directory=Split-Path $Executable
@@ -66,18 +67,22 @@ function Retained-Controls{
     }
     $result
 }
+function Resize-BridgeWindow([int]$Width,[int]$Height){
+    $work=[System.Windows.Forms.Screen]::FromHandle($window).WorkingArea
+    $root.GetCurrentPattern([System.Windows.Automation.TransformPattern]::Pattern).Move($work.Left+40,$work.Top+40)
+    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $window.ToInt64() -Action Resize -Width ([Math]::Min($Width,$work.Width-40)) -Height ([Math]::Min($Height,$work.Height-40))
+}
 try{
     Enter-CapyEnvironment
     $env:CAPY_STORAGE_DIR=Join-Path $run 'profile';$env:CAPY_TRACE_UI='1';$env:CAPY_TEST_DISPLAY='1';$env:CAPY_TEST_PRIMARY='1'
     [IO.File]::WriteAllText((Settings-File),(@{language=@{Explicit='en'};theme=$Theme}|ConvertTo-Json))
     $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr
     $null=$review.Handle;$owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window-and(Model).brush_ready-and(Model).windows_workspace.ready-and!(Model).windows_workspace.busy} 'Owned panel bridge fixture did not start' 90
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$owned.window-and(Review-Ready)-and!(Model).windows_workspace.busy} 'Owned panel bridge fixture did not start' 90
     $root=$owned.window.Root;$window=$owned.window.Handle
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
-    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $window.ToInt64() -Action Resize -Width 1500 -Height 1300
     [CapyWindowApi]::ShowWindow($window,9)|Out-Null
-    [CapyWindowExercise]::MoveWindow($window,40,40,1500,1300,$true)|Out-Null
+    Resize-BridgeWindow 1500 1300
     [CapyRowPointer]::SetForegroundWindow($window)|Out-Null
     [CapyRowPointer]::Initialize([uint32]$review.Id)
     Use-PaintWorkspace
@@ -130,7 +135,7 @@ try{
     $moveEnd=[CapyBridgeWindow]::Bounds($window)
     Check ($moveEnd[0] -gt $moveStart[0]+30 -and $moveEnd[2] -eq $moveStart[2] -and $moveEnd[3] -eq $moveStart[3]) 'Real titlebar drag changes position without resizing' $moveEnd
     Save-State 'titlebar-move-settled';Capture 'titlebar-move' -Composed -WithModel
-    [CapyWindowExercise]::MoveWindow($window,40,40,1500,1000,$true)|Out-Null
+    Resize-BridgeWindow 1500 1000
     $preSizingRegions=(Model).windows_glass.regions
     $motionFolder=Join-Path $run 'continuous-resize'
     $observer=[PanelBridgeCapture]::new($window,[uint32]$review.Id,(Workspace-Root),$motionFolder,(State-File))
@@ -202,7 +207,7 @@ try{
 
     foreach($size in @(@(1800,1100),@(1600,1000))){
         $phase='resize-'+$size[0]
-        [CapyWindowExercise]::MoveWindow($window,40,40,$size[0],$size[1],$true)|Out-Null
+        Resize-BridgeWindow $size[0] $size[1]
         Wait-Until {[math]::Abs($root.Current.BoundingRectangle.Width-$size[0])-le2} 'Owned native width did not change'
         Open-Column $phase;$current=Retained-Controls
         foreach($id in $retained.Keys){Check ($current[$id]-eq$retained[$id]) ($phase+' retains '+$id) $null}

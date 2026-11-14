@@ -37,8 +37,19 @@ extension XCTestCase {
     }
     @MainActor func waitForEditorInteraction(in app: XCUIApplication) {
         let paint = app.buttons["workspace-switch-builtin:workspace:illustrator"]
-        XCTAssertTrue(paint.waitForExistence(timeout: 30))
-        expectation(for: NSPredicate(format: "enabled == YES"), evaluatedWith: paint)
+        let canvas = app.descendants(matching: .any)["canvas"].firstMatch
+        let startup = app.descendants(matching: .any)["canvas-startup"].firstMatch
+        let data = Data((app.launchEnvironment["CAPY_INITIAL_ACTIONS"] ?? "[]").utf8)
+        let actions = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
+        let requestsPaint = actions.contains { action in
+            let command = action["command"] as? [String: Any]
+            return action["type"] as? String == "workspace_manager" && command?["type"] as? String == "switch"
+                && command?["id"] as? String == "builtin:workspace:illustrator"
+        }
+        expectation(for: NSPredicate { _, _ in
+            !startup.exists && paint.exists && paint.isEnabled && canvas.exists && canvas.value as? String == "Canvas ready"
+                && (!requestsPaint || paint.isSelected)
+        }, evaluatedWith: paint)
         waitForExpectations(timeout: 60)
     }
     @MainActor func workspaceActivate(_ element: XCUIElement) {

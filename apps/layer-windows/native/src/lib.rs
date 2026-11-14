@@ -28,6 +28,8 @@ mod filter_packages;
 #[cfg(any(target_os = "windows", test))]
 mod navigator;
 #[cfg(any(target_os = "windows", test))]
+mod navigator_surface;
+#[cfg(any(target_os = "windows", test))]
 mod chrome;
 #[cfg(any(target_os = "windows", test))]
 mod previews;
@@ -42,7 +44,7 @@ mod workspace_service;
 #[cfg(target_os = "windows")]
 mod workspace_owner;
 #[cfg(any(target_os = "windows", test))]
-pub use navigator::{capy_navigator_aspect, capy_navigator_image};
+pub use navigator::{capy_navigator_aspect, capy_navigator_image, capy_navigator_maximum_width};
 #[cfg(any(target_os = "windows", test))]
 mod settings;
 #[cfg(any(target_os = "windows", test))]

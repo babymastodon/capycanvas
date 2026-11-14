@@ -14,7 +14,7 @@ fn phone_ui_roundtrips_bar_contacts_and_projects_menu_geometry() {
     assert!(!initial.is_null());
     assert!(transported(json!({"kind":"bar_begin","layout":phone,"tiles":tiles,"point":center(phone.work_area)})).is_null());
     assert_eq!(transported(json!({"kind":"bar_valid","layout":phone,"tiles":tiles,"contact":initial})), true);
-    for (drag, hold, kind) in [(false,false,"tap"),(false,true,"menu"),(true,true,"move")] {
+    for (drag, hold, kind) in [(false,false,"tap"),(false,true,"pending"),(true,true,"move")] {
         let mut contact = initial.clone();
         let mut direct: PhoneBarContact = serde_json::from_value(contact.clone()).unwrap();
         let mut inputs = Vec::new();
@@ -88,16 +88,37 @@ fn phone_tile_contact_distinguishes_tap_quick_drag_and_hold_release() {
                 let mut quick = begin(&phone, tiles, origin);
                 assert_eq!(quick.motion(&phone, tiles, center(phone.tools[4]), true), PhoneBarOutcome::WindowMove);
                 let mut held = begin(&phone, tiles, origin);
-                assert_eq!(held.arm(), PhoneBarOutcome::Held);
+                assert_eq!(held.arm(), PhoneBarOutcome::Menu(Some(tiles[2].id)));
                 assert_eq!(held.lifted(), Some(2));
                 assert!(!held.move_window(true));
                 let lifted = held.geometry(&phone);
                 assert!(lifted[2].width > phone.tools[2].width && lifted[2].height > phone.tools[2].height);
                 assert!(lifted.iter().zip(phone.tools).enumerate().all(|(index, (shown, original))| index == 2 || *shown == original));
                 assert_eq!(held.motion(&phone, tiles, slight, false), PhoneBarOutcome::Held);
-                assert_eq!(held.finish(&phone, tiles, slight), PhoneBarOutcome::Menu(Some(tiles[2].id)));
+                assert_eq!(held.finish(&phone, tiles, slight), PhoneBarOutcome::Pending);
             }
         }
+    }
+}
+
+#[test]
+fn phone_hold_opens_once_and_preserves_the_contact_for_reordering() {
+    let layout = WorkspacePreset::Painter.layout(Platform::Gtk);
+    let tiles = layout.phone.as_ref().unwrap();
+    let phone = PhoneState { platform: Some(Platform::Gtk), movable: true, ..Default::default() }.resolve(&layout, [891.,412.]).unwrap();
+    let point = center(phone.tools[0]);
+    let mut held = begin(&phone, tiles, point);
+    assert_eq!(held.arm(), PhoneBarOutcome::Menu(Some(tiles[0].id)));
+    assert_eq!(held.motion(&phone, tiles, point, false), PhoneBarOutcome::Held);
+    assert_eq!(held.finish(&phone, tiles, point), PhoneBarOutcome::Pending);
+    let mut drag = begin(&phone, tiles, point);
+    assert_eq!(drag.arm(), PhoneBarOutcome::Menu(Some(tiles[0].id)));
+    let target = center(phone.tools[2]);
+    assert_eq!(drag.motion(&phone, tiles, target, true), PhoneBarOutcome::Dragging);
+    assert_eq!(drag.finish(&phone, tiles, target), PhoneBarOutcome::Move { tile: tiles[0].id, before: Some(tiles[3].id) });
+    for bounds in [phone.capy, phone.settings, phone.title] {
+        let mut contact = begin(&phone, tiles, center(bounds));
+        assert_eq!(contact.arm(), PhoneBarOutcome::Pending);
     }
 }
 
@@ -146,7 +167,7 @@ fn held_phone_tile_moves_in_the_drop_band_and_cancels_outside_it() {
             let bar = phone.bars[0];
             for inside in [false, true] {
                 let mut contact = begin(&phone, tiles, center(phone.tools[0]));
-                assert_eq!(contact.arm(), PhoneBarOutcome::Held);
+                assert_eq!(contact.arm(), PhoneBarOutcome::Menu(Some(tiles[0].id)));
                 let mut point = center(phone.tools[3]);
                 point[cross] = if cross == 0 { bar.x } else { bar.y } - phone.tile + if inside { 1. } else { -1. };
                 assert_eq!(contact.motion(&phone, tiles, point, true), PhoneBarOutcome::Dragging);
@@ -198,8 +219,8 @@ fn empty_bar_opens_toolbar_menu_while_capy_and_settings_keep_their_native_action
             let axis = usize::from(phone.edge != Edge::Top);
             empty[axis] = if axis == 0 { phone.bars[0].x + phone.bars[0].width } else { phone.bars[0].y + phone.bars[0].height } - 1.;
             let mut contact = begin(&phone, tiles, empty);
-            contact.arm();
-            assert_eq!(contact.finish(&phone, tiles, empty), PhoneBarOutcome::Menu(None));
+            assert_eq!(contact.arm(), PhoneBarOutcome::Menu(None));
+            assert_eq!(contact.finish(&phone, tiles, empty), PhoneBarOutcome::Pending);
             for bounds in [phone.capy, phone.settings] {
                 let origin = center(bounds);
                 let mut contact = begin(&phone, tiles, origin);
@@ -224,8 +245,8 @@ fn phone_divider_hold_targets_the_existing_divider_identity() {
             let phone = resolve(&layout, viewport, swapped);
             let point = center(phone.tools[index]);
             let mut contact = begin(&phone, tiles, point);
-            assert_eq!(contact.arm(), PhoneBarOutcome::Held);
-            assert_eq!(contact.finish(&phone, tiles, point), PhoneBarOutcome::Menu(Some(tiles[index].id)));
+            assert_eq!(contact.arm(), PhoneBarOutcome::Menu(Some(tiles[index].id)));
+            assert_eq!(contact.finish(&phone, tiles, point), PhoneBarOutcome::Pending);
         }
     }
 }

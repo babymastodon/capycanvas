@@ -16,7 +16,7 @@ extension XCTestCase {
         let trigger = app.buttons["trigger-touch.tap.2"]
         func openInputSettings() {
             workspaceActivate(app.buttons["settings-button"])
-            workspaceActivate(app.staticTexts["settings-page-input"])
+            workspaceActivate(app.buttons["settings-page-input"])
             #if os(iOS)
             let list = app.collectionViews.containing(.button, identifier: "preference-cursor").firstMatch
             XCTAssertTrue(list.waitForExistence(timeout: 10))
@@ -80,7 +80,9 @@ extension XCTestCase {
         XCTAssertTrue(reset.waitForExistence(timeout: 10), "A bound side button offers Reset")
         workspaceActivate(reset)
         XCTAssertTrue(reset.waitForNonExistence(timeout: 10))
-        workspaceActivate(app.buttons["settings-back"])
+        let back = app.buttons["settings-back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Side-button settings presents Back")
+        workspaceActivate(back)
         XCTAssertTrue(lower.waitForExistence(timeout: 10))
         closeSettings()
         #endif

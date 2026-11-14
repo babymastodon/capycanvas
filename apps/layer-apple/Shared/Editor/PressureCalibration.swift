@@ -76,7 +76,9 @@ private struct PenResponsePanel: View {
                 EditorScrollView(.vertical) {
                     VStack(spacing: 12) {
                         CurveEditor(store: store, control: view["editor"], target: JSON(["kind": kind]), label: view["title"].string,
-                            axisGutter: view["axis_gutter"].string, plotOverlay: tilt ? AnyView(directionCircle.padding(8)) : nil).id(kind)
+                            axisGutter: view["axis_gutter"].string,
+                            graphMinimum: CGSize(width: view["graph_minimum"][0].number, height: view["graph_minimum"][1].number),
+                            plotOverlay: tilt ? AnyView(directionCircle.padding(8)) : nil).id(kind)
                         HStack(spacing: 0) {
                             HStack(spacing: store.panelMetrics.spacing) {
                                 if tilt { Text(view["sensitivity"].string).accessibilityIdentifier("pen-tilt-sensitivity-title") }

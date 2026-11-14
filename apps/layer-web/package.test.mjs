@@ -197,6 +197,22 @@ test("the store worker fingerprints its read-only legacy reader and destination 
   assert.equal(Object.keys(names).some(path=>path.startsWith("fixtures/")||path==="restart-store.js"),false);
 });
 
+test('generated launch CSS remains fingerprinted and available offline through its stylesheet import',t=>{
+  const style=readFileSync(new URL('style.css',import.meta.url),'utf8');
+  const imported=style.match(/^@import url\("([^\"]+)"\);/)[1];
+  assert.equal(imported,'launch.css');
+  const fixture={"style.css":`@import url("${imported}"); body { color:black; }`,[imported]:':root { --launch-reveal:713ms; }'};
+  const dir=runtimeFixture(t,fixture),names=fingerprintAssets(dir),worker=writeWorker(dir);
+  assert.equal(readFileSync(join(dir,names['style.css']),'utf8'),`@import url("${names[imported]}"); body { color:black; }`);
+  assert.equal(readFileSync(join(dir,names[imported]),'utf8'),fixture[imported]);
+  assert.ok(worker.files.some(file=>file.path===names[imported]));
+  const changed=runtimeFixture(t,{...fixture,[imported]:':root { --launch-reveal:829ms; }'}),next=fingerprintAssets(changed);
+  assert.notEqual(next[imported],names[imported]);
+  assert.notEqual(next['style.css'],names['style.css']);
+  assert.notEqual(writeWorker(changed).version,worker.version);
+  assert.throws(()=>fingerprintAssets(runtimeFixture(t,{'style.css':fixture['style.css']})),/Missing CSS asset: launch.css/);
+});
+
 // Checks the packaged output independently of the packager's own reference scan.
 function assertResolved(dir, names) {
   const files = new Set(filesIn(dir));
@@ -361,7 +377,7 @@ test("complete installation activates automatically without deleting open tabs' 
   await w.lifetime("install"); await w.lifetime("activate");
   assert.ok(w.state.skipped && w.state.claimed);
   assert.deepEqual(w.deleted, []);
-  assert.ok(w.installed.every(r => r.url.startsWith(w.scope) && r.cache === "reload" && r.integrity));
+  assert.ok(w.installed.every(r => r.url.startsWith(w.scope) && r.cache === "no-cache" && r.integrity));
 });
 
 test("startup and refresh revalidate HTML without replacing the complete offline fallback", async t => {

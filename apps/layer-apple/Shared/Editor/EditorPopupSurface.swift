@@ -1,6 +1,14 @@
 import SwiftUI
 
 #if os(iOS)
+struct PhoneSystemOverlays: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            content.statusBarHidden().persistentSystemOverlays(.hidden)
+        } else { content }
+    }
+}
+
 @available(iOS 18.0, *)
 private struct EditorPreferredPresentationSizing: PresentationSizing {
     func proposedSize(for root: PresentationSizingRoot, context: PresentationSizingContext) -> ProposedViewSize {
@@ -162,6 +170,17 @@ struct EditorPresentationAppearance: ViewModifier {
     }
 }
 
+struct HostSurfacePresence: ViewModifier {
+    let store: EditorStore
+    let shown: Bool
+    @State private var id = UUID()
+    func body(content: Content) -> some View {
+        content.onAppear { store.hostSurface(id, shown: shown) }
+            .onChange(of: shown) { _, shown in store.hostSurface(id, shown: shown) }
+            .onDisappear { store.hostSurface(id, shown: false) }
+    }
+}
+
 extension View {
     func editorSheet<Sheet: View>(intent: JSON, isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil,
         @ViewBuilder content: @escaping () -> Sheet) -> some View {
@@ -208,7 +227,7 @@ private struct EditorSheet<Sheet: View>: ViewModifier {
     private var visible: [String: Any] {
         let viewport = store.snapshot["layout"]["viewport"]
         return ["x": 0, "y": 0, "width": viewport[0].number,
-            "height": max(0, viewport[1].number - Double(store.keyboardInset))]
+            "height": max(0, viewport[1].number - Double(store.obscuredBottom))]
     }
     private func binding(page: Bool) -> Binding<Bool> {
         Binding(get: { presented && !alert && !closing && !presentation.isNull && (presentation["kind"].string == "page") == page },
@@ -224,17 +243,22 @@ private struct EditorSheet<Sheet: View>: ViewModifier {
         content.sheet(isPresented: binding(page: false), onDismiss: dismissed) {
             sheet().environment(\.editorDialogPage, false).environment(\.editorDialogAvailableHeight, nil)
         }.fullScreenCover(isPresented: binding(page: true), onDismiss: dismissed) {
-            ZStack(alignment: .topLeading) {
-                EditorPalette(source: store.state["palette"])["settings"].ignoresSafeArea()
-                sheet().environment(\.editorDialogPage, true)
-                    .environment(\.editorDialogAvailableHeight, CGFloat(presentation["bounds"]["height"].number))
-                    .placed(presentation["bounds"])
-            }.frame(maxWidth: .infinity, maxHeight: .infinity).ignoresSafeArea(.container)
+            GeometryReader { _ in
+                ZStack(alignment: .topLeading) {
+                    EditorPalette(source: store.state["palette"])["settings"].ignoresSafeArea()
+                    sheet().environment(\.editorDialogPage, true)
+                        .environment(\.editorDialogAvailableHeight, CGFloat(presentation["bounds"]["height"].number))
+                        .placed(presentation["bounds"])
+                }
+            }.ignoresSafeArea(.container)
+                .modifier(PhoneSystemOverlays())
         }.modifier(EditorAlertSurface(store: store, presented: presented && alert, onDismiss: dismissed) { size in
             sheet().environment(\.editorDialogPage, false).environment(\.editorDialogAvailableHeight, size.height)
         }).onChange(of: presented) { _, shown in if !shown { closing = false } }
+            .modifier(HostSurfacePresence(store: store, shown: presented))
         #else
         content.sheet(isPresented: $presented, onDismiss: onDismiss, content: sheet)
+            .modifier(HostSurfacePresence(store: store, shown: presented))
         #endif
     }
 }
@@ -404,6 +428,7 @@ private struct EditorAlertPresentation: ViewModifier {
                     }
                 }
             })
+            .modifier(HostSurfacePresence(store: store, shown: presented))
     }
 }
 
@@ -420,15 +445,10 @@ private struct EditorAlertSurface<Alert: View>: ViewModifier {
             .overlay {
                 if presented {
                     GeometryReader { geometry in
-                        let frame = geometry.frame(in: .global), layout = store.snapshot["layout"]
-                        let height = max(0, layout["viewport"][1].number - Double(store.keyboardInset))
-                        let insets = store.state["phone"]["insets"]
-                        let visible = layout["phone"].isNull
-                            ? CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: min(frame.height, height))
-                            : CGRect(x: insets[0].number, y: insets[1].number,
-                                width: max(0, layout["viewport"][0].number - insets[0].number - insets[2].number),
-                                height: max(0, layout["viewport"][1].number - insets[1].number - insets[3].number))
-                                .intersection(CGRect(x: 0, y: 0, width: layout["viewport"][0].number, height: height))
+                        let frame = geometry.frame(in: .global)
+                        let height = max(0, store.snapshot["layout"]["viewport"][1].number - Double(store.obscuredBottom))
+                        let visible = store.phoneVisibleArea
+                            ?? CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: min(frame.height, height))
                         let area = frame.intersection(visible)
                         ZStack {
                             Color.black.opacity(0.32).ignoresSafeArea().contentShape(Rectangle())

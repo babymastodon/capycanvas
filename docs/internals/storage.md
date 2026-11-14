@@ -27,23 +27,31 @@ temp folder when the process that owns the installation starts; Apple clears the
 app's `tmp` itself.
 
 The workspace store holds the painter's palettes and custom workspaces. Its
-worker restores editing fields with the window's language and reports discarded
-fields before returning them. Startup shows the shared palettes-and-brush-settings
-notice once when any field was discarded.
+worker restores editing fields with the window's language before returning
+them; a field it can't read takes its default without a notice.
 Saves merge only this window's changed JSON paths, keeping other windows' brush
 overrides and palettes and unchanged unreadable fields; see
 [editing saves](workspace-ownership.md).
-Unreadable rows and pending deliveries stay in place. When no workspace can be
-read, startup creates a new workspace from the included layout and leaves the
-unreadable rows untouched and shows the shared update notice. SQLite corruption
-or not-a-database errors rename the database and its existing WAL/SHM sidecars to
-`workspaces.damaged.<uuid>.sqlite3` and matching sidecar names, then start a fresh
-store. Damaged copies are kept outside version-copy retention. A failed set-aside
-continues in memory with the can't-open notice. Unsupported schemas stay in place;
-newer schemas show the newer-version notice. See
+A workspace or toolbar whose content can't be read opens with its fallback (see
+[saving and loading](../ui/settings.md#saving-and-loading)); opening writes
+nothing, and the next save replaces the stored content. Rows whose metadata
+can't be read and unreadable pending deliveries stay in place, left out of the
+list. When no workspace can be listed, startup creates a new workspace from the
+included layout. SQLite corruption,
+not-a-database errors and an older `user_version` rename the database and its
+existing WAL/SHM sidecars to `workspaces.damaged.<uuid>.sqlite3` and matching
+sidecar names. A Web store that isn't valid JSON, or doesn't decode at the
+current schema or comes from an older one, moves to a `damaged:<uuid>` record.
+In the same operation the newest retained version copy whose envelope reads
+(SQLite `quick_check` at the current `user_version`; Web decode) moves into its
+place and leaves the copy list, so each copy is installed at most once; without
+one a fresh store starts. Startup then shows the restored-copy or damaged-store
+notice, without buttons. Damaged copies are kept outside version-copy
+retention. A failed set-aside continues in memory with the can't-open notice.
+Newer schemas stay in place and show the newer-version notice. See
 [workspace ownership](workspace-ownership.md#startup-always-adopts-a-workspace).
 Keep released table layouts readable with concrete SQL conversions keyed by
-`user_version`; do not use the reset path for a released layout.
+`user_version`.
 
 ### Workspace version copies
 
@@ -82,12 +90,6 @@ transaction failure publishes none of them. On quota failure, the protecting
 transaction runs once more without copy records or marker changes, so ordinary
 saves can continue; a later start tries protection again. Other failures are
 reported. Retention uses the copy metadata without reading every retained snapshot.
-
-A newly detected legacy reset offers **Restore Workspaces?** once at startup.
-**Restore** retains a version copy of the current store before replacing it under
-the store's write lock, then restarts workspace adoption. **Keep Current** leaves
-the current store in place. A failed restoration retains the current store and
-copies; restoration never falls back to writing without its version copy.
 
 To restore a native copy, close every Capy Canvas process. Move the current
 database and its `-wal` and `-shm` sidecars into a separate recovery folder.

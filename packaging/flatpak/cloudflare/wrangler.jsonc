@@ -1,0 +1,8 @@
+{
+  "name": "capycanvas-flatpak",
+  "compatibility_date": "2026-11-01",
+  "assets": { "directory": "../../../target/flatpak-publish/assets" },
+  "routes": [{ "pattern": "flatpak.capycanvas.art", "zone_name": "capycanvas.art", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false
+}

@@ -166,7 +166,7 @@ try{
  @{process_id=$review.Id;executable=$Executable;sha256=(Get-FileHash -LiteralPath $Executable).Hash}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $run 'owner.json')
  Write-Output "Owned touch review $($review.Id): $run"
  $native=@{window=$null}
- Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Isolated canvas did not start' 45
+ Wait-Until {$native.window=Owned-DrawingWindow $review;$native.window -and (Review-Ready)} 'Isolated canvas did not start' 45
  $handle=$native.window.Handle;$root=$native.window.Root
  $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
  Wait-Until {$c=Camera;$b=(Control 'drawing-canvas').Current.BoundingRectangle;[Math]::Abs($c.viewport[0]-$b.Width) -lt .1 -and $b.Width -gt 1600} 'Maximized canvas did not settle'
@@ -184,12 +184,12 @@ try{
   $scrubBounds=$bounds;$scrubCamera=Camera-Pose;$scrubSamples=@(@(($cx-48),($cy-50)),@($cx,($cy-50)),@(($cx+48),($cy-50)))
   Scrub-Park;$scrubEmpty=Wait-StablePixels {Scrub-Pixels}
  }
+ $seedRevision=(Model).state.document_file.revision
  [CapyRowPointer]::Down('mouse',($cx-60),($cy-50))
  try{for($i=1;$i -le 24;$i++){[CapyRowPointer]::Move(($cx-60+$i*5),($cy-50+[int](10*[Math]::Sin($i/4))));Start-Sleep -Milliseconds 8}}finally{[CapyRowPointer]::Up()}
- Wait-Until {(Model).state.document_file.modified} 'Visible mouse seed stroke did not finish'
- $settled=@{value=''};Wait-Until {$now=Signature;$same=$now -eq $settled.value;$settled.value=$now;Start-Sleep -Milliseconds 150;$same} 'Seed stroke did not settle'
+ Wait-Until {$m=Model;$m.state.document_file.revision -gt $seedRevision -and $m.state.document_file.modified} 'Visible mouse seed stroke did not finish'
  if($ScrubOnly){Scrub-Park;Check-Scrubs;return}
- $seeded=$settled.value;$unpanned=Camera
+ $seeded=Signature;$unpanned=Camera
  [CapyRowPointer]::RightDrag(($cx+40),($cy+40),($cx+100),($cy+70))
  Wait-Until {[Math]::Abs((Camera).translation[0]-$unpanned.translation[0]) -gt 20} 'Mouse right-drag did not pan'
  if((Signature) -ne $seeded){throw 'Mouse right-drag painted'}
@@ -250,7 +250,7 @@ try{
  Wait-Until {$null -ne (Find 'Preferences' -Name)} 'Preferences did not open over a resting finger'
  [CapyCanvasTouch]::Up(1);Start-Sleep -Milliseconds 150
  Invoke 'CloseButton'
- Wait-Until {$null -eq (Find 'Preferences' -Name)} 'Preferences did not close'
+ Wait-Until {$canvas=Find 'drawing-canvas';!(Model).preferences -and $canvas -and $canvas.Current.IsEnabled} 'Preferences did not close'
  [CapyCanvasTouch]::SetForegroundWindow($handle)|Out-Null;Start-Sleep -Milliseconds 150
  [CapyCanvasTouch]::Down(1,($cx+40),$cy)
  for($i=1;$i -le 10;$i++){[CapyCanvasTouch]::Move(1,($cx+40+$i*6),($cy+$i*4));Start-Sleep -Milliseconds 12}

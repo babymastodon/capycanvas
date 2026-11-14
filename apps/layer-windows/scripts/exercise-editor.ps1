@@ -121,6 +121,7 @@ function Check-Zen {
         if(($id -match '^(tile-|panel-tab-|group-grip-|zen-tile-|application-menu-)' -or $id -in @('settings-button','application-menus')) -and !$element.Current.IsOffscreen){throw "Full Zen retained visible chrome: $id"}
     }
     if([bool](Find 'zen-capy' -Visible) -ne [bool]$model.keep_zen_button){throw 'Full Zen Capy visibility differs'}
+    Wait-Until {!(Find 'canvas-view-info' -Visible)} 'Full Zen retained the canvas footer'
 }
 function Check-Header {
     $scale=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.
@@ -160,7 +161,7 @@ try{
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/editor-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned editor review $($review.Id)"
     $native=@{window=$null}
-    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Model).brush_ready} 'Review did not start' 45
+    Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window -and (Review-Ready)} 'Review did not start' 45
     [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
     $root=$native.window.Root;$drawingWindow=$native.window.Handle
     Wait-Until {(Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Workspace startup did not complete' 45
@@ -208,6 +209,7 @@ try{
     $normal=(Model).layout|ConvertTo-Json -Compress -Depth 70
     $retained=(Control 'drawing-canvas').GetRuntimeId() -join ':'
     $generation=(Model).windows_gpu_generation
+    $null=Control 'canvas-view-info' -Arranged
     Set-Zen
     Wait-Until {(Model).chrome_hidden} 'Full Zen did not hide workspace chrome'
     Check-Zen

@@ -391,13 +391,18 @@ fn tilt_first_pen_binding_waits_for_an_unbound_curve_gesture_to_commit_or_rollba
             assert!(!view(&s).ready,"ending={ending}, prior={prior}");
             assert_eq!(view(&s).panel.editor.points,draft);
             assert_eq!(view(&s).panel.editor.controls.epoch,epoch);
+            edit(&mut s,CurveEditorAction::Contact{epoch,phase:ContactPhase::Move,point:[35.,20.],extent:[100.,100.]});
+            let continued_draft=view(&s).panel.editor.points.clone();
+            assert_ne!(continued_draft,draft,"ending={ending}, prior={prior}");
+            assert!(!view(&s).ready,"ending={ending}, prior={prior}");
+            assert_eq!(view(&s).panel.editor.controls.epoch,epoch);
             match ending {
                 0=>edit(&mut s,CurveEditorAction::Contact{epoch,phase:ContactPhase::Cancel,point:[0.;2],extent:[100.,100.]}),
                 1=>edit(&mut s,CurveEditorAction::Key{epoch,key_event:"Escape".into(),pressed:true,repeat:false,modifiers:Modifiers::default()}),
-                _=>edit(&mut s,CurveEditorAction::Contact{epoch,phase:ContactPhase::Up,point:[40.,25.],extent:[100.,100.]}),
+                _=>edit(&mut s,CurveEditorAction::Contact{epoch,phase:ContactPhase::Up,point:[35.,20.],extent:[100.,100.]}),
             }
             assert!(view(&s).ready,"ending={ending}, prior={prior}");
-            let expected=if ending==2 {draft} else if prior==0 {saved.response.points()} else {baseline};
+            let expected=if ending==2 {continued_draft} else if prior==0 {saved.response.points()} else {baseline};
             let expected_axes=if prior==2 {TiltAxes::default()} else {saved.axes};
             assert_eq!(view(&s).panel.editor.points,expected,"ending={ending}, prior={prior}");
             assert_eq!(view(&s).axes,expected_axes);

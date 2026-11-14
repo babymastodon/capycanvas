@@ -183,13 +183,18 @@ impl PaintTransforms {
     pub(super) fn placement_pass(&self, scalar: bool) -> PixelTransform {
         if scalar { self.0[0].scalar.fork() } else { self.0[0].color.fork() }
     }
+    #[cfg(test)]
+    pub(super) fn bound_color_pipeline(&self) -> (String, Deferred<wgpu::RenderPipeline>) {
+        self.0[0].color.bound_pipeline()
+    }
     pub fn new(device: &PipelineDevice) -> Self {
         let primary = ImageTransformState::new(device);
         let companion = primary.fork();
         Self([primary, companion])
     }
-    pub fn pipelines(&self) -> [Deferred<wgpu::RenderPipeline>; 3] {
-        self.0[0].pipelines()
+    pub fn pipelines(&self) -> [Deferred<wgpu::RenderPipeline>; 5] {
+        let [color, scalar, visibility] = self.0[0].pipelines();
+        [color, scalar, visibility, self.0[0].color.linear_affine_pipeline(false), self.0[0].color.linear_affine_pipeline(true)]
     }
     /// What warp meshes draw with, compiled when a mesh is first shown.
     pub fn mesh_pipelines(&self) -> [Deferred<wgpu::RenderPipeline>; 1] {
@@ -202,6 +207,9 @@ impl PaintTransforms {
     }
     pub fn placement_pipelines(&self) -> [Deferred<wgpu::ComputePipeline>; 2] {
         [self.placement_pipeline(false, &Default::default()), self.placement_pipeline(true, &Default::default())]
+    }
+    pub fn linear_affine_placement_pipelines(&self) -> [Deferred<wgpu::ComputePipeline>; 2] {
+        [false, true].map(|area| self.0[0].color.linear_affine_placement_pipeline(area))
     }
     pub fn placement_pipeline(&self, scalar: bool, transform: &layer_core::ImageTransform) -> Deferred<wgpu::ComputePipeline> {
         let state = &self.0[0];

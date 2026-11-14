@@ -9,8 +9,9 @@ substitutes for another: injected input does not exercise the OS pen driver, a
 software adapter or small desktop fixture does not qualify hardware rendering or
 a tier's performance, and window-free tests do not establish host coverage.
 
-Ordinary CI runs the window-free shared suites, the Wasm check, the Apple project
-check and the license check. The release workflow adds platform builds,
+Ordinary CI runs only when dispatched (`gh workflow run ci.yml --ref <branch>`).
+It runs the window-free shared suites, the Wasm check, the Apple project check
+and the license check. The release workflow adds platform builds,
 packaging, script suites and software-adapter tests
 ([release validation](releasing.md#release-validation)). Neither replaces the
 hardware checks and journeys for your change.
@@ -30,7 +31,7 @@ crates that a given machine may not be able to run.
 | Pen prediction or stroke placement | `cargo test --locked -p layer-engine --features prediction-bench`, then `cargo build --locked -p layer-engine --release --features prediction-bench --examples` and `python3 tools/prediction/replay-bank.py --output artifacts/strokes/bank --analyze --check`. |
 | GTK | `cargo test --locked -p layer-linux` (includes the confined `photo_reader` integration test) for the model tests, then each affected journey on the private display: `bash tools/performance/workspace-motion.sh gtk --native-test=<name>`, adding `--tablet` for pen journeys ([Linux](linux.md#tests)). |
 | Web | `bash apps/layer-web/build.sh`, the [pure tests](web.md#tests), then the affected journeys with `bash tools/performance/workspace-motion.sh web --<journey>` (headed, hardware WebGPU) or `node apps/layer-web/test.mjs --headless --<journey>` against `run.sh`. Packaging changes: `node apps/layer-web/package.mjs && node apps/layer-web/test.mjs --package` ([Web](web.md#tests)). |
-| Android | Without a device: `./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug -PcapyAbi=arm64-v8a` in `apps/layer-android`. On a reserved tablet, through `tools/devices/devices.py run`: install both APKs with `adb install -r`, then `am instrument -w -e class art.capycanvas.<Class>[#method] $CAPY_APPLICATION_ID.test/androidx.test.runner.AndroidJUnitRunner`. Read `OK` or `FAILURES!!!`, not the exit status ([Android](android.md#device-tests)). |
+| Android | Without a device: `./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug -PcapyAbi=arm64-v8a` in `apps/layer-android`. On a reserved tablet, through `tools/devices/devices.py run`: install both APKs with `adb install -r`, then `am instrument -w -e class art.capycanvas.<Class>[#method] $CAPY_APPLICATION_ID.test/androidx.test.runner.AndroidJUnitRunner`. Read `OK` or `FAILURES!!!`, not the exit status ([Android](android.md#device-tests)). Kotlin or R8 changes also need the [minified class check](android.md#minified-class-verification). |
 | Android distribution | `python3 -m unittest discover -s tools/build -p 'test_android_*.py'`, then the [APK release checks](releasing.md#android-apk) on devices with and without Google services. A local build does not verify the APK that Play processes. |
 | Apple | Anywhere: `cargo test --locked -p layer-apple --lib -- --test-threads=1` and `python3 apps/layer-apple/tests/test_icon_assets.py`. On a Mac: the Swift fixtures, the command audit, and the XCTest journeys in the [Apple guide](apple.md#tests). The iOS simulator renders the canvas through the Float32 texel fallback; hardware filtering, Pencil and timing need a physical iPad. |
 | Windows | From any OS: `cargo test --locked -p layer-host -p layer-ui -p layer-workspace -p layer-windows --lib` and `cargo clippy --locked -p layer-windows --all-targets -- -D warnings`. On Windows: `apps/layer-windows/scripts/test-without-gpu.ps1`, then the `exercise-*.ps1` fixtures for the changed area; from Linux, `tools/windows-vm/windows-vm.py check` and `fixtures <name>`, which runs in [shared GPU sessions](windows-vm.md#shared-gpu-sessions); `fixtures --warp <names>` or `--runners N` runs on the [CPU pool](windows-vm.md#cpu-runner-pool). A configured [VM GPU pool](windows-vm.md#hardware-gpu-pool) also supports `gpu-check` and `fixtures --hardware-gpu <name>`. HDR output, physical input and performance targets require the corresponding reference hardware ([Windows](windows.md#test)). |
@@ -59,7 +60,7 @@ never move a row to hardware to avoid a check that passes on WARP.
 | Change | Windows fixtures before pushing |
 | --- | --- |
 | Shared UI state, layout, Windows host Rust or shared native controls, input and presentation | `smoke` plus every affected selector family and dependent journey. |
-| Startup, window registry, automation discovery, shared fixture helpers or runner | Full default matrix. |
+| Startup, process exit, close, window registry, automation discovery, shared fixture helpers or runner | Full default matrix. |
 | Local controls and individual fixture scripts | Complete affected selector families and dependent journeys. |
 
 `smoke` is the single named selector list in `run-fixtures.ps1`; use the alias
@@ -73,6 +74,12 @@ the windowless checks above. Fixture routing changes also run
 Changes to scripts that fixtures or tests dot-source, AST-import or mock (for example,
 `CapyUia.ps1`, `CapyEnvironment.ps1` or `run-fixtures.ps1`) run the full normal
 suite with `tools/windows-vm/windows-vm.py check`, not only the edited scripts.
+
+Changes to model fields or helpers read by shared fixture helpers (such as
+Diagnostics statistics read by `Idle-Fps`) also run that suite, whose owned-search tests mock the helpers.
+
+Changes to headers or types included by `apps/layer-windows/tests/*Fixture.cpp` run at least one row per affected fixture app (for example `popup:controls`); `check` does not build every control fixture.
+Search tests for native includes as well as AST imports when choosing affected fixtures.
 
 Record first-attempt failures with the selector, exact error and evidence path;
 a retry is diagnostic evidence, not a passing result. Fix or report failures
@@ -90,9 +97,9 @@ host guide describes.
 | Area | Checks |
 | --- | --- |
 | Session persistence | Core `package::session`, `package::session_transfer`, `package::session_store` and `persistence_tests`; UI `session_recovery` and `recovery`; affected native restore/close fixtures; `node apps/layer-web/restart-store.test.mjs`. Keep the [regression checks](../internals/session-recovery.md#regression-checks). |
-| Memory diagnostics | UI `stats::tests` and `localization_catalog_tests`; renderer `memory_sample::tests` and `display_memory::tests`; GTK `native_diagnostics_and_gpu_failure_recovery`. |
+| Memory diagnostics | UI `stats::tests`, `readout::tests` and `localization_catalog_tests`; renderer `memory_sample::tests` and `display_memory::tests`; GTK `native_diagnostics_and_gpu_failure_recovery`. |
 | Workspace version copies | Native `sqlite::snapshots::tests`, shared `snapshots::tests`, and Web `--workspace-store` cover version changes, failed copies, legacy preservation, retention and transaction aborts. |
-| Workspace startup | `workspace_controls_become_ready_with_the_restored_layout_on_every_platform`, UI `renderer_lifecycle::tests::launch_`, GTK `native_launch_splash_timing_and_bypass`; Web `--workspace-startup`. |
+| Workspace startup | `workspace_controls_become_ready_with_the_restored_layout_on_every_platform`, UI `renderer_lifecycle::tests::launch_` and `notices_raised_under_the_launch_cover_wait_for_its_reveal`, GTK `native_launch_splash_timing_and_bypass`, `native_launch_cover_yields_to_host_alerts` and `native_startup_latency` (cold painted-editor reveal); Android `AndroidFirstUiTest` (`splashMarkFitsSystemSafeCircle`, `launchMarksDrawTheSharedPoses`, `splashShowsOnlyTheSavedCapyAndYieldsToHostDialogs`, `launchRevealWaitsForReadyDrawAndCommit`); Web `--workspace-startup`; Windows `startup-close`; Apple `startup-owner` launch cover checks. |
 | Artwork, filters and file format | Core `package::effect_records`, `package::codec` and `package::session` with the fixed [`builtin-contracts.json`](../../crates/layer-core/src/package/codec/fixtures/builtin-contracts.json) and [`authored-filters.capy`](../../crates/layer-core/src/package/codec/fixtures/authored-filters.capy); on hardware, `saved_artwork_render_contracts` and `saved_angular_filter_render_contracts` with `-- --nocapture`. |
 | Vector layers | `vector::tests`; on hardware, `saved_vector_render_contract`. |
 | Vector face Fill | Core `authored::vector`, UI `vector_line_tests`; GTK `native_vector_fill_between_open_strokes` and `native_vector_gap_fill_and_everywhere`; Web `--vector-fill`, both themes. Release `vector_face_busy_page` measures the 2,002-path Off, Auto and search-miss gates, and `vector_fill_busy_page_timings` measures press/lift dispatch and each fixed-reach slot; renderer `vector_reference_line_middle_tracks_pressure_stroke_centrelines` checks raster fill against pressure-stroke centre lines. |
@@ -121,7 +128,7 @@ host guide describes.
 | Watercolor and direct paint | `first_watercolor_frame_batches_page_initialization`, `first_watercolor_contact_on_empty_layer_batches_source_reduction`, `page_zero_copies_reclear_both_formats_and_reduced_extents` and `watercolor_transport_batches_restored_empty_backing`; `direct_contact_paint_and_erase_match_destination_deposition` with `--ignored` on hardware float32 blending. |
 | Presentation and submission | The vendored wgpu-core surface tests with `RUSTFLAGS='--cfg wgpu_validate_locks'`, with and without the `trace` feature ([vendored crates](../../vendor/README.md)); renderer `submission::tests`; Android `frontBufferSurfaceLifecycle`. Measure navigation and brush rows separately. |
 | Pen tilt | Engine `projected_tilt` and `dry_pose_keys_use_physical_inclination_independent_of_azimuth`; Android `AndroidStylusTest` and `AndroidHostTest#physicalTiltControlsDryBrushCursorAndPigment`; GTK `native_contact_brushes`; Web `--contact-brushes`. |
-| Panels, bridges and squircles | Shared `panel_bridges::tests` and `divider_geometry_`; renderer `panel_surface::tests` and `panel_geometry::tests`; GTK `panel_tabs::tests`, `workspace::allocation_tests`, `squircle::tests`, `render_thread::tests::chrome_`, ignored `render_thread::tests::workspace_presenter_prepares_chrome_before_first_panel_parameters`, `native_squircle_corners`, `native_panel_tab_alpha_pixels`, `native_compact_shadow_pixels` and `native_window_scene_pixels`; Android `columnBridgeGapFrameTiming` and `AndroidWorkspacePresentationTest`. |
+| Panels, bridges and squircles | Shared `panel_bridges::tests` and `divider_geometry_`; renderer `panel_surface::tests` and `panel_geometry::tests`; GTK `panel_tabs::tests`, `workspace::allocation_tests`, `squircle::tests`, `render_thread::tests::chrome_`, ignored `render_thread::tests::workspace_presenter_prepares_chrome_before_first_panel_parameters`, `native_squircle_corners`, `native_panel_tab_alpha_pixels`, `native_compact_shadow_pixels`, `native_window_scene_pixels` and `native_fractional_chrome_seams`; Android `columnBridgeGapFrameTiming` and `AndroidWorkspacePresentationTest`. |
 
 GTK `native_document_tabs_cold_store_motion` checks cold pan and ordered paint/undo after real pressure parking.
 
@@ -185,10 +192,10 @@ reserved tablet; there is no Android compatibility job in GitHub Actions.
 `layer-core`, `layer-ui` and `layer-host` opens released inputs through the real
 store, import and recovery readers and compares reviewed authored values and
 resource/preview digests, including save/reopen and session history.
-Push CI enables the native workspace cases and runs the paper compatibility
-tests separately without a GPU. It also runs the released-input guard over the
-pushed commit range, or the range since `origin/main` for a new branch, with full
-history so intermediate input edits cannot hide behind a later restore.
+CI enables the native workspace cases and runs the paper compatibility tests
+separately without a GPU. The pre-push hook runs the released-input guard over
+every pushed range, and CI runs it over the commits since `origin/main`, both
+with full history so intermediate input edits cannot hide behind a later restore.
 
 `generated_compat_fixtures_load_without_expectations` runs the workspace fixture
 generator in private temporary storage and reads every generated input through
@@ -197,11 +204,18 @@ the release loaders without expectation files; output excludes markers and locks
 `generated_saved_documents_set_every_field` (UI) checks non-default saved fields,
 including serde omissions; `generated_fixtures_cover_every_saved_value` (core)
 checks portable saved values and private-only session fields.
+`released_saved_names_still_read` (UI) reads each enum name and ID in every
+release's `saved-names.json` on its own, without the lenient readers;
+`generated_fixtures_cover_every_saved_name` requires the generated
+`workspace-layout.json` to use every name the current ledger lists.
 
 `saved_documents_tolerate_missing_and_unknown_fields` in the affected suites
 removes defaultable app-state options and adds unknown struct fields; required
 identities and structure still fail validation. Closed artwork records keep
 their strict package acceptance tests.
+`an_unreadable_saved_value_reads_as_if_it_were_absent` (workspace) replaces
+each released list element and field in turn with a value no build wrote and
+requires the same result as removing it.
 
 Inputs live in each crate's `tests/compat/<release>/`, written by that release's
 code and never edited or resaved. Expectations live separately under

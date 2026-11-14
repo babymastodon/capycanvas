@@ -10,6 +10,7 @@ pub enum ToolbarUiRequest {
     ToolSetPresentation { panel: Panel, actions: Vec<UiAction> },
     ToolSetColumns { width: f32, natural: Vec<f32>, rows: bool },
     ToolPreview { width: f32, caption: f32 },
+    BrushSizeTile { label: [f32; 2] },
     NoticeLayout {
         text: f32,
         content: f32,
@@ -116,6 +117,7 @@ pub fn toolbar_ui(request: ToolbarUiRequest, localizer: &Localizer) -> Result<se
         ToolbarUiRequest::ToolPreview { width, caption } => json!({
             "heights": TOOL_PREVIEW_METRICS.heights(caption), "bounds": TOOL_PREVIEW_METRICS.layout(width, TOOL_PREVIEW_METRICS.heights(caption)[1], caption),
         }),
+        ToolbarUiRequest::BrushSizeTile { label } => json!(brush_size_tile(label)),
         ToolbarUiRequest::NoticeLayout { text, content, actions, gap, min_text_width } => {
             json!({"beside": NoticePlacement { min_text_width, ..NoticePlacement::default() }.actions_beside(text, content, actions, gap)})
         }
@@ -285,6 +287,20 @@ fn tool_set_queries_share_aligned_columns_and_natural_preview_geometry() {
         {"x":0.,"y":0.,"width":368.,"height":40.},
         {"x":0.,"y":40.,"width":368.,"height":26.},
     ]));
+}
+
+#[test]
+fn brush_size_tiles_fit_complete_labels_without_shrinking_the_default() {
+    assert_eq!(brush_size_tile([32., 18.]), BRUSH_SIZE_TILE);
+    assert_eq!(brush_size_tile([39., 20.]), [43., 46.]);
+    assert_eq!(brush_size_tile([32., 50.]), [36., 76.]);
+}
+
+#[test]
+fn brush_size_tile_queries_round_trip_native_label_measurements() {
+    let request = serde_json::from_str(r#"{"type":"brush_size_tile","label":[39,50]}"#).unwrap();
+    let result = toolbar_ui(request, &Localizer::shared(UiLanguage::English)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&serde_json::to_string(&result).unwrap()).unwrap(), serde_json::json!([43., 76.]));
 }
 
 #[test]

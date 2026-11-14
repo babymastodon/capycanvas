@@ -19,6 +19,19 @@ extension EditorLaunchTests {
         for identifier in ["document-close-save", "document-close-discard", "document-close-cancel"] {
             XCTAssertTrue(app.buttons[identifier].isHittable, identifier)
         }
+        let responses = ["document-close-save", "document-close-discard", "document-close-cancel"].map { app.buttons[$0].frame }
+        let title = app.staticTexts["editor-alert-title"].frame
+        for response in responses {
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(response))
+            XCTAssertGreaterThanOrEqual(response.minY, title.maxY)
+        }
+        let stacked = responses[1].minY >= responses[0].maxY - 1
+        for pair in zip(responses, responses.dropFirst()) {
+            if stacked {
+                XCTAssertGreaterThanOrEqual(pair.1.minY, pair.0.maxY - 1)
+                XCTAssertEqual(pair.0.width, pair.1.width, accuracy: 1)
+            } else { XCTAssertEqual(pair.0.midY, pair.1.midY, accuracy: 1) }
+        }
         phoneCapture(in: app, id: phoneCaptureID("pages", "unsaved-changes"), theme: theme, fixture: fixture)
         workspaceActivate(cancel)
         XCTAssertTrue(cancel.waitForNonExistence(timeout: 10))
@@ -195,8 +208,7 @@ extension XCTestCase {
         XCTAssertTrue(root.waitForExistence(timeout: 15)); workspaceActivate(root)
         let directory = app.cells["Capy Files " + token + ", Folder"]
         XCTAssertTrue(directory.waitForExistence(timeout: 10)); workspaceActivate(directory)
-        let file = fileProviderFile(name, in: app).images.firstMatch
-        XCTAssertTrue(file.waitForExistence(timeout: 10)); workspaceActivate(file)
+        workspaceActivate(revealFileProviderFile(name, in: app))
         if submitSelection { submitFileProviderSelection(in: app) }
     }
 }

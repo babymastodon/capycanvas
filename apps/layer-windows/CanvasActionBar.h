@@ -218,7 +218,7 @@ struct CanvasActionBar:std::enable_shared_from_this<CanvasActionBar>{
         append(L"items");append(L"completion");return next;
     }
     void Apply(J const& state){
-        auto value=state.GetNamedValue(L"canvas_bar",JsonValue::CreateNullValue());
+        auto value=named(state,L"canvas_bar");
         if(value.ValueType()!=JsonValueType::Object){
             if(reappear)reappear.Stop();
             if(view.Size()||pending){view=J{};pending.reset();schema=L"";measurement=L"";revealContext=J{};bounds=J{};menuOwner.Cancel();present(false);}

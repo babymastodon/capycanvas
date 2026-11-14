@@ -851,13 +851,12 @@ impl WgpuRasterizer {
         if let RegionTask::Fill {request,..}=&task {
             let refinement=RegionRequests::refinement(request);
             let prepare_ends=refinement.close_gaps && request.fill.as_ref().is_none_or(|fill|fill.reach!=Some(0));
-            self.compilation.require(regions.raw.pipelines().chain(regions.flood.request_pipelines(refinement,request.enclosure.is_some(),request.contiguous,prepare_ends)),startup::DOCUMENT);
-            let mut required=self.artwork_frame.as_ref().map_or_else(compile::Needs::default,|frame|compile::Needs::capture_scene(self,frame.scene.view(),true));
-            required.render.extend(self.scene_pipelines.fill_pipelines(&self.device).into_iter().cloned());
-            required.render.push(self.layer_masks.initialize.clone());
-            required.compute.extend(self.selection_clip.pipelines().into_iter().cloned());
-            required.compute.push(self.selection_clip.resample.clone());
+            self.regions=Some(regions);
+            let mut required=compile::Needs::default();
+            required.regions(self,refinement,request.enclosure.is_some(),request.contiguous,prepare_ends);
+            required.fill(self,self.artwork_frame.as_ref().map(|frame|frame.scene.view()));
             required.require(&self.compilation,startup::DOCUMENT);
+            regions=self.regions.take().unwrap();
         }
         regions.fill_seed=None;
         let result = match task {
@@ -939,6 +938,7 @@ impl WgpuRasterizer {
 pub(crate) mod tests {
     use super::*;
     pub(crate) fn cache_ready(r:&WgpuRasterizer)->bool {r.regions.as_ref().unwrap().cache.as_ref().unwrap().ready}
+    pub(crate) fn request_encoded(r:&WgpuRasterizer)->bool {r.regions.as_ref().is_some_and(|r|r.waiting.is_none()&&r.pending.is_some()&&r.readback.is_some()&&r.rx.is_some())}
     pub(crate) fn cached_pages(r:&WgpuRasterizer)->(wgpu::Buffer,Option<wgpu::Buffer>,std::collections::BTreeSet<[u32;2]>) {
         let cache=r.regions.as_ref().unwrap().cache.as_ref().unwrap();
         (cache.seeds.clone(),cache.mask.clone(),cache.dirty.values().flatten().copied().collect())

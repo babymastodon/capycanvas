@@ -221,7 +221,8 @@ export function createCustomization({ app, catalog, state, paintPair, workspace,
   // Scrolling, dragging or cancelling retires the hold; editing keeps ownership.
   let hold, heldPointer = null;
   const cancelHold = () => { if (hold) clearTimeout(hold.timer); hold = null; };
-  function dismissContext() {
+  function dismissContext(owner) {
+    if(owner&&context.menuOwner!==owner)return;
     cancelHold();
     closeContext();
   }
@@ -244,9 +245,9 @@ export function createCustomization({ app, catalog, state, paintPair, workspace,
   }, { capture: true });
   for (const event of ["pointerup", "pointercancel", "dragstart", "scroll"])
     window.addEventListener(event, cancelHold, { capture: true });
-  window.addEventListener("blur", dismissContext);
+  window.addEventListener("blur", () => dismissContext());
   window.addEventListener("keydown", e => { if (e.key === "Escape") cancelHold(); });
-  workspace.addEventListener("pointercancel", dismissContext, { capture: true });
+  workspace.addEventListener("pointercancel", () => dismissContext(), { capture: true });
   workspace.addEventListener("click", (e) => {
     if (heldPointer === e.pointerId) { heldPointer = null; e.preventDefault(); e.stopImmediatePropagation(); }
   }, { capture: true });
@@ -292,7 +293,7 @@ export function createCustomization({ app, catalog, state, paintPair, workspace,
       }
       case "size_presets":
         input = brushSizeGrid({ app, catalog, state, dispatch, element, button });
-        row.append(input); sync = input.refresh;
+        row.append(input); row.disposeEditor = input.disposeEditor; sync = input.refresh;
         break;
       case "layer_actions":
         row.classList.add("configuration-presets");

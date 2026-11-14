@@ -15,7 +15,7 @@ hstring settingsContext(J const& state){
         auto choice=item.GetObject();if(flag(choice,L"selected"))selectedActions.Append(object(choice,L"action"));
     }
     auto target=object(object(state,L"layer_tools"),L"editing_layer");
-    return O({{L"tools",selectedActions},{L"preset",N(num(object(state,L"brush"),L"preset"))},
+    return O({{L"tools",selectedActions},{L"preset",N(num(state,{L"brush",L"preset"}))},
         {L"target",N(num(target,L"id"))},{L"mask",B(flag(target,L"mask_selected"))}}).Stringify();
 }
 hstring itemSchema(A const& items){
@@ -192,7 +192,7 @@ struct SettingsView : std::enable_shared_from_this<SettingsView> {
                     &&num(object(self->data->state,L"color_picker"),L"sample_width")!=widths[index])
                     self->data->dispatch(O({{L"type",S(L"set_color_sample_size")},{L"width",N(widths[index])}}));});
         }
-        for(auto const& bind:fields)bind();
+        for(auto const& bind:fields)bind.Apply();
     }
     mutable std::map<std::wstring,double> captionWidths;
     double captionWidth(std::vector<hstring> const& titles)const{
@@ -225,7 +225,7 @@ struct SettingsView : std::enable_shared_from_this<SettingsView> {
     void actionChoice(hstring const& group,std::shared_ptr<hstring> const& context){
         auto weak=weak_from_this();
         choiceRow([weak,group]{if(auto self=weak.lock()){
-            A items;for(auto value:array(self->data->state,L"tool_actions"))if(auto item=value.GetObject();str(item,L"group")==group){auto id=str(item,L"command");auto command=find(array(self->data->state,L"commands"),L"id",id);items.Append(O({{L"label",S(str(command,L"label"))},{L"enabled",B(flag(command,L"enabled"))},{L"selected",B(flag(command,L"selected"))},{L"action",O({{L"type",S(L"invoke")},{L"command",S(id)}})}}));}
+            A items;for(auto value:array(self->data->state,L"tool_actions"))if(auto item=value.GetObject();str(item,L"group")==group){auto id=str(item,L"command");auto command=find(self->data->state,L"commands",L"id",id);items.Append(O({{L"label",S(str(command,L"label"))},{L"enabled",B(flag(command,L"enabled"))},{L"selected",B(flag(command,L"selected"))},{L"action",O({{L"type",S(L"invoke")},{L"command",S(id)}})}}));}
             return O({{L"label",S(self->actionGroupLabel(group))},{L"items",items}});
             }return J{};},L"tool-action-group-"+group,context,[weak]{if(auto self=weak.lock())return self->actionLabelWidth();return 0.;});
     }
@@ -277,7 +277,7 @@ struct SettingsView : std::enable_shared_from_this<SettingsView> {
     }
     void refresh(){
         if(picking(data->state))return refreshPicker();
-        auto target=settingsContext(data->state);A schema;hstring previousGroup;
+        auto target=settingsContext(data->state);bool contextChanged=fieldContext&&*fieldContext!=target;A schema;hstring previousGroup;
         for(auto value:array(data->state,L"tool_settings")){
             auto item=value.GetObject();auto group=str(item,L"group_id");
             schema.Append(O({{L"id",S(str(item,L"id"))},{L"group_boundary",B(previousGroup!=group)},{L"numeric",object(item,L"numeric")},{L"preview",B(flag(item,L"preview"))}}));previousGroup=group;
@@ -385,7 +385,7 @@ struct SettingsView : std::enable_shared_from_this<SettingsView> {
                         auto heading=label(data,anchor!=beside.end()?str(anchor->second,L"label"):str(item,L"group"),true);heading.Opacity(.55);heading.Margin({0,body.Children().Size()?2.:0.,0,0});body.Children().Append(heading);
                         auto specId=anchor!=beside.end()?str(anchor->second,L"id"):hstring();
                         fields.emplace_back([weak,heading,id,specId]{if(auto self=weak.lock()){
-                            auto title=str(find(array(self->data->state,L"tool_settings"),L"id",id),L"group");
+                            auto title=str(find(self->data->state,L"tool_settings",L"id",id),L"group");
                             if(!specId.empty())for(auto option:array(self->data->state,L"tool_extra"))if(auto spec=object(option.GetObject(),L"Choice");str(spec,L"id")==specId)title=str(spec,L"label");
                             heading.Text(title);}});
                     }
@@ -408,9 +408,9 @@ struct SettingsView : std::enable_shared_from_this<SettingsView> {
                     self->data->dispatch(O({{L"type",S(L"tool_setting_contact")},{L"id",S(id)},{L"phase",S(phase)},{L"value",N(value)}}));};
                 presentation.reset=[weak,id,context]{if(auto self=weak.lock();self&&settingsContext(self->data->state)==*context)
                     self->data->dispatch(O({{L"type",S(L"reset_tool_setting")},{L"id",S(id)}}));};
-                presentation.title=[weak,id]{if(auto self=weak.lock())return str(find(array(self->data->state,L"tool_settings"),L"id",id),L"label");return hstring();};
+                presentation.title=[weak,id]{if(auto self=weak.lock())return str(find(self->data->state,L"tool_settings",L"id",id),L"label");return hstring();};
                 auto control=number(data,str(item,L"label"),object(item,L"numeric"),
-                    [weak,id]{if(auto self=weak.lock())return num(find(array(self->data->state,L"tool_settings"),L"id",id),L"value");return 0.;},
+                    [weak,id]{if(auto self=weak.lock())return num(find(self->data->state,L"tool_settings",L"id",id),L"value");return 0.;},
                     [weak,id,context](double value){if(auto self=weak.lock();self&&settingsContext(self->data->state)==*context)
                         self->data->dispatch(O({{L"type",S(L"set_tool_setting")},{L"id",S(id)},{L"value",N(value)}}));},fields,nullptr,bool(numbers)&&numbersInline,L"tool-setting-"+id,compact,presentation);
                 AutomationProperties::SetAutomationId(control,L"number-root-tool-setting-"+id);
@@ -432,20 +432,20 @@ struct SettingsView : std::enable_shared_from_this<SettingsView> {
             }
             std::map<std::wstring,Grid> actionRows;std::map<std::wstring,size_t> actionIndices;std::vector<hstring> groups;
             for(auto value:actions){
-                auto item=value.GetObject();auto id=str(item,L"command"),group=str(item,L"group"),rowId=str(item,L"row");auto command=find(array(data->state,L"commands"),L"id",id);
+                auto item=value.GetObject();auto id=str(item,L"command"),group=str(item,L"group"),rowId=str(item,L"row");auto command=find(data->state,L"commands",L"id",id);
                 auto invoke=[weak,id,context]{if(auto self=weak.lock();self&&settingsContext(self->data->state)==*context)self->data->dispatch(O({{L"type",S(L"invoke")},{L"command",S(id)}}));};
                 if(flag(item,L"segmented")){
                     auto modes=modeRows.at(group.c_str());auto index=modeIndices[group.c_str()]++;
                     auto pick=segment(str(command,L"icon"),str(command,L"label"),str(command,L"tooltip"),L"tool-action-"+id,compact,index,invoke);
                     double r=data->panelMetric(L"control_radius")*CornerFit;pick.CornerRadius({index==0?r:0,index+1==modes.ColumnDefinitions().Size()?r:0,index+1==modes.ColumnDefinitions().Size()?r:0,index==0?r:0});Grid::SetColumn(pick,int(index));modes.Children().Append(pick);
-                    fields.emplace_back([weak,id,pick,compact]{if(auto self=weak.lock()){auto command=find(array(self->data->state,L"commands"),L"id",id);bool chosen=flag(command,L"selected");pick.IsEnabled(flag(command,L"enabled"));pick.Background(chosen?selected(self->data):compact?self->data->brush(L"input"):clear());AutomationProperties::SetItemStatus(pick,chosen?self->data->caption(L"search",L"selected"):hstring());AutomationProperties::SetName(pick,str(command,L"label"));tooltip(pick,str(command,L"tooltip"));}});
+                    fields.emplace_back([weak,id,pick,compact]{if(auto self=weak.lock()){auto command=find(self->data->state,L"commands",L"id",id);bool chosen=flag(command,L"selected");pick.IsEnabled(flag(command,L"enabled"));pick.Background(chosen?selected(self->data):compact?self->data->brush(L"input"):clear());AutomationProperties::SetItemStatus(pick,chosen?self->data->caption(L"search",L"selected"):hstring());AutomationProperties::SetName(pick,str(command,L"label"));tooltip(pick,str(command,L"tooltip"));}});
                 }else if(!group.empty()){
                     if(std::find(groups.begin(),groups.end(),group)==groups.end()){groups.push_back(group);actionChoice(group,context);}
                 }else if(flag(item,L"checkable")){
                     auto text=label(data,str(command,L"label"));auto check=compactCheck(data,text);check.HorizontalAlignment(HorizontalAlignment::Stretch);
                     AutomationProperties::SetName(check,str(command,L"label"));AutomationProperties::SetAutomationId(check,L"tool-action-"+id);check.Click([invoke](auto&&,auto&&){invoke();});
                     body.Children().Append(check);
-                    fields.emplace_back([weak,id,check,text]{if(auto self=weak.lock()){auto command=find(array(self->data->state,L"commands"),L"id",id);text.Text(str(command,L"label"));AutomationProperties::SetName(check,str(command,L"label"));check.IsEnabled(flag(command,L"enabled"));check.IsChecked(flag(command,L"selected"));tooltip(check,str(command,L"tooltip"));}});
+                    fields.emplace_back([weak,id,check,text]{if(auto self=weak.lock()){auto command=find(self->data->state,L"commands",L"id",id);text.Text(str(command,L"label"));AutomationProperties::SetName(check,str(command,L"label"));check.IsEnabled(flag(command,L"enabled"));check.IsChecked(flag(command,L"selected"));tooltip(check,str(command,L"tooltip"));}});
                 }else{
                     bool iconOnly=flag(item,L"icon_only");auto pick=button(data,str(command,L"label"),invoke);pick.MinHeight(iconOnly?data->panelMetric(L"control_height"):data->controlHeight());pick.Padding({iconOnly?0.:6.,0,iconOnly?0.:6.,0});pick.HorizontalAlignment(HorizontalAlignment::Stretch);
                     TextBlock caption{nullptr};if(iconOnly){pick.Width(data->panelMetric(L"control_height"));pick.Height(data->panelMetric(L"control_height"));pick.Content(icon(str(command,L"icon"),data->theme(),data->panelMetric(L"icon_size")));}
@@ -455,16 +455,16 @@ struct SettingsView : std::enable_shared_from_this<SettingsView> {
                         if(!actionRows.contains(rowId.c_str())){Grid row;row.ColumnSpacing(data->panelMetric(L"control_spacing"));for(auto other:actions)if(str(other.GetObject(),L"row")==rowId){ColumnDefinition column;column.Width({iconOnly?data->panelMetric(L"control_height"):1.,iconOnly?GridUnitType::Pixel:GridUnitType::Star});row.ColumnDefinitions().Append(column);}actionRows.emplace(rowId.c_str(),row);body.Children().Append(row);AutomationProperties::SetAutomationId(row,L"tool-action-row-"+rowId);}
                         auto row=actionRows.at(rowId.c_str());Grid::SetColumn(pick,int(actionIndices[rowId.c_str()]++));row.Children().Append(pick);
                     }
-                    fields.emplace_back([weak,id,pick,caption]{if(auto self=weak.lock()){auto command=find(array(self->data->state,L"commands"),L"id",id);auto title=str(command,L"label");for(auto value:array(object(self->data->state,L"canvas_bar"),L"completion")){auto item=value.GetObject();if(str(object(object(item,L"option"),L"Action"),L"id")==id||str(object(object(object(item,L"option"),L"Action"),L"state"),L"id")==id)title=str(item,L"label");}if(caption)caption.Text(title);AutomationProperties::SetName(pick,str(command,L"label"));pick.IsEnabled(flag(command,L"enabled"));tooltip(pick,str(command,L"tooltip"));}});
+                    fields.emplace_back([weak,id,pick,caption]{if(auto self=weak.lock()){auto command=find(self->data->state,L"commands",L"id",id);auto title=str(command,L"label");for(auto value:array(object(self->data->state,L"canvas_bar"),L"completion")){auto item=value.GetObject();if(str(object(object(item,L"option"),L"Action"),L"id")==id||str(object(object(object(item,L"option"),L"Action"),L"state"),L"id")==id)title=str(item,L"label");}if(caption)caption.Text(title);AutomationProperties::SetName(pick,str(command,L"label"));pick.IsEnabled(flag(command,L"enabled"));tooltip(pick,str(command,L"tooltip"));}});
                 }
             }
 
-        }else if(fieldContext&&*fieldContext!=target){
+        }else if(contextChanged){
             if(range&&range->capture)range->capture->Cancel();
-            for(auto const& bind:fields)bind();
+            for(auto const& bind:fields)bind.Apply(true);
             *fieldContext=target;
         }
-        for(auto const& bind:fields)bind();
+        for(auto const& bind:fields)bind.Apply(contextChanged);
     }
 };
 }
@@ -501,7 +501,7 @@ FrameworkElement BrushSizePanel(std::shared_ptr<WorkspaceData> const& data,Bindi
         AutomationProperties::SetAutomationId(pick,L"size-preset-"+text);actionTooltip(data,pick,[action]{return action;});
         grid.Children().Append(pick);
         bindings.emplace_back([data,pick,size]{
-            bool chosen=num(object(data->state,L"brush"),L"diameter")==size;pick.Background(chosen?selected(data):clear());
+            bool chosen=num(data->state,{L"brush",L"diameter"})==size;pick.Background(chosen?selected(data):clear());
             AutomationProperties::SetItemStatus(pick,chosen?data->caption(L"search",L"selected"):hstring());
         });
     }

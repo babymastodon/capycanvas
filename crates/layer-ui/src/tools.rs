@@ -627,12 +627,15 @@ pub(crate) fn view(brush: &BrushState, canvas_tool: LayerCanvasTool, localizer: 
 /// merely loading or remembering a brush never rewrites an explicit override.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolMemory {
+    #[serde(deserialize_with = "crate::lenient::map")]
     tools: BTreeMap<Tool, u32>,
+    #[serde(deserialize_with = "crate::lenient::map")]
     groups: BTreeMap<ToolGroup, u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     drawing: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sculpt: Option<u32>,
+    #[serde(deserialize_with = "crate::lenient::map")]
     pub overrides: BTreeMap<u32, BTreeMap<String, f32>>,
 }
 impl ToolMemory {

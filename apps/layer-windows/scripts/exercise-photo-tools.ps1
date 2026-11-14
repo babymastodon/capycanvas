@@ -327,7 +327,7 @@ try {
  $native=@{window=$null}
  Wait-Until {$native.window=Owned-DrawingWindow $review;$null -ne $native.window} 'Review did not start' 45
  $root=$native.window.Root;$drawingWindow=$native.window.Handle
- Wait-Until {(Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Photo tools review did not start'
+ Wait-Until {(Review-Ready) -and !(Model).windows_workspace.busy} 'Photo tools review did not start'
  $root.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Maximized)
  [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
  [CapyRowPointer]::SetForegroundWindow($drawingWindow)|Out-Null

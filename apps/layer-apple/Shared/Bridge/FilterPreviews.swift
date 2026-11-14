@@ -1,6 +1,30 @@
 import SwiftUI
 import CoreGraphics
 
+final class NativeBrushStamp: @unchecked Sendable {
+    private let handle: UInt64
+    let metadata: JSON
+    let count: Int
+    init?(_ handle: UInt64) {
+        var info = CapyBrushStampInfo()
+        guard capy_brush_stamp_read(handle, &info) else { capy_brush_stamp_free(handle); return nil }
+        self.handle = handle
+        metadata = JSON(["request_id": info.request, "pending": info.pending, "size": info.size, "extent": Double(info.extent)])
+        count = info.count
+    }
+    deinit { capy_brush_stamp_free(handle) }
+    func image() -> CGImage? {
+        let side = Int(metadata["size"].uint)
+        guard side > 0, count == side * side,
+            let alpha = copyNativeData(count, copy: { capy_brush_stamp_copy(handle, $0, $1, $2) }) else { return nil }
+        let bytes = alpha.flatMap { [0, 0, 0, $0] as [UInt8] }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+        return CGImage(width: side, height: side, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: side * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+}
+
 struct FilterPreviewReply: Sendable {
     let status: JSON
     let atlas: NativeFilterPreviews?

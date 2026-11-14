@@ -71,9 +71,16 @@ impl ModelUpdates {
     /// Full models establish the baseline; layout, camera and other packets
     /// pass through without changing it.
     pub fn publish(&mut self, next: Vec<u8>) -> Result<Vec<u8>, serde_json::Error> {
+        Ok(self.publish_without(next, None)?.0)
+    }
+    pub fn publish_without(&mut self, next: Vec<u8>, field: Option<&str>) -> Result<(Vec<u8>, Option<Box<RawValue>>), serde_json::Error> {
         let text = String::from_utf8(next).map_err(serde::de::Error::custom)?;
-        let fields: Fields = serde_json::from_str(&text)?;
-        if !fields.contains_key("state") { return Ok(text.into_bytes()); }
+        let mut fields: Fields = serde_json::from_str(&text)?;
+        if let Some(value) = field.and_then(|key| fields.remove(key)) {
+            let rest = serde_json::to_vec(&fields)?;
+            return Ok((self.publish(rest)?, Some(value.to_owned())));
+        }
+        if !fields.contains_key("state") { return Ok((text.into_bytes(), None)); }
         let ranges = fields.iter().map(|(&key, value)| {
             let start = value.get().as_ptr() as usize - text.as_ptr() as usize;
             (key.to_owned(), start..start + value.get().len())
@@ -93,7 +100,7 @@ impl ModelUpdates {
         };
         drop(fields);
         self.baseline = Some(ModelBaseline { text, fields: ranges });
-        Ok(bytes)
+        Ok((bytes, None))
     }
 }
 
@@ -538,6 +545,7 @@ mod tests {
         use layer_engine::{PenEvent, PenPhase, SampleFlags, ToolKind};
         use layer_ui::{CommandId, LayerAction, Platform, UiAction, UiInput};
         let mut host = NativeHost::new(Platform::Android).unwrap();
+        host.set_launch_interaction(true);
         host.resize(2200, 1440, 1.75).unwrap();
         host.dispatch(UiAction::Invoke { command: CommandId::Move }).unwrap();
         host.dispatch(UiAction::Layer { action: LayerAction::Lock { id: 1, value: true } }).unwrap();

@@ -152,6 +152,7 @@ extension XCTestCase {
         #endif
         app.launch(); capturePaintEditor(in: app)
         #if os(macOS)
+        createWhitePaperDrawing(in: app)
         let viewport = workspaceViewport(in: app), paper = editorPaper(in: app)
         let center = paper.point(0.25, 0.5)
         let points = [center, paper.point(0.55, 0.5), paper.point(0.85, 0.5)]
@@ -180,11 +181,11 @@ extension XCTestCase {
         editorDocumentTitle(in: app).hover()
         workspaceActivate(app.buttons["layer-New layer"])
         workspaceActivate(app.buttons["color-swap"])
-        let blank = samples()
+        let blank = settledEditorPixelSamples(in: app, at: points, size: 4)
         func fillResult(_ source: String, inverted: Bool = false, name: String) {
             expectation(for: NSPredicate { _, _ in red(samples()[inverted ? 1 : 0]) }, evaluatedWith: app)
             waitForExpectations(timeout: 15)
-            let painted = samples()
+            let painted = settledEditorPixelSamples(in: app, at: points, size: 4)
             let coverage = source == "Editing layer" ? [true, true, true]
                 : source == "Reference layers" ? [true, true, false] : [true, false, false]
             for index in points.indices {
@@ -238,7 +239,7 @@ extension XCTestCase {
                 let entry = app.textFields["number-entry-tool-tolerance"]
                 XCTAssertTrue(entry.waitForExistence(timeout: 5))
                 entry.typeText("\(percent)\n")
-                expectation(for: NSPredicate(format: "value == %@", "\(percent).0 %"),
+                expectation(for: NSPredicate(format: "value == %@", "\(percent) %"),
                     evaluatedWith: app.buttons["number-value-tool-tolerance"])
                 waitForExpectations(timeout: 5)
             }
@@ -248,7 +249,8 @@ extension XCTestCase {
             for value in ["2", "-2", "0"] {
                 let entry = app.textFields["number-entry-tool-edge_offset"]
                 revealEditorControl(entry, in: app.scrollViews.containing(.textField, identifier: entry.identifier).firstMatch)
-                workspaceActivate(entry); entry.typeText(value + "\n")
+                replaceEditorText(entry, with: value, in: app)
+                entry.typeText("\n")
                 editorTool("Paint Brush", in: app); editorTool(tool, in: app)
                 expectation(for: NSPredicate(format: "value == %@", value + " px"), evaluatedWith: entry)
                 waitForExpectations(timeout: 5)
@@ -269,6 +271,7 @@ extension XCTestCase {
     @MainActor func checkSelectionInversion(in app: XCUIApplication) {
         app.launchEnvironment["CAPY_INITIAL_ACTIONS"] = #"[{"type":"set_theme","theme":"light"},{"type":"set_color","rgba":[0.9,0.25,0.2,1]},{"type":"color","action":{"op":"swap"}},{"type":"set_color","rgba":[0.2,0.45,0.8,1]}]"#
         app.launch(); capturePaintEditor(in: app)
+        createWhitePaperDrawing(in: app)
         func pixels() -> Data { editorPixels(in: app) }
         func invert() { editorMenu(in: app, menu: "Select", id: "invert_selection", label: "Invert selection") }
         func fill() { editorMenu(in: app, menu: "Edit", id: "fill_selection", label: "Fill selection") }
@@ -276,14 +279,14 @@ extension XCTestCase {
         fill()
         expectation(for: NSPredicate { _, _ in let p = pixels(); return Int(p[2]) > Int(p[0]) + 50 }, evaluatedWith: app)
         waitForExpectations(timeout: 15)
-        let blue = pixels()
+        let blue = settledEditorPixels(in: app)
         workspaceActivate(app.buttons["color-swap"])
         invert(); fill(); expectPixels(blue, in: app)
         attachEditor(in: app, name: "selection-inverted-empty")
         invert(); fill()
         expectation(for: NSPredicate { _, _ in let p = pixels(); return Int(p[0]) > Int(p[2]) + 50 }, evaluatedWith: app)
         waitForExpectations(timeout: 15)
-        let red = pixels()
+        let red = settledEditorPixels(in: app)
         attachEditor(in: app, name: "selection-inverted-full")
         editorHistory("Undo", in: app); expectPixels(blue, in: app)
         editorHistory("Redo", in: app); expectPixels(red, in: app)

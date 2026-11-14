@@ -1,4 +1,5 @@
 #pragma once
+#include "WorkspaceSurfaceGeometry.h"
 #include "UiControls.h"
 #include <array>
 #include <set>
@@ -125,7 +126,7 @@ inline bool orderPanelTabs(StackPanel const& row,A const& order,std::map<std::ws
     for(auto value:order){
         auto found=tabs.find(std::wstring(value.GetString()));if(found==tabs.end())continue;
         auto shell=found->second;auto tab=shell.Children().GetAt(1).as<Button>();
-        auto tag=tab.Tag().as<J>();object(tag,L"workspace_tab").Insert(L"index",N(index));
+        auto tag=tab.Tag().as<J>();auto membership=object(tag,L"workspace_tab");if(num(membership,L"index",-1)!=index)membership.Insert(L"index",N(index));
         auto children=row.Children();uint32_t previous;
         if(index>=children.Size()||children.GetAt(index)!=shell){
             reordered=true;
@@ -218,18 +219,30 @@ inline void hoverPanelTabShell(Grid const& shell,bool hovered){
 }
 inline void selectPanelTabShell(Grid const& shell,bool selected,Brush const& fill=nullptr,J const& presentation=J{}){
     bool wasSelected=unbox_value_or<hstring>(shell.Tag(),L"")==L"active-panel-tab-shell";
-    shell.Tag(box_value(selected?L"active-panel-tab-shell":L"panel-tab-shell"));Canvas::SetZIndex(shell,selected?1:0);
+    if(selected!=wasSelected)shell.Tag(box_value(selected?L"active-panel-tab-shell":L"panel-tab-shell"));
+    if(Canvas::GetZIndex(shell)!=(selected?1:0))Canvas::SetZIndex(shell,selected?1:0);
     auto background=shell.Children().GetAt(0).as<Canvas>();auto shape=background.Children().GetAt(0).as<Microsoft::UI::Xaml::Shapes::Path>();
-    if(selected||wasSelected)shape.Fill(selected?fill:Brush(nullptr));
+    if(selected||wasSelected){auto next=selected?fill:Brush(nullptr);if(shape.Fill()!=next)shape.Fill(next);}
     if(presentation.Size()){
         auto bottom=array(presentation,L"hover_bottom");
-        shape.Resources().Insert(box_value(L"TabHoverBottom"),box_value(Thickness{bottom.GetNumberAt(0),0,bottom.GetNumberAt(1),0}));
+        auto key=box_value(L"TabHoverBottom");Thickness next{bottom.GetNumberAt(0),0,bottom.GetNumberAt(1),0};
+        if(!shape.Resources().HasKey(key)||unbox_value<Thickness>(shape.Resources().Lookup(key))!=next)shape.Resources().Insert(key,box_value(next));
     }
     auto key=box_value(L"TabHoverBottom");auto corners=shape.Resources().HasKey(key)?unbox_value<Thickness>(shape.Resources().Lookup(key)):Thickness{};
     std::array<float,2> bottom=selected?std::array<float,2>{-6,-6}:std::array<float,2>{float(corners.Left),float(corners.Right)};
     Canvas::SetLeft(shape,std::min(0.f,bottom[0]));
     auto content=shell.Children().GetAt(1).as<FrameworkElement>();float width=float(content.ActualWidth()),height=float(content.ActualHeight());
-    if(width>0&&height>0){shape.Width(width-std::min(0.f,bottom[0])-std::min(0.f,bottom[1]));shape.Height(height);shape.Data(polygon(panelTabOutline(width,height,bottom)));}
+    if(width>0&&height>0){
+        TabShapeInputs next{width,height,bottom};auto key=box_value(L"TabShapeInputs");bool changed=true;
+        if(shape.Resources().HasKey(key)){
+            auto saved=unbox_value<Thickness>(shape.Resources().Lookup(key));
+            changed=next!=TabShapeInputs{float(saved.Left),float(saved.Top),{float(saved.Right),float(saved.Bottom)}};
+        }
+        if(changed){
+            shape.Resources().Insert(key,box_value(Thickness{width,height,bottom[0],bottom[1]}));
+            shape.Width(width-std::min(0.f,bottom[0])-std::min(0.f,bottom[1]));shape.Height(height);shape.Data(polygon(panelTabOutline(width,height,bottom)));
+        }
+    }
 }
 inline Grid panelTabShell(FrameworkElement const& content,Brush const& fill,Brush const& hover=nullptr){
     if(auto tab=content.try_as<Button>())buttonFeedback(tab,nullptr,0,0,nullptr,true);

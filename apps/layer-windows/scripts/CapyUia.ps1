@@ -62,7 +62,7 @@ function Start-CapyDebugger([Diagnostics.Process]$Process,[string]$DebuggerPath,
     [CapyWindowApi]::GetWindowThreadProcessId($Drawing.Handle,[ref]$owner)|Out-Null
     $profile=[IO.Path]::GetFullPath($env:CAPY_STORAGE_DIR)
     $fixtureRoot=[IO.Path]::GetFullPath($Run).TrimEnd([IO.Path]::DirectorySeparatorChar)+[IO.Path]::DirectorySeparatorChar
-    $context=Get-Content -LiteralPath $env:CAPY_FIXTURE_CONTEXT -Raw|ConvertFrom-Json
+    $context=Read-CapyFixtureContext
     $owned=@($context.windows|Where-Object {$_.process_id -eq $Process.Id -and $_.hwnd -eq $Drawing.Handle.ToInt64() -and $_.executable -eq $Process.Path})
     if(!$env:CAPY_PRIVATE_DESKTOP -or !$profile.StartsWith($fixtureRoot,[StringComparison]::OrdinalIgnoreCase) -or $owned.Count -ne 1 -or $Process.HasExited -or
         $Drawing.Handle -eq [IntPtr]::Zero -or $owner -ne $Process.Id -or $Drawing.Root.Current.ProcessId -ne $Process.Id){
@@ -95,10 +95,11 @@ function Start-CapyDebugger([Diagnostics.Process]$Process,[string]$DebuggerPath,
     }
     $debugger
 }
+function Read-CapyFixtureContext{Read-Snapshot $env:CAPY_FIXTURE_CONTEXT}
 function Update-CapyFixtureContext([scriptblock]$Update){
     if(!$env:CAPY_FIXTURE_CONTEXT){return}
     $context=@{}
-    if(Test-Path -LiteralPath $env:CAPY_FIXTURE_CONTEXT){foreach($property in (Get-Content -LiteralPath $env:CAPY_FIXTURE_CONTEXT -Raw|ConvertFrom-Json).PSObject.Properties){$context[$property.Name]=$property.Value}}
+    if(Test-Path -LiteralPath $env:CAPY_FIXTURE_CONTEXT){foreach($property in (Read-CapyFixtureContext).PSObject.Properties){$context[$property.Name]=$property.Value}}
     & $Update $context
     $temporary=$env:CAPY_FIXTURE_CONTEXT+'.tmp-'+[guid]::NewGuid().ToString('N')
     $stream=[IO.FileStream]::new($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write)
@@ -110,7 +111,7 @@ function Register-CapyFixtureWindow([Diagnostics.Process]$Process,[long]$WindowH
     $owner=[uint32]0;[CapyWindowApi]::GetWindowThreadProcessId([IntPtr]$WindowHandle,[ref]$owner)|Out-Null
     if($WindowHandle -eq 0 -or $owner -ne $Process.Id){throw 'Fixture census window is not owned by the review'}
     $executable=$Process.Path
-    $context=if(Test-Path -LiteralPath $env:CAPY_FIXTURE_CONTEXT){Get-Content -LiteralPath $env:CAPY_FIXTURE_CONTEXT -Raw|ConvertFrom-Json}else{$null}
+    $context=if(Test-Path -LiteralPath $env:CAPY_FIXTURE_CONTEXT){Read-CapyFixtureContext}else{$null}
     $known=@($context.windows|Where-Object {$_.process_id -eq $Process.Id -and $_.hwnd -eq $WindowHandle})
     if($known.Count -gt 1 -or ($known.Count -eq 1 -and $known[0].executable -ne $executable)){throw 'Fixture census owner changed'}
     if(!$TraceDirectory){$TraceDirectory=if($known.Count){$known[0].trace_directory}elseif($script:CapyTraceDirectory){$script:CapyTraceDirectory}else{Split-Path -Parent $executable}}
@@ -621,6 +622,15 @@ function Search-State{
  if($base.process_id -ne $review.Id -or $search.process_id -ne $review.Id -or $search.window_id -ne $base.window_id -or 'search' -notin $search.PSObject.Properties.Name){throw 'The search acknowledgement is not from the owned drawing'}
  $search.search
 }
+function Text-Input{
+    $path=State-File
+    if(!$path){return}
+    $inputPath=Join-Path (Split-Path -Parent $path) ((Split-Path -Leaf $path) -replace '^ui-state-','text-input-')
+    if(![IO.File]::Exists($inputPath)){return}
+    $base=Read-Snapshot $path;$textInput=Read-Snapshot $inputPath
+    if($base.process_id -ne $review.Id -or $textInput.process_id -ne $review.Id -or $textInput.window_id -ne $base.window_id){throw 'The text input trace is not from the owned drawing'}
+    $textInput
+}
 function Camera-Receipt{
     $path=State-File
     if(!$path){return}
@@ -661,6 +671,17 @@ function Model{
     if(!$script:CapyCacheModel -or !$script:CapyTrace){return $model}
     if($model){$script:CapyTrace.model=$model}
     if($script:CapyTrace.process -eq $review.Id){$script:CapyTrace.model}
+}
+function Review-Ready($View=(Model),[long]$WindowHandle){
+    if(!($View.brush_ready -and $View.windows_workspace.ready -and !$View.launch.visible)){return $false}
+    $windows=@(Owned-ProcessWindows $review $WindowHandle)
+    $cover=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'launch-splash')
+    $windows.Count -gt 0 -and !@($windows|Where-Object {$splash=$_.Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cover);$splash -and !$splash.Current.IsOffscreen}).Count
+}
+function Input-Ready($View=(Model),[long]$WindowHandle){
+    if(!(Review-Ready $View $WindowHandle)){return $false}
+    $canvas=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'drawing-canvas')
+    !@(Owned-ProcessWindows $review $WindowHandle|Where-Object {$surface=$_.Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$canvas);!$surface -or !$surface.Current.IsEnabled}).Count
 }
 function Set-CapyTransparency([ValidateSet('off','low','medium','high')][string]$Value){
     $opened=!(Model).preferences
@@ -1094,7 +1115,7 @@ function Native-Bounds([string]$Id,[double]$Scale,[switch]$Group,$Snapshot=$null
     Wait-Until {
         $workspace=Workspace-Root
         if(!$workspace){return $false}
-        $presentation=$workspace.Current.ItemStatus|ConvertFrom-Json
+        $presentation=if($Snapshot){$Snapshot}else{$workspace.Current.ItemStatus|ConvertFrom-Json}
         $records=if($Group){$presentation.groups}else{$presentation.elements}
         $hit.record=@($records|Where-Object id -eq $Id)[0]
         $bounds=if($Group){$hit.record.bounds}else{$hit.record.actual_bounds}

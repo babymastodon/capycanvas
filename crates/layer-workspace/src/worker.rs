@@ -77,8 +77,12 @@ impl StoreWorker {
                     };
                     if matches!(request, StoreRequest::SetAside) {
                         let result = if matches!(&store,Err(error) if error.kind==ErrorKind::DamagedStorage) {
-                            store = set_aside_database(&database);
-                            store.as_ref().map(|_|StoreResponse::Done).map_err(Clone::clone)
+                            let (opened, restored) = match set_aside_database(&database) {
+                                Ok((opened, restored)) => (Ok(opened), restored),
+                                Err(error) => (Err(error), false),
+                            };
+                            store = opened;
+                            store.as_ref().map(|_|StoreResponse::SetAside {restored}).map_err(Clone::clone)
                         } else {
                             Err(StoreError::new(ErrorKind::Unavailable,"Only a damaged database can be set aside."))
                         };
@@ -86,7 +90,7 @@ impl StoreWorker {
                         let _ = reply.try_send(result);
                         continue;
                     }
-                    if matches!(request, StoreRequest::Reopen | StoreRequest::Reset)
+                    if matches!(request, StoreRequest::Reopen)
                         && store.is_err()
                     {
                         store = SqliteStore::open(&database);
@@ -184,7 +188,7 @@ pub fn validate_database_export_destination(source: &Path, destination: &Path) -
     Ok(())
 }
 
-fn set_aside_database(path: &Path) -> Result<SqliteStore> {
+fn set_aside_database(path: &Path) -> Result<(SqliteStore, bool)> {
     let io = |error: std::io::Error| StoreError::new(ErrorKind::Unavailable,error.to_string());
     let path = std::fs::canonicalize(path).map_err(io)?;
     let _recovery = crate::sqlite::ownership::storage_recovery_lock(&path)?;
@@ -214,7 +218,8 @@ fn set_aside_database(path: &Path) -> Result<SqliteStore> {
             return Err(StoreError::new(ErrorKind::Unavailable,detail));
         }
     }
-    SqliteStore::open(&path)
+    let restored = crate::sqlite::install_newest_copy(&path)?;
+    Ok((SqliteStore::open(&path)?, restored))
 }
 
 pub(crate) fn backup_database(source: &Path, destination: &Path) -> Result<()> {

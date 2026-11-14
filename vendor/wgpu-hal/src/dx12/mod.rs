@@ -612,6 +612,8 @@ struct SwapChain {
     /// Handle is freed in [`Self::release_resources()`]
     waitable: Option<Foundation::HANDLE>,
     acquired_count: usize,
+    nonblocking: bool,
+    acquisition_ready: bool,
     present_mode: wgt::PresentMode,
     format: wgt::TextureFormat,
     size: wgt::Extent3d,
@@ -647,6 +649,15 @@ unsafe impl Send for Surface {}
 unsafe impl Sync for Surface {}
 
 impl Surface {
+    /// Enable nonblocking acquisition and deferred presentation on a configured surface.
+    pub fn set_nonblocking(&self) -> Result<(), crate::SurfaceError> {
+        let mut swapchain = self.swap_chain.write();
+        let sc = swapchain.as_mut().ok_or(crate::SurfaceError::Outdated)?;
+        if sc.waitable.is_none() { return Err(crate::SurfaceError::Other("Nonblocking surfaces require a latency waitable handle".into())); }
+        sc.nonblocking = true;
+        Ok(())
+    }
+
     pub fn swap_chain(&self) -> Option<Dxgi::IDXGISwapChain3> {
         Some(self.swap_chain.read().as_ref()?.raw.clone())
     }
@@ -1408,6 +1419,39 @@ pub struct AccelerationStructure {
 
 impl crate::DynAccelerationStructure for AccelerationStructure {}
 
+fn acquire_nonblocking(waitable: Option<Foundation::HANDLE>, ready: &mut bool) -> Result<(), crate::SurfaceError> {
+    if *ready { return Ok(()); }
+    let waitable = waitable.ok_or(crate::SurfaceError::Lost)?;
+    match unsafe { Threading::WaitForSingleObject(waitable, 0) } {
+        Foundation::WAIT_OBJECT_0 => { *ready = true; Ok(()) },
+        Foundation::WAIT_TIMEOUT => Err(crate::SurfaceError::Timeout),
+        _ => Err(crate::SurfaceError::Lost),
+    }
+}
+
+#[cfg(test)]
+mod nonblocking_tests {
+    use super::*;
+    #[test]
+    fn acquisition_polls_without_consuming_an_unavailable_buffer() {
+        let event = unsafe { Threading::CreateEventW(None, false, false, None) }.unwrap();
+        let mut ready = false;
+        assert_eq!(acquire_nonblocking(Some(event), &mut ready), Err(crate::SurfaceError::Timeout));
+        assert!(!ready);
+        unsafe { Threading::SetEvent(event) }.unwrap();
+        assert!(acquire_nonblocking(Some(event), &mut ready).is_ok());
+        assert!(ready);
+        assert!(acquire_nonblocking(Some(event), &mut ready).is_ok());
+        ready = false;
+        assert_eq!(acquire_nonblocking(Some(event), &mut ready), Err(crate::SurfaceError::Timeout));
+        unsafe { Foundation::CloseHandle(event) }.unwrap();
+    }
+    #[test]
+    fn missing_nonblocking_handle_does_not_fall_back_to_a_wait() {
+        assert_eq!(acquire_nonblocking(None, &mut false), Err(crate::SurfaceError::Lost));
+    }
+}
+
 impl SwapChain {
     unsafe fn release_resources(mut self) -> Dxgi::IDXGISwapChain3 {
         if let Some(mut waitable) = self.waitable.take() {
@@ -1695,6 +1739,8 @@ impl crate::Surface for Surface {
             resources,
             waitable,
             acquired_count: 0,
+            nonblocking: false,
+            acquisition_ready: false,
             present_mode: config.present_mode,
             format: config.format,
             size: config.extent,
@@ -1727,7 +1773,9 @@ impl crate::Surface for Surface {
         let mut swapchain = self.swap_chain.write();
         let sc = swapchain.as_mut().unwrap();
 
-        match self.options.latency_waitable_object {
+        if sc.nonblocking {
+            acquire_nonblocking(sc.waitable, &mut sc.acquisition_ready)?;
+        } else { match self.options.latency_waitable_object {
             wgt::Dx12UseFrameLatencyWaitableObject::None
             | wgt::Dx12UseFrameLatencyWaitableObject::DontWait => {}
             wgt::Dx12UseFrameLatencyWaitableObject::Wait => {
@@ -1735,6 +1783,7 @@ impl crate::Surface for Surface {
             }
         }
 
+        }
         let base_index = unsafe { sc.raw.GetCurrentBackBufferIndex() } as usize;
         let index = (base_index + sc.acquired_count) % sc.resources.len();
         sc.acquired_count += 1;
@@ -1816,6 +1865,34 @@ impl crate::Queue for Queue {
 
         Ok(())
     }
+    fn supports_nonblocking_present(&self, surface: &Surface) -> bool {
+        surface.swap_chain.read().as_ref().is_some_and(|sc| sc.nonblocking)
+    }
+
+    unsafe fn try_present(
+        &self,
+        surface: &Surface,
+        _texture: &Texture,
+    ) -> Result<crate::PresentAttempt, crate::SurfaceError> {
+        let mut swapchain = surface.swap_chain.write();
+        let sc = swapchain.as_mut().ok_or(crate::SurfaceError::Outdated)?;
+        if !sc.nonblocking { return Ok(crate::PresentAttempt::Unsupported); }
+        let (interval, flags) = match sc.present_mode {
+            wgt::PresentMode::Immediate => (0, Dxgi::DXGI_PRESENT_ALLOW_TEARING),
+            wgt::PresentMode::Mailbox => (0, Dxgi::DXGI_PRESENT::default()),
+            wgt::PresentMode::Fifo => (1, Dxgi::DXGI_PRESENT::default()),
+            mode => unreachable!("Cannot make surface with present mode {mode:?}"),
+        };
+        let result = unsafe { sc.raw.Present(interval, flags | Dxgi::DXGI_PRESENT_DO_NOT_WAIT) };
+        if result == Dxgi::DXGI_ERROR_WAS_STILL_DRAWING {
+            return Ok(crate::PresentAttempt::Pending);
+        }
+        result.ok().into_device_result("Nonblocking Present")?;
+        sc.acquired_count -= 1;
+        sc.acquisition_ready = false;
+        Ok(crate::PresentAttempt::Presented)
+    }
+
     unsafe fn present(
         &self,
         surface: &Surface,

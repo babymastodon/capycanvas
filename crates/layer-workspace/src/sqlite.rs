@@ -1,4 +1,4 @@
-use crate::protocol::{PreparedWrite, unpack};
+use crate::protocol::{PreparedWrite, resolve};
 use crate::store_rules::*;
 use crate::*;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -56,10 +56,8 @@ pub struct SqliteStore {
     connection: Connection,
     clock: Arc<dyn Clock>,
     ownership: ownership::Ownership,
-    /// Set for a store of another version; only `StoreRequest::Reset` is served.
-    incompatible: Option<StoreError>,
+    newer: bool,
     snapshots_ready: bool,
-    restore: Option<String>,
 }
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self> {
@@ -91,28 +89,23 @@ impl SqliteStore {
         }
         options.open(path).map_err(unavailable)?;
         let mut connection = Connection::open(std::fs::canonicalize(path).map_err(unavailable)?)?;
-        use rusqlite::{config::DbConfig, limits::Limit};
-        connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
-        connection.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+        use rusqlite::config::DbConfig;
+        harden(&connection)?;
         connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
-        connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_ROW_BYTES as i32)?;
-        connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "synchronous", "FULL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "wal_autocheckpoint", 1000)?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let protection = snapshots::protect(&tx);
-        let snapshots_ready = protection.is_ok();
-        let restore = protection.ok().flatten();
-        let incompatible = match tx.pragma_query_value(None, "user_version", |r| r.get(0))? {
-            SCHEMA_VERSION => None,
+        let snapshots_ready = snapshots::protect(&tx).is_ok();
+        let newer = match tx.pragma_query_value(None, "user_version", |r| r.get(0))? {
+            SCHEMA_VERSION => false,
             0 if table_names(&tx)?.is_empty() => {
                 create_schema(&tx)?;
-                None
+                false
             }
-            version if version > SCHEMA_VERSION => Some(newer_schema()),
-            _ => Some(other_schema()),
+            version if version > SCHEMA_VERSION => true,
+            version => return Err(StoreError::new(ErrorKind::DamagedStorage, format!("Workspace storage schema {version}"))),
         };
         tx.commit()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -121,61 +114,24 @@ impl SqliteStore {
             connection,
             clock,
             ownership: ownership::Ownership::new(path)?,
-            incompatible,
+            newer,
             snapshots_ready,
-            restore,
         })
     }
-    fn reset(&mut self) -> Result<()> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > SCHEMA_VERSION {
+    pub fn handle(&mut self, request: StoreRequest) -> Result<StoreResponse> {
+        if self.newer {
             return Err(newer_schema());
         }
-        preserve(Path::new(tx.path().unwrap_or_default()))?;
-        for table in table_names(&tx)? {
-            tx.execute(
-                &format!("DROP TABLE \"{}\"", table.replace('"', "\"\"")),
-                [],
-            )?;
-        }
-        create_schema(&tx)?;
-        tx.commit()?;
-        self.ownership.release_all();
-        self.incompatible = None;
-        Ok(())
-    }
-    pub fn handle(&mut self, request: StoreRequest) -> Result<StoreResponse> {
-        if let Some(error) = self
-            .incompatible
-            .as_ref()
-            .filter(|_| !matches!(request, StoreRequest::Reset))
-        {
-            return Err(error.clone());
-        }
         match request {
-            StoreRequest::RestoreSnapshot { id } => {
-                snapshots::restore(&mut self.connection,&id)?;
-                self.ownership.release_all();
-                Ok(StoreResponse::Done)
-            }
             StoreRequest::Adopted => {
                 let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 if self.snapshots_ready { snapshots::prune(&tx)?; }
                 tx.commit()?;
                 Ok(StoreResponse::Done)
             }
-            StoreRequest::Reset => {
-                self.reset()?;
-                Ok(StoreResponse::Done)
-            }
             StoreRequest::Editing { language } => {
                 let json: Option<String> = self.connection.query_row("SELECT json FROM editing WHERE id=1", [], |r| r.get(0)).optional()?;
-                let (state, dropped) = json.map(|json|layer_ui::EditingState::restore_with_report(&json,&layer_ui::Localizer::shared(language)))
-                    .map_or((None,false), |(state,dropped)|(Some(Box::new(state)),dropped));
-                Ok(StoreResponse::Editing {state,dropped})
+                Ok(StoreResponse::Editing(json.map(|json| Box::new(layer_ui::EditingState::restore(&json, &layer_ui::Localizer::shared(language))))))
             }
             StoreRequest::SetAside => Err(StoreError::new(ErrorKind::Unavailable,"Only a damaged database can be set aside.")),
             StoreRequest::Switcher => self
@@ -263,7 +219,7 @@ impl SqliteStore {
             StoreRequest::Reopen => {
                 self.connection
                     .execute_batch("PRAGMA wal_checkpoint(PASSIVE)")?;
-                Ok(StoreResponse::Reopened(self.restore.take()))
+                Ok(StoreResponse::Done)
             }
         }
     }
@@ -326,38 +282,15 @@ impl SqliteStore {
         };
         let values = ids
             .into_iter()
-            .map(|id| {
-                let result = (|| -> Result<ItemSummary> {
-                    let row = header(&tx, &id)?;
+            .filter_map(|id| {
+                let summary = header(&tx, &id).and_then(|row| {
                     let metadata: Metadata = serde_json::from_str(&row.metadata)?;
                     metadata.validate()?;
-                    Ok(ItemSummary {
-                        id: id.clone(),
-                        metadata,
-                        generations: row.generations,
-                        claim: row.claim,
-                        error: None,
-                        unavailable_name: false,
-                    })
-                })();
-                match result {
-                    Ok(summary) => Ok(summary),
-                    Err(error) => {
-                        let (name, kind): (String, String) =
-                            tx.query_row("SELECT name,kind FROM items WHERE id=?1", [&id], |r| {
-                                Ok((r.get(0)?, r.get(1)?))
-                            })?;
-                        let row = header(&tx, &id).ok();
-                        Ok(summary_fallback(
-                            id,
-                            Some(&kind),
-                            Some(&name),
-                            row.as_ref().is_some_and(|r| r.builtin),
-                            row.as_ref().map(|r| r.generations).unwrap_or_default(),
-                            row.and_then(|r| r.claim),
-                            error,
-                        ))
-                    }
+                    Ok(ItemSummary { id, metadata, generations: row.generations, claim: row.claim })
+                });
+                match summary {
+                    Err(error) if error.kind == ErrorKind::InvalidData => None,
+                    summary => Some(summary),
                 }
             })
             .collect::<Result<Vec<_>>>()?;
@@ -587,28 +520,15 @@ impl SqliteStore {
         Ok(result)
     }
 }
-/// Copies a store this build cannot read beside it before a reset replaces it.
-/// The write lock held by the caller keeps the database and its log consistent.
-fn preserve(path: &Path) -> Result<()> {
-    let failed = |e: std::io::Error| StoreError::new(ErrorKind::FailedWrite, format!("Cannot keep a copy of workspace storage: {e}"));
-    let backup = path.with_extension("unreadable.sqlite3");
-    let suffixed = |path: &Path, suffix: &str| {
-        let mut name = path.as_os_str().to_owned();
-        name.push(suffix);
-        std::path::PathBuf::from(name)
-    };
-    for suffix in ["", "-wal", "-shm"] {
-        match std::fs::remove_file(suffixed(&backup, suffix)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(failed(e)),
-            _ => {}
-        }
-    }
-    for suffix in ["", "-wal"] {
-        match std::fs::copy(suffixed(path, suffix), suffixed(&backup, suffix)) {
-            Err(e) if !(suffix == "-wal" && e.kind() == std::io::ErrorKind::NotFound) => return Err(failed(e)),
-            _ => {}
-        }
-    }
+pub(crate) fn install_newest_copy(path: &Path) -> Result<bool> {
+    snapshots::install(path)
+}
+fn harden(connection: &Connection) -> Result<()> {
+    use rusqlite::{config::DbConfig, limits::Limit};
+    connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    connection.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_ROW_BYTES as i32)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024)?;
     Ok(())
 }
 fn table_names(connection: &Connection) -> Result<Vec<String>> {
@@ -641,19 +561,18 @@ fn create_schema(connection: &Connection) -> Result<()> {
 struct Header {
     metadata: String,
     kind: String,
-    builtin: bool,
     generations: Generations,
     fence: u64,
     claim: Option<Claim>,
 }
 fn header(connection: &Connection, id: &str) -> Result<Header> {
-    let row = connection.query_row("SELECT metadata,kind,builtin,metadata_generation,layout_generation,working_generation,fence,owner,epoch,lease_until FROM items WHERE id=?1", [id], |r| Ok((
-        r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, bool>(2)?,
-        r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, String>(5)?,r.get::<_, String>(6)?,
-        r.get::<_, Option<String>>(7)?,r.get::<_, Option<String>>(8)?,r.get::<_, Option<String>>(9)?,
+    let row = connection.query_row("SELECT metadata,kind,metadata_generation,layout_generation,working_generation,fence,owner,epoch,lease_until FROM items WHERE id=?1", [id], |r| Ok((
+        r.get::<_, String>(0)?,r.get::<_, String>(1)?,
+        r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, String>(5)?,
+        r.get::<_, Option<String>>(6)?,r.get::<_, Option<String>>(7)?,r.get::<_, Option<String>>(8)?,
     ))).optional()?.ok_or_else(not_found)?;
-    let fence = parse_counter(&row.6)?;
-    let claim = match (row.7, row.8, row.9) {
+    let fence = parse_counter(&row.5)?;
+    let claim = match (row.6, row.7, row.8) {
         (Some(id), Some(epoch), Some(until)) => Some(Claim {
             owner: Owner { id, epoch },
             fence,
@@ -665,11 +584,10 @@ fn header(connection: &Connection, id: &str) -> Result<Header> {
     Ok(Header {
         metadata: row.0,
         kind: row.1,
-        builtin: row.2,
         generations: Generations {
-            metadata: parse_counter(&row.3)?,
-            layout: parse_counter(&row.4)?,
-            working: parse_counter(&row.5)?,
+            metadata: parse_counter(&row.2)?,
+            layout: parse_counter(&row.3)?,
+            working: parse_counter(&row.4)?,
         },
         fence,
         claim,
@@ -689,18 +607,9 @@ fn load(connection: &Connection, id: &str) -> Result<StoredEntity> {
         connection.query_row("SELECT content,working FROM items WHERE id=?1", [id], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?;
-    let entity = Entity {
-        id: id.into(),
-        metadata: serde_json::from_str(&row.metadata)?,
-        content: unpack(&content, |id| component(connection, id))?,
-        working: working.map(|v| layer_ui::WorkspaceWorkingState::restore(serde_json::from_str(&v).unwrap_or_default())),
-    };
-    entity.validate()?;
-    Ok(StoredEntity {
-        entity,
-        generations: row.generations,
-        claim: row.claim,
-    })
+    let working = working.and_then(|working| serde_json::from_str(&working).ok());
+    let (entity, fallback) = Entity::read(id.into(), serde_json::from_str(&row.metadata)?, resolve(&content, |id| component(connection, id)), working)?;
+    Ok(StoredEntity { entity, generations: row.generations, claim: row.claim, fallback })
 }
 fn receipt(connection: &Connection, id: &str) -> Result<Option<(String, CommitReceipt)>> {
     connection

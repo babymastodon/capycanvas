@@ -20,7 +20,7 @@ function Wait-Until([scriptblock]$Condition,[string]$Message,[int]$Seconds=8){
     throw $Message
 }
 $native=@{window=$null}
-Wait-Until {$native.window=Owned-DrawingWindow $app;$null -ne $native.window -and (Model).brush_ready -and (Model).windows_workspace.ready -and !(Model).windows_workspace.busy} 'Review startup did not complete' 45
+Wait-Until {$native.window=Owned-DrawingWindow $app;$null -ne $native.window -and (Review-Ready) -and !(Model).windows_workspace.busy} 'Review startup did not complete' 45
 if(!(Model).windows_isolated_settings){throw 'Use an isolated review settings profile'}
 $root=$native.window.Root;$drawingWindow=$native.window.Handle
 function Find([string]$Value,$Type=[System.Windows.Automation.ControlType]::Button,[switch]$Id){

@@ -66,6 +66,12 @@ use serde::Deserialize;
 #[cfg(not(target_arch="wasm32"))]
 use serde_json::{Value, json};
 
+#[cfg(not(target_arch="wasm32"))]
+pub fn finish_native_process() {
+    layer_render_wgpu::stop_shader_compilers();
+    session_stores::drain_native_work();
+}
+
 #[derive(Clone, PartialEq)]
 #[cfg(not(target_arch="wasm32"))]
 struct SnapshotKey {
@@ -169,7 +175,6 @@ pub struct NativeHost {
     pub sequence: u64,
     pub startup: layer_render_wgpu::StartupProgress,
     chrome_ready: bool,
-    launch_interaction: bool,
     pub(crate) document_close_prepared: bool,
     poisoned: Option<String>,
     pub proof: layer_ui::proof_workflow::ProofView,
@@ -253,7 +258,10 @@ impl NativeHost {
         else {self.preparation.retire();}
     }
     pub fn poll_preparation(&mut self)->layer_render::FrameDemand {
-        if self.preparation.take() {self.dirty=true;}
+        if self.preparation.take() {
+            self.dirty |= self.session.engine().backend().0.as_ref()
+                .is_some_and(|gpu|gpu.frame_preparation_pending());
+        }
         self.frame_demand()
     }
     pub fn frame_demand(&self)->layer_render::FrameDemand {
@@ -286,6 +294,10 @@ impl NativeHost {
     pub fn take_filter_preview_image(&mut self) -> Option<layer_render::FilterPreviewImage> {
         self.filter_preview_image.take()
     }
+    pub fn toolbar_stamp(&mut self, context: Option<layer_ui::ToolbarContext>, known_request: Option<u64>) -> Result<Option<layer_ui::BrushStamp>, String> {
+        let context = context.unwrap_or_else(|| self.session.state().toolbar_context());
+        self.session.toolbar_stamp(context, known_request)
+    }
     pub fn launch(platform: layer_ui::Platform, saved: &str, preferred_tags: &[&str]) -> Result<Self, String> {
         Self::launch_localized(platform, saved, layer_ui::launch_localization(saved, preferred_tags))
     }
@@ -304,7 +316,7 @@ impl NativeHost {
         Ok(Self::from_session(Box::new(session)))
     }
     pub fn bootstrap_view(&self) -> layer_ui::BootstrapView {
-        layer_ui::bootstrap_view(self.session.localization())
+        layer_ui::launch_bootstrap_view(self.session.localization(), self.session.state().settings.zen_icon)
     }
     pub fn set_device_class(&mut self, device: layer_ui::DeviceClass) {
         self.session.set_device_class(device);
@@ -353,7 +365,6 @@ impl NativeHost {
             // Eager hosts are ready on GPU attachment; staged hosts reset this.
             startup: layer_render_wgpu::StartupProgress::COMPLETE,
             chrome_ready: false,
-            launch_interaction: false,
             document_close_prepared: false,
             poisoned: None,
             last_pen: None,
@@ -982,9 +993,9 @@ impl NativeHost {
             Query::BubbleHit { id, x, y } => json!(self.session.bubbles().iter().find(|view| view.id == id).and_then(|view| view.hit([x, y]))),
             Query::BubbleGrab { grab, held } => json!(self.session.bubble_grab(grab, held)),
             Query::CanTakeBubble { grab, position, viewport } => json!(self.session.can_take_bubble(grab, position, viewport)),
-            Query::BubbleStamp { known_request } => json!(self.session.toolbar_stamp(self.session.state().toolbar_context(), known_request)?),
+            Query::BubbleStamp { known_request } => json!(self.toolbar_stamp(None, known_request)?),
             Query::BubbleWheelColor => json!(self.session.state().colors.definition()),
-            Query::ToolbarStamp { context, known_request } => json!(self.session.toolbar_stamp(context, known_request)?),
+            Query::ToolbarStamp { context, known_request } => json!(self.toolbar_stamp(Some(context), known_request)?),
             Query::ApplicationMenu { menu } => json!(self.session.application_menu(menu)),
             Query::ApplicationMenuHover { open, hovered } => json!(layer_ui::ApplicationMenu::switches_on_hover(open, hovered)),
             Query::ApplicationLink { link } => json!(link.url()),
@@ -1264,6 +1275,7 @@ mod tests {
     #[test]
     fn action_refusals_keep_the_native_host_usable() {
         let mut host=NativeHost::new(layer_ui::Platform::Windows).unwrap();
+        host.set_launch_interaction(true);
         host.set_localization(layer_ui::Localizer::shared(layer_ui::UiLanguage::Italian));
         let before=host.session.engine().document().clone();let checkpoint=host.session.engine().checkpoint();
         assert!(host.dispatch(UiAction::Invoke {command:layer_ui::CommandId::PlacementOriginalSize}).is_err());
@@ -1889,72 +1901,80 @@ mod tests {
     }
 
     #[test]
-    fn idle_paper_lighting_wakes_one_presentation_without_input() {
-        let mut document = layer_ui::new_drawing(128, 128, &layer_ui::Localizer::shared(layer_ui::UiLanguage::English)).unwrap();
-        document.set_paper_texture(layer_core::paper::built_in_paper("rough").unwrap().texture.clone());
-        document.set_paper_relief(150.);
-        let (_reference, mut host) = gpu_document_host(layer_ui::Platform::Windows, document);
-        let clock = std::cell::Cell::new(0);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !host.startup.complete || host.session.frame_demand() != layer_render::FrameDemand::Wait { frame_step(&mut host, &clock, deadline); }
-        let gpu = host.session.engine().backend().0.as_ref().unwrap();
-        gpu.shader_idle(false, false);
-        let view = host.session.state().camera.view();
-        let surround = host.session.state().palette.surround_linear;
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("idle paper presentation"), size: wgpu::Extent3d { width: view.width_px, height: view.height_px, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
-        });
-        let target = texture.create_view(&Default::default());
-        let mut presenter = layer_render_wgpu::ViewportPresenter::for_surface(gpu, format, layer_render_wgpu::SdrSurfaceColor::Srgb).unwrap();
-        pollster::block_on(presenter.prepare(gpu)).unwrap();
-        presenter.present(gpu, &target, view, surround).unwrap();
-        assert!(!presenter.paper_lighting_drawn());
-        let pixels = |host: &NativeHost| {
+    fn first_ready_paper_presentation_is_lit_without_an_idle_transition() {
+        let mut unlit: Option<Vec<u8>> = None;
+        for lit in [false, true] {
+            let mut document = layer_ui::new_drawing(128, 128, &layer_ui::Localizer::shared(layer_ui::UiLanguage::English)).unwrap();
+            document.set_paper_texture(layer_core::paper::built_in_paper("rough").unwrap().texture.clone());
+            document.set_paper_color(layer_core::color::RgbColor::new(layer_core::color::RgbSpace::Srgb, [0.5, 0.5, 0.5, 1.]).unwrap());
+            document.set_paper_relief(if lit { 150. } else { 0. });
+            let (_reference, mut host) = gpu_document_host(layer_ui::Platform::Windows, document);
             let gpu = host.session.engine().backend().0.as_ref().unwrap();
-            let row = (view.width_px * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-            let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
-                label: Some("idle paper readback"), size: u64::from(row * view.height_px),
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
-            });
-            let mut encoder = gpu.device().create_command_encoder(&Default::default());
-            encoder.copy_texture_to_buffer(texture.as_image_copy(), wgpu::TexelCopyBufferInfo {
-                buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(view.height_px) },
-            }, texture.size());
-            gpu.queue().submit([encoder.finish()]);
-            buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.unwrap());
-            gpu.device().poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(30)) }).unwrap();
-            buffer.slice(..).get_mapped_range().unwrap().to_vec()
-        };
-        let plain = pixels(&host);
-        let revision = host.session.engine().document().revision;
-        host.dirty = false;
-        host.poll_canvas_presentation(&mut presenter).unwrap();
-        assert!(!host.dirty, "parked optional pipelines do not pump frames");
-        assert!(host.startup.complete, "optional lighting does not hold startup completion");
-        host.session.engine().backend().0.as_ref().unwrap().shader_idle(true, false);
-        let mut frames = 0;
-        while !presenter.paper_lighting_drawn() {
-            host.poll_canvas_presentation(&mut presenter).unwrap();
-            if host.dirty {
-                let gpu = host.session.engine().backend().0.as_ref().unwrap();
-                presenter.present(gpu, &target, view, surround).unwrap();
-                host.dirty = false;
-                frames += 1;
+            gpu.shader_idle(false, false);
+            let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+            let mut presenter = layer_render_wgpu::ViewportPresenter::for_surface(gpu, format, layer_render_wgpu::SdrSurfaceColor::Srgb).unwrap();
+            assert!(!host.startup.complete);
+            let clock = std::cell::Cell::new(0);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                frame_step(&mut host, &clock, deadline);
+                host.session.engine().backend().0.as_ref().unwrap().shader_idle(false, false);
+                host.poll_canvas_presentation(&mut presenter).unwrap();
+                let ready = host.prepare_canvas_presentation(&presenter);
+                if host.startup.complete && ready && host.session.frame_demand() == layer_render::FrameDemand::Wait
+                    && host.session.engine().backend().0.as_ref().unwrap().has_presentable_frame() { break; }
             }
-            assert!(std::time::Instant::now() < deadline, "idle paper lighting never requested a presentation");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            let gpu = host.session.engine().backend().0.as_ref().unwrap();
+            let view = host.session.state().camera.view();
+            let surround = host.session.state().palette.surround_linear;
+            let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("first ready paper presentation"), size: wgpu::Extent3d { width: view.width_px, height: view.height_px, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+            });
+            let target = texture.create_view(&Default::default());
+            presenter.present(gpu, &target, view, surround).unwrap();
+            assert_eq!(presenter.paper_lighting_drawn(), lit, "the first ready canvas must use its configured lighting");
+            let pixels = |host: &NativeHost| {
+                let gpu = host.session.engine().backend().0.as_ref().unwrap();
+                let row = (view.width_px * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+                let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("idle paper readback"), size: u64::from(row * view.height_px),
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+                });
+                let mut encoder = gpu.device().create_command_encoder(&Default::default());
+                encoder.copy_texture_to_buffer(texture.as_image_copy(), wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(view.height_px) },
+                }, texture.size());
+                gpu.queue().submit([encoder.finish()]);
+                buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.unwrap());
+                gpu.device().poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(30)) }).unwrap();
+                buffer.slice(..).get_mapped_range().unwrap().to_vec()
+            };
+            let first = pixels(&host);
+            if lit { assert_ne!(&first, unlit.as_ref().unwrap(), "rough gray paper must visibly receive lighting"); }
+            else { unlit = Some(first.clone()); }
+            let revision = host.session.engine().document().revision;
+            host.session.engine().backend().0.as_ref().unwrap().shader_idle(true, false);
+            loop {
+                host.poll_canvas_presentation(&mut presenter).unwrap();
+                let gpu = host.session.engine().backend().0.as_ref().unwrap();
+                if !lit || presenter.prepare_paper_lighting(gpu) { break; }
+                assert!(std::time::Instant::now() < deadline, "paper lighting did not settle");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let gpu = host.session.engine().backend().0.as_ref().unwrap();
+            pollster::block_on(presenter.prepare(gpu)).unwrap();
+            presenter.present(gpu, &target, view, surround).unwrap();
+            assert_eq!(first, pixels(&host), "first ready paper pixels must equal settled paper pixels");
+            host.dirty = false;
+            for _ in 0..4 {
+                host.poll_canvas_presentation(&mut presenter).unwrap();
+                assert!(!host.dirty, "paper lighting must not request a late idle presentation");
+                assert_eq!(host.session.engine().document().revision, revision);
+            }
+            assert!(host.startup.complete);
         }
-        assert_eq!(frames, 1, "only the completed lighting transition draws");
-        assert_ne!(plain, pixels(&host), "lighting changes the displayed paper");
-        assert_eq!(host.session.engine().document().revision, revision);
-        for _ in 0..4 {
-            host.poll_canvas_presentation(&mut presenter).unwrap();
-            assert!(!host.dirty, "settled paper does not pump idle frames");
-        }
-        assert!(host.startup.complete);
     }
 
     fn visible_layer_thumbnails(host: &mut NativeHost, pending: impl Fn(&NativeHost)) -> std::collections::BTreeMap<u64, Vec<u8>> {
@@ -2476,6 +2496,110 @@ mod tests {
         }
         assert!(woke, "the thumbnail leaves decoding for canvas frames");
         assert!(prompt, "Idle preview batches resume promptly instead of waiting for a UI refresh");
+    }
+    #[test]
+    fn saved_selection_first_show_resumes_after_its_merge_recipe_completes() {
+        use layer_core::authored::{RecordChange,Occurrence,OccurrenceContent};
+        use std::sync::{Arc,mpsc};
+        let mut document=layer_ui::new_drawing(32,32,&layer_ui::Localizer::shared(layer_ui::UiLanguage::English)).unwrap();
+        let saved=RecordChange::insert(&document.artwork.selections,layer_core::SavedSelection {selection:layer_core::Selection::polygon(vec![Point{x:0.,y:0.},Point{x:16.,y:0.},Point{x:16.,y:32.},Point{x:0.,y:32.}]).unwrap()});
+        let row=RecordChange::insert(&document.artwork.occurrences,Occurrence::new(OccurrenceContent::Selection(saved.handle),"Saved coverage"));
+        let id=row.handle;
+        let stack=document.composition().result;
+        let mut entries=document.artwork.stacks.get(stack).unwrap().clone();entries.entries.insert(0,id);
+        let entries=RecordChange::replace(&document.artwork.stacks,stack,Some(entries)).unwrap();
+        document.apply(layer_core::Edit::Batch(vec![layer_core::Edit::SavedSelection(saved),layer_core::Edit::Occurrence(row),layer_core::Edit::Stack(entries)])).unwrap();
+        document.working.selection_overlays.visibility.insert(id,false);
+        let (_reference,mut host)=gpu_document_host(layer_ui::Platform::Windows,document);
+        let clock=std::cell::Cell::new(0);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(60);
+        loop {
+            frame_step(&mut host,&clock,deadline);
+            if host.startup.complete&&!host.dirty&&host.session.engine().frame_demand()==layer_render::FrameDemand::Wait {break;}
+        }
+        let view=host.session.state().camera.view();
+        let surround=host.session.state().palette.surround_linear;
+        let gpu=host.session.engine().backend().0.as_ref().unwrap();
+        let mut presenter=layer_render_wgpu::ViewportPresenter::for_renderer(gpu,wgpu::TextureFormat::Rgba8UnormSrgb);
+        let hidden=presenter.readback_rgba8(gpu,view,surround).unwrap();
+        let (notify,notified)=mpsc::channel();
+        host.set_wake(Arc::new(move || {let _=notify.send(());}));
+        host.dispatch(UiAction::Layer {action:layer_ui::LayerAction::Visibility {id:layer_ui::occurrence_token(id),value:true}}).unwrap();
+        frame_step(&mut host,&clock,deadline);
+        notified.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(host.poll_preparation()==layer_render::FrameDemand::Work,"first-show saved-selection merge completion must resume its visible tint");
+        loop {
+            frame_step(&mut host,&clock,deadline);
+            if host.dirty {continue;}
+            if !host.session.engine().backend().0.as_ref().unwrap().frame_preparation_pending() {break;}
+            notified.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).expect("the deferred first-show frame must be resumed by a preparation wake");
+            assert!(host.poll_preparation()==layer_render::FrameDemand::Work,"first-show saved-selection merge completion must resume its visible tint");
+        }
+        host.close_wake();
+        let gpu=host.session.engine().backend().0.as_ref().unwrap();
+        let shown=presenter.readback_rgba8(gpu,view,surround).unwrap();
+        assert!(hidden.bytes!=shown.bytes,"the resumed first-show frame must display its saved-selection tint");
+    }
+    #[test]
+    fn deferred_presentation_recipe_completion_resumes_the_canvas_frame() {
+        use std::sync::{Arc,mpsc};
+        let (_reference,mut host)=gpu_host(layer_ui::Platform::Windows,[32,32]);
+        let clock=std::cell::Cell::new(0);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(60);
+        loop {
+            frame_step(&mut host,&clock,deadline);
+            if host.startup.complete&&!host.dirty&&host.session.engine().frame_demand()==layer_render::FrameDemand::Wait {break;}
+        }
+        let (notify,notified)=mpsc::channel();
+        host.set_wake(Arc::new(move || {let _=notify.send(());}));
+        let gpu=host.session.engine().backend().0.as_ref().unwrap();
+        let mut presenter=layer_render_wgpu::ViewportPresenter::for_surface(gpu,
+            wgpu::TextureFormat::Bgra8UnormSrgb,layer_render_wgpu::SdrSurfaceColor::Srgb).unwrap();
+        assert!(!host.prepare_canvas_presentation(&presenter));
+        assert!(host.dirty);
+        notified.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(host.poll_preparation()==layer_render::FrameDemand::Work);
+        let gpu=host.session.engine().backend().0.as_ref().unwrap();
+        pollster::block_on(presenter.prepare(gpu)).unwrap();
+        frame_step(&mut host,&clock,deadline);
+        assert!(host.prepare_canvas_presentation(&presenter));
+        host.close_wake();
+    }
+    #[test]
+    fn unrelated_thumbnail_validation_completion_does_not_request_a_canvas_frame() {
+        use std::sync::{Arc,mpsc};
+        let (_reference,mut host)=gpu_host(layer_ui::Platform::Windows,[32,32]);
+        let clock=std::cell::Cell::new(0);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(60);
+        loop {
+            frame_step(&mut host,&clock,deadline);
+            if host.startup.complete&&!host.dirty&&host.session.engine().frame_demand()==layer_render::FrameDemand::Wait
+                &&host.session.engine().backend().0.as_ref().unwrap().has_presentable_frame() {break;}
+        }
+        let target=layer_ui::occurrence_token(host.session.engine().document().working.occurrence.unwrap());
+        let (notify,notified)=mpsc::channel();
+        host.set_wake(Arc::new(move || {let _=notify.send(());}));
+        let gpu=host.session.renderer_mut().0.as_mut().unwrap();
+        gpu.configure_ui_previews(layer_core::color::RgbSpace::DisplayP3).unwrap();
+        assert!(!gpu.ui_readback_ready(),"the new thumbnail conversion recipe must start cold");
+        notified.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let frames=host.session.engine().metrics().frames;
+        let mut needs_frame=host.poll_preparation()==layer_render::FrameDemand::Work;
+        let mut accepted=false;
+        let image=loop {
+            let requests=if accepted {Vec::new()} else {vec![(1,target)]};
+            let (submitted,images)=host.layer_thumbnails(requests).unwrap();
+            accepted|=submitted.contains(&1);
+            needs_frame|=host.poll_preparation()==layer_render::FrameDemand::Work;
+            if let Some(image)=images.into_iter().find(|image|image.request_id==1) {break image;}
+            assert!(std::time::Instant::now()<deadline,"thumbnail service did not complete without a canvas frame");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        host.close_wake();
+        assert!(accepted);
+        assert!(!image.bytes.is_empty());
+        assert_eq!(host.session.engine().metrics().frames,frames);
+        assert!(!needs_frame,"unrelated thumbnail Validation completion must service its consumer without dirtying the canvas");
     }
     #[test]
     fn pending_store_decode_releases_frame_demand_and_completion_wakes_the_host() {

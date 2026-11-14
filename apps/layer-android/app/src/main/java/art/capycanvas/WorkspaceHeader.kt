@@ -20,6 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -147,7 +150,14 @@ private fun CanvasHost.primaryMenu(open: (JSONObject?) -> Unit) =
         val placements = geometry?.array("items")?.objects()?.associateBy { it.getInt("id") } ?: emptyMap()
         val bars = geometry?.optJSONArray("bars")?.objects() ?: emptyList()
         val joined = bars.flatMap { bar -> bar.array("items").values().map { (it as Number).toInt() } }.toSet()
-        bars.forEach { bar -> Box(Modifier.placed(bar.getJSONObject("bounds"), density).glass(TileShape, colors.headerSurface)) }
+        bars.forEach { bar ->
+            val bounds = bar.getJSONObject("bounds")
+            val members = bar.array("items").values().map { (it as Number).toInt() }
+            val sources = input.dock.drawerSources.values.filter { it.anchor?.optString("kind") == "header" && (it.anchor?.optInt("id", -1) ?: -1) in members }
+            val radius = size.number("tile") / 2
+            Box(Modifier.placed(bounds, density).glass(input.dock.drawerContainerShape(bounds, radius, sources = sources), colors.headerSurface,
+                nativeShape = { input.dock.drawerContainerShape(bounds, radius, sources = sources.filter { it.glass?.active == true }) }))
+        }
         if (editing) geometry?.array("zones")?.objects()?.forEachIndexed { index, zone ->
             val active = input.preview?.optJSONArray("target")?.optString(0) == listOf("left", "center", "right")[index]
             Box(Modifier.placed(zone, density).border(1.dp, colors.divider, ControlShape)
@@ -176,7 +186,7 @@ private fun CanvasHost.primaryMenu(open: (JSONObject?) -> Unit) =
             val single = hidden.singleOrNull()
             Box(Modifier.placed(bounds, density).testTag("header-overflow-$zone")
                 .then(if (editing && single != null) Modifier.headerSource(input, obj("kind" to "item", "value" to single, "overflow_zone" to zone), specs.getValue(single).getString("label"), 1) else Modifier)) {
-                HeaderButton(host.catalog.getJSONObject("native_copy").getJSONObject("header").getString("more_items"), false, true, false, Modifier.fillMaxSize(),
+                HeaderButton(host.catalog.getJSONObject("native_copy").getJSONObject("header").getString("more_items"), false, true, null, Modifier.fillMaxSize(),
                     inBar = bars.any { it.optInt("overflow", -1) == zone }, onClick = { input.overflow = if (input.overflow == zone) null else zone }) { SharedIcon("menu", host.catalog.getJSONObject("native_copy").getJSONObject("header").getString("more_items"), Modifier.size(size.number("icon").dp)) }
             }
         }
@@ -295,7 +305,7 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
         if (ownsPopup) input.dock.popup(true)
         onDispose { if (ownsPopup) input.dock.popup(false) }
     }
-    val open = input.dock.drawerSources["tool"]?.anchor?.let { it.optString("kind") == "header" && it.optInt("id") == id } == true
+    val source = input.dock.anchorSource(obj("kind" to "header", "id" to id))
     Row(modifier.then(if(editing) Modifier else activation.modifier).alpha(if (!editing && !spec.optBoolean("enabled")) .4f else 1f).testTag("header-item-$id").headerSource(input, obj("kind" to "item", "value" to id), label, 1,
             context = if (kind == "workspaces") ({ host.workspaceManager?.optJSONObject("switcher_options") }) else null)
         .onPreviewKeyEvent { event ->
@@ -329,7 +339,7 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
                     snapshot.array("application_menus").objects().forEach { application ->
                         Box(Modifier.onGloballyPositioned { menuAnchors[application.getString("id")] = it.boundsInRoot() }) {
                             val menuId = application.getString("id")
-                            HeaderButton(application.getString("label"), false, !editing, menu != null && menuLabel == menuId,
+                            HeaderButton(application.getString("label"), false, !editing, "bottom".takeIf { menu != null && menuLabel == menuId },
                                 Modifier.height(26.dp).testTag("application-menu-${application.getString("id")}").pointerInput(menuId) {
                                     awaitPointerEventScope {
                                         while (true) {
@@ -339,7 +349,7 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
                                         }
                                     }
                                 },
-                                fillWidth = false, surface = false, shape = SquircleShape(50),
+                                fillWidth = false, surface = false, shape = SquircleShape(50), drawerPresented = true,
                                 onClick = { menuLabel = menuId; menu = application.getJSONObject("model") }) {
                                 Text(application.getString("label"), Modifier.padding(horizontal = 8.dp), maxLines = 1)
                             }
@@ -353,9 +363,9 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
                 kind == "clock" -> SystemStatus(showBattery = false)
                 kind == "battery" -> SystemStatus(clock = false)
                 kind == "space" -> if (editing) Text("·", color = colors.secondary)
-                else -> HeaderButton(label, spec.optBoolean("selected"), !editing && spec.optBoolean("enabled"), open,
+                else -> HeaderButton(label, spec.optBoolean("selected"), !editing && spec.optBoolean("enabled"), source?.direction,
                     Modifier.fillMaxSize().testTag(if (kind == "menu_labels") "header-menu-labels-compact" else "header-control-$id"),
-                    inBar = inBar, reason = spec.nullableString("disabled_reason").takeUnless { editing },
+                    inBar = inBar, drawerPresented = source?.presented == true, reason = spec.nullableString("disabled_reason").takeUnless { editing },
                     onDoubleClick = if (spec.optBoolean("double_click")) ({ host.dispatch(obj("type" to "double_click_tool", "control" to spec.getJSONObject("resolved_control"))) }) else null,
                     onClick = {
                         when (kind) {
@@ -386,10 +396,10 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
 }
 
 /** Active tools stay blue through hover/press; actions use neutral feedback. */
-@Composable internal fun HeaderButton(label: String, selected: Boolean, enabled: Boolean, open: Boolean,
-    modifier: Modifier, fillWidth: Boolean = true, surface: Boolean = true, shape: Shape = drawerButtonShape(if (open) "bottom" else null),
+@Composable internal fun HeaderButton(label: String, selected: Boolean, enabled: Boolean, drawer: String?,
+    modifier: Modifier, fillWidth: Boolean = true, surface: Boolean = true, shape: Shape = drawerButtonShape(drawer), drawerPresented: Boolean = false,
     inBar: Boolean = false, active: Boolean = true, reason: String? = null, onDoubleClick: (() -> Unit)? = null, onLongClick: (() -> Unit)? = null,
-    face: Modifier? = null, onClick: () -> Unit, content: @Composable () -> Unit) {
+    face: Modifier? = null, phoneFace: Boolean = false, onClick: () -> Unit, content: @Composable () -> Unit) {
     val colors = LocalPalette.current
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -400,14 +410,17 @@ private fun activateHeader(host: CanvasHost, entry: JSONObject) {
         enabled = enabled || explained, role = Role.Button, onClickLabel = label, onDoubleClick = onDoubleClick.takeIf { enabled },
         onLongClick = if (explained) {{ reveal += 1 }} else onLongClick, onClick = if (enabled) onClick else {{ reveal += 1 }}).semantics { if (!enabled) disabled() }
     HoverTip(reason.takeIf { explained } ?: label, modifier, reveal = reveal) {
-    val paint = Modifier.clip(shape)
-        .then(if (surface && !inBar) Modifier.glass(shape, colors.headerSurface, active = active) else Modifier).background(when {
+    val panelFace = drawer != null && (phoneFace || !selected)
+    val fill = when {
+        panelFace -> colors.drawerFill(drawerPresented).let { if (selected) colors.headerActive.compositeOver(it) else it }
         selected -> colors.headerActive
-        open -> colors.onGlass.panelFill
         enabled && pressed -> colors.text.copy(alpha = .16f)
         enabled && hovered -> colors.text.copy(alpha = .10f)
         else -> Color.Transparent
-    })
+    }
+    val paint = Modifier.clip(shape)
+        .then(if (surface && !inBar) Modifier.glass(shape, if (panelFace) Color.Transparent else colors.headerSurface, active = active) else Modifier)
+        .drawBehind { drawRect(fill, blendMode = if (panelFace) BlendMode.Src else BlendMode.SrcOver) }
     Box((if (fillWidth) Modifier.fillMaxSize() else Modifier.fillMaxHeight()).then(if (face == null) paint else Modifier).then(click),
         contentAlignment = if (face == null) Alignment.Center else androidx.compose.ui.AbsoluteAlignment.TopLeft) {
         if (face == null) content() else Box(face.then(paint), contentAlignment = Alignment.Center) { content() }

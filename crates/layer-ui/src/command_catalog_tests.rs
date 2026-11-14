@@ -3,6 +3,32 @@ fn search_action(s: &mut UiSession<Recorder>, action: CommandSearchAction) {
 }
 
 #[test]
+fn command_search_keyboard_search_preserves_results_and_enter_executes() {
+    let mut s = session(Platform::Gtk);
+    let layers = s.engine.document().scene().order().len();
+    invoke(&mut s, CommandId::SearchCommands);
+    search_action(&mut s, serde_json::from_value(serde_json::json!({"type":"search", "text":"new layer"})).unwrap());
+    let view = s.state.command_search.as_ref().unwrap();
+    assert_eq!(view.query, "new layer");
+    assert_eq!(view.results[view.selected].id, "command.add_layer");
+    assert_eq!(s.engine.document().scene().order().len(), layers);
+    search_action(&mut s, CommandSearchAction::Commit { text: "new layer".into() });
+    assert!(s.state.command_search.is_none());
+    assert_eq!(s.engine.document().scene().order().len(), layers + 1);
+}
+
+#[test]
+fn command_search_keyboard_search_commits_parameter_text() {
+    let mut s = session(Platform::Gtk);
+    invoke(&mut s, CommandId::SearchCommands);
+    search_action(&mut s, CommandSearchAction::Commit { text: "brush size".into() });
+    assert!(s.state.command_search.as_ref().unwrap().parameter.is_some());
+    search_action(&mut s, serde_json::from_value(serde_json::json!({"type":"search", "text":"24"})).unwrap());
+    assert!(s.state.command_search.is_none());
+    assert_eq!(s.state.brush.diameter, 24.);
+}
+
+#[test]
 fn command_catalog_covers_live_commands_and_keeps_legacy_bindings() {
     let mut s = session(Platform::Gtk);
     let catalog = s.command_catalog();

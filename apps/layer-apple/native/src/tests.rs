@@ -2,6 +2,14 @@
 use super::*;
 use serde_json::{Value, json};
 
+#[test]
+fn apple_launch_mark_geometry_is_available_before_a_native_owner() {
+    for (window, expected) in [([1300., 900.], 252.), ([390., 844.], 156.),
+        ([844., 390.], 156.), ([180., 120.], 48.), ([0., 0.], 0.)] {
+        assert_eq!(capy_apple_launch_mark_size(window[0], window[1]), expected);
+    }
+}
+
 fn photo_limits() -> layer_color::photo::DecodeLimits {
     layer_color::photo::DecodeLimits::from_memory_budget(layer_color::photo::PhotoMemoryBudget::from_limit(layer_core::MemoryBudget::process().import_headroom_bytes()))
 }
@@ -200,7 +208,7 @@ mod fixtures {
         })
     }
 
-    pub(super) fn until(app: &App, what: &str, done: impl Fn() -> bool) {
+    pub(super) fn until(app: &App, what: &str, mut done: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !done() {
             assert!(std::time::Instant::now() < deadline, "{what}");
@@ -572,9 +580,9 @@ fn property_edits_and_gestures_preserve_exact_metal_history_on_both_platforms() 
             app.borrow().host.session.renderer_mut().0 = Some(
                 native_renderer(),
             );
-            app.draw_frame();
+            app.draw_until_idle();
             app.stroke();
-            app.draw_frame();
+            app.draw_until_idle();
             if target == "paper" {
                 let document = &app.document();
                 let paper = layer_core::paper::paper_occurrence(document.scene(), None).unwrap();
@@ -583,7 +591,7 @@ fn property_edits_and_gestures_preserve_exact_metal_history_on_both_platforms() 
             } else if target != "paint" {
                 app.action(json!({"type":"effect","action":{"op":"insert","effect":target}}));
             }
-            app.draw_frame();
+            app.draw_until_idle();
             let key = match target {
                 "gaussian_blur" => "sigma",
                 "split_tone" => "shadows",
@@ -686,9 +694,9 @@ fn document_edits_keep_filter_previews_and_publish_an_owned_atlas() {
     for platform in [0, 1] {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 = Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let filter = install_example_filter(&app);
         let query = json!({"type":"filter_previews", "filters":[filter]});
         let first = app.request(2, query.clone()).unwrap();
@@ -744,9 +752,9 @@ fn filter_preview_abi_keeps_owned_pixels_after_editor_teardown_without_document_
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let filter = install_example_filter(&app);
         let before = app.pixels();
         let revision = app.borrow().host.session.filter_preview_revision();
@@ -857,9 +865,9 @@ fn project_jobs_save_specific_revisions_and_adopt_only_unchanged_editors() {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let original_pixels = app.pixels();
         let original = app.document().clone();
         let save = ProjectJob::new(&app, false);
@@ -1006,9 +1014,9 @@ fn project_cancellation_and_invalid_input_preserve_live_artwork() {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let before = app.pixels();
         let save = ProjectJob::new(&app, false);
         unsafe { capy_project_cancel(save.0) };
@@ -1067,7 +1075,8 @@ fn new_canvas_dimensions_and_worker_png_export_preserve_captured_pixels() {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
+        app.launched();
         let initial = app.document().composition().size;
         let unordered = ProjectJob::new(&app, true);
         assert_eq!(unsafe { capy_project_new(unordered.0) }, -1);
@@ -1323,9 +1332,11 @@ impl App {
         app
     }
     fn unbound(platform: u32) -> Self {
+        extern "C" fn wake(_: *mut c_void) {}
         layer_core::temp_files::set_directory(std::env::temp_dir()).unwrap();
         let app = Self::from_handle(capy_apple_create(platform));
         assert!(!(app.0==0));
+        assert_eq!(unsafe { capy_apple_set_workspace_wake(app.0, std::ptr::null_mut(), Some(wake)) }, 0);
         assert_eq!(unsafe { capy_apple_resize(app.0, 1200, 900, 1.) }, 0);
         app
     }
@@ -1350,6 +1361,15 @@ impl App {
     fn full_snapshot(&self) -> Value {
         self.borrow().host.invalidate_snapshot();
         self.request(7, Value::Null).unwrap()
+    }
+    fn launched(&self) {
+        let ready = layer_ui::LaunchReadiness { canvas: true, brush: true, chrome: true, failed: false };
+        let mut native = self.borrow();
+        let before = native.host.session.state().revision;
+        let change = native.host.session.finish_workspace_startup();
+        native.host.apply_change(before, change);
+        let frame = native.host.session.launch_state(ready).frame.expect("a drawn workspace is ready to reveal");
+        assert!(native.host.session.launch_presented(frame, ready));
     }
     fn action(&self, action: Value) {
         self.request(0, action).unwrap();
@@ -1524,7 +1544,7 @@ fn apple_raster_project_preserves_exact_pixels_in_a_fresh_gpu_session() {
         let app = App::new(platform);
         app.borrow().host.session.renderer_mut().0 =
             Some(native_renderer());
-        app.draw_frame();
+        app.draw_until_idle();
         let paper = app.pixels();
         let pixels: Vec<u8> = (0..64 * 64)
             .flat_map(|i| {
@@ -1600,7 +1620,7 @@ fn apple_raster_project_preserves_exact_pixels_in_a_fresh_gpu_session() {
         );
         restored.action(json!({"type":"set_color","rgba":[1,0,0,1]}));
         restored.stroke();
-        restored.draw_frame();
+        restored.draw_until_idle();
         assert!(
             restored.pixels() != expected,
             "Reopened artwork remains editable"
@@ -2019,9 +2039,9 @@ fn apple_color_actions_change_real_paint_and_transparent_eraser_pixels() {
             Some(native_renderer());
         app.action(json!({"type":"set_color","rgba":[1,0,0,1]}));
         let brush = app.state()["brush"].clone();
-        app.draw_frame();
+        app.draw_until_idle();
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         let painted = app.pixels();
         let reds = |pixels: &[u8]| {
             pixels
@@ -2037,7 +2057,7 @@ fn apple_color_actions_change_real_paint_and_transparent_eraser_pixels() {
         assert_eq!(app.state()["brush"]["preset"], brush["preset"]);
         assert_eq!(app.state()["brush"]["diameter"], brush["diameter"]);
         app.stroke();
-        app.draw_frame();
+        app.draw_until_idle();
         assert!(
             reds(&app.pixels()) < reds(&painted),
             "Transparent paint must erase with the current tip"
@@ -2058,11 +2078,38 @@ fn apple_launch_resolves_saved_preference_before_native_session() {
         let localization = app.borrow().host.session.localization().clone();
         assert_eq!(localization.language(), layer_ui::UiLanguage::English);
         let bootstrap = app.request(2, json!({"type": "bootstrap"})).unwrap();
+        assert_eq!(bootstrap["launch_reveal_ms"], layer_ui::LAUNCH_REVEAL_MS);
+        assert_eq!(bootstrap["launch_mark_size"], layer_ui::LAUNCH_MARK_SIZE);
+        assert_eq!(bootstrap["launch_mark_max_fraction"], json!(layer_ui::LAUNCH_MARK_MAX_FRACTION));
+        assert_eq!(bootstrap["launch_caption_gap"], layer_ui::LAUNCH_CAPTION_GAP);
         assert_eq!(bootstrap["active_tag"], "en");
         assert_eq!(bootstrap["shipped_tags"], json!(layer_ui::localization::SHIPPED_LANGUAGES.iter().map(|language| language.tag()).collect::<Vec<_>>()));
         assert_eq!(bootstrap["preparing_canvas"], localization.text(layer_ui::MessageId::COMMON_PREPARING_CANVAS).as_ref());
         app.action(json!({"type": "restore_saved_settings", "saved": "{\"language\":{\"Explicit\":\"ja\"}}"}));
         assert!(std::sync::Arc::ptr_eq(&localization, &app.with(|native|native.host.session.localization().clone())));
+    }
+}
+
+#[test]
+fn apple_launch_bootstrap_carries_the_saved_capy_before_the_session_publishes() {
+    let cases = std::iter::once((String::new(), layer_ui::ZenIcon::LookingUp))
+        .chain(layer_ui::ZenIcon::CHOICES.map(|(icon, _)| (json!({"zen_icon": icon}).to_string(), icon)));
+    for (saved, icon) in cases {
+        for platform in [0, 1] {
+            let source = CString::new(json!({"saved": saved, "preferred_languages": ["en-US"]}).to_string()).unwrap();
+            let mut bootstrap = 0;
+            let app = App::from_handle(unsafe { launch_json(platform, source.as_ptr(), &mut bootstrap, std::ptr::null_mut()) });
+            assert!(!(app.0==0));
+            let expected = icon.launch_mark();
+            let mark = |view: Value| {
+                let mark = &view["launch_mark"];
+                (mark["icon"].as_str().map(str::to_owned), mark["ink_bottom"].as_f64().map(|value| value as f32))
+            };
+            let published = (Some(expected.icon.to_owned()), Some(expected.ink_bottom));
+            assert_eq!(mark(serde_json::from_slice(handles::take_text(bootstrap).to_bytes()).unwrap()), published, "{saved}");
+            assert_eq!(mark(app.request(7, Value::Null).unwrap()["bootstrap"].clone()), published, "{saved}");
+            assert_eq!(mark(app.request(2, json!({"type": "bootstrap"})).unwrap()), published, "{saved}");
+        }
     }
 }
 

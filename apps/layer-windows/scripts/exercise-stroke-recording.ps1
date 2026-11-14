@@ -92,7 +92,7 @@ try{
  $stderr=Join-Path $run 'stderr.log'
  $review=Start-Process -FilePath $Executable -WorkingDirectory $directory -WindowStyle Hidden -PassThru -RedirectStandardError $stderr;$null=$review.Handle
  Write-Output "Owned stroke recording review $($review.Id): $run"
- Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Model).brush_ready} 'Recording review did not start' 45
+ Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Review-Ready)} 'Recording review did not start' 45
  $root=$registeredWindow.Root
  if($Theme){Wait-Until {(Model).state.theme -eq $Theme} 'Recording theme did not apply'}
  Invoke 'panel-tab-stats'

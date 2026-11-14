@@ -12,14 +12,16 @@ const ci = workflow("ci");
 const job = (source, name) => source.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [\\w-]+:|$(?![\\s\\S]))`, "m"))?.[1];
 const condition = (expression, event, ref) => Function("github", `return (${expression.replace(/^\$\{\{\s*|\s*\}\}$/g, "")});`)({ event_name: event, ref_type: ref });
 const signed = release.match(/^  SIGNED: (.+)$/m)?.[1];
+const publicRelease = release.match(/^  CAPY_PUBLIC_RELEASE: (.+)$/m)?.[1];
 const platforms = ["web", "flatpak", "android", "windows", "apple"];
 const publishers = ["android-publish", "ipad-publish", "release"];
 
-test("only a tag push enables signing and publication", () => {
+test("only a tag push enables signing, publication and the public About version", () => {
   for (const event of ["workflow_dispatch", "push", "pull_request"])
     for (const ref of ["branch", "tag"]) {
       const expected = event === "push" && ref === "tag";
       assert.equal(condition(signed, event, ref), expected, `${event}/${ref}: signing`);
+      assert.equal(condition(publicRelease, event, ref), expected, `${event}/${ref}: public About version`);
       for (const name of publishers)
         assert.equal(condition(job(release, name).match(/^    if: (.+)$/m)[1], event, ref), expected, `${event}/${ref}: ${name}`);
     }

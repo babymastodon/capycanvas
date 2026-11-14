@@ -104,10 +104,12 @@ impl PixelGrid {
     fn new(scale: f64) -> Self { Self { scale: [scale as f32; 2], offset: [0.; 2] } }
 
     pub fn for_widget(widget: &gtk::Widget) -> Self {
-        let grid = Self::new(device_scale(widget));
-        widget.root().and_then(|root| root.dynamic_cast::<gtk::Widget>().ok())
-            .and_then(|root| widget.compute_transform(&root))
-            .map_or(grid, |matrix| grid.matrix(&matrix))
+        let scale = device_scale(widget);
+        let Some(native) = widget.native() else { return Self::new(scale) };
+        let (x, y) = native.surface_transform();
+        let surface = Self { scale: [scale as f32; 2], offset: [(x * scale) as f32, (y * scale) as f32] };
+        widget.compute_transform(native.upcast_ref::<gtk::Widget>())
+            .map_or(surface, |matrix| surface.matrix(&matrix))
     }
 
     fn matrix(self, matrix: &graphene::Matrix) -> Self {
@@ -152,7 +154,7 @@ impl PixelGrid {
         ((value * self.scale[axis] + self.offset[axis]).round() - self.offset[axis]) / self.scale[axis]
     }
 
-    fn key(self) -> [u32; 4] {
+    pub(crate) fn key(self) -> [u32; 4] {
         [self.scale[0], self.scale[1], self.offset[0].rem_euclid(1.), self.offset[1].rem_euclid(1.)].map(f32::to_bits)
     }
 }
@@ -342,13 +344,36 @@ fn gaussian_blur(values: &mut [f32], [width, height]: [usize; 2], sigma: f64) {
     }
 }
 
-type NodeCache = HashMap<(usize, bool, [u32; 4], [u32; 9]), (gsk::RenderNode, gsk::RenderNode)>;
+type NodeCache = HashMap<(usize, bool, [u32; 4], [u32; 9], [u32; 4]), (gsk::RenderNode, gsk::RenderNode)>;
+
+const OUTLINE: &str = "capy-outline";
+
+pub(crate) fn outline(node: gsk::RenderNode, bounds: &graphene::Rect) -> gsk::RenderNode {
+    let message = format!("{OUTLINE} {} {} {} {}", bounds.x(), bounds.y(), bounds.width(), bounds.height());
+    gsk::DebugNode::new(node, message.into()).upcast()
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Outline {
+    scale: [f32; 2],
+    edges: [[f32; 2]; 2],
+}
+
+impl Outline {
+    fn on_edge(&self, grid: PixelGrid, axis: usize, value: f32) -> bool {
+        let device = value * grid.scale[axis] + grid.offset[axis];
+        self.edges[axis].iter().any(|edge| (edge - device).abs() < 0.01)
+    }
+}
 
 #[derive(Default)]
 struct Converter {
     scale: f64,
     aligned: bool,
     grid: PixelGrid,
+    origin: [f32; 2],
+    surfaces: Vec<layer_ui::GlassColor>,
+    outline: Option<Outline>,
     window: Option<[f32; 3]>,
     nodes: NodeCache,
     previous: NodeCache,
@@ -361,16 +386,17 @@ struct Converter {
 
 impl Converter {
     fn frame(&mut self, node: &gsk::RenderNode, scale: f64) -> gsk::RenderNode {
-        self.frame_in_window(node, scale, None)
+        self.frame_in_window(node, scale, PixelGrid::new(scale), None)
     }
 
-    fn frame_in_window(&mut self, node: &gsk::RenderNode, scale: f64, window: Option<[f32; 3]>) -> gsk::RenderNode {
+    fn frame_in_window(&mut self, node: &gsk::RenderNode, scale: f64, root: PixelGrid, window: Option<[f32; 3]>) -> gsk::RenderNode {
         if self.scale != scale {
-            *self = Self { scale, ..Self::default() };
+            *self = Self { scale, surfaces: std::mem::take(&mut self.surfaces), ..Self::default() };
         }
         self.window = window;
-        self.aligned = scale.fract() == 0.;
-        self.grid = PixelGrid::new(scale);
+        self.aligned = scale.fract() == 0. && root.offset.iter().all(|offset| offset.fract() == 0.);
+        self.grid = root;
+        self.origin = root.offset;
         self.previous = std::mem::take(&mut self.nodes);
         if self.masks.len() > MASK_PRUNE_THRESHOLD {
             self.masks.retain(|_, mask| mask.upgrade().is_some());
@@ -387,7 +413,8 @@ impl Converter {
     }
 
     fn convert(&mut self, node: &gsk::RenderNode) -> gsk::RenderNode {
-        let key = (node.as_ptr() as usize, self.aligned, self.grid.key(), self.window_key(&node.bounds()));
+        let bounds = node.bounds();
+        let key = (node.as_ptr() as usize, self.aligned, self.grid.key(), self.window_key(&bounds), self.outline_key(&bounds));
         if let Some((_, converted)) = self.nodes.get(&key) {
             return converted.clone();
         }
@@ -403,7 +430,7 @@ impl Converter {
         let mut key = [0; 9];
         let Some([width, height, radius]) = self.window else { return key };
         if self.grid.scale != [self.scale as f32; 2] { return key; }
-        let position = self.grid.offset.map(|offset| offset / self.scale as f32);
+        let position = self.window_position();
         let world = graphene::Rect::new(bounds.x() + position[0], bounds.y() + position[1], bounds.width(), bounds.height());
         for (i, [x, y]) in [[0., 0.], [width - radius, 0.], [width - radius, height - radius], [0., height - radius]].into_iter().enumerate() {
             if world.intersection(&graphene::Rect::new(x, y, radius, radius)).is_some() {
@@ -415,12 +442,57 @@ impl Converter {
         key
     }
 
+    fn surface(&self, node: &gsk::RenderNode) -> bool {
+        let mut node = node.clone();
+        loop {
+            node = if let Some(n) = node.downcast_ref::<gsk::ContainerNode>() {
+                if n.n_children() == 0 { return false; }
+                n.child(0)
+            } else if let Some(n) = node.downcast_ref::<gsk::DebugNode>() { n.child()
+            } else if let Some(n) = node.downcast_ref::<gsk::TransformNode>() { n.child()
+            } else if let Some(n) = node.downcast_ref::<gsk::ClipNode>() { n.child()
+            } else if let Some(n) = node.downcast_ref::<gsk::RoundedClipNode>() { n.child()
+            } else if let Some(n) = node.downcast_ref::<gsk::ColorNode>() {
+                let color = n.color();
+                return self.surfaces.iter().any(|s| s.matches([color.red(), color.green(), color.blue(), color.alpha()]));
+            } else { return false; };
+        }
+    }
+
+    fn current_outline(&self) -> Option<Outline> {
+        self.outline.filter(|outline| outline.scale == self.grid.scale)
+    }
+
+    fn outline_key(&self, bounds: &graphene::Rect) -> [u32; 4] {
+        let Some(outline) = self.current_outline() else { return [0; 4] };
+        let span = [[bounds.x(), bounds.x() + bounds.width()], [bounds.y(), bounds.y() + bounds.height()]];
+        std::array::from_fn(|index| {
+            let axis = index / 2;
+            let [start, end] = span[axis].map(|value| value * self.grid.scale[axis] + self.grid.offset[axis]);
+            let edge = outline.edges[axis][index % 2];
+            if edge >= start.min(end) - 1. && edge <= start.max(end) + 1. { (edge - self.grid.offset[axis]).to_bits() } else { u32::MAX }
+        })
+    }
+
+    fn surface_rect(&self, node: &gsk::RenderNode, rect: &graphene::Rect) -> graphene::Rect {
+        let Some(outline) = self.current_outline() else { return *rect };
+        if !self.surface(node) { return *rect; }
+        let snap = |axis: usize, value: f32| if outline.on_edge(self.grid, axis, value) { value } else { self.grid.round(axis, value) };
+        let [left, right] = [rect.x(), rect.x() + rect.width()].map(|x| snap(0, x));
+        let [top, bottom] = [rect.y(), rect.y() + rect.height()].map(|y| snap(1, y));
+        if right > left && bottom > top { graphene::Rect::new(left, top, right - left, bottom - top) } else { *rect }
+    }
+
+    fn window_position(&self) -> [f32; 2] {
+        std::array::from_fn(|axis| (self.grid.offset[axis] - self.origin[axis]) / self.scale as f32)
+    }
+
     fn content_clip(&self, shape: &gsk::RoundedRect) -> gsk::RoundedRect {
         let mut radii = shape.corner().map(|radius|
             graphene::Size::new(radius.width() * CORNER_FIT, radius.height() * CORNER_FIT));
         if let Some([width, height, radius]) = self.window
             && self.grid.scale == [self.scale as f32; 2] {
-            let [x, y] = self.grid.offset.map(|offset| offset / self.scale as f32);
+            let [x, y] = self.window_position();
             let bounds = shape.bounds();
             let left = bounds.x() + x;
             let top = bounds.y() + y;
@@ -475,6 +547,11 @@ impl Converter {
                 gsk::ContainerNode::new(&converted).upcast()
             };
         }
+        if let Some(color) = node.downcast_ref::<gsk::ColorNode>() {
+            let bounds = node.bounds();
+            let rect = self.surface_rect(node, &bounds);
+            return if rect == bounds { node.clone() } else { gsk::ColorNode::new(&color.color(), &rect).upcast() };
+        }
         if let Some(transform) = node.downcast_ref::<gsk::TransformNode>() {
             let matrix = transform.transform();
             let aligned = self.aligned;
@@ -489,12 +566,13 @@ impl Converter {
             return converted;
         }
         if let Some(clip) = node.downcast_ref::<gsk::ClipNode>() {
-            let rect = clip.clip();
+            let rect = self.surface_rect(&clip.child(), &clip.clip());
             let aligned = self.aligned;
             self.aligned &= grid_bounds(&rect, self.scale);
-            let converted = self.rebuild(node, &clip.child(), |child| gsk::ClipNode::new(child, &rect).upcast());
+            let child = self.convert(&clip.child());
             self.aligned = aligned;
-            return converted;
+            return if rect == clip.clip() && child.as_ptr() == clip.child().as_ptr() { node.clone() }
+                else { gsk::ClipNode::new(&child, &rect).upcast() };
         }
         if let Some(opacity) = node.downcast_ref::<gsk::OpacityNode>() {
             let alpha = opacity.opacity();
@@ -542,18 +620,31 @@ impl Converter {
             if message == KEEP_ROUND {
                 return node.clone();
             }
-            return self.rebuild(node, &debug.child(), |child| gsk::DebugNode::new(child, message).upcast());
+            let bounds: Vec<f32> = message.strip_prefix(OUTLINE).map_or_else(Vec::new,
+                |values| values.split_whitespace().filter_map(|value| value.parse().ok()).collect());
+            let outline = self.outline;
+            if let [x, y, width, height] = bounds[..] && self.grid.scale.iter().all(|scale| *scale != 0.) {
+                let grid = self.grid;
+                let device = |axis: usize, value: f32| value * grid.scale[axis] + grid.offset[axis];
+                self.outline = Some(Outline { scale: grid.scale, edges: [[device(0, x), device(0, x + width)], [device(1, y), device(1, y + height)]] });
+            }
+            let converted = self.rebuild(node, &debug.child(), |child| gsk::DebugNode::new(child, message).upcast());
+            self.outline = outline;
+            return converted;
         }
         if let Some(rounded) = node.downcast_ref::<gsk::RoundedClipNode>() {
-            let clip = rounded.clip();
+            let original = rounded.clip();
+            let bounds = self.surface_rect(&rounded.child(), original.bounds());
+            let [top_left, top_right, bottom_right, bottom_left] = *original.corner();
+            let clip = gsk::RoundedRect::new(bounds, top_left, top_right, bottom_right, bottom_left);
             let aligned = self.aligned;
             self.aligned &= grid_bounds(clip.bounds(), self.scale);
-            let converted = if clip.is_rectilinear() {
-                self.rebuild(node, &rounded.child(), |child| gsk::RoundedClipNode::new(child, &clip).upcast())
-            } else {
-                let child = self.convert(&rounded.child());
+            let child = self.convert(&rounded.child());
+            let converted = if !clip.is_rectilinear() {
                 self.rounded(&child, &squircle_rect(&clip))
-            };
+            } else if bounds == *original.bounds() && child.as_ptr() == rounded.child().as_ptr() {
+                node.clone()
+            } else { gsk::RoundedClipNode::new(&child, &clip).upcast() };
             self.aligned = aligned;
             return converted;
         }
@@ -660,7 +751,8 @@ impl Converter {
             let path = self.corners.entry(key).or_insert_with(|| {
                 let mut radii = [graphene::Size::new(0., 0.); 4];
                 radii[index] = radius;
-                let corner = gsk::RoundedRect::new(graphene::Rect::new(0., 0., size[0], size[1]),
+                let [left, top] = [matches!(index, 1 | 2), matches!(index, 2 | 3)].map(|inner| if inner { -1. } else { 0. });
+                let corner = gsk::RoundedRect::new(graphene::Rect::new(left, top, size[0] + 1., size[1] + 1.),
                     radii[0], radii[1], radii[2], radii[3]);
                 path(|cr| rounded_rect(cr, &corner))
             });
@@ -1033,6 +1125,51 @@ mod tests {
     }
 
     #[test]
+    fn shared_surface_edges_meet_on_device_pixels_while_outlines_stay() {
+        let color = gdk::RGBA::new(0.25, 0.25, 0.25, 0.96);
+        let surface = |rect: graphene::Rect| -> gsk::RenderNode { gsk::ColorNode::new(&color, &rect).upcast() };
+        let strip = gsk::ClipNode::new(surface(graphene::Rect::new(0., 0., 222., 36.)), &graphene::Rect::new(0., 0., 222., 36.));
+        let body = gsk::TransformNode::new(surface(graphene::Rect::new(0., 0., 242., 285.)),
+            Some(&gsk::Transform::new().translate(&graphene::Point::new(0., 36.))));
+        let group: gsk::RenderNode = gsk::TransformNode::new(gsk::ContainerNode::new(&[strip.upcast(), body.upcast()]),
+            Some(&gsk::Transform::new().translate(&graphene::Point::new(852., 48.)))).upcast();
+        let root = PixelGrid { scale: [1.5; 2], offset: [37.5; 2] };
+        let convert = |node: &gsk::RenderNode| {
+            let mut converter = Converter { surfaces: vec![layer_ui::GlassColor([0.25, 0.25, 0.25, 0.96])], ..Converter::default() };
+            converter.frame_in_window(node, 1.5, root, None)
+        };
+        let parts = |node: gsk::RenderNode| {
+            let node = node.downcast_ref::<gsk::DebugNode>().map_or(node.clone(), |debug| debug.child());
+            let container = node.downcast_ref::<gsk::TransformNode>().unwrap().child().downcast::<gsk::ContainerNode>().unwrap();
+            let strip = container.child(0).downcast::<gsk::ClipNode>().unwrap();
+            let body = container.child(1).downcast::<gsk::TransformNode>().unwrap().child();
+            (strip.clip(), strip.child().bounds(), body.bounds())
+        };
+        let device = |value: f32, origin: f32| value * 1.5 + origin * 1.5 + 37.5;
+        let near = |actual: f32, expected: f32| (actual - expected).abs() < 1e-3;
+        let (clip, fill, body) = parts(convert(&outline(group.clone(), &graphene::Rect::new(852., 48., 242., 321.))));
+        for rect in [clip, fill] {
+            assert_eq!([rect.x(), rect.y()], [0., 0.], "edges on the outline stay put");
+            assert!(near(device(rect.y() + rect.height(), 48.), 164.), "the strip meets the body on a device pixel: {rect:?}");
+            assert!(near(device(rect.x() + rect.width(), 852.), 1649.), "the strip meets its end on a device pixel: {rect:?}");
+        }
+        assert!(near(device(body.y(), 84.), 164.), "the body starts where the strip ends: {body:?}");
+        assert!(near(body.x(), 0.) && near(body.width(), 242.) && near(body.y() + body.height(), 285.), "the body keeps its outline edges: {body:?}");
+        let (clip, fill, body) = parts(convert(&group));
+        assert_eq!([clip, fill, body], [graphene::Rect::new(0., 0., 222., 36.), graphene::Rect::new(0., 0., 222., 36.),
+            graphene::Rect::new(0., 0., 242., 285.)], "surfaces outside an outline keep their geometry");
+        let mut converter = Converter { surfaces: vec![layer_ui::GlassColor([0.25, 0.25, 0.25, 0.96])], ..Converter::default() };
+        let strip = |height: f32, converter: &mut Converter| {
+            let node = converter.frame_in_window(&outline(group.clone(), &graphene::Rect::new(852., 48., 242., height)), 1.5, root, None);
+            let container = node.downcast_ref::<gsk::DebugNode>().unwrap().child()
+                .downcast::<gsk::TransformNode>().unwrap().child().downcast::<gsk::ContainerNode>().unwrap();
+            container.child(0)
+        };
+        assert_eq!(strip(321., &mut converter).as_ptr(), strip(340., &mut converter).as_ptr(),
+            "a resized outline keeps converted nodes away from its moving edge");
+    }
+
+    #[test]
     fn panel_clip_corners_follow_the_window_without_reusing_stale_cache_entries() {
         let bounds = graphene::Rect::new(0., 0., 74., 666.);
         let content = gsk::ContainerNode::new(&[
@@ -1041,10 +1178,11 @@ mod tests {
         ]);
         let clip = gsk::RoundedClipNode::new(content, &gsk::RoundedRect::from_rect(bounds, 9.72));
         let node = gsk::TransformNode::new(clip, Some(&gsk::Transform::new().translate(&graphene::Point::new(6., 48.))));
-        for scale in [1., 2.] {
+        for scale in [1., 1.5, 2.] {
             let mut converter = Converter::default();
+            let root = PixelGrid { scale: [scale as f32; 2], offset: [25. * scale as f32; 2] };
             for height in [718., 719., 740., 718.] {
-                let result = converter.frame_in_window(node.upcast_ref(), scale, Some([1034., height, 15.]));
+                let result = converter.frame_in_window(node.upcast_ref(), scale, root, Some([1034., height, 15.]));
                 let child = result.downcast_ref::<gsk::TransformNode>().unwrap().child();
                 let clip = child.downcast_ref::<gsk::RoundedClipNode>().unwrap().clip();
                 let expected = if height < 729. { 9.72f32.max(15. - (height - 714.)) } else { 9.72 };
@@ -1109,7 +1247,7 @@ fn append_converted(widget: &gtk::Widget, converter: &RefCell<Converter>, conten
     let scale = device_scale(widget);
     let window = widget.native().and_then(|native| native.downcast::<crate::window::Window>().ok())
         .map(|window| [window.width() as f32, window.height() as f32, window.corner_radius()]);
-    snapshot.append_node(converter.borrow_mut().frame_in_window(&node, scale, window));
+    snapshot.append_node(converter.borrow_mut().frame_in_window(&node, scale, PixelGrid::for_widget(widget), window));
 }
 
 mod imp {
@@ -1198,6 +1336,16 @@ impl Squircles {
         let this: Self = glib::Object::new();
         child.set_parent(&this);
         this
+    }
+
+    pub fn set_surfaces(&self, surfaces: &[layer_ui::GlassColor]) {
+        let mut converter = self.imp().converter.borrow_mut();
+        if converter.surfaces != surfaces {
+            converter.surfaces = surfaces.to_vec();
+            converter.nodes.clear();
+            drop(converter);
+            self.queue_draw();
+        }
     }
 }
 

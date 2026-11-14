@@ -35,25 +35,27 @@ fn quick_pinch(s: &mut UiSession<Recorder>, outward: bool, start: u64, duration:
 }
 
 #[test]
-fn quick_pinch_fits_upright_and_reverse_restores_the_view_on_every_host() {
+fn quick_pinch_fits_upright_keeping_reflection_and_reverse_restores_the_view_on_every_host() {
     for platform in [Platform::Gtk, Platform::Web, Platform::Android, Platform::Mac, Platform::Ios, Platform::Windows] {
-        let mut s = painted_session();
-        s.state.platform = platform;
-        s.gesture([400., 300.], [350., 280.], 2., 0.7).unwrap();
-        s.state.camera.flipped = [true, false];
-        let before = s.state.camera.view();
-        let checkpoint = s.engine.checkpoint();
-        quick_pinch(&mut s, false, 0, 80);
-        assert_eq!(s.state.camera.rotation, 0., "{platform:?}");
-        assert_eq!(s.state.camera.flipped, [false; 2]);
-        let mut fitted = s.state.camera.clone();
-        fitted.fit(s.engine.document().composition().size);
-        assert_eq!(s.state.camera.view(), fitted.view());
-        quick_pinch(&mut s, true, 500, 80);
-        for (actual, expected) in s.state.camera.view().document_to_surface.into_iter().zip(before.document_to_surface) {
-            assert!((actual - expected).abs() < 0.001, "{platform:?}: {actual} != {expected}");
+        for flipped in [[true, false], [false, true], [true, true]] {
+            let mut s = painted_session();
+            s.state.platform = platform;
+            s.gesture([400., 300.], [350., 280.], 2., 0.7).unwrap();
+            s.state.camera.flipped = flipped;
+            let before = s.state.camera.view();
+            let checkpoint = s.engine.checkpoint();
+            quick_pinch(&mut s, false, 0, 80);
+            assert_eq!(s.state.camera.rotation, 0., "{platform:?}");
+            assert_eq!(s.state.camera.flipped, flipped, "{platform:?}: {flipped:?}");
+            let mut fitted = s.state.camera.clone();
+            fitted.fit(s.engine.document().composition().size);
+            assert_eq!(s.state.camera.view(), fitted.view());
+            quick_pinch(&mut s, true, 500, 80);
+            for (actual, expected) in s.state.camera.view().document_to_surface.into_iter().zip(before.document_to_surface) {
+                assert!((actual - expected).abs() < 0.001, "{platform:?}: {actual} != {expected}");
+            }
+            assert_eq!(s.engine.checkpoint(), checkpoint);
         }
-        assert_eq!(s.engine.checkpoint(), checkpoint);
     }
 }
 

@@ -10,91 +10,196 @@ import {createLaunchCover} from './gpu.js';
 
 function launchCoverHarness() {
   let clock = 0, sequence = 0;
-  const timers = new Map(), caption = {dataset:{},textContent:''};
-  const content = {querySelector:()=>caption};
-  const container = {dataset:{launch:'loading'},hidden:false,firstElementChild:content,
+  const timers = new Map(), caption = {dataset:{},textContent:''}, mark = {dataset:{},style:{}};
+  const content = {querySelector:selector=>selector==='.launch-capy'?mark:caption};
+  const properties = new Map(),listeners=new Map();
+  const container = {dataset:{launch:'loading'},hidden:false,firstElementChild:content,style:{setProperty:(name,value)=>properties.set(name,value)},
+    addEventListener:(type,callback)=>listeners.set(type,callback),
     querySelector:()=>content,replaceChildren(node){this.firstElementChild=node;},
     removeAttribute(name){if(name==='data-launch')delete this.dataset.launch;}};
   const controls = {inert:false};container.parentElement={children:[controls,container]};
-  const cover = createLaunchCover({container,now:()=>clock,
-    setTimer:(callback,delay)=>{const id=++sequence;timers.set(id,{callback,at:clock+delay});return id;},
-    clearTimer:id=>timers.delete(id)});
-  return {cover,container,caption,content,controls,advance(ms){clock+=ms;for(const [id,timer] of [...timers])if(timer.at<=clock){timers.delete(id);timer.callback();}}};
+  const cover = createLaunchCover({container,asset:path=>`https://assets.test/${path}`,now:()=>clock,
+    setTimer:(callback,delay)=>{const id=++sequence;timers.set(id,{callback,at:clock+delay});return id;}});
+  return {cover,container,caption,mark,content,controls,properties,
+    transition(event={}){listeners.get('transitionend')?.({target:container,propertyName:'opacity',...event});},
+    advance(ms){clock+=ms;for(const [id,timer] of [...timers])if(timer.at<=clock){timers.delete(id);timer.callback();}}};
 }
 
+function launchCopy(values={}) { return {launch_caption_delay_ms:5000,launch_reveal_ms:500,launch_mark_size:252,launch_mark_max_fraction:.4,launch_caption_gap:18,launch_caption:'Compiling GPU shaders…',launch_caption_size:14.666667,launch_caption_color_role:'settings_secondary',launch_mark:{icon:'zen-bathing',ink_bottom:.851621},...values}; }
+
 test('launch cover delays its existing localized caption and fades only a finished launch',()=>{
-  const h=launchCoverHarness(),copy={launch_caption_delay_ms:5000,preparing_canvas:'Preparing canvas…',preparing_brush:'Preparing brush…'};
-  h.cover.update({visible:true,finished:false,notice:'canvas'},copy);
+  const h=launchCoverHarness(),copy=launchCopy();
+  h.cover.update({visible:true,finished:false},copy);
   assert.equal(h.controls.inert,true);assert.equal(h.cover.blocking,true);
-  assert.equal(h.caption.textContent,copy.preparing_canvas);
+  assert.equal(h.caption.textContent,copy.launch_caption);
   h.advance(copy.launch_caption_delay_ms-1);assert.equal(h.caption.dataset.visible,undefined);
   h.advance(1);assert.equal(h.caption.dataset.visible,'');
-  h.cover.update({visible:true,finished:false,notice:'brush'},copy);
-  assert.equal(h.caption.textContent,copy.preparing_brush);
-  h.cover.update({visible:false,finished:true,notice:'canvas'},copy);
+  h.cover.update({visible:true,finished:false},copy);
+  assert.equal(h.caption.textContent,copy.launch_caption);
+  h.cover.update({visible:false,finished:true},copy);
   assert.equal(h.cover.pending,false);
   assert.equal(h.controls.inert,false);assert.equal(h.cover.blocking,false);
   assert.equal(h.container.dataset.launch,'leaving');assert.equal(h.container.hidden,false);
-  h.advance(179);assert.equal(h.container.hidden,false);
-  h.advance(1);assert.equal(h.container.hidden,true);
+  h.advance(copy.launch_reveal_ms-1);assert.equal(h.container.hidden,false);
+  h.advance(1);assert.equal(h.container.hidden,false);
+  h.transition();assert.equal(h.container.hidden,true);
 });
 
 test('interactive launch bypass is immediate and diagnostics survive later shared updates',()=>{
-  const h=launchCoverHarness(),copy={launch_caption_delay_ms:5000,preparing_canvas:'Preparing canvas…'};
-  h.cover.update({visible:false,finished:false,notice:'canvas'},copy);
+  const h=launchCoverHarness(),copy=launchCopy();
+  h.cover.update({visible:false,finished:false},copy);
   assert.equal(h.container.hidden,true);
   assert.equal(h.cover.pending,true);
-  h.cover.update({visible:true,finished:false,notice:'canvas'},copy);
+  h.cover.update({visible:true,finished:false},copy);
   assert.equal(h.container.hidden,false);
-  h.cover.update({visible:false,finished:true,notice:'canvas'},copy);
+  h.cover.update({visible:false,finished:true},copy);
   h.cover.diagnostic();h.container.replaceChildren({error:true});
   h.advance(copy.launch_caption_delay_ms);
-  h.cover.update({visible:false,finished:true,notice:'canvas'},copy);
+  h.transition();
+  h.cover.update({visible:false,finished:true},copy);
   assert.equal(h.container.hidden,false);assert.equal(h.container.firstElementChild.error,true);
 });
 
 test('launch caption uses the shared delay and elapsed HTML time when copy arrives',()=>{
-  const h=launchCoverHarness(),copy={launch_caption_delay_ms:7311,preparing_canvas:'Preparing canvas…'};
+  const h=launchCoverHarness(),copy=launchCopy({launch_caption_delay_ms:7311});
   h.advance(1300);assert.equal(h.caption.dataset.visible,undefined);
-  h.cover.update({visible:true,finished:false,notice:'canvas'},copy);
+  h.cover.update({visible:true,finished:false},copy);
   h.advance(copy.launch_caption_delay_ms-1301);assert.equal(h.caption.dataset.visible,undefined);
   h.advance(1);assert.equal(h.caption.dataset.visible,'');
   const late=launchCoverHarness();late.advance(copy.launch_caption_delay_ms+1);
   assert.equal(late.caption.dataset.visible,undefined);
-  late.cover.update({visible:true,finished:false,notice:'canvas'},copy);
+  late.cover.update({visible:true,finished:false},copy);
   late.advance(0);assert.equal(late.caption.dataset.visible,'');
 });
 
 test('launch caption accepts the Wasm Bootstrap u64 delay',()=>{
-  const h=launchCoverHarness(),copy={launch_caption_delay_ms:5000n,preparing_canvas:'Preparing canvas…'};
-  h.cover.update({visible:true,finished:false,notice:'canvas'},copy);
+  const h=launchCoverHarness(),copy=launchCopy({launch_caption_delay_ms:5000n});
+  h.cover.update({visible:true,finished:false},copy);
   h.advance(Number(copy.launch_caption_delay_ms)-1);assert.equal(h.caption.dataset.visible,undefined);
   h.advance(1);assert.equal(h.caption.dataset.visible,'');
 });
 
+test('launch reveal waits for CSS completion after a delayed first paint',()=>{
+  const h=launchCoverHarness(),copy=launchCopy({launch_caption_delay_ms:5000n,launch_reveal_ms:1379n});
+  h.cover.update({visible:true,finished:false},copy);
+  h.cover.update({visible:false,finished:true},copy);
+  assert.equal(h.properties.get('--launch-reveal'),'1379ms');
+  assert.equal(h.properties.get('--launch-caption-size'),`${copy.launch_caption_size}px`);
+  assert.equal(h.properties.get('--launch-caption-color'),'var(--settings-secondary)');
+  assert.equal(h.properties.get('--launch-mark-ink-bottom'),copy.launch_mark.ink_bottom);
+  h.advance(650+Number(copy.launch_reveal_ms));assert.equal(h.container.hidden,false);
+  h.transition();assert.equal(h.container.hidden,true);
+});
+
+test('only the leaving cover opacity transition can hide the launch',()=>{
+  const h=launchCoverHarness(),copy=launchCopy();
+  h.cover.update({visible:true,finished:false},copy);
+  h.cover.update({visible:false,finished:true},copy);
+  h.transition({target:h.caption});assert.equal(h.container.hidden,false);
+  h.transition({propertyName:'transform'});assert.equal(h.container.hidden,false);
+  h.transition();assert.equal(h.container.hidden,true);
+});
+
+test('retired transition events cannot hide resumed loading or GPU diagnostics',()=>{
+  const h=launchCoverHarness(),copy=launchCopy();
+  h.cover.update({visible:true,finished:false},copy);
+  h.cover.update({visible:false,finished:true},copy);
+  h.cover.update({visible:true,finished:false},copy);
+  h.transition();assert.equal(h.container.hidden,false);assert.equal(h.cover.blocking,true);
+  h.cover.diagnostic();h.container.replaceChildren({error:true});
+  h.transition();assert.equal(h.container.hidden,false);assert.equal(h.container.firstElementChild.error,true);
+});
+
+test('launch geometry and CSS timing consume the shared Bootstrap values',()=>{
+  const h=launchCoverHarness(),copy=launchCopy({launch_mark_size:317,launch_mark_max_fraction:.27,launch_caption_gap:23,launch_reveal_ms:1379n});
+  h.cover.update({visible:true,finished:false},copy);
+  assert.equal(h.properties.get('--launch-mark-size'),'317px');
+  assert.equal(h.properties.get('--launch-mark-fit'),'calc(0.27 * min(100vw, 100dvh))');
+  assert.equal(h.properties.get('--launch-caption-gap'),'23px');
+  assert.equal(h.properties.get('--launch-reveal'),'1379ms');
+  assert.equal(h.properties.get('--launch-caption-size'),`${copy.launch_caption_size}px`);
+  assert.equal(h.properties.get('--launch-caption-color'),'var(--settings-secondary)');
+  assert.equal(h.properties.get('--launch-mark-ink-bottom'),copy.launch_mark.ink_bottom);
+});
+
+test('launch cover draws no capy until Bootstrap names the chosen pose, then never swaps it',()=>{
+  const h=launchCoverHarness();
+  h.cover.update({visible:true,finished:false},launchCopy({launch_mark:null}));
+  assert.equal(h.mark.dataset.icon,undefined);assert.equal(h.mark.style.maskImage,undefined);
+  assert.equal(h.properties.has('--launch-mark-ink-bottom'),false);
+  const sleeping=launchCopy({launch_mark:{icon:'zen-sleeping',ink_bottom:.740654}});
+  h.cover.update({visible:false,finished:false},sleeping);
+  assert.equal(h.mark.dataset.icon,'zen-sleeping','A bypassed cover keeps the chosen pose for its return');
+  assert.equal(h.mark.style.maskImage,'url("https://assets.test/icons/layer-zen-sleeping-symbolic.svg")');
+  assert.equal(h.properties.get('--launch-mark-ink-bottom'),.740654);
+  h.cover.update({visible:true,finished:false},launchCopy());
+  assert.equal(h.mark.dataset.icon,'zen-sleeping');
+  assert.equal(h.mark.style.maskImage,'url("https://assets.test/icons/layer-zen-sleeping-symbolic.svg")');
+  assert.equal(h.properties.get('--launch-mark-ink-bottom'),.740654);
+});
+
 function launchFrameHarness(numbers = false) {
-  const waits=[],acknowledgments=[],views=[];
-  let owner=numbers?11:11n,finished=false,submitted=true,wakes=0,ready=true;
+  const waits=[],acknowledgments=[],views=[],frames=[],interactions=[];
+  let owner=numbers?11:11n,finished=false,submitted=true,wakes=0,ready=true,modal=false;
   let ticket=numbers?1:1n;
   const context={app:{
-    launch_state:()=>({visible:!finished,finished,notice:'canvas',frame:finished||!ready?null:ticket}),
+    launch_state:(_chrome,_failed,interaction)=>{interactions.push(['state',interaction]);return {visible:!finished&&!interaction,finished,frame:finished||!ready||interaction?null:ticket};},
     startup_progress:()=>[true,true,false],canvas_presented:()=>true,canvas_notice:()=>null,
-    launch_frame:()=>finished||!ready||!submitted?null:[ticket,owner],
+    launch_frame:()=>finished||!ready||!submitted||modal?null:[ticket,owner],
     wait_for_canvas:()=>new Promise(resolve=>waits.push(resolve)),
-    launch_presented:(frame,surface)=>{assert.equal(typeof frame,'bigint');assert.equal(typeof surface,'bigint');acknowledgments.push([frame,surface]);if(surface===BigInt(owner)&&frame===BigInt(ticket)&&ready)finished=true;},
+    launch_presented:(frame,surface,_chrome,interaction)=>{assert.equal(typeof frame,'bigint');assert.equal(typeof surface,'bigint');interactions.push(['presented',interaction]);acknowledgments.push([frame,surface]);if(surface===BigInt(owner)&&frame===BigInt(ticket)&&ready&&!interaction)finished=true;},
     language_pending:()=>false,dispatch(action){ready=action.type==='close_settings';if(!ready)submitted=false;return{regions:0,canvas_wake:false};},
   },bootstrap:{},layout:{},workspaceLayoutReady:()=>true,workspacePresentation:null,
     compilerFailed:false,compilerEpoch:0,gpuReady:true,launchPresentation:null,
     document:{body:{dataset:{gpu:'ready'}}},launchCover:{blocking:true,pending:true,update:view=>views.push(view)},
     startupTimes:{canvas:null,document:null,brush:null,complete:null},statusError:null,
-    $:()=>({textContent:''}),performance:{now:()=>0,mark(){}},wake(){wakes++;},stopGpu:assert.fail,
-    documents:null,workspaceGesture:null,message:assert.fail};
+    $:()=>({textContent:''}),performance:{now:()=>0,mark(){}},requestAnimationFrame:callback=>frames.push(callback),wake(){wakes++;},stopGpu:assert.fail,
+    documents:null,workspaceGesture:null,message:assert.fail,hasModalDialog:()=>modal};
   runInNewContext(source.slice(source.indexOf('function launchChromeReady()'),source.indexOf('// Host timing and contacts')),context);
   runInNewContext(source.slice(source.indexOf('function dispatch(action)'),source.indexOf('let languageTimer')),context);
   runInNewContext(source.slice(source.indexOf('function applyChange(change)'),source.indexOf('let canvasCursorActive')),context);
-  return {waits,acknowledgments,views,refresh:()=>context.refreshStartup(),dispatch:action=>context.dispatch(action),bypass(){context.launchCover.blocking=false;},replace(){owner++;},
+  return {waits,acknowledgments,views,interactions,modal(value){modal=value;},refresh:()=>context.refreshStartup(),dispatch:action=>context.dispatch(action),bypass(){context.launchCover.blocking=false;},replace(){owner++;},
+    async paint(){for(const callback of frames.splice(0))callback();await Promise.resolve();await Promise.resolve();},get pendingFrames(){return frames.length;},
     unsubmitted(){submitted=false;},submit(){submitted=true;},unready(){ready=false;submitted=false;},ready(){ready=true;},digest(value){ticket=value;submitted=false;},get wakes(){return wakes;},get finished(){return finished;}};
 }
+
+test('GPU completion leaves a browser paint opportunity before the launch acknowledgment',async()=>{
+  const h=launchFrameHarness();h.refresh();
+  h.waits[0]();await Promise.resolve();await Promise.resolve();
+  assert.equal(h.finished,false,'GPU completion alone cannot start the reveal');
+  assert.deepEqual(h.acknowledgments,[]);
+  assert.equal(h.pendingFrames,1);
+  await h.paint();
+  assert.equal(h.finished,false,'The first rAF still precedes its browser paint');
+  assert.deepEqual(h.acknowledgments,[]);
+  await h.paint();
+  assert.deepEqual(h.acknowledgments,[[1n,11n]]);
+  assert.equal(h.finished,true);
+});
+
+test('host modal dialogs reach shared launch readiness, and the reveal wakes the frame that publishes held notices',async()=>{
+  const h=launchFrameHarness();h.modal(true);h.refresh();
+  assert.deepEqual(h.interactions,[['state',true]]);
+  assert.equal(h.views.at(-1).visible,false,'A host modal drops the launch cover');
+  assert.equal(h.waits.length,0);
+  h.modal(false);h.refresh();
+  assert.deepEqual(h.interactions.at(-1),['state',false]);
+  h.waits[0]();await Promise.resolve();await Promise.resolve();await h.paint();
+  const wakes=h.wakes;await h.paint();
+  assert.deepEqual(h.interactions.filter(([kind])=>kind==='presented'),[['presented',false]]);
+  assert.equal(h.finished,true);
+  assert.ok(h.wakes>wakes,'The reveal schedules a frame, which publishes notices held under the cover');
+});
+
+test('a queued browser-paint acknowledgment retains the exact submission receipt',async()=>{
+  const h=launchFrameHarness();h.refresh();
+  h.waits[0]();await Promise.resolve();await Promise.resolve();await h.paint();
+  h.unready();h.refresh();h.ready();h.submit();h.refresh();
+  await h.paint();
+  assert.deepEqual(h.acknowledgments,[],'Retired paint callbacks must not acknowledge a replacement with the same digest');
+  h.waits[1]();await Promise.resolve();await Promise.resolve();await h.paint();await h.paint();
+  assert.deepEqual(h.acknowledgments,[[1n,11n]]);
+});
 
 test('launch presentation waits for queue completion and carries the matching surface owner',async()=>{
   const h=launchFrameHarness();h.refresh();
@@ -103,6 +208,7 @@ test('launch presentation waits for queue completion and carries the matching su
   h.waits[0]();await Promise.resolve();await Promise.resolve();
   assert.deepEqual(h.acknowledgments,[]);assert.equal(h.finished,false);
   h.waits[1]();await Promise.resolve();await Promise.resolve();
+  await h.paint();await h.paint();
   assert.deepEqual(h.acknowledgments,[[1n,12n]]);assert.equal(h.finished,true);
   assert.equal(h.views.at(-1).finished,true,'Optional compiler completion is not required');
 });
@@ -116,6 +222,7 @@ test('a readiness flap cancels the old submission even when digest and surface r
   assert.deepEqual(h.acknowledgments,[],'The old receipt must be retired before calling Wasm');
   assert.equal(h.finished,false);
   h.waits[1]();await Promise.resolve();await Promise.resolve();
+  await h.paint();await h.paint();
   assert.deepEqual(h.acknowledgments,[[1n,11n]]);assert.equal(h.finished,true);
 });
 
@@ -126,6 +233,7 @@ test('a decreasing launch digest replaces the pending receipt without ordering c
   h.waits[0]();await Promise.resolve();await Promise.resolve();
   assert.deepEqual(h.acknowledgments,[]);assert.equal(h.finished,false);
   h.waits[1]();await Promise.resolve();await Promise.resolve();
+  await h.paint();await h.paint();
   assert.deepEqual(h.acknowledgments,[[7n,11n]]);assert.equal(h.finished,true);
 });
 
@@ -137,6 +245,7 @@ test('same-turn Settings dispatch cancels the old receipt before its queue promi
   assert.equal(h.finished,false);
   h.submit();h.refresh();assert.equal(h.waits.length,2);
   h.waits[1]();await Promise.resolve();await Promise.resolve();
+  await h.paint();await h.paint();
   assert.deepEqual(h.acknowledgments,[[1n,11n]]);assert.equal(h.finished,true);
 });
 
@@ -148,12 +257,14 @@ test('hidden unfinished launch mutations publish before any submission receipt e
 
 test('numeric serialized launch ownership is converted to the wasm u64 BigInt ABI',async()=>{
   const h=launchFrameHarness(true);h.refresh();h.waits[0]();await Promise.resolve();await Promise.resolve();
+  await h.paint();await h.paint();
   assert.deepEqual(h.acknowledgments,[[1n,11n]]);assert.equal(h.finished,true);
 });
 
 test('launch digest transport preserves every bit above the JavaScript integer range',async()=>{
   const h=launchFrameHarness(),digest=(1n<<63n)+123n;
   h.digest(digest);h.submit();h.refresh();h.waits[0]();await Promise.resolve();await Promise.resolve();
+  await h.paint();await h.paint();
   assert.deepEqual(h.acknowledgments,[[digest,11n]]);assert.equal(h.finished,true);
 });
 
@@ -170,6 +281,12 @@ test('launch cover obscures ordinary workspace status while failure recovery sta
   assert.ok(status<cover,'Ordinary workspace loading must stay underneath the launch cover');
   const failure=stacking('.workspace-status.error');
   assert.ok((Number.isFinite(failure)?failure:status)>cover,'Workspace failure and recovery actions remain above the launch cover');
+});
+test('the loading cover retains its compositor underlay while appearing opaque',()=>{
+  const css=readFileSync(new URL('style.css',import.meta.url),'utf8');
+  const rule=css.match(/#gpu-notice\[data-launch\] \{([^}]+)\}/)[1];
+  const opacity=Number(rule.match(/\bopacity:\s*([\d.]+)/)?.[1]);
+  assert.ok(opacity>.99&&opacity<1,'The cover must blend the editor beneath it before reveal');
 });
 test('glass CSS preserves the shared straight RGBA channels',()=>{
   const styles=new Map(),context={appliedTheme:null,glass:null,document:{
@@ -205,14 +322,15 @@ test('document transitions retain canvas bar measurement and reveal reports',()=
   assert.deepEqual(actions.map(action=>action.type),['measure_canvas_bar','reveal_canvas_bar']);
 });
 
-test('phone inset reports apply while busy and deduplicate against shared state',()=>{
+test('phone inset and keyboard reports apply while busy and deduplicate against shared state',()=>{
   const phoneSource=readFileSync(new URL('phone.js',import.meta.url),'utf8');
   const state={workspace_ready:true,phone:{insets:[0,0,0,0]}};
-  let busy=true,observer,refuse=false;
+  let busy=true,observer,refuse=false,viewportChanged;
+  const visualViewport={offsetTop:0,height:891,scale:1,addEventListener(type,listener){assert.equal(type,'resize');viewportChanged=listener;}};
   const attempts=[],delivered=[];
-  const context={documents:{interactionBusy:()=>busy},workspaceGesture:null,window:{addEventListener(){}},
+  const context={documents:{interactionBusy:()=>busy},workspaceGesture:null,window:{addEventListener(){},innerHeight:891,visualViewport},
     app:{allowed_during_document_interaction:action=>action.type==='phone'&&action.action.kind==='metrics',
-      dispatch(action){if(!refuse){delivered.push(action);state.phone.insets=[...action.action.insets];}return{};}},
+      dispatch(action){if(!refuse){delivered.push(action);state.phone.insets=[...action.action.insets];state.phone.keyboard=action.action.keyboard;}return{};}},
     applyChange(){},message:assert.fail,
     ResizeObserver:class{constructor(callback){this.callback=callback;this.targets=[];observer=this;}observe(target){this.targets.push(target);}}};
   runInNewContext(source.slice(source.indexOf('function dispatch(action)'),source.indexOf('let languageTimer')),context);
@@ -237,6 +355,16 @@ test('phone inset reports apply while busy and deduplicate against shared state'
   const physical={left:3,top:17,right:11,bottom:29};
   observer.callback(observer.targets.map(target=>({target,contentRect:{width:physical[target.style.width.match(/inset-(\w+)/)[1]]}})));
   assert.deepEqual([...state.phone.insets],[3,17,11,29],'CSS side facts use the shared left/top/right/bottom order');
+  const before=attempts.length;
+  visualViewport.height=513.476;viewportChanged();
+  assert.equal(state.phone.keyboard,378);assert.equal(attempts.length,before+1);
+  viewportChanged();assert.equal(attempts.length,before+1,'Unchanged visual viewport does not send another report');
+  visualViewport.offsetTop=20;viewportChanged();assert.equal(state.phone.keyboard,358);
+  visualViewport.height=900;viewportChanged();assert.equal(state.phone.keyboard,0,'Viewport motion cannot report a negative keyboard');
+  visualViewport.offsetTop=0;visualViewport.height=695;viewportChanged();assert.equal(state.phone.keyboard,196,'Unscaled keyboard height is reported as measured');
+  visualViewport.scale=2;visualViewport.height=891/2;viewportChanged();assert.equal(state.phone.keyboard,0,'Page zoom is not a keyboard');
+  visualViewport.scale=1.0000001;visualViewport.height=891/1.0000001;viewportChanged();assert.equal(state.phone.keyboard,0,'Floating point residue from page zoom is not a keyboard');
+  assert.deepEqual([...state.phone.insets],[3,17,11,29],'Keyboard reports preserve sensor insets');
 });
 
 test('retained workspace placement keeps bubble presentation without scheduling GPU work',()=>{
@@ -426,10 +554,10 @@ test('floating editor measures its natural border box and releases a stale width
 });
 
 test('common dialog host forwards owned keys once and registers actual modal state',async t=>{
-  const {createDialogHost,hasOpenDialog,hasModalDialog}=await import('./dialog-host.js');
+  const {createDialogHost,hasOpenDialog,hasModalDialog,watchModalDialogs}=await import('./dialog-host.js');
   const {doc,element,icon}=colorDialogDom(t),dialog=element('dialog'),header=element('header'),cancel=element('button');
   header.append(cancel);dialog.append(header);doc.body.append(dialog);dialog.show=()=>{dialog.open=true;};
-  const forwarded=[];
+  const forwarded=[],modalChanges=[];watchModalDialogs(()=>modalChanges.push(hasModalDialog()));
   const app={dialog_presentation:()=>({kind:'floating'}),floating_dialog_width:(_window,natural)=>natural,dialog_header:()=>({start:'cancel',end:null}),dialog_escape:()=> 'cancel'};
   const host=createDialogHost({app,dialog,header,cancel,icon,copy:{cancel:'Cancel'},onCancel(){},onKey:event=>forwarded.push(event.key)});
   const key=()=>{let stopped=0;dialog.dispatchEvent({type:'keydown',key:'a',stopPropagation(){stopped++;},preventDefault(){}});return stopped;};
@@ -440,6 +568,7 @@ test('common dialog host forwards owned keys once and registers actual modal sta
   host.present({frame:{kind:'editor'},role:'editor',modal:false,primary:null});
   assert.equal(hasOpenDialog(),true);assert.equal(hasModalDialog(),false);assert.equal(key(),0);assert.deepEqual(forwarded,['a','a']);
   host.dispose();assert.equal(hasOpenDialog(),false);assert.equal(hasModalDialog(),false);
+  assert.deepEqual(modalChanges,[true,false],'Watchers hear only modal presence changes');
 });
 
 test('a consumed child Escape leaves its dialog open until the terminal Escape',async t=>{
@@ -700,7 +829,7 @@ test('drawer plans follow exact native tile facts and retire missing sources',()
   const context={drawers,markedSources:new Set(),tiles:[structuredClone(native)],animating:false,catalog:{panel_expansion_ms:200},previousAnimationFrame:null,frameInterval:()=>16,
     workspace:{clientWidth:1200,clientHeight:900,querySelectorAll:()=>[]},
     app:{drawer_measure(){plans++;return{measure:context.tiles.length?{placement:{columns:[bounds]}}:null,toolbars:[]};},drawer(){placements++;return{placement:{bounds,columns:[bounds],direction:'right'},connection:null};}},
-    contentHeight:()=>120,matchMedia:()=>({matches:false}),place(){},dispose(){disposed++;},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},
+    contentHeight:()=>120,matchMedia:()=>({matches:false}),place(){},dispose(){disposed++;},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},queueGlass(){},
     requestAnimationFrame(){assert.fail('A completed drawer does not schedule another callback');}};
   const start=chrome.indexOf('  function animate('),end=chrome.indexOf('  workspace.addEventListener("scroll"',start);
   assert.ok(start>=0&&end>start);runInNewContext(chrome.slice(start,end)+'\nglobalThis.step=()=>animate(200);',context);
@@ -743,7 +872,7 @@ test('drawer ticks clear owned marks without scanning the workspace',()=>{
     animating:true,previousAnimationFrame:null,frameInterval:()=>16,catalog:{panel_expansion_ms:200},
     getComputedStyle:()=>({borderTopLeftRadius:'8px',borderTopRightRadius:'8px',borderBottomRightRadius:'8px',borderBottomLeftRadius:'8px'}),
     app:{toolbar_ui(request){assert.equal(request.type,'drawer_source_corners');return[false,true,true,false];},drawer_measure:()=>({measure:{placement},toolbars:[]}),drawer:()=>({placement,connection:null})},
-    matchMedia:()=>({matches:false}),place(){},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},requestAnimationFrame(){}};
+    matchMedia:()=>({matches:false}),place(){},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},queueGlass(){},requestAnimationFrame(){}};
   const start=chrome.indexOf('  function markSource('),end=chrome.indexOf('  workspace.addEventListener("scroll"',start);
   runInNewContext(chrome.slice(start,end)+'\nglobalThis.mark=markSource;globalThis.tick=animate;',context);
   for(const time of [100,116]){
@@ -768,7 +897,7 @@ test('drawer progress follows frame deltas through delayed callbacks, close and 
     const context={drawers:new Map([[46,record]]),markedSources:new Set(),tiles:[],animating:true,previousAnimationFrame:null,catalog:{panel_expansion_ms:200},frameInterval:()=>16,entryTime:101.6,
       performance:{now:()=>context.entryTime},workspace:{clientWidth:1200,clientHeight:900,querySelectorAll:()=>[],querySelector:()=>null},
       app:{drawer_measure:()=>({measure:{placement:{columns:[bounds]}},toolbars:[]}),drawer(query){queries.push(query);const width=bounds.width*(query.closing?1-query.progress:Math.max(0,query.progress)),placement={...bounds,width};return{placement:{bounds:placement,columns:[placement],direction:'right'},connection:null};}},
-      contentHeight:()=>120,matchMedia:()=>({matches:false}),place:(node,box)=>Object.assign(node.style,box),dispose(){},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},requestAnimationFrame:callback=>callbacks.push(callback)};
+      contentHeight:()=>120,matchMedia:()=>({matches:false}),place:(node,box)=>Object.assign(node.style,box),dispose(){},dispatch(){},measureColumnDrawers(){},editor:{queuePositions(){}},queueGlass(){},requestAnimationFrame:callback=>callbacks.push(callback)};
     const start=chrome.indexOf('  function animate('),end=chrome.indexOf('  workspace.addEventListener("scroll"',start);
     assert.ok(start>=0&&end>start);runInNewContext(chrome.slice(start,end)+'\nglobalThis.onFrame=animate;',context);
     return{context,record,root,queries,callbacks,bounds};
@@ -939,7 +1068,7 @@ test('phone contacts preview locally, commit once and retire on cancellation',t=
   let next=0,valid=true,outcome={kind:'pending'},capture;
   const app={phone_tools:()=>[view,view],phone_settings:()=>view,toolbar_component:()=>({}),header_view:()=>({capy:view,sizes:[{id:'medium',tile:32}]}),capy_caption:()=>'',
     touch_hold_ms:()=>500,phone_bar_contact:()=>{const id=++next;return{id,free:()=>freed.push(id)};},phone_bar_valid:()=>valid,
-    phone_bar_input:(bar,input)=>{inputs.push([bar.id,input.kind]);return{outcome,geometry:geometry.tools,lifted:outcome.kind==='held'||outcome.kind==='dragging'?0n:null};}};
+    phone_bar_input:(bar,input)=>{inputs.push([bar.id,input.kind]);return{outcome,geometry:geometry.tools,lifted:['menu','held','dragging'].includes(outcome.kind)?0n:null};}};
   const workspace=element('div'),capy=element('button');doc.body.append(workspace);workspace.append(capy);
   const createElement=(...args)=>{const n=element(...args);n.style.setProperty=()=>{};n.querySelector=()=>null;n.hasPointerCapture=id=>capture===id;n.setPointerCapture=id=>capture=id;n.releasePointerCapture=()=>capture=null;return n;};
   const context={window:{addEventListener:(type,listener)=>{const list=listeners.get(type)??[];list.push(listener);listeners.set(type,list);}},document:doc,
@@ -951,8 +1080,8 @@ test('phone contacts preview locally, commit once and retire on cancellation',t=
     customization:{target(){},variationMarker:()=>element('span'),showContext:()=>sent.push('menu')},dispatch:action=>sent.push(action),place(){},changed(){}});
   host.layout({phone:geometry});
   const root=workspace.children.find(n=>n.id==='phone-frame'),tool=doc.body.descendants().find(n=>n.id==='phone-tool-8');
-  const event=(type,x=2,y=2)=>{for(const fn of listeners.get(type)??[])fn({target:tool,button:0,isPrimary:true,pointerId:1,clientX:x,clientY:y,preventDefault(){},stopPropagation(){}});};
-  const arm=()=>{outcome={kind:'held'};for(const fn of [...timers.values()])fn();};
+  const event=(type,x=2,y=2)=>{for(const fn of listeners.get(type)??[])fn({target:tool,button:0,isPrimary:true,pointerType:'mouse',pointerId:1,clientX:x,clientY:y,preventDefault(){},stopPropagation(){}});};
+  const arm=()=>{outcome={kind:'menu',value:8};for(const fn of [...timers.values()])fn();};
   event('pointerdown');arm();assert.equal(root.dataset.contact,'held');
   assert.equal(tool.parentNode.classList.contains('header-drag-preview'),true,'A Wasm usize index marks the lifted control');
   outcome={kind:'dragging'};event('pointermove',42);assert.equal(sent.length,0);assert.equal(root.dataset.contact,'dragging');

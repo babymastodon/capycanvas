@@ -90,7 +90,7 @@ try{
     $null=$review.Handle
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/toolbars-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned toolbar review $($review.Id)"
-    Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Model).brush_ready -and (Model).windows_workspace.ready} 'Review did not start' 45
+    Wait-Until {$review.Refresh();$script:registeredWindow=Owned-DrawingWindow $review;$registeredWindow -and (Review-Ready)} 'Review did not start' 45
     if($PSBoundParameters.ContainsKey('Theme') -and (Model).state.theme -ne $Theme){throw 'Toolbar fixture did not adopt its explicit isolated theme'}
     $root=$registeredWindow.Root
     [CapyRowPointer]::Initialize([uint32]$review.Id)

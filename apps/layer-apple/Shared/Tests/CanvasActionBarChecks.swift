@@ -68,7 +68,7 @@ extension XCTestCase {
         let bar = app.descendants(matching: .any)["canvas-action-bar"].firstMatch
         let more = app.buttons["canvas-bar-more"]
         let menu = app.descendants(matching: .any)["canvas-bar-menu"].firstMatch
-        let capy = app.descendants(matching: .any)["zen-button"].firstMatch
+        let capy = app.descendants(matching: .any)["zen-button"].firstMatch, camera = app.buttons["camera-status"]
         func action(_ id: String) -> XCUIElement { app.buttons["canvas-bar-action-" + id] }
         func expect(_ element: XCUIElement, _ format: String, _ message: String = "") {
             let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: element)
@@ -161,7 +161,7 @@ extension XCTestCase {
             editorMenu(in: app, menu: "Edit", id: "search_commands", label: "Search Commands…")
             let search = app.textFields["command-search"]
             XCTAssertTrue(search.waitForExistence(timeout: 5), "Reset is a command, not a bar item")
-            search.typeText("Reset transform\n")
+            runCommandSearch("Reset transform", field: search, in: app)
             XCTAssertTrue(search.waitForNonExistence(timeout: 5))
         }
 
@@ -173,13 +173,13 @@ extension XCTestCase {
             expectation(for: NSPredicate { _, _ in (window.frame.width > narrow + 200) == enter }, evaluatedWith: app)
             waitForExpectations(timeout: 15)
         }
-        addTeardownBlock { await MainActor.run { if window.frame.width > narrow + 200 { fullscreen(false) } } }
+        addTeardownBlock { MainActor.assumeIsolated { if window.frame.width > narrow + 200 { fullscreen(false) } } }
         #endif
 
         editorMenu(in: app, menu: "Select", id: "select_all", label: "Select all pixels")
         XCTAssertFalse(bar.waitForExistence(timeout: 2), "Painting tools hide the selection bar")
         editorMenu(in: app, menu: "Select", id: "deselect", label: "Deselect pixels")
-        editorTool("Operation", in: app); editorChoice("Operation", group: true, in: app)
+        editorTool("Operation", in: app); editorChoice("Operation", in: app)
         XCTAssertFalse(bar.exists, "No bar without a selection")
         editorMenu(in: app, menu: "Select", id: "select_all", label: "Select all pixels")
         expect(action("deselect"), "exists == YES AND enabled == YES", "Select all shows the selection bar")
@@ -189,14 +189,14 @@ extension XCTestCase {
         attachEditor(in: app, name: "canvas-bar-selection-\(theme)")
         editorMenu(in: app, menu: "View", id: "fit_canvas", label: "Fit canvas")
         expect(action("deselect"), "exists == YES AND enabled == YES")
-        let unfilledPixels = editorPixels(in: app)
+        let unfilledPixels = settledEditorPixels(in: app)
         perform("fill_selection", "Fill selection", menuItem: "menu-action-Fill selection")
         expectation(for: NSPredicate { _, _ in
             let pixel = self.editorPixels(in: app); return Int(pixel[2]) > Int(pixel[0]) + 50
         }, evaluatedWith: app)
         waitForExpectations(timeout: 15)
         expect(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "toolbar-tile-", "Undo")).firstMatch, "enabled == YES")
-        let filledPixels = editorPixels(in: app), filledCamera = app.buttons["camera-status"].label
+        let filledPixels = settledEditorPixels(in: app), filledCamera = camera.label
         let filledHistory = historyState()
         func checkFillHistory() {
             editorHistory("Undo", in: app); expectPixels(unfilledPixels, in: app)
@@ -215,7 +215,7 @@ extension XCTestCase {
         #endif
         expect(action("deselect"), "exists == YES AND enabled == YES", "Holding the mounted divider keeps the selection")
         XCTAssertFalse(menu.exists)
-        XCTAssertEqual(app.buttons["camera-status"].label, filledCamera)
+        XCTAssertEqual(camera.label, filledCamera)
         XCTAssertEqual(editorPixels(in: app), filledPixels)
         XCTAssertEqual(historyState(), filledHistory)
         #if os(macOS)
@@ -238,7 +238,7 @@ extension XCTestCase {
         #endif
         editorMenu(in: app, menu: "View", id: "fit_canvas", label: "Fit canvas")
         #if os(iOS)
-        let camera = app.buttons["camera-status"], canvas = app.descendants(matching: .any)["canvas"].firstMatch
+        let canvas = app.descendants(matching: .any)["canvas"].firstMatch
         let beforePinch = camera.label
         editorTool("Lasso selection", in: app); editorChoice("Lasso selection", in: app)
         expect(camera, "label == '\(beforePinch)'", "The navigation fixture preserves the fitted camera")
@@ -254,7 +254,7 @@ extension XCTestCase {
         expect(bar, "exists == YES", "Shared placement returns after the camera hold")
         expectation(for: NSPredicate { _, _ in window.frame.contains(bar.frame) }, evaluatedWith: bar)
         waitForExpectations(timeout: 10)
-        editorTool("Operation", in: app); editorChoice("Operation", group: true, in: app)
+        editorTool("Operation", in: app); editorChoice("Operation", in: app)
         expect(action("deselect"), "exists == YES AND enabled == YES")
         editorMenu(in: app, menu: "View", id: "reset_rotation", label: "Reset rotation")
         editorMenu(in: app, menu: "View", id: "fit_canvas", label: "Fit canvas")
@@ -306,7 +306,11 @@ extension XCTestCase {
         for apply in [false, true] {
             var hull = CGRect.zero
             if !apply {
-                for _ in 0..<2 { editorMenu(in: app, menu: "View", id: "zoom_out", label: "Zoom out") }
+                for _ in 0..<2 {
+                    let zoom = camera.label
+                    editorMenu(in: app, menu: "View", id: "zoom_out", label: "Zoom out")
+                    expect(camera, "label != '\(zoom)'", "Zoom out changes the camera")
+                }
                 hull = bluePaperBounds(in: app)
             }
             perform("scale_rotate", "Transform", menuItem: "menu-action-Transform")

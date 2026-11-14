@@ -16,7 +16,8 @@ import SwiftUI
     private weak var store: EditorStore?
     lazy var phone = PhoneBarInput(enabled: { [weak self] in self?.enabled == true }, action: { [weak self] action in
         self?.store?.dispatch(["type": "phone", "action": action.raw])
-    }, menu: { [weak self] target, point in self?.phoneContext(target, at: point) })
+    }, menu: { [weak self] target, point in self?.phoneContext(target, at: point) },
+        dismissMenu: { [weak self] in if self?.phoneMenuLayout != nil { self?.closeMenu() } })
     init(workspace: WorkspacePresentation, store: EditorStore?) {
         self.workspace = workspace; self.store = store
     }

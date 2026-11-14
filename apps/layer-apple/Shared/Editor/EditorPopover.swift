@@ -52,49 +52,55 @@ private struct EditorPopovers: PreferenceKey {
 /// An ordinary overlay preserves the held contact and needs no presentation
 /// controller, extra window, native menu handoff, or animation override.
 struct EditorPopoverHost: ViewModifier {
+    @Environment(\.editorPopupStore) private var store
     func body(content: Content) -> some View {
         content.overlayPreferenceValue(EditorPopovers.self) { requests in
             GeometryReader { geometry in
                 if let request = requests.last {
-                    EditorPopoverLayer(request: request, source: geometry[request.anchor], viewport: geometry.size,
+                    EditorPopoverLayer(request: request, source: geometry[request.anchor], bounds: bounds(geometry),
                         passThrough: request.passThrough.map { geometry[$0] })
                         .id(request.id)
                 }
             }
         }.transformPreference(EditorPopovers.self) { $0.removeAll() }
     }
+    private func bounds(_ geometry: GeometryProxy) -> CGRect {
+        let frame = geometry.frame(in: .global), local = CGRect(origin: .zero, size: geometry.size)
+        let visible = store?.phoneVisibleArea.map { local.intersection($0.offsetBy(dx: -frame.minX, dy: -frame.minY)) } ?? local
+        return (visible.isNull ? local : visible).insetBy(dx: 8, dy: 8)
+    }
 }
 
 private struct EditorPopoverLayer: View {
     let request: EditorPopoverRequest
     let source: CGRect
-    let viewport: CGSize
+    let bounds: CGRect
     let passThrough: CGRect?
     @State private var size = CGSize(width: 340, height: 300)
     @Environment(\.scenePhase) private var phase
     @Environment(\.editorPalette) private var palette
     private var maximumHeight: CGFloat {
-        passThrough.map { max(0, viewport.height - max(source.maxY, $0.maxY) - 14) } ?? max(0, viewport.height - 16)
+        passThrough.map { max(0, bounds.maxY - max(source.maxY, $0.maxY) - 6) } ?? max(0, bounds.height)
     }
     private var origin: CGPoint {
         let x: CGFloat, y: CGFloat
         if request.placement == .inward {
-            x = source.midX > viewport.width / 2 ? source.minX - size.width - 6 : source.maxX + 6
+            x = source.midX > bounds.midX ? source.minX - size.width - 6 : source.maxX + 6
             y = source.midY - min(24, size.height / 2)
         } else {
             x = source.minX
             let bottom = max(source.maxY, passThrough?.maxY ?? source.maxY)
-            y = passThrough != nil || bottom + size.height + 6 <= viewport.height - 8 ? bottom + 6 : source.minY - size.height - 6
+            y = passThrough != nil || bottom + size.height + 6 <= bounds.maxY ? bottom + 6 : source.minY - size.height - 6
         }
-        return CGPoint(x: max(8, min(x, viewport.width - size.width - 8)),
-            y: max(8, min(y, viewport.height - size.height - 8)))
+        return CGPoint(x: max(bounds.minX, min(x, bounds.maxX - size.width)),
+            y: max(bounds.minY, min(y, bounds.maxY - size.height)))
     }
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.clear.contentShape(EditorPopoverDismissRegion(passThrough: passThrough), eoFill: true)
                 .onTapGesture { request.dismiss() }.accessibilityHidden(true)
             request.content
-                .frame(maxWidth: max(0, viewport.width - 16), maxHeight: maximumHeight)
+                .frame(maxWidth: max(0, bounds.width), maxHeight: maximumHeight)
                 .fixedSize(horizontal: true, vertical: true)
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
                 .modifier(EditorPopupSurface(shape: RoundedRectangle(cornerRadius: 8)))

@@ -19,17 +19,21 @@ struct WorkspaceStartupNotice: View {
     @Environment(\.capyCommonCopy) private var common
     @Environment(\.capyNativeCopy) private var copy
     var body: some View {
-        if !workspaces.presented && (workspaces.visibleError != nil || workspaces.error == nil && (workspaces.readOnly || !workspaces.ready)) {
+        let status = workspaces.view["status"], action = status["action"]
+        if !workspaces.presented && (workspaces.visibleError != nil
+            || workspaces.error == nil && (workspaces.readOnly || !workspaces.ready || !action.isNull)) {
             EditorNotice(message: workspaces.visibleError
                 ?? (workspaces.view["owner_lost"].bool ? copy["header"]["owner_lost"].string
                     : workspaces.readOnly ? (workspaces.store?.bootstrap["recovery"]["saving_workspace"].string ?? "")
-                        : (workspaces.store?.bootstrap["recovery"]["opening_workspace"].string ?? "")),
+                    : workspaces.ready ? status["text"].string
+                    : (workspaces.store?.bootstrap["recovery"]["opening_workspace"].string ?? "")),
                 working: workspaces.busy || workspaces.error == nil && !workspaces.ready) {
-                if workspaces.error != nil || workspaces.view["owner_lost"].bool {
+                if status["retry"].bool {
                     Button(copy["header"]["retry"].string) { workspaces.send(["type": "retry"]) }.disabled(workspaces.busy)
-                    if workspaces.ready {
-                        Button(copy["header"]["save_as_new_workspace"].string) { workspaces.form(["type": "save_as_new"]) }.disabled(workspaces.busy)
-                    }
+                }
+                if !action.isNull {
+                    Button(action["label"].string) { workspaces.send(["type": "form", "action": action["action"].raw]) }
+                        .disabled(workspaces.busy || !action["enabled"].bool).accessibilityIdentifier("workspace-status-action")
                 }
                 if workspaces.error != nil && workspaces.ready && !workspaces.readOnly {
                     Button(common["ok"].string) { workspaces.dismissError() }
@@ -267,11 +271,12 @@ private struct WorkspaceManagerForm: View {
     @Environment(\.editorDialogPage) private var page
     @ObservedObject var workspaces: WorkspaceController
     let spec: JSON
+    @FocusState private var nameFocused: Bool
     var body: some View {
         Group {
             if spec["dialog"]["role"].string == "alert", let store = workspaces.store {
                 EditorAlertLayout(viewport: CGSize(width: store.snapshot["layout"]["viewport"][0].number,
-                    height: max(0, store.snapshot["layout"]["viewport"][1].number - store.keyboardInset)),
+                    height: max(0, store.snapshot["layout"]["viewport"][1].number - store.obscuredBottom)),
                     preferWide: spec["dialog"]["frame"]["prefer_wide"].bool,
                     fontPixels: CGFloat(store.catalog["text_size_pt"].number * 4 / 3)) {
                     Text(spec["title"].string).font(.headline).multilineTextAlignment(.center)
@@ -303,7 +308,7 @@ private struct WorkspaceManagerForm: View {
             Text(spec["message"].string).fixedSize(horizontal: false, vertical: true)
             if !spec["name"].isNull {
                 TextField(common["name"].string, text: $workspaces.formName).textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("workspace-form-name")
+                    .focused($nameFocused).onAppear { nameFocused = page }.accessibilityIdentifier("workspace-form-name")
             }
             if !spec["description"].isNull {
                 TextField(nativeCopy["header"]["description"].string, text: $workspaces.formDescription, axis: .vertical)

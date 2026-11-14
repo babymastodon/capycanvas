@@ -79,18 +79,42 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
                     .await;
                 continue;
             }
-            let names: Vec<_> = batch.writes.iter()
-                .filter(|w| !(w.delete || w.create && model::is_default_item(&w.id)))
-                .map(|write| write.metadata.clone().or_else(|| self.items().into_iter()
-                    .find(|item| item.id == write.id).map(|item| item.metadata))
-                    .map(|metadata| (write.id.clone(), metadata)))
-                .collect();
+            let names: Vec<_> = self.rebuild(&batch, now).await.into_iter().map(|(source, _)| Some(source)).collect();
             let names = if names.is_empty() && batch.editing_json.is_some() { vec![None] } else { names };
             if !names.is_empty() {
                 choices.push(InterruptedChange { id: batch.operation_id, names });
             }
         }
         Ok(choices)
+    }
+    async fn rebuild(&self, batch: &CommitBatch, now: u64) -> Vec<((String, Metadata), Entity)> {
+        let mut rebuilt = Vec::new();
+        for write in batch.writes.iter().filter(|write| !(write.delete || write.create && model::is_default_item(&write.id))) {
+            if let Ok(entity) = self.rebuild_write(batch, write, now).await { rebuilt.push(entity); }
+        }
+        rebuilt
+    }
+    async fn rebuild_write(&self, batch: &CommitBatch, write: &PreparedWrite, now: u64) -> Result<((String, Metadata), Entity)> {
+        let base = if write.create { None } else { Some(self.load(&write.id).await?.entity) };
+        let mut entity=Entity {
+            id: write.id.clone(),
+            metadata:write.metadata.clone().or_else(||base.as_ref().map(|e|e.metadata.clone())).ok_or_else(||StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::TheInterruptedItemIsMissingMetadata))?,
+            content:if let Some(content)=&write.content_json {
+                protocol::unpack(content,|id|batch.components.get(id).cloned().ok_or_else(||StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::AnInterruptedResourceIsMissing)))?
+            } else {base.as_ref().ok_or_else(||StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::TheInterruptedItemIsMissingItsLayout))?.content.clone()},
+            working:if let Some(working)=&write.working_json {Some(serde_json::from_str(working)?)} else {base.as_ref().and_then(|e|e.working.clone())},
+        };
+        let source = (write.id.clone(), entity.metadata.clone());
+        entity.resolve_phone()?;
+        entity.id = new_id();
+        entity.metadata.name = message(&self.localization(), layer_ui::MessageId::WORKSPACE_RECOVERED_NAME,
+            &[("name", self.display_name(&write.id, &entity.metadata).chars().take(90).collect())])
+            .chars().take(100).collect();
+        entity.metadata.builtin = false;
+        entity.metadata.created_at_ms = now;
+        entity.metadata.last_used_ms = now;
+        entity.validate()?;
+        Ok((source, entity))
     }
     pub async fn recover_interrupted(
         &self,
@@ -106,35 +130,7 @@ impl<S: WorkspaceStore> WorkspaceManager<S> {
                 StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::TheseChangesHaveAlreadyBeenRecoveredOrSaved)
             })?;
         self.flush().await?;
-        let mut entities = Vec::new();
-        for write in &batch.writes {
-            if write.delete || (write.create && model::is_default_item(&write.id)) {
-                continue;
-            }
-            let base = if write.create {
-                None
-            } else {
-                Some(self.load(&write.id).await?.entity)
-            };
-            let mut entity=Entity {
-                id: write.id.clone(),
-                metadata:write.metadata.clone().or_else(||base.as_ref().map(|e|e.metadata.clone())).ok_or_else(||StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::TheInterruptedItemIsMissingMetadata))?,
-                content:if let Some(content)=&write.content_json {
-                    protocol::unpack(content,|id|batch.components.get(id).cloned().ok_or_else(||StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::AnInterruptedResourceIsMissing)))?
-                } else {base.as_ref().ok_or_else(||StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::TheInterruptedItemIsMissingItsLayout))?.content.clone()},
-                working:if let Some(working)=&write.working_json {Some(serde_json::from_str(working)?)} else {base.as_ref().and_then(|e|e.working.clone())},
-            };
-            entity.resolve_phone()?;
-            entity.id = new_id();
-            entity.metadata.name = message(&self.localization(), layer_ui::MessageId::WORKSPACE_RECOVERED_NAME,
-                &[("name", self.display_name(&write.id, &entity.metadata).chars().take(90).collect())])
-                .chars().take(100).collect();
-            entity.metadata.builtin = false;
-            entity.metadata.created_at_ms = now;
-            entity.metadata.last_used_ms = now;
-            entity.validate()?;
-            entities.push(entity);
-        }
+        let entities: Vec<_> = self.rebuild(&batch, now).await.into_iter().map(|(_, entity)| entity).collect();
         if entities.is_empty() && batch.editing_json.is_none() {
             return Err(StoreError::known(ErrorKind::InvalidData, WorkspaceRefusal::NoRecoverableItemsWereFound));
         }

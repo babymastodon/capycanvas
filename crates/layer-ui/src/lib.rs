@@ -22,7 +22,7 @@ pub(crate) use variants;
 
 pub mod localization;
 pub use fluent_bundle::FluentArgs;
-pub use localization::{LanguagePreference, LanguageRequest, LanguageTransition, Localizer, LocalizerPreparation, MessageId, UiLanguage, resolve_language, resolve_launch_language, launch_localization, BootstrapView, bootstrap_view, file_open_failure, gpu_unsupported};
+pub use localization::{LanguagePreference, LanguageRequest, LanguageTransition, Localizer, LocalizerPreparation, MessageId, UiLanguage, resolve_language, resolve_launch_language, launch_localization, BootstrapView, bootstrap_view, launch_bootstrap_view, file_open_failure, gpu_unsupported, UnsupportedSessionView, unsupported_session_view};
 #[cfg(test)]
 mod localization_catalog_tests;
 #[cfg(test)]
@@ -83,7 +83,9 @@ pub use layer_core::{FigurePaint, FigureShape, RulerKind};
 mod navigator;
 pub use navigator::NavigatorGeometry;
 pub use session::tonal_selection::{TonalAction, TonalOptions};
-pub use session::{CanvasNotice, LaunchReadiness, LaunchView, LAUNCH_CAPTION_DELAY_MS, ThumbnailRequests, occurrence_token, occurrence_handle, object_token, object_handle, SourceUse, FilterPreviewCache, FilterPreviewStatus, FilterPreviewUpdate};
+pub use session::{CanvasNotice, LaunchMark, LaunchReadiness, LaunchView, LAUNCH_CAPTION_DELAY_MS, LAUNCH_REVEAL_MS,
+    LAUNCH_MARK_SIZE, LAUNCH_MARK_MAX_FRACTION, LAUNCH_CAPTION_GAP, LAUNCH_CAPTION_SIZE, LAUNCH_CAPTION_COLOR_ROLE,
+    launch_mark_size, ThumbnailRequests, occurrence_token, occurrence_handle, object_token, object_handle, SourceUse, FilterPreviewCache, FilterPreviewStatus, FilterPreviewUpdate};
 mod curve_editor;
 pub use curve_editor::{CurveEditorView, CurveEditorTarget, CurveEditorAction};
 pub use session::pressure_calibration::{PressureCalibrationAction, PressureCalibrationView};
@@ -146,6 +148,7 @@ pub use session::{CANVAS_BAR_REAPPEAR_MS, CanvasBarContext, CanvasBarItem, Canva
 pub mod keymaps;
 mod settings;
 mod saved_state;
+pub use saved_state::lenient;
 mod shortcut_page;
 mod shortcuts;
 mod theme;
@@ -156,6 +159,8 @@ mod workspace_manager_ui;
 pub use session::{FillScope, FillGestureView, FillPillView, ImageLayerDestination, ImagePlacementContext, LayerAction, LayerCanvasTool, LayerDropHint, LayerDropPosition, LayerDropSurface, LayerFooterButton, LayerFooterSlot, LayersView, RegionSource, layer_footer_overflow};
 pub use workspace_manager_ui::{ManagedWorkspace, WorkspaceChoice, WorkspaceCommand};
 mod stats;
+mod readout;
+pub use readout::{byte_share, byte_size, Chip, Meter, MeterRow, MeterSection, MeterSegment, MeterTone, Tip, TipLine};
 pub use session::{HistogramAction, HistogramView};
 pub use session::{
     AdjustmentChoice, ApplicationLink, ApplicationMenu, MenuPageId, ZoomMenu, NAVIGATOR_COMMANDS, clipboard_document, ClipboardCapture, CloseDecision,
@@ -190,7 +195,7 @@ pub use layout::{
     WorkspacePreset,
 };
 pub use layout::{
-    DropHint, BRUSH_SETS_MIN_WIDTH, LAYERS_MIN_WIDTH, LAYER_EDGE_INSET, PANEL_CONTENT_INSET,
+    DropHint, COLUMN_MAX_WIDTH, BRUSH_SETS_MIN_WIDTH, LAYERS_MIN_WIDTH, LAYER_EDGE_INSET, PANEL_CONTENT_INSET,
     PANEL_CONTROL_SPACING, PANEL_GROUP_SPACING, PANEL_COMPOUND_SPACING, PanelKind, SURFACE_RADIUS, TAB_BAR_HEIGHT,
     PanelControlMetrics, PANEL_CONTROL_METRICS,
     TILE_GAP, TILE_SIZE, TOOLBAR_DIVIDER_SIZE, DIVIDER_LENGTH, TOOLBAR_DIVIDER_INSET,
@@ -201,7 +206,7 @@ pub use numeric::{
     NumericControl, NumericError, WorkspaceValidationError, NumericKind, NumericMapping, NumericOperation, NumericRequest, NumericSliderSnap, NumericValue,
 };
 pub use session::{Notice, NoticeAction, NoticeActionId, refusal_message};
-pub use session::{ScreenChip, ScreenDetails, ScreenState};
+pub use session::{ScreenDetails, ScreenState};
 pub use session::{CanvasAnchor, CanvasAnchorChoice, CanvasSizeAction, CanvasSizeUnit, CanvasSizeView, CanvasUnitChoice};
 pub use session::{ImageResample, ImageResampleChoice, ImageSizeAction, ImageSizeView};
 pub use session::{NewDrawingAction, NewDrawingChoice, NewDrawingCopy, NewDrawingDialogView, NewDrawingDrawerView, NewDrawingOrder, PaperChoice, PaperColorChoice, PaperColorDrawerView, PaperReliefView, PresetBrowserView, PresetSaveView, PresetTabView, PresetTileView, ResolutionChoice, SheetView};
@@ -243,6 +248,11 @@ pub const UI_TEXT_PT: u8 = 11;
 use serde::{Deserialize, Serialize};
 
 pub const BRUSH_SIZE_TILE: [f32; 2] = [TILE_SIZE, 44.];
+pub const BRUSH_SIZE_LABEL_INSET: f32 = 2.;
+pub const BRUSH_SIZE_LABEL_TOP: f32 = 24.;
+pub fn brush_size_tile(label: [f32; 2]) -> [f32; 2] {
+    [BRUSH_SIZE_TILE[0].max(label[0] + 2. * BRUSH_SIZE_LABEL_INSET), BRUSH_SIZE_TILE[1].max(BRUSH_SIZE_LABEL_TOP + label[1] + BRUSH_SIZE_LABEL_INSET)]
+}
 pub const BRUSH_SIZES: &[f32] = &[
     0.7, 1., 1.5, 2., 2.5, 3., 4., 5., 6., 7., 8., 10., 12., 15., 17., 20., 25.,
     30., 40., 50., 60., 70., 80., 100., 120., 150., 170., 200., 250., 300., 400.,
@@ -293,7 +303,7 @@ pub enum ToolbarControl {
     ColorPicker,
     BrushSizeSlider,
     BrushStrengthSlider,
-    ToolOptions { #[serde(default)] style: ToolOptionsStyle },
+    ToolOptions { #[serde(default, deserialize_with = "crate::lenient::fields")] style: ToolOptionsStyle },
     Panel { panel: Panel },
     Divider,
 }

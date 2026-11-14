@@ -110,7 +110,7 @@ mod startup_pixels_tests;
 mod startup;
 pub use startup::{StartupProgress, ShaderDocument, ShaderBrushKey};
 #[cfg(not(target_arch = "wasm32"))]
-pub use startup::finish_shader_compiler_shutdown;
+pub use startup::{finish_shader_compiler_shutdown, stop_shader_compilers};
 #[cfg(not(target_arch = "wasm32"))]
 pub use startup::ShaderActivity;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
@@ -1123,6 +1123,7 @@ pub struct WgpuRasterizer {
     transforms: Option<paint_transform::PaintTransforms>,
     compilation: compile::Scope,
     context_compilation: compile::Scope,
+    preparation: layer_render::PreparationContext,
     transform_preview: Option<layer_render::TransformPreview>,
     fill_preview: Option<layer_render::FillPreview>,
     fill_preview_shown: Option<(u64,u64,SourceTarget)>,
@@ -1542,6 +1543,7 @@ impl WgpuRasterizer {
             transforms,
             compilation,
             context_compilation,
+            preparation: Default::default(),
             transform_preview: None,
             fill_preview: None,
             fill_preview_shown: None,
@@ -1986,7 +1988,7 @@ impl WgpuRasterizer {
             separated,
         }));
         if let Some(lighting) = &lighting {
-            self.require_paper_slope(&lighting.binding, startup::OTHER)?;
+            self.require_paper_slope(&lighting.binding, startup::DOCUMENT)?;
         }
         self.paper_lighting = lighting;
         Ok(())
@@ -3863,6 +3865,10 @@ impl CanvasRenderer for WgpuRasterizer {
     }
     fn shader_input(&mut self) { WgpuRasterizer::shader_input(self); }
     fn shader_idle(&mut self, idle: bool, speculative_idle: bool) { WgpuRasterizer::shader_idle(self, idle, speculative_idle); }
+    fn preparation_key(&self, document: &layer_core::Document) -> Option<Arc<dyn layer_render::PreparationKey>> {
+        Some(self.startup.as_ref().and_then(|startup| startup.document_key.as_ref())
+            .filter(|key| key.matches(document)).cloned().unwrap_or_else(|| Arc::new(ShaderDocument::new(document))))
+    }
     fn prepare_context(&mut self, document: &layer_core::Document, brush: &layer_core::BrushSnapshot, context: layer_render::PreparationContext) {
         WgpuRasterizer::prepare_context(self, document, brush, context);
     }
@@ -3892,12 +3898,9 @@ impl CanvasRenderer for WgpuRasterizer {
     fn raster_dependencies_ready(&mut self, packet: FramePacket<'_>, preview: Option<&layer_render::TransformPreview>) -> bool {
         self.activate_presentation(packet.scene);
         if self.retained_transition_frame(packet, preview) { return true; }
-        if let Some(preview) = preview {
-            if preview.transform.validate().is_err() { return true; }
-            let installed = self.transform_preview.replace(preview.clone());
-            self.begin_frame_memory(packet);
-            self.transform_preview = installed;
-        } else { self.begin_frame_memory(packet); }
+        if preview.is_some_and(|preview| preview.transform.validate().is_err()) { return true; }
+        let installed = preview.map(|preview| self.transform_preview.replace(preview.clone()));
+        self.begin_frame_memory(packet);
         if self.bake_preflight.as_ref().is_some_and(|state|!state.matches(packet,self.document_color())) {self.bake_preflight=None;}
         if self.fill_edges_preflight.as_ref().is_some_and(|state|!state.matches(packet,self.document_color())) {self.fill_edges_preflight=None;}
         let mut required = compile::Needs::default();
@@ -3922,6 +3925,7 @@ impl CanvasRenderer for WgpuRasterizer {
             && self.prepare_raster_restores(packet) && self.bake_analyses_ready(packet) && self.retouch_analyses_ready(packet)
             && self.bake_vectors_ready(packet) && self.prepare_bakes(packet) && self.prepare_fill_edges(packet) && self.prepare_transform_preview(packet,preview);
         if !ready {self.upload_window_open(residency::Class::Visible);}
+        if let Some(installed) = installed { self.transform_preview = installed; }
         ready
     }
     fn has_pending_submission(&self) -> bool { self.settling.is_some() }
@@ -4111,6 +4115,7 @@ impl CanvasRenderer for WgpuRasterizer {
         #[cfg(not(target_arch = "wasm32"))]
         { t.memory = self.memory_samples.snapshot(); }
         t.memory_budget = self.factory.budget_snapshot();
+        t.adapter = Some(self.factory.adapter_summary());
         let m = &self.metrics;
         t.submissions = m.submissions;
         t.dabs = m.dabs;
@@ -4118,7 +4123,6 @@ impl CanvasRenderer for WgpuRasterizer {
         t.resident_bytes = self.resident_bytes();
         if let Some(scene) = &self.scene {
             t.effect_passes = scene.effect_passes;
-            t.compiled_effects = scene.effects.compilations;
         }
         t
     }
@@ -5267,7 +5271,7 @@ impl WgpuRasterizer {
             let result = transforms.prepare_standby(self, &mut encoder, packet.scene, layer, &selection, level);
             self.transforms = Some(transforms);
             self.transform_sources_pending = match result {
-                Ok(ready) => !ready && !self.preparation_can_wake(),
+                Ok(ready) => !ready,
                 Err(error) if error.is_preparation_pending() => true,
                 Err(error) => return Err(error),
             };

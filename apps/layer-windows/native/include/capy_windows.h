@@ -45,10 +45,16 @@ typedef struct CapyPointer {
     uint32_t button; /* primary=0, pan=1, other=2 */
     uint32_t flags; /* shared predicted/primary/barrel/inverted bits; 0x40 indirect pen */
 } CapyPointer;
+typedef struct CapyView {
+    uint64_t revision;
+    float document_to_surface[6];
+    float document[2];
+} CapyView;
 
 /* Prepare on the startup worker; view returns an owned text handle.
    A launch is adopted at most once. */
 __declspec(dllimport) CapyLaunch capy_launch(const char* tags,const char* screen);
+__declspec(dllimport) float capy_launch_mark_size(float width,float height);
 __declspec(dllimport) CapyString capy_launch_view(CapyLaunch);
 __declspec(dllimport) void capy_launch_free(CapyLaunch);
 __declspec(dllimport) CapyLocalization capy_launch_localization(CapyLaunch);
@@ -77,16 +83,30 @@ __declspec(dllimport) int32_t capy_start_services(CapyHost, void* context, void 
 /* Returns 1 when canvas work is pending; 0 permits an idle service-only tick. */
 __declspec(dllimport) int32_t capy_needs_frame(CapyHost);
 __declspec(dllimport) int32_t capy_poll_services(CapyHost);
+/* Chrome or surface readiness awaits GPU completion; a non-blocking poll publishes it. */
+__declspec(dllimport) int32_t capy_surface_pending(CapyHost);
+__declspec(dllimport) int32_t capy_poll_surface(CapyHost, bool* pending);
 __declspec(dllimport) int32_t capy_workspace_action(CapyHost, const char* json);
 /* Cold runtime package transport on the render owner. JSON: directory (optional),
    mode (add/replace/merge), library (default false; true preserves embedded project
    programs). Directory omitted reloads installed/overridden resources.
    1=busy/rejected, -1=fatal; progress/error is in windows_filter_load snapshots. */
 __declspec(dllimport) int32_t capy_load_filter_directory(CapyHost, const char* json);
-/* Logical native overview slots; call only on the canvas owner. */
 __declspec(dllimport) int32_t capy_glass(CapyHost, const char* json);
-/* Pure shared image bounds for the native cutout; output has four floats. */
+typedef struct CapyNavigatorViewport {
+    float image[2],maximum[2],nominal[2],scale;
+    uint32_t moving;
+} CapyNavigatorViewport;
+typedef struct CapyNavigatorSurfaceInfo {
+    uintptr_t handle;
+    uint64_t generation;
+    uint32_t ready;
+} CapyNavigatorSurfaceInfo;
+__declspec(dllimport) int32_t capy_navigator_surface_update(CapyHost,uint64_t,CapyNavigatorViewport const*);
+__declspec(dllimport) bool capy_navigator_surface_info(CapyHost,uint64_t,CapyNavigatorSurfaceInfo*);
+__declspec(dllimport) int32_t capy_present_navigators(CapyHost);
 __declspec(dllimport) bool capy_navigator_image(float width, float height, uint32_t document_width, uint32_t document_height, float* output);
+__declspec(dllimport) float capy_navigator_maximum_width(void);
 __declspec(dllimport) float capy_navigator_aspect(uint32_t document_width, uint32_t document_height);
 /* Stateless shared color presentation: projection 0 square, 1 triangle, 2 circle.
    Hit result: 0 none, 1 hue, 2 field. Free returned strings with capy_string_free.
@@ -139,10 +159,11 @@ __declspec(dllimport) int32_t capy_scroll(CapyHost, float x, float y, float dx, 
 /* 0=refresh, 1=motion, 2=contact, 3=leave. Returns handled/dismiss bits. */
 __declspec(dllimport) int32_t capy_chrome(CapyHost, uint32_t kind, float x, float y, bool canvas, bool popup_open);
 __declspec(dllimport) int32_t capy_suspend(CapyHost);
-__declspec(dllimport) uint64_t capy_view_revision(CapyHost);
+__declspec(dllimport) bool capy_view(CapyHost, CapyView*);
 /* Acquisition: 0=wait, 1=image, 2=surface reconfiguration, 3=commands only while a drawing renderer is unavailable. Can wait for DXGI. Drain newly arrived input after this call. */
 __declspec(dllimport) int32_t capy_acquire(CapyHost);
 __declspec(dllimport) int32_t capy_frame(CapyHost, uint64_t now_ns, uint64_t presentation_ns);
+__declspec(dllimport) int32_t capy_present_held(CapyHost);
 /* Returned text handle owns UTF-8 in Rust; release with capy_string_free. Zero=no change/error.
    Optional info is writable/exclusive during the call and reset even on error.
    Ranges address the exact bytes copied through capy_string_copy. */

@@ -20,7 +20,7 @@ import SwiftUI
     private var previewRunning = false
     private var pendingPreview: UInt64?
     private var pendingChoice = false
-    private var working = false { didSet { refreshBusy() } }
+    @Published private(set) var working = false { didSet { refreshBusy() } }
     private func refreshBusy() { busy = working || operations > 0 }
     private var closing = false
     private var finished = false

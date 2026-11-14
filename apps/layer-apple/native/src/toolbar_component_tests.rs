@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn apple_stamp_bytes_match_the_canonical_mask_and_known_receipts_omit_pixels() {
+    let app = fixtures::drawing_app(0, [64, 64]);
+    let catalog = app.request(2, json!({"type":"catalog"})).unwrap();
+    let brush = catalog["brush_categories"].as_array().unwrap().iter()
+        .flat_map(|category| category["brushes"].as_array().unwrap()).find(|brush| brush["label"] == "G-Pen").unwrap()["id"].clone();
+    app.action(json!({"type":"select_brush","id":brush}));
+    app.action(json!({"type":"set_brush_size","value":40}));
+    app.draw_until_idle();
+    let context = app.with(|app| app.host.session.state().toolbar_context());
+    let query = json!({"type":"toolbar_stamp","context":context});
+    let mut canonical = Value::Null;
+    fixtures::until(&app, "canonical G-Pen stamp", || {
+        canonical = app.request(2, query.clone()).unwrap_or(Value::Null);
+        canonical["alpha"].as_array().is_some_and(|alpha| !alpha.is_empty()) && canonical["pending"] == false
+    });
+    let expected: Vec<u8> = serde_json::from_value(canonical["alpha"].clone()).unwrap();
+    assert!(expected.iter().any(|&alpha| alpha != 0));
+    for explicit in [true, false] {
+        let source = CString::new(serde_json::to_string(&context).unwrap()).unwrap();
+        let source = if explicit { source.as_ptr() } else { std::ptr::null() };
+        let mut stamp = 0;
+        let mut info = CapyBrushStampInfo::default();
+        fixtures::until(&app, "typed G-Pen stamp", || {
+            let next = unsafe { capy_apple_toolbar_stamp(app.0, source, 0) };
+            if next == 0 { return false; }
+            assert!(unsafe { capy_brush_stamp_read(next, &mut info) });
+            if info.pending || info.count == 0 { unsafe { capy_brush_stamp_free(next) }; false }
+            else { stamp = next; true }
+        });
+        let actual = copied_bytes(info.count, |offset, output, length| unsafe { capy_brush_stamp_copy(stamp, offset, output, length) });
+        assert_eq!(actual, expected);
+        assert_eq!(info.size, canonical["size"].as_u64().unwrap() as u32);
+        assert_eq!(info.extent, canonical["extent"].as_f64().unwrap() as f32);
+        let request = info.request;
+        unsafe { capy_brush_stamp_free(stamp) };
+        assert!(!unsafe { capy_brush_stamp_read(stamp, &mut info) });
+        let known = unsafe { capy_apple_toolbar_stamp(app.0, source, request) };
+        let mut receipt = CapyBrushStampInfo::default();
+        assert!(unsafe { capy_brush_stamp_read(known, &mut receipt) });
+        assert_eq!(receipt.request, request);
+        assert!(!receipt.pending);
+        assert_eq!(receipt.count, 0);
+        assert!(unsafe { capy_brush_stamp_copy(known, 0, std::ptr::null_mut(), 0) });
+        unsafe { capy_brush_stamp_free(known) };
+    }
+    let mut stale = context;
+    stale.generation += 1;
+    let stale = CString::new(serde_json::to_string(&stale).unwrap()).unwrap();
+    assert_eq!(unsafe { capy_apple_toolbar_stamp(app.0, stale.as_ptr(), 0) }, 0);
+    let error = unsafe { capy_apple_error(app.0) };
+    assert_ne!(error, 0);
+    assert!(handles::take_text(error).to_string_lossy().contains("Obsolete brush preview"));
+    assert_eq!(unsafe { capy_apple_toolbar_stamp(0, std::ptr::null(), 0) }, 0);
+}
+
+#[test]
 fn apple_phone_queries_round_trip_without_a_session() {
     let dock = layer_ui::WorkspacePreset::Painter.layout(layer_ui::Platform::Gtk);
     let layout = layer_ui::PhoneLayout::resolve(&dock, [402., 874.], [0.; 4], [0.; 2], [0; 2], false, false).unwrap();

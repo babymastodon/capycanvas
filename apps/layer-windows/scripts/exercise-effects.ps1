@@ -6,7 +6,7 @@ $curveOnly=$Theme.StartsWith('curve-');if($curveOnly){$Theme=$Theme.Substring(6)
 $CapyCacheModel=$true;$CapyCaptureDelay=250
 Add-Type -Path (Join-Path $PSScriptRoot 'RowPointerDriver.cs')
 $CapyEach={[CapyRowPointer]::VerifyPrivateDesktop($env:CAPY_PRIVATE_DESKTOP);[CapyRowPointer]::Verify()}
-Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Drawing,System.Windows.Forms
 Add-Type -TypeDefinition @'
 using System;
 using System.Drawing;
@@ -250,7 +250,8 @@ function Check-Gradient {Pointer-Session {
     Wait-Until {(Gradient-Json) -ne $before} 'Use current color did not change the selected stop'
     Check-Undo $before 'Use current color'
     Invoke 'Undo' -Name;Wait-Until {(Gradient-Json) -eq $before} 'Use current color did not undo'
-    $at=Strip-Point .4;[CapyRowPointer]::Down('mouse',$at[0],$at[1]);[CapyRowPointer]::Up();Start-Sleep -Milliseconds 150
+    $at=Strip-Point .4;[CapyRowPointer]::Down('mouse',$at[0],$at[1]);[CapyRowPointer]::Up()
+    Wait-Until {(Property 'gradient').gradient.selected -eq 1} 'Tapping the stop at 40% did not select it'
     if((Gradient-Json) -ne $before){throw 'Selecting a stop changed the gradient'}
 }}
 function Check-PropertyScrub {Pointer-Session {
@@ -308,9 +309,15 @@ function Property-Row([string]$Key,[string]$Case){
     (Control 'drawing-canvas').SetFocus()
     Wait-Until {!$entry.Current.HasKeyboardFocus} 'The compact editor did not finish its unchanged draft'
 }
+function Resize-Effects([int]$Width,[int]$Height){
+    [CapyRowPointer]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
+    $work=[System.Windows.Forms.Screen]::FromHandle($drawingWindow).WorkingArea
+    $root.GetCurrentPattern([System.Windows.Automation.TransformPattern]::Pattern).Move($work.Left,$work.Top)
+    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width ([Math]::Min($Width,$work.Width)) -Height ([Math]::Min($Height,$work.Height))
+}
 function Property-Resize([int]$Width){
     $scale=[CapyRowPointer]::GetDpiForWindow($drawingWindow)/96.
-    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width ([int]($Width*$scale)) -Height ([int](900*$scale))
+    Resize-Effects ([int]($Width*$scale)) ([int](900*$scale))
     Wait-Until {[Math]::Abs($root.Current.BoundingRectangle.Width-$Width*$scale) -lt 2} 'Properties window did not acknowledge its dimensions'
 }
 function Property-Language([string]$Tag){
@@ -503,12 +510,7 @@ function Check-PropertyLayout {
 }}
 
 function Check-LogCurve {Pointer-Session {
-    $grown=$false
-    for($attempt=0;$attempt -lt 5 -and !$grown;$attempt++){
-        & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width 1550 -Height 1400
-        try{Wait-Until {(Model).state.camera.viewport[0] -gt 1450} 'Resize pending' 3;$grown=$true}catch{}
-    }
-    if(!$grown){throw 'The window did not grow for the curve check'}
+    Resize-Effects 1550 1400
     Select-Filter 'curves' 'Curves'
     Wait-Until {(Property 'domain').kind.options.Count -eq 2 -and (Find 'property-domain').Current.IsEnabled} 'Curve space did not reach the enabled native control'
     Choose 'property-domain' (Property 'domain').kind.options[1]
@@ -678,16 +680,11 @@ try {
     [IO.File]::WriteAllText((Join-Path $repo 'artifacts/windows/effects-review.json'),(@{process_id=$review.Id;run=$run}|ConvertTo-Json))
     Write-Output "Owned effects review $($review.Id)"
     $owned=@{window=$null}
-    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Model).brush_ready} 'Review did not start' 45
+    Wait-Until {$owned.window=Owned-DrawingWindow $review;$null -ne $owned.window -and (Review-Ready)} 'Review did not start' 45
     $root=$owned.window.Root;$drawingWindow=$owned.window.Handle
     Use-PaintWorkspace
     [CapyEffectsCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
-    $resized=$false
-    for($attempt=0;$attempt -lt 10 -and !$resized;$attempt++){
-        & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width 1550 -Height 1400
-        try{Wait-Until {(Model).state.camera.viewport[0] -gt 1450} 'Resize pending' 3;$resized=$true}catch{}
-    }
-    if(!$resized){throw 'Initial resize did not reach the canvas'}
+    Resize-Effects 1550 1400
     $root=(Owned-DrawingWindow $review $drawingWindow.ToInt64()).Root
     if($curveOnly -or $VisibilityOnly -or $ControlsOnly){
         Select-Filter 'curves' 'Curves'
@@ -740,7 +737,7 @@ try {
     if(((Control 'property-rgb-curve').GetRuntimeId() -join ':') -ne $graph){throw 'Editing replaced the curve graph'}
     Capture 'curve'
     $wide=(Model).state.camera.viewport[0]
-    & (Join-Path $PSScriptRoot 'exercise-window.ps1') -ProcessId $review.Id -WindowHandle $drawingWindow.ToInt64() -Action Resize -Width 1450 -Height 1000
+    Resize-Effects 1450 1000
     Wait-Until {(Model).state.camera.viewport[0] -lt $wide-50} 'Resize did not reach the canvas'
     if(((Control 'property-rgb-curve').GetRuntimeId() -join ':') -ne $graph){throw 'Resize replaced the curve graph'}
     Invoke 'property-rgb-reset'

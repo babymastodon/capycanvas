@@ -652,7 +652,7 @@ private fun expandedShape(expansion: JSONObject, density: Float) = GenericShape 
     val command = snapshot.getJSONObject("header").getJSONObject("capy")
     val target = remember { obj("kind" to "zen_mode") }
     Layout(modifier = Modifier.fillMaxSize().zIndex(1000f), content = {
-    HeaderButton(command.getString("tooltip"), false, bounds != null && command.optBoolean("enabled"), false,
+    HeaderButton(command.getString("tooltip"), false, bounds != null && command.optBoolean("enabled"), null,
         Modifier.size(size.number("tile").dp).alpha(if (command.optBoolean("enabled")) 1f else .4f).testTag("zen-button")
             .chromeRegion(dock, header = !snapshot.optBoolean("chrome_hidden"), active = bounds != null)
             .then(if (bounds != null) Modifier.contextAnchor(dock, target)

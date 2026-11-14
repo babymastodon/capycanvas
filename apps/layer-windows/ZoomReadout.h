@@ -54,7 +54,7 @@ struct ZoomReadout:std::enable_shared_from_this<ZoomReadout>{
         separator();items.Spacing(2);body.Children().Append(items);separator();
         field(data->copyCaption(L"header",L"rotation"),L"rotation",L"rotation-field",&ZoomReadout::rotation,[](double value){return O({{L"type",S(L"set_rotation")},{L"rotation",N(value)}});});
         separator();rotationItems.Spacing(2);body.Children().Append(rotationItems);separator();
-        auto row=NavigationButtons(data,L"zoom-button",[weak]{auto self=weak.lock();return self?self->buttons:A{};},controls);
+        auto row=NavigationButtons(data,L"zoom-button",[weak](hstring const& id){auto self=weak.lock();return self?find(self->buttons,L"id",id):J{};},controls);
         for(auto child:row.Children())if(auto pick=child.try_as<Button>()){pick.AllowFocusOnInteraction(false);pick.IsTabStop(false);}
         body.Children().Append(row);
         scroller.Content(body);scroller.HorizontalScrollMode(ScrollMode::Disabled);scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
