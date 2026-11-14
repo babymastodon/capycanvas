@@ -567,6 +567,7 @@ extension XCTestCase {
         let filename = controls.filename, save = controls.commit
         try location()
         XCTAssertFalse(app.cells[folder+", Folder"].exists,"Only a fresh owned provider folder")
+        if !app.buttons["New Folder"].waitForExistence(timeout: 5) { workspaceActivate(app.buttons["OverflowBarButtonItem"]) }
         workspaceActivate(app.buttons["New Folder"])
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout:10))
         app.typeKey("a",modifierFlags:.command);app.typeText(folder+"\n")
