@@ -35,6 +35,8 @@ foreach($shell in @((Get-Process -Id $PID).Path,(Join-Path $env:SystemRoot 'Syst
     if($LASTEXITCODE -ne 0){throw 'HDR output format regression failed.'}
     & $shell -NoProfile -File (Join-Path $PSScriptRoot '../tests/hdr-delivery.ps1')
     if($LASTEXITCODE -ne 0){throw 'HDR delivery format regression failed.'}
+    & $shell -NoProfile -File (Join-Path $PSScriptRoot '../tests/navigator-frames.ps1')
+    if($LASTEXITCODE -ne 0){throw 'Navigator geometry and pixel oracle regression failed.'}
     & $shell -NoProfile -File (Join-Path $PSScriptRoot '../tests/document-retention.ps1')
     if($LASTEXITCODE -ne 0){throw 'Document retention focus regression failed.'}
 }

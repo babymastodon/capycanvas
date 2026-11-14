@@ -19,10 +19,12 @@ function Navigator-LoadTypes {
 function Navigator-ValidateResults([string]$Name,$Results){
  $seenImage=$false;$bad=[Collections.Generic.List[object]]::new()
  foreach($result in $results){
+  if($result.classification -eq 'U'){continue}
   if($result.classification -eq 'I'){$seenImage=$true}
   elseif($result.classification -ne 'A' -or $seenImage -or $Name -in @('retained-column-drag','retained-panel-divider')){$bad.Add($result)}
  }
  if($bad.Count){throw "$Name exposed invalid Navigator samples: $($bad.classification -join ',')"}
+ if(!@($results|Where-Object classification -ne 'U').Count){throw "$Name has no classified Navigator samples"}
  if(!@($results|Where-Object classification -eq 'I').Count){throw "$Name never displayed a filled Navigator image"}
 
 }
@@ -79,7 +81,7 @@ function Navigator-Reference {
  $script:navReference=@{area=@($script:navArea.Left,$script:navArea.Top,$script:navArea.Width,$script:navArea.Height);origin=@($script:navOrigin.x,$script:navOrigin.y);geometry_origin=@($script:navGeometryOrigin.x,$script:navGeometryOrigin.y);content_bounds=@($contentBounds.left,$contentBounds.top,($contentBounds.right-$contentBounds.left),($contentBounds.bottom-$contentBounds.top));screen=@($script:navScreen.Left,$script:navScreen.Top,$script:navScreen.Width,$script:navScreen.Height);scale=$scale;header_offset=$script:navHeaderOffset;overview=(Navigator-FrameRect $overview);header=(Navigator-FrameRect $tab);frame=(Navigator-FrameRect $frame);footer=(Navigator-FrameRect $footer);shape_source=$script:navShapeSource;drawer_id=$script:navDrawerId;aspect=$script:navAspect;paper_rgb=$paperRgb;background_rgb=(Navigator-Rgb (Model).state.palette.bg);panel_rgb=(Navigator-Rgb (Model).state.palette.panel)}
  if($script:navClassifier){$script:navClassifier.Dispose()}
  $script:navClassifier=[NavigatorFrameClassifier]::new($reference,(Navigator-FrameRect $overview),(Navigator-FrameRect $tab),$scale,$paperRgb,(Navigator-Rgb (Model).state.palette.bg),(Navigator-Rgb (Model).state.palette.panel),(Navigator-FrameRect $footer))
- $geometry=[NavigatorGeometry]::new();$geometry.overview=Navigator-FrameRect $overview;$geometry.header=Navigator-FrameRect $tab
+ $geometry=[NavigatorGeometry]::new();$geometry.overview=Navigator-FrameRect $overview;$geometry.header=Navigator-FrameRect $tab;$geometry.footer=Navigator-FrameRect $footer
  try{$settled=$script:navClassifier.ClassifyBitmap($crop,0,@($geometry),$script:navAspect);if($settled.classification -ne 'I'){throw "Navigator settled reference is $($settled.classification), expected I"}}finally{$crop.Dispose()}
 }
 function Navigator-CaptureArea($Bounds,[Drawing.Rectangle]$Owned){
@@ -269,6 +271,8 @@ function Navigator-Observe([string]$Name,[scriptblock]$Command,[Nullable[bool]]$
   }
  }finally{$script:navClassifier.ClearArtwork();foreach($image in $sample.frames){$image.Dispose()}}
  $results.ToArray()|ConvertTo-Json -Depth 8|Set-Content (Join-Path $folder 'classes.json')
+ $metadata.classified_count=@($results|Where-Object classification -ne 'U').Count;$metadata.unclassified=@($results|Where-Object classification -eq 'U'|ForEach-Object qpc);$metadata.unclassified_count=$results.Count-$metadata.classified_count
+ $metadata|ConvertTo-Json -Depth 12|Set-Content (Join-Path $folder 'metadata.json')
  if(($sample.times[-1].end-$sample.times[3].action)*1000/[Diagnostics.Stopwatch]::Frequency -lt 500){throw 'Navigator observation did not cover 500 ms after input'}
  Navigator-ValidateResults $Name $results
  if($null -ne $AuthoredMark){
@@ -320,18 +324,24 @@ function Navigator-TestHorizontal($Classifier,$Reference){
  try{
   $filled=$Classifier.ClassifyBitmap($moving,1000,@($left,$right),2.);$canvas=$Classifier.ClassifyBitmap($hole,1000,@($left,$right),2.);$partial=$Classifier.ClassifyBitmap($mixed,1000,@($left,$right),2.)
   if($filled.classification -ne 'I' -or $canvas.classification -ne 'C' -or $partial.classification -ne 'M' -or [Math]::Abs($filled.visible[2]-76) -gt .01 -or [Math]::Abs($filled.visible[3]-36) -gt .01){throw 'Native horizontal bracket did not preserve displayed clip, canvas holes and mixed images'}
-  $rejected=$false;try{$null=$Classifier.ClassifyBitmap($moving,1000,@($left),2.)}catch{if($_.Exception.InnerException.Message -ne 'Displayed horizontal geometry has no adjacent native bracket'){throw};$rejected=$true}
+  $rejected=$Classifier.ClassifyBitmap($moving,1000,@($left),2.).classification -eq 'U'
   if(!$rejected){throw 'An unbracketed horizontal position was accepted'}
   $left.source_index=3;$right.source_index=5
-  $rejected=$false;try{$null=$Classifier.ClassifyBitmap($moving,1000,@($left,$right),2.)}catch{if($_.Exception.InnerException.Message -ne 'Displayed horizontal geometry has no adjacent native bracket'){throw};$rejected=$true}
+  $rejected=$Classifier.ClassifyBitmap($moving,1000,@($left,$right),2.).classification -eq 'U'
   if(!$rejected){throw 'Horizontal interpolation crossed a rejected native state'}
   $right.source_index=4
   if($Classifier.ClassifyBitmap($moving,1000,@($left,$right),2.).classification -ne 'I'){throw 'Adjacent qualified native states did not bracket displayed geometry'}
   $left.source_index=-1;$right.source_index=-1
   $changed=[NavigatorGeometry]::new();$changed.qpc=1001;$changed.overview=@(60,34,100,80);$changed.header=@(60,10,100,24);$changed.footer=@(60,100,100,20);$changed.screen=@(0,0,150,180);$changed.frame=@(60,10,130,107);$changed.clip=@(60,10,90,107)
-  $rejected=$false;try{$null=$Classifier.ClassifyBitmap($moving,1000,@($left,$right,$changed),2.)}catch{if($_.Exception.InnerException.Message -ne 'Displayed horizontal geometry has ambiguous native brackets'){throw};$rejected=$true}
+  $rejected=$Classifier.ClassifyBitmap($moving,1000,@($left,$right,$changed),2.).classification -eq 'U'
   if(!$rejected){throw 'Ambiguous horizontal phase brackets were accepted'}
  }finally{$moving.Dispose();$hole.Dispose();$mixed.Dispose()}
+}
+function Navigator-TestStates($Geometry){
+ foreach($stamp in @(0,2)){
+  $copy=[NavigatorGeometry]::new();foreach($key in @('overview','header','footer','clip','frame','screen','corners')){$copy.$key=$Geometry.$key}
+  $copy.qpc=$stamp;$copy.source_index=$stamp/2;$copy
+ }
 }
 function Navigator-TestRounded($Classifier,$Ink,$Partial){
  $shape=[NavigatorGeometry]::new();$shape.overview=$Partial.overview;$shape.header=$Partial.header;$shape.footer=$Partial.footer;$shape.clip=$Partial.clip;$shape.frame=$Partial.clip;$shape.corners=@(0.,0.,14.58,0.)
@@ -341,13 +351,13 @@ function Navigator-TestRounded($Classifier,$Ink,$Partial){
   for($y=54;$y -lt 60;$y++){for($x=57;$x -lt 97;$x++){
    if(![NavigatorFrameClassifier]::FrameInterior($shape,($x+.5),($y+.5),3.)){$curved.SetPixel($x,$y,[Drawing.Color]::FromArgb(169,166,161));$excluded++}
   }}
-  if($excluded -eq 0 -or $Classifier.ClassifyBitmap($curved,1,@($shape),2.).classification -ne 'I'){throw 'Actual rounded-frame boundary was classified as missing artwork'}
+  if($excluded -eq 0 -or $Classifier.ClassifyBitmap($curved,1,(Navigator-TestStates $shape),2.).classification -ne 'I'){throw 'Actual rounded-frame boundary was classified as missing artwork'}
   $shape.corners=@(0.,0.,0.,0.)
-  if($Classifier.ClassifyBitmap($curved,1,@($shape),2.).classification -ne 'P'){throw 'Square frame incorrectly excluded the rounded boundary defect'}
+  if($Classifier.ClassifyBitmap($curved,1,(Navigator-TestStates $shape),2.).classification -ne 'P'){throw 'Square frame incorrectly excluded the rounded boundary defect'}
   $shape.corners=@(0.,0.,14.58,0.);$unknown=$curved.Clone();$unknown.SetPixel(85,55,[Drawing.Color]::Blue)
-  $bad=$Classifier.ClassifyBitmap($unknown,1,@($shape),2.)
+  $bad=$Classifier.ClassifyBitmap($unknown,1,(Navigator-TestStates $shape),2.)
   if($bad.classification -ne 'P'){throw 'Rounded frame accepted an unmatched interior artwork pixel'}
-  $rejected=$false;try{Navigator-ValidateResults 'synthetic-open' @($bad,$Classifier.ClassifyBitmap($curved,1,@($shape),2.))}catch{$rejected=$true}
+  $rejected=$false;try{Navigator-ValidateResults 'synthetic-open' @($bad,$Classifier.ClassifyBitmap($curved,1,(Navigator-TestStates $shape),2.))}catch{$rejected=$true}
   if(!$rejected){throw 'Rounded frame accepted a stale first image followed by a correct image'}
   $small=[NavigatorGeometry]::new();$small.frame=@(0.,0.,10.,8.);$small.corners=@(999.,999.,999.,999.)
   $clamped=[NavigatorGeometry]::new();$clamped.frame=$small.frame;$clamped.corners=@(4.,4.,4.,4.)
@@ -375,7 +385,7 @@ function Navigator-TestArtwork($Classifier,$Reference,$Geometry,$Placeholder,$Ex
    if(!$rejected){throw 'An unfilled, clipped or authored-stale endpoint became an artwork oracle'}
   }
   $null=Navigator-QualifyArtwork $Classifier $marked 1 @($Geometry) 2. $true
-  $valid=$Classifier.ClassifyBitmap($ink,1,@($partial),2.)
+  $valid=$Classifier.ClassifyBitmap($ink,1,(Navigator-TestStates $partial),2.)
   Navigator-TestRounded $Classifier $ink $partial
   $rounded=[NavigatorGeometry]::new();$rounded.overview=$Geometry.overview;$rounded.header=$Geometry.header;$rounded.footer=$Geometry.footer;$rounded.frame=@(50.,10.,100.,130.);$rounded.corners=@(14.58,14.58,14.58,14.58)
   foreach($case in @(@{image=$Placeholder;kind='P'},@{image=$Exposure;kind='C'},@{image=$mixed;kind='M'})){
@@ -383,7 +393,7 @@ function Navigator-TestArtwork($Classifier,$Reference,$Geometry,$Placeholder,$Ex
   }
   if($valid.classification -ne 'I' -or $valid.paper -ne 0){throw 'A fully registered ink-only clip did not display as a filled image'}
   foreach($case in @(@{image=$Placeholder;kind='P'},@{image=$Exposure;kind='C'},@{image=$mixed;kind='M'},@{image=$unknown;kind='P'},@{image=$canvas;kind='C'},@{image=$floating;kind='image-before-panel'},@{image=$unmatchedInk;kind='P'})){
-   $states=if($case.image -eq $floating -or $case.image -eq $unmatchedInk){@($partial)}else{@($Geometry)};$result=$Classifier.ClassifyBitmap($case.image,1,$states,2.)
+   $states=if($case.image -eq $floating -or $case.image -eq $unmatchedInk){Navigator-TestStates $partial}else{@($Geometry)};$result=$Classifier.ClassifyBitmap($case.image,1,$states,2.)
    if($result.classification -ne $case.kind){throw "Artwork evidence changed the $($case.kind) negative"}
    $rejected=$false;try{Navigator-ValidateResults 'synthetic-open' @($result,$valid)}catch{$rejected=$true};if(!$rejected){throw 'Artwork evidence accepted an invalid first frame followed by a correct image'}
   }
@@ -420,17 +430,23 @@ function Navigator-TestClassifier {
  $unmatched=$reference.Clone();$graphics=[Drawing.Graphics]::FromImage($unmatched)
  try{$graphics.FillRectangle([Drawing.Brushes]::DimGray,50,100,100,40)}finally{$graphics.Dispose()}
  try{
+  if($classifier.ClassifyBitmap($mismatch,1000,@($geometry),2.).classification -ne 'U'){throw 'A single stale native size was judged without its matching action-row geometry'}
   Navigator-TestArtwork $classifier $reference $geometry $placeholder $exposure
   Navigator-TestHorizontal $classifier $reference
   $incomplete=[pscustomobject]@{snapshot_qpc=1;elements=@([pscustomobject]@{id='navigator-overview';bounds=@{x=50;y=34;width=100;height=80}})}|ConvertTo-Json -Depth 8 -Compress
   $unqualified=Navigator-States @($incomplete) @($null) $true
   if($unqualified.states.Count -ne 0 -or $unqualified.rejected.Count -ne 1 -or $unqualified.rejected[0].source_index -ne 0){throw 'Incomplete native state did not preserve its rejection evidence'}
-  $rejected=$false;try{$null=$classifier.ClassifyBitmap($reference,1,[NavigatorGeometry[]]$unqualified.states,2.)}catch{if($_.Exception.InnerException.Message -ne 'No arranged Navigator geometry'){throw};$rejected=$true}
+  $rejected=$classifier.ClassifyBitmap($reference,1,[NavigatorGeometry[]]$unqualified.states,2.).classification -eq 'U'
   if(!$rejected){throw 'A displayed Navigator without qualified geometry was accepted'}
   foreach($case in @(@{image=$reference;states=@($missing,$future)},@{image=$unmatched;states=@($geometry,$future)})){
    $rejected=$false
-   try{$null=$classifier.ClassifyBitmap($case.image,1000,$case.states,2.)}catch{if($_.Exception.InnerException.Message -ne 'Displayed native size has no confident action-row anchor'){throw};$rejected=$true}
+   $rejected=$classifier.ClassifyBitmap($case.image,1000,$case.states,2.).classification -eq 'U'
    if(!$rejected){throw 'An ambiguous native size accepted a missing or unmatched action-row anchor'}
+  }
+  $u=[pscustomobject]@{classification='U'};$i=[pscustomobject]@{classification='I'}
+  Navigator-ValidateResults 'synthetic-open' @($u,$i)
+  foreach($sequence in @(@($u),@([pscustomobject]@{classification='C'},$u,$i),@($i,$u,[pscustomobject]@{classification='A'}))){
+   $rejected=$false;try{Navigator-ValidateResults 'synthetic-open' $sequence}catch{$rejected=$true};if(!$rejected){throw 'Unclassified frames waived pixel order or coverage'}
   }
   $oldDisplayed=$classifier.ClassifyBitmap($reference,1000,@($geometry,$future),2.)
   $wrongImage=$classifier.ClassifyBitmap($mismatch,1000,@($geometry,$future),2.)

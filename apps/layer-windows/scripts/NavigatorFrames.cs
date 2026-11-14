@@ -6,7 +6,8 @@ public sealed class NavigatorGeometry {
  public double[] overview,header,clip,footer,frame,screen,corners;
 }
 public sealed class NavigatorFrameResult {
- public string classification;
+ public string classification,geometry_error;
+ public double footer_error;
  public int paper,placeholder,canvas,expected,outside;
  public double header_error;
  public long qpc;
@@ -117,6 +118,14 @@ public sealed class NavigatorFrameClassifier : IDisposable {
   }
   if(found==null)throw new InvalidOperationException("Displayed horizontal geometry has no adjacent native bracket");return found;
  }
+ NavigatorGeometry StationaryBracket(NavigatorGeometry[] states,long qpc){
+  for(int i=0;i+1<states.Length;i++){
+   var a=states[i];var b=states[i+1];
+   if(a.qpc>qpc||b.qpc<qpc||b.qpc<=a.qpc||(a.source_index>=0&&b.source_index!=a.source_index+1))continue;
+   if(Equal(a.overview,b.overview)&&Equal(a.header,b.header)&&Equal(a.footer,b.footer)&&Equal(a.clip,b.clip)&&Equal(a.frame,b.frame)&&Equal(a.corners,b.corners))return a;
+  }
+  return null;
+ }
  public NavigatorFrameResult Classify(byte[] rgba,int offset,long qpc,NavigatorGeometry[] states,double aspect){
   var result=new NavigatorFrameResult{qpc=qpc,header_error=Double.MaxValue};int bestX=0,bestY=0;
   var rows=new HashSet<int>();for(int d=-3;d<=3;d++)rows.Add(ty+d);
@@ -135,9 +144,18 @@ public sealed class NavigatorFrameClassifier : IDisposable {
    double error=sizesDiffer?FooterError(rgba,offset,state,bestX,bestY):0,stamp=Math.Abs((double)state.qpc-qpc);
    if(chosen==null||error<anchor||(error==anchor&&stamp<time)){chosen=state;anchor=error;time=stamp;}
   }
-  if(sizesDiffer&&anchor>=10)throw new InvalidOperationException("Displayed native size has no confident action-row anchor");
-  if(chosen==null)throw new InvalidOperationException("No arranged Navigator geometry");
-  if(Math.Abs(chosen.header[0]+tx-header[0]-bestX)>.51||Math.Abs(chosen.header[1]+ty-header[1]-bestY)>.51)chosen=BetweenHeaders(states,bestX,bestY);
+  try{
+   if(chosen==null)throw new InvalidOperationException("No arranged Navigator geometry");
+   bool moved=Math.Abs(chosen.header[0]+tx-header[0]-bestX)>.51||Math.Abs(chosen.header[1]+ty-header[1]-bestY)>.51;
+   if(moved)chosen=BetweenHeaders(states,bestX,bestY);
+   result.footer_error=FooterError(rgba,offset,chosen,bestX,bestY);
+   if(result.footer_error>=10){
+    if(chosen.footer==null)throw new InvalidOperationException("Displayed native size has no action-row anchor");
+    bool clipped=chosen.clip!=null&&Intersect(chosen.footer,chosen.clip)[3]<=0;
+    if(!clipped)throw new InvalidOperationException("Displayed native size has no confident action-row anchor");
+    if(!moved){var bracket=StationaryBracket(states,qpc);if(bracket==null||!Equal(bracket.overview,chosen.overview)||!Equal(bracket.clip,chosen.clip))throw new InvalidOperationException("Displayed clipped geometry has no native bracket");chosen=bracket;}
+   }
+  }catch(InvalidOperationException error){result.classification="U";result.geometry_error=error.Message;return result;}
   double[] image=Image(chosen.overview,aspect),original=Image(view,aspect);int white=0,matchedArtwork=0;
   double[] visible=(double[])image.Clone();
   if(chosen.clip!=null){double right=Math.Min(image[0]+image[2],chosen.clip[0]+chosen.clip[2]),bottom=Math.Min(image[1]+image[3],chosen.clip[1]+chosen.clip[3]);visible[0]=Math.Max(image[0],chosen.clip[0]);visible[1]=Math.Max(image[1],chosen.clip[1]);visible[2]=Math.Max(0,right-visible[0]);visible[3]=Math.Max(0,bottom-visible[1]);}
