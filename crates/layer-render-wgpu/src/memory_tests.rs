@@ -1117,6 +1117,24 @@ fn an_optional_display_admission_stays_within_the_grant() {
     assert!(r.admit_display(None,crate::residency::Class::Visible,MIB).is_ok());
 }
 
+#[test]
+fn a_tablet_raster_demand_beside_the_display_floor_is_not_reduced_by_the_display_cache_target() {
+    let doc = document();
+    let budget = MemoryBudget::with_facts(MemoryFacts { host_default_bytes: Some(1 << 30), override_bytes: Some(1 << 30), ..Default::default() });
+    let mut r = renderer_in_budget(doc.composition().color, layer_core::DeviceMemoryFacts { budget_bytes: Some(1 << 30), ..Default::default() }, budget).unwrap();
+    submit_settled(&mut r, packet(doc.scene(), doc.composition().size));
+    complete(&r);
+    let budget = r.factory.memory_budget().clone();
+    let device = budget.snapshot().devices[0];
+    let raster = r.memory.raster.handle.reported();
+    let room = device.limit_bytes.saturating_sub(device.pinned_bytes).saturating_sub(r.scene_tiers.display.floor()).saturating_sub(64 * MIB);
+    let wanted = raster.pinned_gpu_bytes.saturating_add(room);
+    r.memory.raster.handle.report(MemoryReport { demand_gpu_bytes: wanted, ..raster });
+    budget.flush_reports();
+    assert!(r.memory.raster_grant() >= wanted, "the display's cache target reduced the raster's working demand: wanted {wanted}, granted {}, display {:?}, device {device:?}",
+        r.memory.raster_grant(), r.memory.display.handle.reported());
+}
+
 fn presented_floor(frame: FramePacket<'_>) -> u64 {
     let format = crate::display_precision::DisplayPrecision::for_scene(frame.scene).format();
     let page = u64::from(PAGE_SIZE).pow(2) * u64::from(format.block_copy_size(None).unwrap());

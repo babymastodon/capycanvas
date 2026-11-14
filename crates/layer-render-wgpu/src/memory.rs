@@ -79,6 +79,7 @@ pub(super) struct Memory {
     applied_limits: std::cell::Cell<Option<[u64; 4]>>,
     limits_dirty: std::cell::Cell<bool>,
     preparation: std::cell::Cell<u64>,
+    target: std::cell::Cell<u64>,
     refused: std::cell::Cell<u64>,
     trimmed: std::cell::Cell<Option<[u64; 2]>>,
     wake: Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
@@ -124,7 +125,7 @@ impl Memory {
     pub fn new(factory: &RendererFactory, samples: Option<MemoryOwner>) -> Self {
         let working = WORKING_BYTES;
         let demand = Demand {floor:working,mips:0,sources:[SOURCE_WORKING_BYTES,scene::scale::SOURCE_WORKING_BYTES+working],inputs:[0;2],resources:working};
-        let display = Owner::new(factory, Kind::Scene, MemoryReport { pinned_gpu_bytes: total(demand.pinned([0;5])), demand_gpu_bytes: total(demand.wanted(0)), ..Default::default() });
+        let display = Owner::new(factory, Kind::Scene, MemoryReport { pinned_gpu_bytes: total(demand.pinned([0;5])), demand_gpu_bytes: total(demand.pinned([0;5])), optional_gpu_bytes: u64::MAX, ..Default::default() });
         let resources = Arc::new(std::sync::atomic::AtomicU64::new(display.handle.grant().gpu_bytes));
         let wake: Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>> = Default::default();
         let forwarded = wake.clone();
@@ -135,7 +136,7 @@ impl Memory {
                 |handle| { let report = handle.reported(); Owner { handle, published: std::cell::Cell::new(report) } }),
             raster: Owner::new(factory, Kind::RasterPool, MemoryReport { pinned_gpu_bytes: working, pinned_ram_bytes: working, demand_gpu_bytes: working, demand_ram_bytes: working, ..Default::default() }),
             staging: Owner::new(factory, Kind::Staging, MemoryReport { pinned_gpu_bytes: working, demand_gpu_bytes: working, ..Default::default() }),
-            demand: std::cell::Cell::new(demand), demand_key: std::cell::Cell::new(None), applied_limits: std::cell::Cell::new(None), limits_dirty: std::cell::Cell::new(true), preparation: std::cell::Cell::new(0), refused: Default::default(), trimmed: Default::default(), wake, resources, overdraft: Default::default(),
+            demand: std::cell::Cell::new(demand), demand_key: std::cell::Cell::new(None), applied_limits: std::cell::Cell::new(None), limits_dirty: std::cell::Cell::new(true), preparation: std::cell::Cell::new(0), target: std::cell::Cell::new(total(demand.wanted(0))), refused: Default::default(), trimmed: Default::default(), wake, resources, overdraft: Default::default(),
             idle: std::sync::atomic::AtomicBool::new(true),
         };
         memory.applied_limits.set(Some(memory.grants()));
@@ -144,7 +145,7 @@ impl Memory {
     #[cfg(test)]
     pub fn display_owner(&self) -> MemoryOwner { self.display.handle.clone() }
     pub(crate) fn display_limit(&self) -> u64 { self.display.handle.gpu_working_limit() }
-    pub(crate) fn display_grant(&self) -> u64 { self.retention_grant().min(self.display.published.get().demand_gpu_bytes) }
+    pub(crate) fn display_grant(&self) -> u64 { self.retention_grant().min(self.target.get()) }
     pub(crate) fn retention_grant(&self) -> u64 { self.display.handle.grant().gpu_bytes }
     pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) { *self.wake.lock().unwrap() = Some(wake); }
     pub(crate) fn raster_grant(&self) -> u64 { self.raster.handle.grant().gpu_bytes }
@@ -474,10 +475,10 @@ impl WgpuRasterizer {
         let mut pinned=usage.pinned;pinned[0]=pinned[0].saturating_add(presented).saturating_add(self.retired_display_bytes.used());
         let pinned=demand.pinned(pinned);let wanted=demand.wanted(self.memory.preparation.get());
         let floor=self.scene_tiers.display.floor();let refused=self.memory.refused.get();
+        let required=total(pinned).saturating_add(floor).max(if refused==0 {0}else {gpu.saturating_add(refused).saturating_add(floor)});
+        self.memory.target.set(total(std::array::from_fn(|part| wanted[part].max(pinned[part]))).max(required));
         MemoryReport { ram_bytes: ram, gpu_bytes: gpu, pinned_gpu_bytes: total(pinned),
-            demand_ram_bytes: ram, demand_gpu_bytes: total(std::array::from_fn(|part| wanted[part].max(pinned[part])))
-                .max(total(pinned).saturating_add(floor)).max(if refused==0 {0}else {gpu.saturating_add(refused).saturating_add(floor)}),
-            optional_gpu_bytes: u64::MAX, ..Default::default() }
+            demand_ram_bytes: ram, demand_gpu_bytes: required, optional_gpu_bytes: u64::MAX, ..Default::default() }
     }
     fn raster_pins(&self)->u64 {
         let held=self.staged_restore_mask_bytes().saturating_add(self.raster_tiers.admitted.used());
