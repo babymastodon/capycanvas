@@ -912,12 +912,20 @@ pub(crate) fn prepare_lit_presenter(r: &WgpuRasterizer, presenter: &mut crate::V
 
 #[derive(Clone)]
 pub(crate) struct PublishedCoverage {pub plan:display_mips::Plan,pub receipt:usize,pub pages:Vec<usize>,pub written:Vec<u32>}
-std::thread_local! {static PUBLISHED_COVERAGE:std::cell::RefCell<std::collections::HashMap<u64,PublishedCoverage>>=std::cell::RefCell::new(std::collections::HashMap::new());}
+std::thread_local! {static PUBLISHED_COVERAGE:std::cell::RefCell<std::collections::HashMap<u64,Vec<(crate::submission::Submission,PublishedCoverage)>>>=std::cell::RefCell::new(std::collections::HashMap::new());}
 pub(crate) fn coverage_hash<T:std::hash::Hash>(value:&T)->u64 {
     let mut hasher=std::collections::hash_map::DefaultHasher::new();std::hash::Hash::hash(value,&mut hasher);std::hash::Hasher::finish(&hasher)
 }
-pub(crate) fn published_coverage(geometry:u64)->Option<PublishedCoverage> {PUBLISHED_COVERAGE.with(|map|map.borrow().get(&geometry).cloned())}
-pub(crate) fn record_published_coverage(geometry:u64,value:PublishedCoverage) {PUBLISHED_COVERAGE.with(|map|{map.borrow_mut().insert(geometry,value);});}
+pub(crate) fn published_coverage(geometry:u64)->Option<PublishedCoverage> {
+    PUBLISHED_COVERAGE.with(|map|map.borrow().get(&geometry)?.iter().rev().find(|(submission,_)|!submission.discarded()).map(|(_,value)|value.clone()))
+}
+pub(crate) fn record_published_coverage(geometry:u64,submission:&crate::submission::Submission,value:PublishedCoverage) {
+    PUBLISHED_COVERAGE.with(|map|{
+        let mut map=map.borrow_mut();let published=map.entry(geometry).or_default();
+        let kept=published.drain(..).rfind(|(earlier,_)|!earlier.discarded() && !earlier.same(submission));
+        published.extend(kept);published.push((submission.clone(),value));
+    });
+}
 pub(crate) fn storm_surface_area(rect:PixelRect,view:ViewState)->f64 {
     let [a,b,c,d,tx,ty]=view.document_to_surface.map(f64::from);
     let [x0,y0,x1,y1]=[rect.min_x(),rect.min_y(),rect.max_x(),rect.max_y()].map(f64::from);

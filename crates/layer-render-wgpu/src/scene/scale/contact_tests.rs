@@ -262,6 +262,30 @@ fn a_discarded_contact_frame_is_reduced_and_composed_again_by_the_next_frame() {
 }
 
 #[test]
+fn a_frame_whose_commit_is_discarded_keeps_presenting_the_last_committed_root() {
+    let extent=[2048,1024];let doc=document_at(extent);let target=primary_target(&doc);
+    let mut frame=packet(doc.scene(),extent);frame.composite_all=false;frame.view=view_at(extent,1);
+    let mut r=renderer(&doc);
+    crate::test_support::submit_settled(&mut r,frame);crate::test_support::complete(&r);
+    let coverage=|r:&WgpuRasterizer|r.scale_display.as_ref().unwrap().storm_visible_coverage(frame.view);
+    let [settled,_,_,known]=coverage(&r);
+    assert!(settled>0. && known==1.,"the settled view presents a committed root");
+    for (step,x) in [300.,1500.].into_iter().enumerate() {
+        let dab=stroke_dab(x,300.);let batch=stroke_batch(target,&dab,step==0,false);
+        r.test.discard_frame=true;
+        crate::test_support::submit_ready(&mut r,FramePacket {dabs:std::slice::from_ref(&dab),dab_batches:std::slice::from_ref(&batch),time_seconds:0.01*(step+1) as f32,..frame}).unwrap();
+        assert!(!r.test.discard_frame,"the stroke frame's encoder is dropped");
+        let [covered,_,_,known]=coverage(&r);
+        assert_eq!(known,1.,"frame {step}: the presented root has a matching publication witness");
+        assert!(covered>=settled,"frame {step}: a discarded commit lost presented coverage: settled {settled}, covered {covered}");
+        assert!(r.scale_display.as_ref().unwrap().pixels.committed_root().is_some(),"frame {step}: the display keeps its last committed root");
+    }
+    crate::test_support::submit_ready(&mut r,frame).unwrap();crate::test_support::complete(&r);
+    let [covered,_,_,known]=coverage(&r);
+    assert!(known==1. && covered>=settled,"the frame after the discarded commits keeps every written cell: settled {settled}, covered {covered}");
+}
+
+#[test]
 fn after_pen_up_every_written_back_page_equals_a_keyed_composition_of_the_same_state() {
     let extent=[2048,1024];let doc=document_at(extent);let target=primary_target(&doc);
     let mut frame=packet(doc.scene(),extent);frame.composite_all=false;

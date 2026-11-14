@@ -7,10 +7,7 @@ pub(super) struct Pixels {
     next: Option<Window>,
     unreduced: PixelRect,
 }
-enum Window {
-    Allocated(Image,crate::residency::Charge),
-    Committed(CommittedImage),
-}
+struct Window {image:Image,_charge:crate::residency::Charge,newest:Option<CommittedImage>,good:Option<CommittedImage>}
 pub(super) struct CommittedImage {
     image: Image,
     submission: submission::Submission,
@@ -18,7 +15,6 @@ pub(super) struct CommittedImage {
     versions:Vec<Recorded>,
     current:Option<Current>,
     authored:Option<layer_core::raster::ContentStamp>,
-    charge: crate::residency::Charge,
 }
 #[derive(Clone)]
 struct Current {frame:Arc<SignatureFrame>,derived:bool}
@@ -38,14 +34,12 @@ impl CommittedImage {
     }
 }
 impl Window {
-    fn image(&self)->&Image {match self {Self::Allocated(image,_)=>image,Self::Committed(image)=>image.image()}}
-    fn committed(&self)->Option<&CommittedImage> {
-        match self {Self::Committed(image) if !image.submission.discarded()=>Some(image),_=>None}
-    }
+    fn new(image:Image,charge:crate::residency::Charge)->Self {Self {image,_charge:charge,newest:None,good:None}}
+    fn committed(&self)->Option<&CommittedImage> {self.newest.iter().chain(&self.good).find(|image|!image.submission.discarded())}
+    fn committed_mut(&mut self)->Option<&mut CommittedImage> {self.newest.iter_mut().chain(&mut self.good).find(|image|!image.submission.discarded())}
     fn commit(&mut self,submission:submission::Submission,pages:Vec<Held>,versions:Vec<Recorded>,current:Option<Current>,authored:Option<layer_core::raster::ContentStamp>) {
-        let (Self::Allocated(_,charge)|Self::Committed(CommittedImage {charge,..}))=self;
-        let charge=charge.split(charge.bytes()).unwrap();
-        *self=Self::Committed(CommittedImage {image:self.image().clone(),submission,pages,versions,current,authored,charge});
+        if let Some(replaced)=self.newest.take().filter(|newest|!newest.submission.discarded() && !newest.submission.same(&submission)) {self.good=Some(replaced);}
+        self.newest=Some(CommittedImage {image:self.image.clone(),submission,pages,versions,current,authored});
     }
 }
 pub(crate) struct PresentedPage<'a> {
@@ -57,8 +51,8 @@ impl<'a> PresentedPage<'a> {
     pub fn geometry(&self)->&'a wgpu::Buffer {self.geometry}
 }
 impl Pixels {
-    pub fn root(&self) -> Option<&Image> { self.root.as_ref().map(Window::image) }
-    pub fn next(&self) -> Option<&Image> { self.next.as_ref().map(Window::image) }
+    pub fn root(&self) -> Option<&Image> { self.root.as_ref().map(|window|&window.image) }
+    pub fn next(&self) -> Option<&Image> { self.next.as_ref().map(|window|&window.image) }
     pub fn committed_root(&self)->Option<&CommittedImage> {self.root.as_ref()?.committed()}
     pub fn committed_next(&self)->Option<&CommittedImage> {self.next.as_ref()?.committed()}
     fn commit_root(&mut self,submission:submission::Submission,pages:Vec<Held>,versions:Vec<Recorded>,current:Option<Current>,authored:Option<layer_core::raster::ContentStamp>) {self.root.as_mut().unwrap().commit(submission,pages,versions,current,authored);}
@@ -68,7 +62,7 @@ impl Pixels {
     }
     pub(super) fn wrote(&mut self,region:PixelRect) {self.unreduced=self.unreduced.union(region);}
     pub(super) fn hold_current(&mut self,frame:&Arc<SignatureFrame>) {
-        if let Some(Window::Committed(image))=&mut self.root {image.current=Some(Current {frame:frame.clone(),derived:false});}
+        if let Some(image)=self.root.as_mut().and_then(Window::committed_mut) {image.current=Some(Current {frame:frame.clone(),derived:false});}
     }
     pub(super) fn derived(&mut self,region:PixelRect,submission:submission::Submission) {
         self.wrote(region);
@@ -79,15 +73,15 @@ impl Pixels {
         self.root().map_or(self.unreduced,|root|PixelRect::new(0,0,root.plan.size[0],root.plan.size[1]))
     }
     pub fn ensure_root(&mut self, r: &WgpuRasterizer, plan: display_mips::Plan, format:wgpu::TextureFormat, _label: &'static str, charge: crate::residency::Charge) {
-        self.root.get_or_insert_with(|| Window::Allocated(Image::with_format(r,plan,format),charge));
+        self.root.get_or_insert_with(|| Window::new(Image::with_format(r,plan,format),charge));
     }
     pub fn ensure(&mut self, r: &WgpuRasterizer, plan: display_mips::Plan, format:wgpu::TextureFormat, charge: crate::residency::Charge) {
-        self.next.get_or_insert_with(|| Window::Allocated(Image::with_format(r,
+        self.next.get_or_insert_with(|| Window::new(Image::with_format(r,
             display_mips::Plan::window(plan.extent, plan.level + 1, plan.bounds),format),charge));
     }
-    pub fn storage_bytes(&self) -> u64 { self.root.iter().chain(&self.next).map(|window|window.image().bytes()).sum() }
+    pub fn storage_bytes(&self) -> u64 { self.root.iter().chain(&self.next).map(|window|window.image.bytes()).sum() }
     pub(super) fn take(&mut self)->Vec<Image> {
-        self.root.take().into_iter().chain(self.next.take()).map(|window|window.image().clone()).collect()
+        self.root.take().into_iter().chain(self.next.take()).map(|window|window.image).collect()
     }
 }
 
@@ -1166,7 +1160,7 @@ impl Cell {
     }
 }
 #[derive(Default)]
-pub(super) struct Cells {cells:Vec<Cell>,template:Option<Key>,input_level:u32,position:u64,frames:u64,unconfirmed:Vec<(submission::Submission,usize)>}
+pub(super) struct Cells {cells:Vec<Cell>,template:Option<Key>,input_level:u32,position:u64,frames:u64,unconfirmed:Vec<(submission::Submission,usize,Option<Shown>)>}
 impl Cells {
     fn index(plan:display_mips::Plan,coordinate:[u32;2])->usize {
         let side=1<<plan.level;
@@ -1201,13 +1195,13 @@ impl Cells {
                 }
             },
         }
-        let cells=&mut self.cells;
-        self.unconfirmed.retain(|(submission,index)| {
-            if submission.discarded() && cells[*index].shown.as_ref().is_some_and(|shown|shown.submission.same(submission)) {
-                cells[*index].shown=None;cells[*index].invalidate();
+        for (submission,index,previous) in self.unconfirmed.iter_mut().rev() {
+            let cell=&mut self.cells[*index];
+            if submission.discarded() && cell.shown.as_ref().is_some_and(|shown|shown.submission.same(submission)) {
+                cell.shown=previous.take().filter(|shown|!shown.submission.discarded());cell.invalidate();
             }
-            submission.pending()
-        });
+        }
+        self.unconfirmed.retain(|(submission,..)|submission.pending());
         self.template=Some(template.clone());self.input_level=input_level;self.position=store.changes.end();self.frames=store.frames;
     }
     pub(super) fn derivations(&self,plan:display_mips::Plan,changed:PixelRect)->PixelRect {
@@ -1419,8 +1413,8 @@ impl Cache {
         for (index,copy,exact) in copies {
             copy.image.clone().track(encoder);changed=changed.union(copy.region);
             let recorded=copy.versions.into_iter().next().expect("a copied page records its key");
-            cells.cells[index]=Cell {shown:Some(Shown {recorded:Some(recorded),submission:submission.clone(),exact,direct:false}),current:true,..Cell::default()};
-            cells.unconfirmed.push((submission.clone(),index));
+            let previous=std::mem::replace(&mut cells.cells[index],Cell {shown:Some(Shown {recorded:Some(recorded),submission:submission.clone(),exact,direct:false}),current:true,..Cell::default()}).shown;
+            cells.unconfirmed.push((submission.clone(),index,previous));
         }
         drop(cells);
         let [x,y,width,height]=paint_transform::texel_rect(changed.window_local(self.plan.bounds),1<<self.plan.level);
@@ -1431,9 +1425,9 @@ impl Cache {
         if write.key.level!=self.plan.level || write.accepted.is_none() && self.gesture.is_none() {return;}
         let mut cells=self.cells.lock().unwrap();
         let index=Cells::index(self.plan,write.key.coordinate);
-        cells.cells[index]=Cell {shown:Some(Shown {recorded:write.accepted.map(|accepted|accepted.recorded),submission:submission.clone(),exact:write.accuracy==Accuracy::Exact,direct:true}),
-            current:true,..Cell::default()};
-        cells.unconfirmed.push((submission,index));
+        let previous=std::mem::replace(&mut cells.cells[index],Cell {shown:Some(Shown {recorded:write.accepted.map(|accepted|accepted.recorded),submission:submission.clone(),exact:write.accuracy==Accuracy::Exact,direct:true}),
+            current:true,..Cell::default()}).shown;
+        cells.unconfirmed.push((submission,index,previous));
     }
     pub(super) fn commit_window(&mut self,r:&mut WgpuRasterizer,encoder:&mut submission::CommandEncoder)->Result<(),GpuRasterError> {
         let Some((cells,store,template))=self.cells() else {return Ok(());};
@@ -1457,7 +1451,7 @@ impl Cache {
         #[cfg(test)]
         {
             let root=self.pixels.committed_root().unwrap();
-            crate::test_support::record_published_coverage(crate::test_support::coverage_hash(&self.geometry),crate::test_support::PublishedCoverage {
+            crate::test_support::record_published_coverage(crate::test_support::coverage_hash(&self.geometry),&root.submission,crate::test_support::PublishedCoverage {
                 plan:root.image.plan,receipt:root.submission.observation_id(),pages:Vec::new(),written:observed_written,
             });
         }
@@ -1938,16 +1932,18 @@ pub(super) mod query_tests {
     }
 
     #[test]
-    fn a_discarded_direct_cell_is_unwritten_before_the_next_frame_begins() {
+    fn a_discarded_direct_cell_keeps_its_previous_picture_and_is_queued_before_the_next_frame_begins() {
         let document=super::super::tests::document_at([1024,512]);
         let (r,_)=settled_view(&document);
-        let mut encoder=submission::CommandEncoder::new(&r.device,&Default::default());
-        let key=show_cell(&r,[1,0],&mut encoder);
         let cache=r.scale_display.as_ref().unwrap();
-        assert!(quiet(&table(cache).cells[Cells::index(cache.plan,key.coordinate)]),"the direct cell is shown while its encoder is open");
+        let index=Cells::index(cache.plan,[1,0]);
+        let settled=table(cache).cells[index].shown.as_ref().map(|shown|shown.submission.clone()).expect("the settled view shows the cell");
+        let mut encoder=submission::CommandEncoder::new(&r.device,&Default::default());
+        show_cell(&r,[1,0],&mut encoder);
+        assert!(quiet(&table(cache).cells[index]),"the direct cell is shown while its encoder is open");
         drop(encoder);
-        let cells=table(cache);let cell=&cells.cells[Cells::index(cache.plan,key.coordinate)];
-        assert!(cell.shown.is_none() && cell.queued,"a discarded direct cell is unwritten and queued before the next frame begins");
+        let cells=table(cache);let cell=&cells.cells[index];
+        assert!(cell.shown.as_ref().is_some_and(|shown|shown.submission.same(&settled)) && cell.queued,"a discarded direct cell keeps its previous picture and is queued before the next frame begins");
     }
 
     #[test]
